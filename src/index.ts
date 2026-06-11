@@ -6,6 +6,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { PolicyEngine, PolicyViolation } from "./policy";
 import { KaspaWallet, formatKas, parseKasToSompi } from "./wallet";
+import { X402Client } from "./x402/client";
 
 const NETWORK = process.env.SOMPI_NETWORK ?? "testnet-10";
 const DATA_DIR = process.env.SOMPI_DATA_DIR ?? path.join(os.homedir(), ".sompi", NETWORK);
@@ -164,6 +165,34 @@ registerTool(
         serverVersion: info.serverVersion,
         virtualDaaScore: info.virtualDaaScore?.toString?.() ?? String(info.virtualDaaScore),
         hasUtxoIndex: info.hasUtxoIndex,
+      };
+    })
+);
+
+const x402 = new X402Client(wallet, policy, DATA_DIR);
+
+registerTool(
+  "paid_fetch",
+  {
+    description:
+      "Fetch a URL, automatically paying for it if the server responds with HTTP 402 (kaspa-tab scheme). " +
+      "Opens a payment tab with an on-chain KAS deposit (subject to the spending policy), then subsequent " +
+      "requests to the same origin are charged against the tab with no on-chain cost.",
+    inputSchema: {
+      url: z.string().url().describe("URL to fetch"),
+      method: z.string().default("GET").describe("HTTP method"),
+      body: z.string().optional().describe("Request body"),
+    },
+  },
+  async ({ url, method, body }) =>
+    guarded(async () => {
+      const result = await x402.paidFetch(url, { method, body });
+      return {
+        status: result.status,
+        body: result.body.length > 10_000 ? result.body.slice(0, 10_000) + "…[truncated]" : result.body,
+        tabId: result.tabId,
+        remainingSompi: result.remainingSompi,
+        deposit: result.deposit,
       };
     })
 );

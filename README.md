@@ -92,10 +92,30 @@ Kaspa's storage mass (KIP-9) charges roughly `C/amount` grams (C = 10¹²) for c
 - The policy file and env vars are deliberately not writable through any MCP tool.
 - Fees are always derived from the node's fee estimator; nothing is hardcoded.
 
+## x402: agents paying for APIs
+
+The `paid_fetch` MCP tool resolves HTTP 402 responses automatically. Servers using the bundled `TabServer` middleware answer unpaid requests with a `kaspa-tab` offer; the client opens a tab with a single on-chain deposit (policy-gated), then requests are charged against the tab off-chain.
+
+Measured on testnet-10: **first request — including the on-chain deposit confirming — completes in ~1 second**; subsequent requests are 1–2ms with zero on-chain cost. Tab deposits are ≥1 KAS by design so KIP-9 fee overhead stays ~1%.
+
+Server side (any Node `http`-compatible framework):
+
+```ts
+import { TabServer } from "sompi/dist/x402/server";
+
+const tabs = new TabServer({ networkId, rpc, minDepositSompi: 100_000_000n, pricePerRequestSompi: 1_000n, dataDir });
+http.createServer(async (req, res) => {
+  if (await tabs.gate(req, res)) return; // replied 402
+  // ... serve the paid content
+});
+```
+
+Run the full live demo (seller + buyer, real testnet KAS): `npm run demo:x402`.
+
 ## Roadmap
 
-1. **Phase 1 (this)** — MCP server with policy-enforced wallet tools.
-2. **Phase 2** — `x402`-style HTTP payment middleware + client: agents paying for API calls with KAS inside the request/retry window.
+1. **Phase 1 (done)** — MCP server with policy-enforced wallet tools.
+2. **Phase 2 (done)** — x402 tab-based HTTP payment middleware + `paid_fetch`: agents paying for API calls with KAS inside the request/retry window.
 3. **Phase 3** — Covenant-based policy vaults (KIP-16): spending limits enforced by consensus, not software.
 
 ## Development

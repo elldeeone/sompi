@@ -50,6 +50,11 @@ async function main() {
   check("policy: hourly cap denies after 4.5 KAS spent", denied);
 
   // --- online checks: live network ---
+  if (process.env.SOMPI_SMOKE_OFFLINE) {
+    console.log(`\nSOMPI_SMOKE_OFFLINE set; skipping live network checks.`);
+    console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);
+    process.exit(failures === 0 ? 0 : 1);
+  }
   console.log(`\nConnecting to ${NETWORK} via public resolver...`);
   const wallet = new KaspaWallet({ networkId: NETWORK, dataDir: DATA_DIR, nodeUrl: process.env.SOMPI_NODE_URL });
   check("wallet: address derived", wallet.address.length > 0, wallet.address);
