@@ -6,6 +6,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { z } from "zod";
 import { PolicyEngine, PolicyViolation } from "./policy";
 import { KaspaWallet, formatKas, parseKasToSompi } from "./wallet";
+import { VaultManager } from "./vault";
 import { X402Client } from "./x402/client";
 
 const NETWORK = process.env.SOMPI_NETWORK ?? "testnet-10";
@@ -16,7 +17,7 @@ const POLICY_PATH = process.env.SOMPI_POLICY;
 const wallet = new KaspaWallet({ networkId: NETWORK, dataDir: DATA_DIR, nodeUrl: NODE_URL });
 const policy = new PolicyEngine(DATA_DIR, POLICY_PATH);
 
-const server = new McpServer({ name: "sompi", version: "0.1.0" });
+const server = new McpServer({ name: "sompi", version: "0.2.0" });
 
 // The SDK's registerTool generics overflow tsc's instantiation depth with
 // zod 3.25 shapes, so registrations go through this loosely-typed wrapper.
@@ -194,6 +195,65 @@ registerTool(
         remainingSompi: result.remainingSompi,
         deposit: result.deposit,
       };
+    })
+);
+
+const vault = new VaultManager(DATA_DIR, process.env.SOMPI_VAULT_DRIVER);
+
+registerTool(
+  "vault_create",
+  {
+    description:
+      "Create a covenant vault: a P2SH address whose agent spending path is capped at maxOutflowSompi " +
+      "per transaction by Kaspa consensus (not by software). Returns the vault address to fund. " +
+      "Requires the vault-driver binary (SOMPI_VAULT_DRIVER). Testnet proof-of-concept.",
+    inputSchema: {
+      maxOutflowSompi: z.string().describe("Consensus-enforced cap per withdrawal (amount + fee), in sompi"),
+    },
+  },
+  async ({ maxOutflowSompi }) =>
+    guarded(async () => {
+      const created = vault.create(BigInt(maxOutflowSompi));
+      return {
+        ...created,
+        note: "fund this address to activate the vault; move the owner key offline for real use",
+      };
+    })
+);
+
+registerTool(
+  "vault_status",
+  {
+    description: "Show the covenant vault's address, consensus spending cap, and on-chain balance.",
+  },
+  async () =>
+    guarded(async () => {
+      if (!vault.configured) return { configured: false };
+      const config = vault.config();
+      const balance = await vault.balanceSompi(wallet);
+      return { configured: true, ...config, balanceSompi: balance.toString(), balanceKas: formatKas(balance) };
+    })
+);
+
+registerTool(
+  "vault_send",
+  {
+    description:
+      "Withdraw from the covenant vault via the consensus-capped agent path. Also passes through the " +
+      "local spending policy (defense in depth). Change returns to the vault automatically.",
+    inputSchema: {
+      to: z.string().describe("Destination Kaspa address"),
+      amountSompi: z.string().describe("Amount in sompi"),
+      feeSompi: z.string().optional().describe("Fee in sompi (default 2000000)"),
+    },
+  },
+  async ({ to, amountSompi, feeSompi }) =>
+    guarded(async () => {
+      const amount = BigInt(amountSompi);
+      policy.authorize(to, amount);
+      const txid = await vault.send(wallet, to, amount, feeSompi ? BigInt(feeSompi) : undefined);
+      policy.record(amount);
+      return { txid, to, amountSompi: amount.toString(), enforcement: "consensus (covenant) + local policy" };
     })
 );
 

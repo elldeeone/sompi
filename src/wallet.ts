@@ -52,11 +52,76 @@ export class KaspaWallet {
         /* stale socket; replaced below */
       }
     }
-    this.rpc = this.config.nodeUrl
-      ? new RpcClient({ url: this.config.nodeUrl, networkId: this.networkId })
-      : new RpcClient({ resolver: new Resolver(), networkId: this.networkId });
-    await this.rpc.connect({ timeoutDuration: 15_000, retries: 2 } as any);
-    return this.rpc;
+    if (this.config.nodeUrl) {
+      this.rpc = new RpcClient({ url: this.config.nodeUrl, networkId: this.networkId });
+      await this.rpc.connect({ timeoutDuration: 15_000, retries: 2 } as any);
+      // Explicitly configured node: trust it, but warn if it looks off-chain.
+      const verdict = await this.chainGuardVerdict(this.rpc);
+      if (verdict) console.error(`sompi warning: configured node ${this.config.nodeUrl} ${verdict}`);
+      return this.rpc;
+    }
+    // Public resolver: nodes may be unsynced or on a stale fork (observed in
+    // the wild on testnet-10). Verify against the explorer and rotate.
+    let lastVerdict = "";
+    for (let attempt = 0; attempt < 4; attempt++) {
+      const rpc = new RpcClient({ resolver: new Resolver(), networkId: this.networkId });
+      await rpc.connect({ timeoutDuration: 15_000, retries: 1 } as any);
+      const verdict = await this.chainGuardVerdict(rpc);
+      if (!verdict) {
+        this.rpc = rpc;
+        return rpc;
+      }
+      lastVerdict = `${rpc.url}: ${verdict}`;
+      console.error(`sompi: rejecting public node (${lastVerdict}); trying another`);
+      try {
+        await rpc.disconnect();
+      } catch {
+        /* discard */
+      }
+    }
+    throw new Error(
+      `no healthy public node found for ${this.networkId} (last: ${lastVerdict}); ` +
+        `set SOMPI_NODE_URL to a trusted synced node`
+    );
+  }
+
+  /**
+   * Returns a problem description if the node looks unsynced or off the
+   * canonical chain, or null when healthy. The canonical reference is the
+   * public explorer's DAA score (best-effort: network failures skip the
+   * fork check rather than blocking).
+   */
+  private async chainGuardVerdict(rpc: RpcClient): Promise<string | null> {
+    const info = await rpc.getServerInfo();
+    if (!info.isSynced) return "reports unsynced";
+    if (!info.hasUtxoIndex) return "runs without utxoindex";
+    const reference = await this.referenceDaaScore();
+    if (reference === null) return null; // explorer unreachable: skip fork check
+    const nodeDaa = BigInt(info.virtualDaaScore);
+    const drift = nodeDaa > reference ? nodeDaa - reference : reference - nodeDaa;
+    // 10 bps => 6000 DAA per 10 minutes. Anything beyond that is a stale fork,
+    // not propagation lag.
+    if (drift > 6_000n) {
+      return `is ${drift} DAA off the canonical chain (node ${nodeDaa}, explorer ${reference})`;
+    }
+    return null;
+  }
+
+  private async referenceDaaScore(): Promise<bigint | null> {
+    const apis: Record<string, string> = {
+      mainnet: "https://api.kaspa.org",
+      "testnet-10": "https://api-tn10.kaspa.org",
+    };
+    const base = apis[this.networkId];
+    if (!base) return null;
+    try {
+      const response = await fetch(`${base}/info/blockdag`, { signal: AbortSignal.timeout(5_000) });
+      if (!response.ok) return null;
+      const body = (await response.json()) as { virtualDaaScore?: string | number };
+      return body.virtualDaaScore !== undefined ? BigInt(body.virtualDaaScore) : null;
+    } catch {
+      return null;
+    }
   }
 
   async serverInfo() {

@@ -51,9 +51,16 @@ On first run the server generates a wallet key at `~/.sompi/<network>/wallet-key
 | `send_payment` | Send KAS — gated by the spending policy |
 | `await_payment` | Block until an incoming payment of at least N sompi arrives (UTXO subscription, not polling) |
 | `verify_payment` | Confirm a txid paid an address |
+| `paid_fetch` | Fetch a URL, auto-resolving HTTP 402 payment via a KAS tab |
 | `estimate_fee` | Live feerate buckets from the node |
 | `network_status` | Node sync state, DAA score, version |
 | `get_policy` | Read-only view of the active spending policy |
+| `vault_create` / `vault_status` / `vault_send` | Covenant vault: spending caps enforced by consensus (see below) |
+
+Connections to public resolver nodes are verified against the explorer's
+chain tip (a **canonical-chain guard**): nodes that are unsynced, missing a
+UTXO index, or sitting on a stale fork are rejected with a clear error
+instead of silently reporting zero balances.
 
 ## Spending policy
 
@@ -84,6 +91,7 @@ Point at a policy file with `SOMPI_POLICY=/path/to/policy.json`. Without one, co
 | `SOMPI_PRIVATE_KEY` | (generated keyfile) | Hex private key override |
 | `SOMPI_DATA_DIR` | `~/.sompi/<network>` | Keyfile + spend-log location |
 | `SOMPI_POLICY` | (built-in defaults) | Path to policy JSON |
+| `SOMPI_VAULT_DRIVER` | (unset) | Path to the vault-driver binary (enables vault tools) |
 
 ## Micropayment economics (KIP-9)
 
@@ -115,11 +123,32 @@ http.createServer(async (req, res) => {
 
 Run the full live demo (seller + buyer, real testnet KAS): `npm run demo:x402`.
 
+Sellers collect revenue with `node scripts/sweep-tabs.js <sellerDataDir> <destination>`
+(sweeps exhausted tabs; `--all` also takes unspent client credit, for decommissioning).
+
+## Covenant vaults (testnet PoC)
+
+The policy engine is software; a stolen key bypasses it. Covenant vaults move the
+spending limit into Kaspa consensus (KIP-16, live on testnet-10): the vault's agent
+path can withdraw at most `maxOutflowSompi` per transaction — withdrawal plus fee —
+with the remainder forced back into the vault by script. **Every node on the network
+enforces this; a fully compromised agent key cannot exceed it.** The owner key
+(kept offline) recovers everything.
+
+Proven on-chain — see [docs/vault-poc.md](docs/vault-poc.md) for the three proof
+transactions, including the node rejecting an over-limit spend.
+
+Requires the `vault-driver` binary from the
+[silverscript fork](https://github.com/elldeeone/silverscript/tree/toccata-docs/vault-driver):
+`cargo build -p vault-driver`, then set `SOMPI_VAULT_DRIVER` to the binary path.
+Owner recovery is deliberately *not* exposed as an MCP tool — agents must not be
+able to invoke the unrestricted path; use the driver CLI (`sign-recover`) directly.
+
 ## Roadmap
 
 1. **Phase 1 (done)** — MCP server with policy-enforced wallet tools.
 2. **Phase 2 (done)** — x402 tab-based HTTP payment middleware + `paid_fetch`: agents paying for API calls with KAS inside the request/retry window.
-3. **Phase 3** — Covenant-based policy vaults (KIP-16): spending limits enforced by consensus, not software.
+3. **Phase 3 (PoC shipped)** — Covenant-based policy vaults (KIP-16): spending limits enforced by consensus, not software. Next: rolling spend windows via covenant state; mainnet after Toccata activation (June 30, 2026).
 
 ## Development
 

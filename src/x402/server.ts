@@ -2,7 +2,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { Keypair, RpcClient } from "../../vendor/kaspa-wasm/kaspa";
+import { Keypair, PrivateKey, RpcClient, createTransactions } from "../../vendor/kaspa-wasm/kaspa";
 import {
   PaymentOffer,
   PaymentRequired,
@@ -157,5 +157,50 @@ export class TabServer {
 
   private persist(): void {
     fs.writeFileSync(this.tabsPath, JSON.stringify([...this.tabs.values()]), { mode: 0o600 });
+  }
+
+  /**
+   * Sweep tab deposits to `destination`.
+   *
+   * By default only exhausted tabs (remaining credit below one request price)
+   * are swept — unspent credit belongs to the client. Pass
+   * `includeUnspent: true` to take everything (e.g. when decommissioning).
+   */
+  async sweep(
+    destination: string,
+    includeUnspent = false
+  ): Promise<{ tabId: string; txid: string; sweptSompi: string }[]> {
+    const rpc = await this.config.rpc();
+    const results: { tabId: string; txid: string; sweptSompi: string }[] = [];
+    for (const tab of this.tabs.values()) {
+      const { entries } = await rpc.getUtxosByAddresses([tab.depositAddress]);
+      if (!entries.length) continue;
+      const deposited = (entries as any[]).reduce(
+        (acc, e) => acc + BigInt(e?.amount ?? e?.entry?.amount ?? 0),
+        0n
+      );
+      const remaining = deposited - BigInt(tab.chargedSompi);
+      if (!includeUnspent && remaining >= this.config.pricePerRequestSompi) continue;
+
+      const estimate = await rpc.getFeeEstimate();
+      const feerate = estimate.estimate?.normalBuckets?.[0]?.feerate ?? 1;
+      const { transactions } = await createTransactions({
+        entries,
+        outputs: [],
+        changeAddress: destination,
+        feeRate: feerate,
+        priorityFee: 0n,
+        networkId: this.config.networkId,
+      } as any);
+      const key = new PrivateKey(tab.depositPrivateKey);
+      let txid = "";
+      for (const pending of transactions) {
+        await pending.sign([key]);
+        txid = await pending.submit(rpc);
+      }
+      this.depositCache.delete(tab.tabId);
+      results.push({ tabId: tab.tabId, txid, sweptSompi: deposited.toString() });
+    }
+    return results;
   }
 }
