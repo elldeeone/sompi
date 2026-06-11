@@ -49,32 +49,42 @@ export class VaultManager {
     return execFileSync(this.driverPath, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   }
 
-  /** Generate keys, derive the vault address, persist config. One vault per data dir. */
-  create(maxOutflowSompi: bigint): VaultConfig & { ownerKeyPath: string } {
+  /**
+   * Derive the vault address and persist config. One vault per data dir.
+   *
+   * Only the agent key is generated here. The owner (recovery) key belongs to
+   * the human operator: they generate it on their own machine and supply just
+   * the public half, so the unrestricted spending path never exists on the
+   * agent's host.
+   */
+  create(maxOutflowSompi: bigint, ownerPublicKey: string): VaultConfig {
     if (this.configured) {
       throw new Error(`vault already exists at ${this.vaultDir}; use it or move it aside first`);
     }
+    const ownerPublic = ownerPublicKey.trim().toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(ownerPublic)) {
+      throw new Error(
+        "ownerPublicKey must be a 32-byte x-only public key in hex (64 hex chars). " +
+          "Ask your human operator to run `vault-driver gen-key` on THEIR machine and " +
+          "give you the `public:` line; the private half must stay with them."
+      );
+    }
     const agent = this.parseKeyPair(this.driver(["gen-key"]));
-    const owner = this.parseKeyPair(this.driver(["gen-key"]));
-    const info = this.driver(["info", agent.public, owner.public, maxOutflowSompi.toString()]);
+    const info = this.driver(["info", agent.public, ownerPublic, maxOutflowSompi.toString()]);
     const address = /vault address: (\S+)/.exec(info)?.[1];
     if (!address) throw new Error(`could not parse vault address from driver output: ${info}`);
 
     fs.mkdirSync(this.vaultDir, { recursive: true, mode: 0o700 });
     fs.writeFileSync(path.join(this.vaultDir, "agent-key"), agent.private, { mode: 0o600 });
-    // The owner key is the recovery/admin key. Keeping it on the same host as
-    // the agent key defeats the purpose outside of testing — move it offline.
-    const ownerKeyPath = path.join(this.vaultDir, "owner-key");
-    fs.writeFileSync(ownerKeyPath, owner.private, { mode: 0o600 });
 
     const config: VaultConfig = {
       agentPublic: agent.public,
-      ownerPublic: owner.public,
+      ownerPublic,
       maxOutflowSompi: maxOutflowSompi.toString(),
       address,
     };
     fs.writeFileSync(path.join(this.vaultDir, "config.json"), JSON.stringify(config, null, 2), { mode: 0o600 });
-    return { ...config, ownerKeyPath };
+    return config;
   }
 
   async balanceSompi(wallet: KaspaWallet): Promise<bigint> {
@@ -95,9 +105,16 @@ export class VaultManager {
     return this.spend(wallet, "sign-withdraw", key, destination, amountSompi, feeSompi);
   }
 
-  /** Drain the vault via the unrestricted owner path. */
+  /** Drain the vault via the unrestricted owner path (legacy vaults only). */
   async recover(wallet: KaspaWallet, destination: string, feeSompi = DEFAULT_FEE_SOMPI): Promise<string> {
-    const key = fs.readFileSync(path.join(this.vaultDir, "owner-key"), "utf8").trim();
+    const ownerKeyPath = path.join(this.vaultDir, "owner-key");
+    if (!fs.existsSync(ownerKeyPath)) {
+      throw new Error(
+        "the owner key is not stored on this host (by design). Recover from your own machine: " +
+          "vault-driver sign-recover <ownerPriv> ... and broadcast with scripts/submit-tx.js"
+      );
+    }
+    const key = fs.readFileSync(ownerKeyPath, "utf8").trim();
     return this.spend(wallet, "sign-recover", key, destination, null, feeSompi);
   }
 

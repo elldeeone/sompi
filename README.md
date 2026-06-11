@@ -138,11 +138,16 @@ enforces this; a fully compromised agent key cannot exceed it.** The owner key
 Proven on-chain — see [docs/vault-poc.md](docs/vault-poc.md) for the three proof
 transactions, including the node rejecting an over-limit spend.
 
+**Setup is a two-party ceremony by design.** The operator runs `vault-driver gen-key`
+on their *own* machine and gives the agent only the public key plus the cap; the
+agent's `vault_create` generates its own key and derives the vault address. The
+unrestricted owner key never exists on the agent's host, so a compromised agent
+has nothing to leak. Owner recovery is likewise *not* an MCP tool — recover from
+your machine with `vault-driver sign-recover` + `scripts/submit-tx.js`.
+
 Requires the `vault-driver` binary from the
 [silverscript fork](https://github.com/elldeeone/silverscript/tree/toccata-docs/vault-driver):
 `cargo build -p vault-driver`, then set `SOMPI_VAULT_DRIVER` to the binary path.
-Owner recovery is deliberately *not* exposed as an MCP tool — agents must not be
-able to invoke the unrestricted path; use the driver CLI (`sign-recover`) directly.
 
 ## Roadmap
 

@@ -17,7 +17,7 @@ const POLICY_PATH = process.env.SOMPI_POLICY;
 const wallet = new KaspaWallet({ networkId: NETWORK, dataDir: DATA_DIR, nodeUrl: NODE_URL });
 const policy = new PolicyEngine(DATA_DIR, POLICY_PATH);
 
-const server = new McpServer({ name: "sompi", version: "0.2.0" });
+const server = new McpServer({ name: "sompi", version: "0.2.1" });
 
 // The SDK's registerTool generics overflow tsc's instantiation depth with
 // zod 3.25 shapes, so registrations go through this loosely-typed wrapper.
@@ -205,18 +205,22 @@ registerTool(
   {
     description:
       "Create a covenant vault: a P2SH address whose agent spending path is capped at maxOutflowSompi " +
-      "per transaction by Kaspa consensus (not by software). Returns the vault address to fund. " +
+      "per transaction by Kaspa consensus (not by software). The owner/recovery key belongs to your " +
+      "HUMAN OPERATOR: before calling this, ask them to run `vault-driver gen-key` on their own machine " +
+      "and give you (1) the public key and (2) the spending cap they want. Never generate or ask for " +
+      "the owner private key. Returns the vault address for them to fund. " +
       "Requires the vault-driver binary (SOMPI_VAULT_DRIVER). Testnet proof-of-concept.",
     inputSchema: {
-      maxOutflowSompi: z.string().describe("Consensus-enforced cap per withdrawal (amount + fee), in sompi"),
+      maxOutflowSompi: z.string().describe("Consensus-enforced cap per withdrawal (amount + fee), in sompi — chosen by the operator"),
+      ownerPublicKey: z.string().describe("The operator's 32-byte x-only public key (64 hex chars); its private half stays with them"),
     },
   },
-  async ({ maxOutflowSompi }) =>
+  async ({ maxOutflowSompi, ownerPublicKey }) =>
     guarded(async () => {
-      const created = vault.create(BigInt(maxOutflowSompi));
+      const created = vault.create(BigInt(maxOutflowSompi), ownerPublicKey);
       return {
         ...created,
-        note: "fund this address to activate the vault; move the owner key offline for real use",
+        note: "ask your operator to fund this address; only they can ever drain it past the cap",
       };
     })
 );
