@@ -9,6 +9,19 @@ import { KaspaWallet, formatKas, parseKasToSompi } from "./wallet";
 import { VaultManager } from "./vault";
 import { X402Client } from "./x402/client";
 
+// Operator-side CLI: `npx @elldeeone/sompi gen-owner-key` — run on the
+// HUMAN's machine, before any MCP plumbing starts.
+if (process.argv[2] === "gen-owner-key") {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { generateOwnerKey } = require("./vault") as typeof import("./vault");
+  const key = generateOwnerKey();
+  console.log("Vault owner (recovery) keypair — generated locally, never share the private line:");
+  console.log(`private: ${key.privateKey}`);
+  console.log(`public:  ${key.publicKey}`);
+  console.log("\nGive your agent the `public:` line and your chosen cap; store the private line safely.");
+  process.exit(0);
+}
+
 const NETWORK = process.env.SOMPI_NETWORK ?? "testnet-10";
 const DATA_DIR = process.env.SOMPI_DATA_DIR ?? path.join(os.homedir(), ".sompi", NETWORK);
 const NODE_URL = process.env.SOMPI_NODE_URL;
@@ -17,7 +30,7 @@ const POLICY_PATH = process.env.SOMPI_POLICY;
 const wallet = new KaspaWallet({ networkId: NETWORK, dataDir: DATA_DIR, nodeUrl: NODE_URL });
 const policy = new PolicyEngine(DATA_DIR, POLICY_PATH);
 
-const server = new McpServer({ name: "sompi", version: "0.2.1" });
+const server = new McpServer({ name: "sompi", version: "0.3.0" });
 
 // The SDK's registerTool generics overflow tsc's instantiation depth with
 // zod 3.25 shapes, so registrations go through this loosely-typed wrapper.
@@ -198,7 +211,7 @@ registerTool(
     })
 );
 
-const vault = new VaultManager(DATA_DIR, process.env.SOMPI_VAULT_DRIVER);
+const vault = new VaultManager(DATA_DIR, NETWORK);
 
 registerTool(
   "vault_create",
@@ -206,10 +219,10 @@ registerTool(
     description:
       "Create a covenant vault: a P2SH address whose agent spending path is capped at maxOutflowSompi " +
       "per transaction by Kaspa consensus (not by software). The owner/recovery key belongs to your " +
-      "HUMAN OPERATOR: before calling this, ask them to run `vault-driver gen-key` on their own machine " +
-      "and give you (1) the public key and (2) the spending cap they want. Never generate or ask for " +
-      "the owner private key. Returns the vault address for them to fund. " +
-      "Requires the vault-driver binary (SOMPI_VAULT_DRIVER). Testnet proof-of-concept.",
+      "HUMAN OPERATOR: before calling this, ask them to run `npx @elldeeone/sompi gen-owner-key` on " +
+      "their own machine and give you (1) the public key and (2) the spending cap they want. Never " +
+      "generate or ask for the owner private key. Returns the vault address for them to fund. " +
+      "Testnet proof-of-concept.",
     inputSchema: {
       maxOutflowSompi: z.string().describe("Consensus-enforced cap per withdrawal (amount + fee), in sompi — chosen by the operator"),
       ownerPublicKey: z.string().describe("The operator's 32-byte x-only public key (64 hex chars); its private half stays with them"),

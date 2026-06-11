@@ -7,7 +7,9 @@
  */
 import * as os from "node:os";
 import * as path from "node:path";
+import * as fs from "node:fs";
 import { PolicyEngine, PolicyViolation } from "./policy";
+import { buildRedeemScript, buildSigArgs, bytesToHex } from "./vault/template";
 import { KaspaWallet, formatKas } from "./wallet";
 
 const NETWORK = process.env.SOMPI_NETWORK ?? "testnet-10";
@@ -48,6 +50,24 @@ async function main() {
     denied = e instanceof PolicyViolation;
   }
   check("policy: hourly cap denies after 4.5 KAS spent", denied);
+
+  // --- offline checks: vault template byte-equality vs compiler fixtures ---
+  const fixtures = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "scripts", "vault-fixtures.json"), "utf8"));
+  let templateMatches = 0;
+  for (const f of fixtures) {
+    const redeem = bytesToHex(buildRedeemScript(f.agent, f.owner, BigInt(f.maxOutflow)));
+    const withdrawArgs = bytesToHex(buildSigArgs(new Uint8Array(65).fill(0xab), "withdraw"));
+    const recoverArgs = bytesToHex(buildSigArgs(new Uint8Array(65).fill(0xab), "recover"));
+    if (redeem === f.redeemScript && withdrawArgs === f.withdrawArgsWithDummySig && recoverArgs === f.recoverArgsWithDummySig) {
+      templateMatches++;
+    } else {
+      console.log(`  fixture mismatch: agent=${f.agent.slice(0, 8)} max=${f.maxOutflow}`);
+    }
+  }
+  check(
+    `vault template: byte-identical to compiler output (${templateMatches}/${fixtures.length} fixtures)`,
+    templateMatches === fixtures.length
+  );
 
   // --- online checks: live network ---
   if (process.env.SOMPI_SMOKE_OFFLINE) {

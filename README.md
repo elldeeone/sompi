@@ -91,7 +91,6 @@ Point at a policy file with `SOMPI_POLICY=/path/to/policy.json`. Without one, co
 | `SOMPI_PRIVATE_KEY` | (generated keyfile) | Hex private key override |
 | `SOMPI_DATA_DIR` | `~/.sompi/<network>` | Keyfile + spend-log location |
 | `SOMPI_POLICY` | (built-in defaults) | Path to policy JSON |
-| `SOMPI_VAULT_DRIVER` | (unset) | Path to the vault-driver binary (enables vault tools) |
 
 ## Micropayment economics (KIP-9)
 
@@ -138,16 +137,23 @@ enforces this; a fully compromised agent key cannot exceed it.** The owner key
 Proven on-chain — see [docs/vault-poc.md](docs/vault-poc.md) for the three proof
 transactions, including the node rejecting an over-limit spend.
 
-**Setup is a two-party ceremony by design.** The operator runs `vault-driver gen-key`
-on their *own* machine and gives the agent only the public key plus the cap; the
-agent's `vault_create` generates its own key and derives the vault address. The
-unrestricted owner key never exists on the agent's host, so a compromised agent
-has nothing to leak. Owner recovery is likewise *not* an MCP tool — recover from
-your machine with `vault-driver sign-recover` + `scripts/submit-tx.js`.
+**Zero extra tooling.** The covenant ships inside this package as a byte-pinned
+template (`src/vault/template.ts`), verified byte-for-byte against the
+[SilverScript compiler](https://github.com/elldeeone/silverscript) in CI. Agents
+can only instantiate this audited rule-shape with their operator's parameters —
+they cannot author covenant logic.
 
-Requires the `vault-driver` binary from the
-[silverscript fork](https://github.com/elldeeone/silverscript/tree/toccata-docs/vault-driver):
-`cargo build -p vault-driver`, then set `SOMPI_VAULT_DRIVER` to the binary path.
+**Setup is a two-party ceremony by design:**
+
+1. Operator, on their own machine: `npx -y @elldeeone/sompi gen-owner-key` —
+   keep the private line, give the agent the public line plus the chosen cap.
+2. Agent: `vault_create` with those two values. It generates only its own key;
+   the unrestricted owner key never exists on the agent's host.
+3. Operator funds the returned vault address.
+
+Owner recovery is likewise *not* an MCP tool — recover from your machine:
+`node scripts/vault-recover.js <ownerPriv> <agentPublic> <maxOutflowSompi> <destination>`
+(it re-derives the vault address from public parameters; no agent cooperation needed).
 
 ## Roadmap
 
