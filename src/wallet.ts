@@ -89,7 +89,7 @@ export class KaspaWallet {
     }
 
     const estimate = await rpc.getFeeEstimate();
-    const feerate = Math.max(estimate.estimate?.normalBuckets?.[0]?.feerate ?? 1, estimate.estimate?.priorityBucket?.feerate ?? 1);
+    const feerate = estimate.estimate?.normalBuckets?.[0]?.feerate ?? estimate.estimate?.priorityBucket?.feerate ?? 1;
 
     const { transactions, summary } = await createTransactions({
       entries,
