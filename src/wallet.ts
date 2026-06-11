@@ -17,7 +17,7 @@ import {
   initConsolePanicHook,
   kaspaToSompi,
   sompiToKaspaString,
-} from "kaspa-wasm";
+} from "../vendor/kaspa-wasm/kaspa";
 
 initConsolePanicHook();
 

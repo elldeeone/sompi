@@ -10,16 +10,19 @@ Named after the sompi — Kaspa's smallest unit (1 KAS = 100,000,000 sompi) — 
 
 ## Quickstart
 
+From npm ([`@elldeeone/sompi`](https://www.npmjs.com/package/@elldeeone/sompi) — npm's similarity rules reserve the bare name):
+
+```bash
+claude mcp add sompi -- npx -y @elldeeone/sompi
+```
+
+Or from source:
+
 ```bash
 git clone https://github.com/elldeeone/sompi
 cd sompi
 npm install
 npm run build
-```
-
-Add to Claude Code:
-
-```bash
 claude mcp add sompi -- node /path/to/sompi/dist/index.js
 ```
 

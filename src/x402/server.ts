@@ -2,7 +2,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { Keypair, RpcClient } from "kaspa-wasm";
+import { Keypair, RpcClient } from "../../vendor/kaspa-wasm/kaspa";
 import {
   PaymentOffer,
   PaymentRequired,
