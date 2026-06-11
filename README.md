@@ -1,0 +1,108 @@
+# sompi
+
+**The agent payment kit for Kaspa.** An MCP server that gives AI agents a policy-enforced Kaspa wallet: receive, send, and verify KAS payments with confirmation times fast enough for synchronous machine-to-machine commerce.
+
+Named after the sompi — Kaspa's smallest unit (1 KAS = 100,000,000 sompi) — because machine-to-machine micropayments are what the sompi is for.
+
+- **Toccata-native**: built against the v2.0.0 WASM SDK with v1 transactions, `storageMass` semantics, and node-derived fees (the post-Toccata 100 sompi/gram floor is handled automatically).
+- **Policy-enforced**: spending limits live in a config file *outside* the agent's tool surface. A prompt-injected agent cannot raise its own limits.
+- **Zero infrastructure**: connects to the public node network via the resolver by default; point it at your own node with one env var.
+
+## Quickstart
+
+```bash
+git clone https://github.com/elldeeone/sompi
+cd sompi
+npm install
+npm run build
+```
+
+Add to Claude Code:
+
+```bash
+claude mcp add sompi -- node /path/to/sompi/dist/index.js
+```
+
+Or to any MCP client config:
+
+```json
+{
+  "mcpServers": {
+    "sompi": {
+      "command": "node",
+      "args": ["/path/to/sompi/dist/index.js"],
+      "env": { "SOMPI_NETWORK": "testnet-10" }
+    }
+  }
+}
+```
+
+On first run the server generates a wallet key at `~/.sompi/<network>/wallet-key` (mode 0600). Ask your agent for its address (`get_address`) and fund it from the [testnet faucet](https://faucet.kaspanet.io/).
+
+## Tools
+
+| Tool | What it does |
+|---|---|
+| `get_address` | The agent's receive address |
+| `get_balance` | Balance of own or any address |
+| `send_payment` | Send KAS — gated by the spending policy |
+| `await_payment` | Block until an incoming payment of at least N sompi arrives (UTXO subscription, not polling) |
+| `verify_payment` | Confirm a txid paid an address |
+| `estimate_fee` | Live feerate buckets from the node |
+| `network_status` | Node sync state, DAA score, version |
+| `get_policy` | Read-only view of the active spending policy |
+
+## Spending policy
+
+Every `send_payment` passes through a policy gate enforced below the LLM:
+
+```json
+{
+  "maxSompiPerTx": "100000000",
+  "maxSompiPerHour": "500000000",
+  "allowlist": ["kaspatest:qq..."],
+  "requireApprovalAboveSompi": "0"
+}
+```
+
+- `maxSompiPerTx` — hard cap per transaction (default 1 KAS)
+- `maxSompiPerHour` — rolling one-hour spend cap, persisted across restarts (default 5 KAS)
+- `allowlist` — if non-empty, only these destinations may receive funds
+- `requireApprovalAboveSompi` — sends above this are rejected with instructions to ask the human operator (0 = disabled)
+
+Point at a policy file with `SOMPI_POLICY=/path/to/policy.json`. Without one, conservative defaults apply. See `policy.example.json`.
+
+## Configuration
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `SOMPI_NETWORK` | `testnet-10` | `mainnet`, `testnet-10`, ... |
+| `SOMPI_NODE_URL` | (public resolver) | Your own node's wRPC (borsh) URL |
+| `SOMPI_PRIVATE_KEY` | (generated keyfile) | Hex private key override |
+| `SOMPI_DATA_DIR` | `~/.sompi/<network>` | Keyfile + spend-log location |
+| `SOMPI_POLICY` | (built-in defaults) | Path to policy JSON |
+
+## Security notes
+
+- The default key storage is a plaintext file with 0600 permissions — fine for testnet experimentation, **not for meaningful mainnet funds**. Treat the wallet as a hot spending wallet holding only what the policy could spend.
+- The policy file and env vars are deliberately not writable through any MCP tool.
+- Fees are always derived from the node's fee estimator; nothing is hardcoded.
+
+## Roadmap
+
+1. **Phase 1 (this)** — MCP server with policy-enforced wallet tools.
+2. **Phase 2** — `x402`-style HTTP payment middleware + client: agents paying for API calls with KAS inside the request/retry window.
+3. **Phase 3** — Covenant-based policy vaults (KIP-16): spending limits enforced by consensus, not software.
+
+## Development
+
+```bash
+npm run build   # compile
+npm run smoke   # offline policy checks + live testnet-10 checks
+```
+
+The Kaspa WASM SDK (v2.0.0, Toccata) is vendored under `vendor/kaspa-wasm` because the npm `kaspa` package is unmaintained (2023). Sourced from the official [rusty-kaspa v2.0.0 release](https://github.com/kaspanet/rusty-kaspa/releases/tag/v2.0.0).
+
+## License
+
+MIT
