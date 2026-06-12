@@ -1,9 +1,11 @@
 /**
  * The sompi demo service: a public paid API on Kaspa testnet-10.
  *
- * Demonstrates x402 (kaspa-tab scheme) end to end: unpaid requests get
- * HTTP 402 with a payment offer; a single on-chain KAS deposit opens a tab;
- * subsequent requests are charged off the tab at no on-chain cost.
+ * Demonstrates the trust-minimized x402 escrow scheme end to end: unpaid
+ * requests get HTTP 402 with a kaspa-escrow offer; the client funds a covenant
+ * escrow once, then pays each request with a cumulative off-chain voucher. The
+ * server claims earned funds with the latest voucher; the client can refund the
+ * unspent balance after a timeout.
  *
  * Free:  GET /            human landing page
  *        GET /llms.txt    agent-readable instructions
@@ -16,27 +18,42 @@
  * Env:   PORT (default 8642), SOMPI_NETWORK (default testnet-10),
  *        SOMPI_DATA_DIR, X402_MIN_DEPOSIT_SOMPI, X402_PRICE_SOMPI
  */
+import * as fs from "node:fs";
 import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
 import { KaspaWallet } from "./wallet";
-import { TabServer } from "./x402/server";
+import { generateChannelKey } from "./x402/escrow";
+import { EscrowTabServer } from "./x402/escrow-server";
 
 const NETWORK = process.env.SOMPI_NETWORK ?? "testnet-10";
 const PORT = Number(process.env.PORT ?? 8642);
 const DATA_DIR = process.env.SOMPI_DATA_DIR ?? path.join(os.homedir(), ".sompi", NETWORK, "service");
-const MIN_DEPOSIT = BigInt(process.env.X402_MIN_DEPOSIT_SOMPI ?? "100000000"); // 1 KAS
-const PRICE = BigInt(process.env.X402_PRICE_SOMPI ?? "1000");
+const MIN_DEPOSIT = BigInt(process.env.X402_MIN_DEPOSIT_SOMPI ?? "90000000"); // 0.9 KAS
+const PRICE = BigInt(process.env.X402_PRICE_SOMPI ?? "1000000"); // 0.01 KAS
 
 const wallet = new KaspaWallet({ networkId: NETWORK, dataDir: DATA_DIR, nodeUrl: process.env.SOMPI_NODE_URL });
-const tabs = new TabServer({
-  networkId: NETWORK,
-  rpc: () => wallet.client(),
-  minDepositSompi: MIN_DEPOSIT,
-  pricePerRequestSompi: PRICE,
-  dataDir: DATA_DIR,
-  description: `sompi demo API: ${PRICE} sompi per request, ${MIN_DEPOSIT} sompi minimum tab deposit`,
-});
+
+// Stable server channel key + refund timeout, persisted so escrows funded
+// before a restart stay claimable and the escrow addresses don't change.
+fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+const cfgPath = path.join(DATA_DIR, "escrow-server-config.json");
+
+/** EscrowTabServer, constructed in main() once the refund timeout is known. */
+let tabs: EscrowTabServer;
+
+async function loadServerConfig(): Promise<{ privateKey: string; publicKey: string; refundTimeout: bigint }> {
+  if (fs.existsSync(cfgPath)) {
+    const c = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+    return { privateKey: c.privateKey, publicKey: c.publicKey, refundTimeout: BigInt(c.refundTimeout) };
+  }
+  const key = generateChannelKey();
+  const info = await (await wallet.client()).getServerInfo();
+  // Refund window ~1M DAA (~28 hours at 10 bps) ahead of the current tip.
+  const refundTimeout = BigInt(info.virtualDaaScore) + 1_000_000n;
+  fs.writeFileSync(cfgPath, JSON.stringify({ ...key, refundTimeout: refundTimeout.toString() }), { mode: 0o600 });
+  return { ...key, refundTimeout };
+}
 
 const JOKES = [
   "Why did the UTXO cross the DAG? To get to the other tip.",
@@ -61,9 +78,10 @@ HTTP 402 and KAS — a deposit opens a tab in ~1 second, then requests are insta
 <li><code>GET /api/verify?txid=&lt;txid&gt;&amp;address=&lt;addr&gt;</code> — did a payment land?</li>
 <li><code>GET /api/joke</code> — premium humor</li>
 </ul>
-<p><b>How to pay:</b> request any endpoint → you get a <code>402</code> with a JSON offer
-(deposit address, tab id) → send the deposit on testnet-10 → retry with the
-<code>X-Payment</code> header. Or skip the plumbing entirely:</p>
+<p><b>How to pay (trust-minimized escrow):</b> request any endpoint → you get a
+<code>402</code> with a <code>kaspa-escrow</code> offer → fund a covenant escrow
+once → pay each request with a cumulative voucher. The server can only claim what
+you signed for; you reclaim the rest after a timeout. Or skip the plumbing:</p>
 <pre>claude mcp add sompi -- npx -y @elldeeone/sompi
 # then ask your agent to fetch this URL — paid_fetch handles the 402 itself</pre>
 <p>Agents: see <a href="/llms.txt">/llms.txt</a>. Humans: source &amp; docs at
@@ -73,21 +91,27 @@ Testnet KAS only — get some from the faucet, this is a demo.</p>
 
 const LLMS_TXT = `# sompi demo API (Kaspa testnet-10)
 
-This is a paid API. Payment protocol: x402 / kaspa-tab scheme.
+This is a paid API. Payment protocol: x402, trust-minimized kaspa-escrow scheme.
 
 How it works:
 1. GET any /api/* endpoint. You will receive HTTP 402 with a JSON body:
-   { "x402Version": 1, "accepts": [{ "scheme": "kaspa-tab", "network": "testnet-10",
-     "payTo": "<deposit address>", "minDepositSompi": "${MIN_DEPOSIT}",
-     "pricePerRequestSompi": "${PRICE}", "tabId": "<id>" }] }
-2. Send at least minDepositSompi to payTo on Kaspa testnet-10 (confirms in ~1s).
-3. Retry the request with header:
-   X-Payment: base64({"scheme":"kaspa-tab","tabId":"<id>"})
-4. Each request deducts ${PRICE} sompi from your tab. The
-   x-payment-remaining-sompi response header shows remaining credit.
+   { "x402Version": 1, "accepts": [{ "scheme": "kaspa-escrow", "network": "testnet-10",
+     "serverPublic": "<32-byte hex>", "refundTimeout": "<DAA score>",
+     "minDepositSompi": "${MIN_DEPOSIT}", "pricePerRequestSompi": "${PRICE}" }] }
+2. Generate a client keypair. Derive the escrow address from (clientPublic,
+   serverPublic, refundTimeout) — the SompiEscrow covenant. Deposit at least
+   minDepositSompi to it on testnet-10.
+3. For each request, sign a cumulative voucher: a BIP340 schnorr signature over
+   sha256(le8(totalAuthorizedSompi)), where totalAuthorized grows by
+   pricePerRequestSompi each request. Send:
+   X-Payment: base64({"scheme":"kaspa-escrow","clientPublic":"<hex>",
+     "voucherAmountSompi":"<total>","voucherHex":"<64-byte sig hex>"})
+4. The server serves while the voucher authorizes >= the running total it is
+   owed, and claims earned funds with your latest voucher. You can refund the
+   unspent balance after refundTimeout.
 
-Easiest client: the @elldeeone/sompi MCP server (npm). Its paid_fetch tool
-performs this whole flow automatically within a local spending policy.
+Easiest client: the @elldeeone/sompi MCP server (npm). Its paid_fetch tool does
+this whole flow automatically within a local spending policy.
 
 Endpoints:
 - GET /api/network  -> {networkId, virtualDaaScore, serverVersion, feerate, canonicalChain}
@@ -177,7 +201,27 @@ const server = http.createServer((req, res) => {
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`sompi demo service on :${PORT} (${NETWORK}); ${PRICE} sompi/request, min deposit ${MIN_DEPOSIT} sompi`);
-  console.log(`tab deposits land in ${DATA_DIR}; sweep with scripts/sweep-tabs.js`);
+async function main(): Promise<void> {
+  const cfg = await loadServerConfig();
+  tabs = new EscrowTabServer({
+    networkId: NETWORK,
+    rpc: () => wallet.client(),
+    wallet: () => wallet,
+    serverPrivateHex: cfg.privateKey,
+    serverPublicHex: cfg.publicKey,
+    refundTimeout: cfg.refundTimeout,
+    minDepositSompi: MIN_DEPOSIT,
+    pricePerRequestSompi: PRICE,
+    dataDir: DATA_DIR,
+    description: `sompi escrow demo API: ${PRICE} sompi per request, ${MIN_DEPOSIT} sompi escrow deposit`,
+  });
+  server.listen(PORT, () => {
+    console.log(`sompi escrow demo on :${PORT} (${NETWORK}); ${PRICE} sompi/request, ${MIN_DEPOSIT} sompi escrow, refund@DAA ${cfg.refundTimeout}`);
+    console.log(`claim earnings: in a node REPL, new EscrowTabServer(...).claimAll(<address>)`);
+  });
+}
+
+main().catch((e) => {
+  console.error("service failed to start:", e);
+  process.exit(1);
 });
