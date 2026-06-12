@@ -1,0 +1,48 @@
+pragma silverscript ^0.1.0;
+
+// SompiEscrow: a one-shot x402 payment channel (trust-minimized tab).
+//
+// The client funds this covenant once. As it consumes API requests it signs
+// off-chain vouchers authorizing the server to claim a running total. Neither
+// side has to trust the other:
+//
+//   claim    — the server closes the channel with the client's latest voucher.
+//              It may take at most the voucher amount; the remainder must
+//              return to this same escrow script so the client can still
+//              reclaim it. checkDataSig proves the client authorized exactly
+//              that amount, so the server cannot over-claim.
+//
+//   refund   — after the timeout the client reclaims everything with its own
+//              signature, so a vanished or unresponsive server cannot strand
+//              the deposit.
+//
+// The voucher message is the 8-byte little-endian claim amount. The client
+// signs sha256(amount_le8); the server presents (amount, signature).
+contract SompiEscrow(pubkey client, pubkey server, int timeout) {
+    // Server claims up to the voucher-authorized amount; change returns to escrow.
+    entrypoint function claim(sig serverSig, datasig clientVoucher, byte[8] amountAuthorized) {
+        require(checkSig(serverSig, server));
+        require(checkDataSig(clientVoucher, amountAuthorized, client));
+
+        int authorized = int(amountAuthorized);
+        int inputValue = tx.inputs[this.activeInputIndex].value;
+
+        // Exactly two outputs: [0] server's claim, [1] change back to escrow.
+        require(tx.outputs.length == 2);
+
+        // The server takes at most what the client authorized (fee comes out of
+        // the server's own output, never the client's change).
+        require(tx.outputs[0].value <= authorized);
+
+        // Change must return to this exact escrow script and preserve the rest.
+        byte[] escrowScriptPubKey = tx.inputs[this.activeInputIndex].scriptPubKey;
+        require(tx.outputs[1].scriptPubKey == escrowScriptPubKey);
+        require(tx.outputs[1].value >= inputValue - authorized);
+    }
+
+    // Client reclaims everything after the timeout.
+    entrypoint function refund(sig clientSig) {
+        require(checkSig(clientSig, client));
+        require(tx.time >= timeout);
+    }
+}

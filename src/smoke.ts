@@ -10,6 +10,7 @@ import * as path from "node:path";
 import * as fs from "node:fs";
 import { PolicyEngine, PolicyViolation } from "./policy";
 import { buildRedeemScript, buildSigArgs, bytesToHex } from "./vault/template";
+import { buildEscrowRedeemScript, buildClaimArgs, buildRefundArgs } from "./x402/escrow-template";
 import { KaspaWallet, formatKas } from "./wallet";
 
 const NETWORK = process.env.SOMPI_NETWORK ?? "testnet-10";
@@ -100,6 +101,26 @@ async function main() {
   check(
     `vault template: byte-identical to compiler output (${templateMatches}/${fixtures.length} fixtures)`,
     templateMatches === fixtures.length
+  );
+
+  // --- offline checks: escrow template byte-equality vs compiler fixtures ---
+  const escrowFixtures = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "scripts", "escrow-fixtures.json"), "utf8"));
+  let escrowMatches = 0;
+  for (const f of escrowFixtures) {
+    const redeem = bytesToHex(buildEscrowRedeemScript(f.client, f.server, BigInt(f.timeout)));
+    const claim = bytesToHex(
+      buildClaimArgs(new Uint8Array(65).fill(0xab), new Uint8Array(64).fill(0xcd), new Uint8Array(8).fill(0xef))
+    );
+    const refund = bytesToHex(buildRefundArgs(new Uint8Array(65).fill(0xab)));
+    if (redeem === f.redeemScript && claim === f.claimArgsWithDummies && refund === f.refundArgsWithDummySig) {
+      escrowMatches++;
+    } else {
+      console.log(`  escrow fixture mismatch: client=${f.client.slice(0, 8)} timeout=${f.timeout}`);
+    }
+  }
+  check(
+    `escrow template: byte-identical to compiler output (${escrowMatches}/${escrowFixtures.length} fixtures)`,
+    escrowMatches === escrowFixtures.length
   );
 
   // --- online checks: live network ---

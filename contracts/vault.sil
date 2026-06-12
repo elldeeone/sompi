@@ -1,0 +1,30 @@
+pragma silverscript ^0.1.0;
+
+// SompiVault: consensus-enforced spending limits for agent wallets.
+//
+// The agent key can withdraw, but the total outflow of any single spend
+// (withdrawal + fee) is capped at maxOutflow, and the remainder must
+// return to this same vault script. A stolen agent key faces the same
+// limit the agent does — enforced by every node, not by wallet software.
+//
+// The owner key is unrestricted and serves as the recovery path.
+contract SompiVault(pubkey agent, pubkey owner, int maxOutflow) {
+    entrypoint function withdraw(sig agentSig) {
+        require(checkSig(agentSig, agent));
+
+        // exactly: [0] destination, [1] vault continuation
+        require(tx.outputs.length == 2);
+
+        // change must return to this exact vault script
+        byte[] vaultScriptPubKey = tx.inputs[this.activeInputIndex].scriptPubKey;
+        require(tx.outputs[1].scriptPubKey == vaultScriptPubKey);
+
+        // outflow (withdrawal + fee) bounded by maxOutflow
+        int inputValue = tx.inputs[this.activeInputIndex].value;
+        require(tx.outputs[1].value >= inputValue - maxOutflow);
+    }
+
+    entrypoint function recover(sig ownerSig) {
+        require(checkSig(ownerSig, owner));
+    }
+}
