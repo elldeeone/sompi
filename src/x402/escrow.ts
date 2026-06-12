@@ -19,6 +19,7 @@ import {
   buildRefundArgs,
   hexToBytes,
 } from "./escrow-template";
+import { estimateVaultSpendFeeSompi } from "../vault";
 
 /**
  * Trust-minimized x402 payment channel (SompiEscrow covenant), pure JS.
@@ -122,7 +123,7 @@ export async function claimEscrow(
   voucher: { amountSompi: bigint; voucherHex: string },
   claimSompi: bigint,
   destination: string,
-  feeSompi: bigint
+  feeSompi?: bigint
 ): Promise<string> {
   if (claimSompi > voucher.amountSompi) {
     throw new Error(`claim ${claimSompi} exceeds voucher authorization ${voucher.amountSompi}`);
@@ -135,8 +136,32 @@ export async function claimEscrow(
   const utxo = await escrowUtxo(wallet, deriveEscrowAddress(params, wallet.networkId));
   const rpc = await wallet.client();
 
+  const destSpk = payToAddressScript(destination);
+  // Estimate the claim fee from the node (the demo's per-request price can be
+  // smaller than a flat fee, so a realistic estimate matters).
+  let resolvedFee = feeSompi;
+  if (resolvedFee === undefined) {
+    const est = await rpc.getFeeEstimate();
+    const feerate = est.estimate?.normalBuckets?.[0]?.feerate ?? 100;
+    resolvedFee = estimateVaultSpendFeeSompi(
+      utxo.amount,
+      [
+        { value: claimSompi, spkScriptLen: String(destSpk.script).length / 2 },
+        { value: utxo.amount - claimSompi, spkScriptLen: String(escrowSpk.script).length / 2 },
+      ],
+      redeem.length,
+      feerate
+    );
+  }
+  if (claimSompi <= resolvedFee) {
+    throw new Error(
+      `claim ${claimSompi} sompi does not cover the estimated fee ${resolvedFee} sompi — ` +
+        `accumulate more before claiming`
+    );
+  }
+
   const outputs = [
-    { value: claimSompi - feeSompi, scriptPublicKey: payToAddressScript(destination) },
+    { value: claimSompi - resolvedFee, scriptPublicKey: destSpk },
     { value: utxo.amount - claimSompi, scriptPublicKey: escrowSpk },
   ];
   if (outputs.some((o) => o.value <= 0n)) throw new Error("escrow UTXO too small for this claim");
@@ -165,7 +190,7 @@ export async function refundEscrow(
   params: EscrowParams,
   clientPrivateHex: string,
   destination: string,
-  feeSompi: bigint
+  feeSompi?: bigint
 ): Promise<string> {
   const redeem = buildEscrowRedeemScript(params.clientPublic, params.serverPublic, params.timeout);
   const escrowSpk = payToScriptHashScript(redeem);
@@ -178,7 +203,19 @@ export async function refundEscrow(
     throw new Error(`refund unavailable until DAA ${params.timeout}; current ${daa}`);
   }
 
-  const outputs = [{ value: utxo.amount - feeSompi, scriptPublicKey: payToAddressScript(destination) }];
+  const destSpk = payToAddressScript(destination);
+  let resolvedFee = feeSompi;
+  if (resolvedFee === undefined) {
+    const est = await rpc.getFeeEstimate();
+    const feerate = est.estimate?.normalBuckets?.[0]?.feerate ?? 100;
+    resolvedFee = estimateVaultSpendFeeSompi(
+      utxo.amount,
+      [{ value: utxo.amount, spkScriptLen: String(destSpk.script).length / 2 }],
+      redeem.length,
+      feerate
+    );
+  }
+  const outputs = [{ value: utxo.amount - resolvedFee, scriptPublicKey: destSpk }];
   if (outputs[0].value <= 0n) throw new Error("escrow UTXO too small to refund");
 
   // lockTime = timeout satisfies `tx.time >= timeout`; sequence 0 keeps the input non-final.

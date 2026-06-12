@@ -150,8 +150,9 @@ export class EscrowTabServer {
     return true;
   }
 
-  /** Claim earned funds from one client's escrow using its latest voucher. */
-  async claim(clientPublic: string, destination: string, feeSompi = 2_000_000n): Promise<string> {
+  /** Claim earned funds from one client's escrow using its latest voucher.
+   *  Fee is estimated from the node unless overridden. */
+  async claim(clientPublic: string, destination: string, feeSompi?: bigint): Promise<string> {
     const channel = this.channels.get(clientPublic);
     if (!channel || channel.authorizedSompi === "0") throw new Error(`no vouchers from client ${clientPublic}`);
     const authorized = BigInt(channel.authorizedSompi);

@@ -55,6 +55,8 @@ export class X402Client {
   private readonly escrowsPath: string;
   private tabs: Record<string, TabState>;
   private escrows: Record<string, EscrowState>;
+  /** Exhausted escrows kept for later refund of their unspent balance. */
+  private retired: EscrowState[];
 
   constructor(wallet: KaspaWallet, policy: PolicyEngine, dataDir: string) {
     this.wallet = wallet;
@@ -62,8 +64,15 @@ export class X402Client {
     fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
     this.tabsPath = path.join(dataDir, "client-tabs.json");
     this.escrowsPath = path.join(dataDir, "client-escrows.json");
+    const escrowData = fs.existsSync(this.escrowsPath) ? JSON.parse(fs.readFileSync(this.escrowsPath, "utf8")) : {};
     this.tabs = fs.existsSync(this.tabsPath) ? JSON.parse(fs.readFileSync(this.tabsPath, "utf8")) : {};
-    this.escrows = fs.existsSync(this.escrowsPath) ? JSON.parse(fs.readFileSync(this.escrowsPath, "utf8")) : {};
+    this.escrows = escrowData.active ?? escrowData; // tolerate the older flat shape
+    this.retired = escrowData.retired ?? [];
+  }
+
+  /** Active and retired escrow channels, for refund tooling. */
+  escrowChannels(): { active: EscrowState[]; retired: EscrowState[] } {
+    return { active: Object.values(this.escrows), retired: [...this.retired] };
   }
 
   async paidFetch(url: string, init?: RequestInit): Promise<PaidFetchResult> {
@@ -145,16 +154,37 @@ export class X402Client {
     await sleep(1_500); // let the deposit confirm before the first voucher
   }
 
+  /** Retire the exhausted escrow and open a fresh one for the same origin. */
+  private async rotateEscrow(origin: string): Promise<void> {
+    const old = this.escrows[origin];
+    this.retired.push(old);
+    delete this.escrows[origin];
+    await this.openEscrow(origin, {
+      network: old.network,
+      serverPublic: old.serverPublic,
+      refundTimeout: old.refundTimeout,
+      minDepositSompi: old.depositedSompi,
+      pricePerRequestSompi: old.pricePerRequestSompi,
+    });
+  }
+
   /** Issue a cumulative voucher and make one escrow-paid request. */
   private async escrowRequest(origin: string, url: string, init?: RequestInit): Promise<PaidFetchResult> {
-    const state = this.escrows[origin];
+    let state = this.escrows[origin];
     const price = BigInt(state.pricePerRequestSompi);
-    const nextAuthorized = BigInt(state.authorizedSompi) + price;
-    if (nextAuthorized > BigInt(state.depositedSompi)) {
-      throw new Error(
-        `escrow for ${origin} exhausted: authorized ${nextAuthorized} would exceed deposit ${state.depositedSompi}; top up needed`
-      );
+    // Rotate before the escrow is fully consumed: the claim contract always
+    // returns change to escrow, so authorized must stay strictly below the
+    // deposit (>= leaves one price-unit of claimable headroom).
+    if (BigInt(state.authorizedSompi) + price >= BigInt(state.depositedSompi)) {
+      // Escrow exhausted: rotate to a fresh escrow for this origin. The old one
+      // is retired (its remaining balance stays refundable after the timeout)
+      // and a new deposit opens a clean channel — the agent sees no
+      // interruption. A fresh channel avoids multi-UTXO claim ambiguity.
+      await this.rotateEscrow(origin);
+      await sleep(1_500); // let the new deposit confirm before the first voucher
+      state = this.escrows[origin];
     }
+    const nextAuthorized = BigInt(state.authorizedSompi) + price;
     const voucher = makeVoucher(state.clientPrivate, nextAuthorized);
     const header = encodePaymentHeader({
       scheme: "kaspa-escrow",
@@ -209,7 +239,7 @@ export class X402Client {
 
   private persist(): void {
     fs.writeFileSync(this.tabsPath, JSON.stringify(this.tabs), { mode: 0o600 });
-    fs.writeFileSync(this.escrowsPath, JSON.stringify(this.escrows), { mode: 0o600 });
+    fs.writeFileSync(this.escrowsPath, JSON.stringify({ active: this.escrows, retired: this.retired }), { mode: 0o600 });
   }
 }
 
