@@ -41,12 +41,17 @@ const DEFAULT_POLICY: Policy = {
 };
 
 export class PolicyEngine {
-  readonly policy: Policy;
+  private readonly policyPath?: string;
   private readonly spendLogPath: string;
   private spendLog: SpendRecord[] = [];
+  private cachedPolicy: Policy;
+  private cachedMtimeMs = -1;
+  private loadError?: string;
 
   constructor(dataDir: string, policyPath?: string) {
-    this.policy = loadPolicy(policyPath);
+    this.policyPath = policyPath;
+    this.cachedPolicy = loadPolicy(policyPath);
+    if (policyPath) this.cachedMtimeMs = fs.statSync(policyPath).mtimeMs;
     this.spendLogPath = path.join(dataDir, "spend-log.json");
     if (fs.existsSync(this.spendLogPath)) {
       try {
@@ -55,6 +60,34 @@ export class PolicyEngine {
         this.spendLog = [];
       }
     }
+  }
+
+  /**
+   * The active policy, hot-reloaded: edits to the policy file take effect on
+   * the next call, no restart needed. A malformed file fails closed — sends
+   * are denied until it parses again.
+   */
+  get policy(): Policy {
+    if (this.policyPath) {
+      try {
+        const mtimeMs = fs.statSync(this.policyPath).mtimeMs;
+        if (mtimeMs !== this.cachedMtimeMs) {
+          this.cachedPolicy = loadPolicy(this.policyPath);
+          this.cachedMtimeMs = mtimeMs;
+          this.loadError = undefined;
+          console.error(`sompi: policy reloaded from ${this.policyPath}`);
+        }
+      } catch (e) {
+        this.loadError = e instanceof Error ? e.message : String(e);
+      }
+    }
+    if (this.loadError) {
+      throw new PolicyViolation(
+        `policy file ${this.policyPath} is unreadable or malformed (${this.loadError}); ` +
+          `all sends are denied until it is fixed`
+      );
+    }
+    return this.cachedPolicy;
   }
 
   /** Sum of sends in the trailing hour, in sompi. */

@@ -51,6 +51,39 @@ async function main() {
   }
   check("policy: hourly cap denies after 4.5 KAS spent", denied);
 
+  // --- offline checks: policy hot-reload ---
+  const hotDir = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-smoke-"));
+  const hotPolicyPath = path.join(hotDir, "policy.json");
+  fs.writeFileSync(hotPolicyPath, JSON.stringify({ maxSompiPerTx: "100", maxSompiPerHour: "1000" }));
+  const hotEngine = new PolicyEngine(hotDir, hotPolicyPath);
+  let hotDenied = false;
+  try {
+    hotEngine.authorize("kaspatest:qq000", 200n);
+  } catch {
+    hotDenied = true;
+  }
+  // rewrite with a looser cap and a bumped mtime; no new engine instance
+  fs.writeFileSync(hotPolicyPath, JSON.stringify({ maxSompiPerTx: "500", maxSompiPerHour: "1000" }));
+  fs.utimesSync(hotPolicyPath, new Date(), new Date(Date.now() + 5));
+  let hotAllowed = true;
+  try {
+    hotEngine.authorize("kaspatest:qq000", 200n);
+  } catch {
+    hotAllowed = false;
+  }
+  check("policy: hot-reload picks up file edits without restart", hotDenied && hotAllowed);
+
+  fs.writeFileSync(hotPolicyPath, "{not json");
+  fs.utimesSync(hotPolicyPath, new Date(), new Date(Date.now() + 10));
+  let hotFailedClosed = false;
+  try {
+    hotEngine.authorize("kaspatest:qq000", 1n);
+  } catch (e) {
+    hotFailedClosed = e instanceof PolicyViolation && e.message.includes("malformed");
+  }
+  check("policy: malformed file fails closed", hotFailedClosed);
+  fs.rmSync(hotDir, { recursive: true, force: true });
+
   // --- offline checks: vault template byte-equality vs compiler fixtures ---
   const fixtures = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "scripts", "vault-fixtures.json"), "utf8"));
   let templateMatches = 0;
