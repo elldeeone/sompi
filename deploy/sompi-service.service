@@ -1,0 +1,27 @@
+[Unit]
+Description=sompi demo x402 service (Kaspa testnet-10)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sompi
+Group=sompi
+WorkingDirectory=/opt/sompi
+Environment=SOMPI_NETWORK=testnet-10
+# Set to a trusted synced testnet-10 node (public resolver nodes are on a
+# stale fork as of 2026-06; the built-in chain guard will refuse them).
+Environment=SOMPI_NODE_URL=REPLACE_ME
+Environment=PORT=8642
+ExecStart=/usr/bin/node /opt/sompi/dist/service.js
+Restart=on-failure
+RestartSec=5
+# hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/home/sompi/.sompi
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
