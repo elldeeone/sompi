@@ -122,6 +122,24 @@ http.createServer(async (req, res) => {
 
 Run the full live demo (seller + buyer, real testnet KAS): `npm run demo:x402`.
 
+### Trust-minimized tabs (covenant escrow)
+
+The basic tab trusts the server with the unspent deposit. The **escrow** scheme
+(`kaspa-escrow`) removes that: the deposit goes into a covenant address, the
+client issues cumulative off-chain vouchers (BIP340 signatures) authorizing a
+running total, and:
+
+- the **server** can only claim up to what the client signed for, with the
+  remainder staying in escrow;
+- the **client** can reclaim the unspent balance after a refund timeout if the
+  server vanishes.
+
+`paid_fetch` and the bundled `EscrowTabServer` negotiate this automatically when
+the server offers it — `npm run demo:escrow` runs the full flow live (deposit,
+three voucher-paid requests, server claim) on testnet-10. The covenant template
+is byte-pinned (`src/x402/escrow-template.ts`) and verified against the compiler
+in CI; the channel is proven on-chain (`scripts/escrow-live.js`).
+
 Sellers collect revenue with `node scripts/sweep-tabs.js <sellerDataDir> <destination>`
 (sweeps exhausted tabs; `--all` also takes unspent client credit, for decommissioning).
 

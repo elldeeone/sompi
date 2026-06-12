@@ -32,6 +32,7 @@
     "start": "node dist/index.js",
     "smoke": "node dist/smoke.js",
     "demo:x402": "node dist/demo-x402.js",
+    "demo:escrow": "node dist/demo-escrow.js",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
