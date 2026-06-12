@@ -40,31 +40,45 @@ Or to any MCP client config:
 }
 ```
 
-### Onboard an agent in 4 steps
+### Onboard an agent — you hold the keys
 
-1. **Generate the wallet key yourself** so you control it and know the address before funding:
-   ```bash
-   npx -y @elldeeone/sompi gen-wallet-key testnet-10
-   # prints: private: <hex>   address: kaspatest:...
-   ```
-   Back up the private line. (Skip this and the server auto-creates a key at
-   `~/.sompi/<network>/wallet-key` on first use — fine for testing, but then the
-   key lives only on the agent's host and you don't control it.)
+The right way to give an agent money is **not** to hand it a private key. Instead,
+the agent's main funds live in a **covenant vault that you control**: your key can
+recover everything at any time, while the agent's own key can only spend up to a
+per-transaction cap enforced by Kaspa consensus. A stolen or prompt-injected agent
+cannot exceed that cap. The agent asks *you* for your key during setup — you never
+give it yours.
 
-2. **Fund the address** from the [testnet faucet](https://faucet-tn10.kaspanet.io/) or your own wallet.
+**1. Connect the agent** (no key yet — it just needs the tools):
+```json
+{ "mcpServers": { "sompi": {
+    "command": "npx", "args": ["-y", "@elldeeone/sompi"],
+    "env": { "SOMPI_NETWORK": "testnet-10" } } } }
+```
 
-3. **Wire the key into the agent** via the MCP env block:
-   ```json
-   { "mcpServers": { "sompi": {
-       "command": "npx", "args": ["-y", "@elldeeone/sompi"],
-       "env": { "SOMPI_NETWORK": "testnet-10", "SOMPI_PRIVATE_KEY": "<hex from step 1>" } } } }
-   ```
-   (Optional: add `"SOMPI_POLICY": "/path/policy.json"` for spending limits the
-   agent can't change, and `"SOMPI_NODE_URL"` for your own node.)
+**2. Generate *your* control key** (once, on your own machine; keep the private line safe):
+```bash
+npx -y @elldeeone/sompi gen-owner-key
+# prints:  public: <hex>   private: <hex>
+```
 
-4. **Use it.** Tell the agent in plain English: *"buy a joke from
-   http://… /api/joke"* — `paid_fetch` funds an escrow and pays per request
-   automatically, within the policy. Confirm with `get_balance` / `get_policy`.
+**3. Tell the agent to set up its vault.** Plain English: *"set up your vault."*
+Its `vault_create` tool will ask you for two things — give it your **public** key
+from step 2 and a per-transaction cap (e.g. `100000000` = 1 KAS). It generates its
+own key, derives the vault address, and reports it back. Your private key never
+touches the agent's host.
+
+**4. Fund the vault address** it returns, from the [faucet](https://faucet-tn10.kaspanet.io/)
+or your wallet. Verify with `vault_status`.
+
+Now the agent can spend (`vault_send`, capped by consensus) and pay for services
+(`paid_fetch`), and **you** can drain or recover the vault any time with your key
+(`scripts/vault-recover.js`). Add a `SOMPI_POLICY` file for softer day-to-day
+limits on top of the hard consensus cap.
+
+> A plain hot wallet (auto-created, or `gen-wallet-key` + `SOMPI_PRIVATE_KEY`) also
+> exists for small working float — but the agent's real balance belongs in the
+> operator-controlled vault above.
 
 ## Tools
 
@@ -167,14 +181,15 @@ in CI; the channel is proven on-chain (`scripts/escrow-live.js`).
 Sellers collect revenue with `node scripts/sweep-tabs.js <sellerDataDir> <destination>`
 (sweeps exhausted tabs; `--all` also takes unspent client credit, for decommissioning).
 
-## Covenant vaults (testnet PoC)
+## Covenant vaults — the agent wallet
 
-The policy engine is software; a stolen key bypasses it. Covenant vaults move the
-spending limit into Kaspa consensus (KIP-16, live on testnet-10): the vault's agent
-path can withdraw at most `maxOutflowSompi` per transaction — withdrawal plus fee —
-with the remainder forced back into the vault by script. **Every node on the network
-enforces this; a fully compromised agent key cannot exceed it.** The owner key
-(kept offline) recovers everything.
+This is how an agent should hold money (see onboarding above). A software policy is
+just a suggestion a stolen key ignores; the vault moves the spending limit into
+Kaspa consensus (KIP-16, live on testnet-10). The vault's agent path can withdraw at
+most `maxOutflowSompi` per transaction — withdrawal plus fee — with the remainder
+forced back into the vault by script. **Every node on the network enforces this; a
+fully compromised agent key cannot exceed it.** The owner key (yours, kept offline)
+recovers everything.
 
 Proven on-chain — see [docs/vault-poc.md](docs/vault-poc.md) for the three proof
 transactions, including the node rejecting an over-limit spend.
@@ -201,7 +216,7 @@ Owner recovery is likewise *not* an MCP tool — recover from your machine:
 
 1. **Phase 1 (done)** — MCP server with policy-enforced wallet tools.
 2. **Phase 2 (done)** — x402 tab-based HTTP payment middleware + `paid_fetch`: agents paying for API calls with KAS inside the request/retry window.
-3. **Phase 3 (PoC shipped)** — Covenant-based policy vaults (KIP-16): spending limits enforced by consensus, not software. Next: rolling spend windows via covenant state; mainnet after Toccata activation (June 30, 2026).
+3. **Phase 3 (done)** — Covenant vaults (KIP-16): the agent wallet, with spending limits enforced by consensus rather than software. Next: rolling spend windows via covenant state; mainnet after Toccata activation (June 30, 2026).
 
 ## Development
 
