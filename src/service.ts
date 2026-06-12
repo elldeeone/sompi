@@ -71,8 +71,9 @@ a{color:#70c7ba}code,pre{background:#16191d;padding:.15rem .4rem;border-radius:4
 <body>
 <h1>sompi demo API</h1>
 <p>A paid API on <b>Kaspa testnet-10</b>. Machines pay for it autonomously using
-HTTP 402 and KAS — a deposit opens a tab in ~1 second, then requests are instant.</p>
-<p><b>Paid endpoints</b> (${PRICE} sompi each, ${Number(MIN_DEPOSIT) / 1e8} tKAS min deposit):</p>
+HTTP 402 and KAS — fund a trust-minimized covenant escrow once (~1 second), then
+each request is paid by an instant off-chain voucher.</p>
+<p><b>Paid endpoints</b> (${PRICE} sompi each, ${Number(MIN_DEPOSIT) / 1e8} tKAS escrow deposit):</p>
 <ul>
 <li><code>GET /api/network</code> — live network stats + canonical-chain verdict</li>
 <li><code>GET /api/verify?txid=&lt;txid&gt;&amp;address=&lt;addr&gt;</code> — did a payment land?</li>
