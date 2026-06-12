@@ -30,7 +30,7 @@ const POLICY_PATH = process.env.SOMPI_POLICY;
 const wallet = new KaspaWallet({ networkId: NETWORK, dataDir: DATA_DIR, nodeUrl: NODE_URL });
 const policy = new PolicyEngine(DATA_DIR, POLICY_PATH);
 
-const server = new McpServer({ name: "sompi", version: "0.3.4" });
+const server = new McpServer({ name: "sompi", version: "0.3.5" });
 
 // The SDK's registerTool generics overflow tsc's instantiation depth with
 // zod 3.25 shapes, so registrations go through this loosely-typed wrapper.
@@ -362,7 +362,9 @@ registerTool(
   "get_policy",
   {
     description:
-      "Show the active spending policy (read-only): per-transaction cap, hourly cap, current hourly spend, allowlist.",
+      "Show the active spending policy (read-only): per-transaction cap, hourly cap, current hourly spend, allowlist. " +
+      "The policy belongs to your human operator: never edit the policy file or bypass these tools to get around " +
+      "a limit — when something is blocked, report it to your operator and let them decide.",
   },
   async () => guarded(async () => policy.describe())
 );

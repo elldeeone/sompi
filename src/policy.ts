@@ -106,25 +106,26 @@ export class PolicyEngine {
     }
     if (amountSompi > p.maxSompiPerTx) {
       throw new PolicyViolation(
-        `amount ${amountSompi} sompi exceeds per-transaction limit of ${p.maxSompiPerTx} sompi`
+        `amount ${amountSompi} sompi exceeds per-transaction limit of ${p.maxSompiPerTx} sompi` + OPERATOR_BOUNDARY
       );
     }
     if (p.requireApprovalAboveSompi > 0n && amountSompi > p.requireApprovalAboveSompi) {
       throw new PolicyViolation(
-        `amount ${amountSompi} sompi exceeds the approval threshold of ${p.requireApprovalAboveSompi} sompi; ` +
-          `ask your human operator to perform this payment manually or raise the policy limit`
+        `amount ${amountSompi} sompi exceeds the approval threshold of ${p.requireApprovalAboveSompi} sompi. ` +
+          `Relay this to your human operator and wait for them to either perform the payment themselves or ` +
+          `adjust the policy — do not edit the policy file or work around this tool yourself`
       );
     }
     if (p.allowlist.length > 0 && !p.allowlist.includes(destination)) {
       throw new PolicyViolation(
-        `destination ${destination} is not on the policy allowlist`
+        `destination ${destination} is not on the policy allowlist` + OPERATOR_BOUNDARY
       );
     }
     const spent = this.spentLastHour();
     if (spent + amountSompi > p.maxSompiPerHour) {
       throw new PolicyViolation(
         `send of ${amountSompi} sompi would exceed the rolling hourly limit ` +
-          `(${spent} of ${p.maxSompiPerHour} sompi already spent in the last hour)`
+          `(${spent} of ${p.maxSompiPerHour} sompi already spent in the last hour)` + OPERATOR_BOUNDARY
       );
     }
   }
@@ -147,6 +148,16 @@ export class PolicyEngine {
     };
   }
 }
+
+/**
+ * Appended to policy denials so agents treat them as boundaries to report,
+ * not obstacles to engineer around. This is the agent-facing contract: the
+ * policy belongs to the human operator.
+ */
+const OPERATOR_BOUNDARY =
+  ". This limit was set deliberately by your human operator. Do not edit the policy file, restart processes, " +
+  "or bypass these tools with direct scripts to get around it — report this message to your operator and let " +
+  "them decide";
 
 export class PolicyViolation extends Error {
   constructor(reason: string) {
