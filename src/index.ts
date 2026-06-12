@@ -30,7 +30,7 @@ const POLICY_PATH = process.env.SOMPI_POLICY;
 const wallet = new KaspaWallet({ networkId: NETWORK, dataDir: DATA_DIR, nodeUrl: NODE_URL });
 const policy = new PolicyEngine(DATA_DIR, POLICY_PATH);
 
-const server = new McpServer({ name: "sompi", version: "0.3.0" });
+const server = new McpServer({ name: "sompi", version: "0.3.1" });
 
 // The SDK's registerTool generics overflow tsc's instantiation depth with
 // zod 3.25 shapes, so registrations go through this loosely-typed wrapper.
@@ -224,16 +224,63 @@ registerTool(
       "generate or ask for the owner private key. Returns the vault address for them to fund. " +
       "Testnet proof-of-concept.",
     inputSchema: {
-      maxOutflowSompi: z.string().describe("Consensus-enforced cap per withdrawal (amount + fee), in sompi — chosen by the operator"),
-      ownerPublicKey: z.string().describe("The operator's 32-byte x-only public key (64 hex chars); its private half stays with them"),
+      maxOutflowSompi: z.string().optional().describe("Consensus-enforced cap per withdrawal (amount + fee), in sompi — chosen by the operator"),
+      ownerPublicKey: z.string().optional().describe("The operator's 32-byte x-only public key (64 hex chars); its private half stays with them"),
     },
   },
   async ({ maxOutflowSompi, ownerPublicKey }) =>
     guarded(async () => {
+      if (!ownerPublicKey || !maxOutflowSompi) {
+        throw new Error(
+          "Vault setup needs two things from your human operator. Ask them to: " +
+            "(1) run `npx -y @elldeeone/sompi gen-owner-key` on THEIR machine and send you the `public:` line " +
+            "(64 hex chars — never the private line), and " +
+            "(2) tell you the per-withdrawal cap in sompi (e.g. 100000000 = 1 KAS). " +
+            "Then call vault_create again with ownerPublicKey and maxOutflowSompi. " +
+            "After it returns the vault address, use vault_deposit to move your funds in."
+        );
+      }
       const created = vault.create(BigInt(maxOutflowSompi), ownerPublicKey);
       return {
         ...created,
-        note: "ask your operator to fund this address; only they can ever drain it past the cap",
+        nextStep:
+          "use vault_deposit to move funds in (your operator can also fund the address directly); " +
+          "only the operator's key can ever drain the vault past the cap",
+      };
+    })
+);
+
+registerTool(
+  "vault_deposit",
+  {
+    description:
+      "Move KAS from this agent's regular wallet INTO its covenant vault. Exempt from the spending " +
+      "policy: deposits make funds MORE constrained, not less. Omit amountSompi to deposit everything " +
+      "except a working float.",
+    inputSchema: {
+      amountSompi: z.string().optional().describe("Amount in sompi; omit to deposit all but the float"),
+      keepFloatSompi: z.string().default("1000000000").describe("Float to keep in the regular wallet when amountSompi is omitted (default 10 KAS)"),
+    },
+  },
+  async ({ amountSompi, keepFloatSompi }) =>
+    guarded(async () => {
+      if (!vault.configured) throw new Error("no vault yet — call vault_create first");
+      const config = vault.config();
+      const balance = await wallet.balanceSompi();
+      const amount = amountSompi ? BigInt(amountSompi) : balance - BigInt(keepFloatSompi);
+      if (amount <= 0n) {
+        throw new Error(`nothing to deposit: wallet holds ${balance} sompi, float is ${keepFloatSompi}`);
+      }
+      // Deliberately NOT policy-gated: the destination is this agent's own
+      // vault, where funds become strictly harder to move.
+      const { txid, feeSompi } = await wallet.send(config.address, amount);
+      return {
+        txid,
+        vaultAddress: config.address,
+        depositedSompi: amount.toString(),
+        depositedKas: formatKas(amount),
+        feeSompi: feeSompi.toString(),
+        remainingWalletFloat: formatKas(balance - amount - feeSompi),
       };
     })
 );
@@ -245,7 +292,13 @@ registerTool(
   },
   async () =>
     guarded(async () => {
-      if (!vault.configured) return { configured: false };
+      if (!vault.configured) {
+        return {
+          configured: false,
+          nextStep:
+            "no vault yet — call vault_create (it will tell you what to ask your human operator for)",
+        };
+      }
       const config = vault.config();
       const balance = await vault.balanceSompi(wallet);
       return { configured: true, ...config, balanceSompi: balance.toString(), balanceKas: formatKas(balance) };

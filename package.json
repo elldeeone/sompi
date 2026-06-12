@@ -1,6 +1,6 @@
 {
   "name": "@elldeeone/sompi",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Sompi — the agent payment kit for Kaspa. MCP server with policy-enforced wallet tools, Toccata-native.",
   "license": "MIT",
   "repository": {
