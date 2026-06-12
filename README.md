@@ -40,7 +40,31 @@ Or to any MCP client config:
 }
 ```
 
-On first run the server generates a wallet key at `~/.sompi/<network>/wallet-key` (mode 0600). Ask your agent for its address (`get_address`) and fund it from the [testnet faucet](https://faucet.kaspanet.io/).
+### Onboard an agent in 4 steps
+
+1. **Generate the wallet key yourself** so you control it and know the address before funding:
+   ```bash
+   npx -y @elldeeone/sompi gen-wallet-key testnet-10
+   # prints: private: <hex>   address: kaspatest:...
+   ```
+   Back up the private line. (Skip this and the server auto-creates a key at
+   `~/.sompi/<network>/wallet-key` on first use — fine for testing, but then the
+   key lives only on the agent's host and you don't control it.)
+
+2. **Fund the address** from the [testnet faucet](https://faucet-tn10.kaspanet.io/) or your own wallet.
+
+3. **Wire the key into the agent** via the MCP env block:
+   ```json
+   { "mcpServers": { "sompi": {
+       "command": "npx", "args": ["-y", "@elldeeone/sompi"],
+       "env": { "SOMPI_NETWORK": "testnet-10", "SOMPI_PRIVATE_KEY": "<hex from step 1>" } } } }
+   ```
+   (Optional: add `"SOMPI_POLICY": "/path/policy.json"` for spending limits the
+   agent can't change, and `"SOMPI_NODE_URL"` for your own node.)
+
+4. **Use it.** Tell the agent in plain English: *"buy a joke from
+   http://… /api/joke"* — `paid_fetch` funds an escrow and pays per request
+   automatically, within the policy. Confirm with `get_balance` / `get_policy`.
 
 ## Tools
 

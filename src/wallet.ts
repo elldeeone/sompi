@@ -260,6 +260,13 @@ export function parseKasToSompi(kas: string): bigint {
   return sompi;
 }
 
+/** Generate a wallet keypair locally (operator-controlled). Returns the private
+ *  key hex and the receive address for the given network. */
+export function generateWalletKey(networkId: string): { privateKey: string; address: string } {
+  const keypair = Keypair.random();
+  return { privateKey: keypair.privateKey, address: keypair.toAddress(networkId).toString() };
+}
+
 function loadOrCreateKey(dataDir: string): PrivateKey {
   const envKey = process.env.SOMPI_PRIVATE_KEY;
   if (envKey) return new PrivateKey(envKey.trim());

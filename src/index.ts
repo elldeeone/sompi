@@ -9,6 +9,25 @@ import { KaspaWallet, formatKas, parseKasToSompi } from "./wallet";
 import { VaultManager } from "./vault";
 import { X402Client } from "./x402/client";
 
+// Operator-side CLI: `npx @elldeeone/sompi gen-wallet-key [network]` — generate
+// the agent's wallet key yourself so you control and can back it up, and know
+// the address to fund before wiring up the agent. Import it via SOMPI_PRIVATE_KEY.
+if (process.argv[2] === "gen-wallet-key") {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const { generateWalletKey } = require("./wallet") as typeof import("./wallet");
+  const net = process.argv[3] ?? process.env.SOMPI_NETWORK ?? "testnet-10";
+  const key = generateWalletKey(net);
+  console.log(`Agent wallet keypair (${net}) — generated locally, back up the private line:`);
+  console.log(`private: ${key.privateKey}`);
+  console.log(`address: ${key.address}`);
+  console.log(
+    `\nFund the address, then give the agent this key via env:\n` +
+      `  SOMPI_PRIVATE_KEY=${key.privateKey}\n` +
+      `(set it in the MCP server's env block; never share the private line otherwise).`
+  );
+  process.exit(0);
+}
+
 // Operator-side CLI: `npx @elldeeone/sompi gen-owner-key` — run on the
 // HUMAN's machine, before any MCP plumbing starts.
 if (process.argv[2] === "gen-owner-key") {
@@ -30,7 +49,7 @@ const POLICY_PATH = process.env.SOMPI_POLICY;
 const wallet = new KaspaWallet({ networkId: NETWORK, dataDir: DATA_DIR, nodeUrl: NODE_URL });
 const policy = new PolicyEngine(DATA_DIR, POLICY_PATH);
 
-const server = new McpServer({ name: "sompi", version: "0.5.0" });
+const server = new McpServer({ name: "sompi", version: "0.5.1" });
 
 // The SDK's registerTool generics overflow tsc's instantiation depth with
 // zod 3.25 shapes, so registrations go through this loosely-typed wrapper.
