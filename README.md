@@ -51,11 +51,11 @@ On first run the server generates a wallet key at `~/.sompi/<network>/wallet-key
 | `send_payment` | Send KAS — gated by the spending policy |
 | `await_payment` | Block until an incoming payment of at least N sompi arrives (UTXO subscription, not polling) |
 | `verify_payment` | Confirm a txid paid an address |
-| `paid_fetch` | Fetch a URL, auto-resolving HTTP 402 payment via a KAS tab |
+| `paid_fetch` | Fetch a URL, auto-resolving HTTP 402 payment (tab or trust-minimized escrow) |
 | `estimate_fee` | Live feerate buckets from the node |
 | `network_status` | Node sync state, DAA score, version |
 | `get_policy` | Read-only view of the active spending policy |
-| `vault_create` / `vault_status` / `vault_send` | Covenant vault: spending caps enforced by consensus (see below) |
+| `vault_create` / `vault_status` / `vault_send` / `vault_deposit` | Covenant vault: spending caps enforced by consensus (see below) |
 
 Connections to public resolver nodes are verified against the explorer's
 chain tip (a **canonical-chain guard**): nodes that are unsynced, missing a
