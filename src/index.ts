@@ -30,7 +30,7 @@ const POLICY_PATH = process.env.SOMPI_POLICY;
 const wallet = new KaspaWallet({ networkId: NETWORK, dataDir: DATA_DIR, nodeUrl: NODE_URL });
 const policy = new PolicyEngine(DATA_DIR, POLICY_PATH);
 
-const server = new McpServer({ name: "sompi", version: "0.3.1" });
+const server = new McpServer({ name: "sompi", version: "0.3.2" });
 
 // The SDK's registerTool generics overflow tsc's instantiation depth with
 // zod 3.25 shapes, so registrations go through this loosely-typed wrapper.
@@ -231,18 +231,36 @@ registerTool(
   async ({ maxOutflowSompi, ownerPublicKey }) =>
     guarded(async () => {
       if (!ownerPublicKey || !maxOutflowSompi) {
+        const policyCap = policy.policy.maxSompiPerTx;
         throw new Error(
-          "Vault setup needs two things from your human operator. Ask them to: " +
-            "(1) run `npx -y @elldeeone/sompi gen-owner-key` on THEIR machine and send you the `public:` line " +
-            "(64 hex chars — never the private line), and " +
-            "(2) tell you the per-withdrawal cap in sompi (e.g. 100000000 = 1 KAS). " +
+          "Vault setup needs two things from your human operator. Relay BOTH questions clearly: " +
+            "(1) Ask them to run `npx -y @elldeeone/sompi gen-owner-key` on THEIR machine and send you the " +
+            "`public:` line (64 hex chars — never the private line). " +
+            "(2) Ask what the vault's UNCHANGEABLE disaster cap should be, in sompi. Explain the two layers " +
+            `when you ask: their day-to-day spending policy (currently ${policyCap} sompi per tx) stays in ` +
+            "force and can be edited anytime; the vault cap is different — it is baked into the vault address " +
+            "forever and only limits what a THIEF with this agent's key could take per transaction. It must be " +
+            "at or above the day-to-day policy cap, and closer to it is safer (changing it later means creating " +
+            "a new vault and moving the funds). " +
             "Then call vault_create again with ownerPublicKey and maxOutflowSompi. " +
             "After it returns the vault address, use vault_deposit to move your funds in."
         );
       }
       const created = vault.create(BigInt(maxOutflowSompi), ownerPublicKey);
+      const policyCap = policy.policy.maxSompiPerTx;
+      const cap = BigInt(maxOutflowSompi);
+      const alignment =
+        cap >= policyCap
+          ? cap / policyCap > 10n
+            ? `note for your operator: the vault cap is ${cap / policyCap}x the day-to-day policy cap ` +
+              `(${policyCap} sompi). Day-to-day nothing changes, but a key thief could drain in ` +
+              `${cap}-sompi steps; keeping the two caps close is safer.`
+            : "vault cap and day-to-day policy are reasonably aligned"
+          : `warning: the vault cap (${cap} sompi) is BELOW the day-to-day policy cap (${policyCap} sompi) — ` +
+            "withdrawals above the vault cap will be rejected by the network regardless of policy";
       return {
         ...created,
+        capAlignment: alignment,
         nextStep:
           "use vault_deposit to move funds in (your operator can also fund the address directly); " +
           "only the operator's key can ever drain the vault past the cap",
@@ -301,7 +319,14 @@ registerTool(
       }
       const config = vault.config();
       const balance = await vault.balanceSompi(wallet);
-      return { configured: true, ...config, balanceSompi: balance.toString(), balanceKas: formatKas(balance) };
+      return {
+        configured: true,
+        ...config,
+        balanceSompi: balance.toString(),
+        balanceKas: formatKas(balance),
+        dayToDayPolicyMaxPerTxSompi: policy.policy.maxSompiPerTx.toString(),
+        note: "maxOutflowSompi is the consensus-enforced disaster cap (unchangeable); the policy cap governs normal operation (editable)",
+      };
     })
 );
 
