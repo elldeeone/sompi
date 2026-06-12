@@ -30,7 +30,7 @@ const POLICY_PATH = process.env.SOMPI_POLICY;
 const wallet = new KaspaWallet({ networkId: NETWORK, dataDir: DATA_DIR, nodeUrl: NODE_URL });
 const policy = new PolicyEngine(DATA_DIR, POLICY_PATH);
 
-const server = new McpServer({ name: "sompi", version: "0.3.3" });
+const server = new McpServer({ name: "sompi", version: "0.3.4" });
 
 // The SDK's registerTool generics overflow tsc's instantiation depth with
 // zod 3.25 shapes, so registrations go through this loosely-typed wrapper.
@@ -335,20 +335,26 @@ registerTool(
   {
     description:
       "Withdraw from the covenant vault via the consensus-capped agent path. Also passes through the " +
-      "local spending policy (defense in depth). Change returns to the vault automatically.",
+      "local spending policy (defense in depth). Change returns to the vault automatically. The fee is " +
+      'estimated from the node; pass amountSompi "max" to send the largest amount the covenant cap allows.',
     inputSchema: {
       to: z.string().describe("Destination Kaspa address"),
-      amountSompi: z.string().describe("Amount in sompi"),
-      feeSompi: z.string().optional().describe("Fee in sompi (default 2000000)"),
+      amountSompi: z.string().describe('Amount in sompi, or "max" for the largest cap-compliant amount'),
     },
   },
-  async ({ to, amountSompi, feeSompi }) =>
+  async ({ to, amountSompi }) =>
     guarded(async () => {
-      const amount = BigInt(amountSompi);
-      policy.authorize(to, amount);
-      const txid = await vault.send(wallet, to, amount, feeSompi ? BigInt(feeSompi) : undefined);
-      policy.record(amount);
-      return { txid, to, amountSompi: amount.toString(), enforcement: "consensus (covenant) + local policy" };
+      const amount = amountSompi === "max" ? ("max" as const) : BigInt(amountSompi);
+      const result = await vault.send(wallet, to, amount, (resolved) => policy.authorize(to, resolved));
+      policy.record(result.amountSompi);
+      return {
+        txid: result.txid,
+        to,
+        amountSompi: result.amountSompi.toString(),
+        amountKas: formatKas(result.amountSompi),
+        feeSompi: result.feeSompi.toString(),
+        enforcement: "consensus (covenant) + local policy",
+      };
     })
 );
 

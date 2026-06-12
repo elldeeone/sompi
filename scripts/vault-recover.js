@@ -37,13 +37,13 @@ async function main() {
   const address = addressFromScriptPublicKey(payToScriptHashScript(redeem), network).toString();
   console.log(`vault address: ${address}`);
 
-  const txid = await spendVault({
+  const { txid } = await spendVault({
     wallet,
     config: { agentPublic, ownerPublic, maxOutflowSompi: maxOutflow, address },
     fn: "recover",
     privateKey: ownerPriv,
     destination,
-    feeSompi: fee ? BigInt(fee) : 2_000_000n,
+    feeSompi: fee ? BigInt(fee) : undefined,
   });
   console.log(`recovered: ${txid}`);
   await wallet.disconnect();

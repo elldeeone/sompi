@@ -36,8 +36,42 @@ interface VaultConfig {
   address: string;
 }
 
-const DEFAULT_FEE_SOMPI = 2_000_000n;
 const SUBNETWORK_NATIVE = "00".repeat(20);
+const STORAGE_MASS_PARAMETER = 10n ** 12n; // KIP-9 C
+const MASS_PER_SPK_BYTE = 10n;
+const GRAMS_PER_SIGOP = 1_000n;
+
+/**
+ * Deterministic fee estimate for a 1-input vault spend.
+ *
+ * Compute mass: serialized size + scriptPubKey bytes ×10 + one sigop;
+ * storage mass (KIP-9): C·(Σ 1/out − 1/in). Priced at the node's normal
+ * feerate with a small margin so cap-max sends don't bounce on rounding.
+ */
+export function estimateVaultSpendFeeSompi(
+  inputAmount: bigint,
+  outputs: { value: bigint; spkScriptLen: number }[],
+  redeemScriptLen: number,
+  feerate: number
+): bigint {
+  // serialized size (see consensus transaction_estimated_serialized_size)
+  const sigScriptLen = BigInt(1 + 65 + 1 + 2 + redeemScriptLen); // push(sig65) + selector + OpPushData1 + redeem
+  const inputSize = 32n + 4n + 8n + sigScriptLen + 8n;
+  const outputsSize = outputs.reduce((acc, o) => acc + 8n + 2n + 8n + BigInt(o.spkScriptLen), 0n);
+  const size = 2n + 8n + inputSize + 8n + outputsSize + 8n + 20n + 8n + 32n + 8n;
+
+  const spkMass = outputs.reduce((acc, o) => acc + (2n + BigInt(o.spkScriptLen)) * MASS_PER_SPK_BYTE, 0n);
+  const computeGrams = size + spkMass + GRAMS_PER_SIGOP;
+
+  const harmonicOuts = outputs.reduce((acc, o) => acc + (o.value > 0n ? STORAGE_MASS_PARAMETER / o.value : 0n), 0n);
+  const harmonicIn = STORAGE_MASS_PARAMETER / inputAmount;
+  const storageGrams = harmonicOuts > harmonicIn ? harmonicOuts - harmonicIn : 0n;
+
+  const transientGrams = size * 2n; // normalized post-Toccata transient component
+  const grams = (computeGrams > transientGrams ? computeGrams : transientGrams) + storageGrams;
+  const rate = BigInt(Math.max(Math.ceil(feerate), 100));
+  return (grams * rate * 110n) / 100n; // +10% margin
+}
 
 export class VaultManager {
   private readonly vaultDir: string;
@@ -99,16 +133,20 @@ export class VaultManager {
     return wallet.balanceSompi(this.config().address);
   }
 
-  /** Withdraw via the consensus-capped agent path. */
-  async send(wallet: KaspaWallet, destination: string, amountSompi: bigint, feeSompi = DEFAULT_FEE_SOMPI): Promise<string> {
+  /**
+   * Withdraw via the consensus-capped agent path.
+   *
+   * `amount` may be the literal "max": the largest amount the covenant cap
+   * (and UTXO) allows once the estimated fee is accounted for. `authorize`
+   * runs against the resolved amount before anything is broadcast.
+   */
+  async send(
+    wallet: KaspaWallet,
+    destination: string,
+    amount: bigint | "max",
+    authorize?: (amountSompi: bigint) => void
+  ): Promise<{ txid: string; amountSompi: bigint; feeSompi: bigint }> {
     const config = this.config();
-    const max = BigInt(config.maxOutflowSompi);
-    if (amountSompi + feeSompi > max) {
-      throw new Error(
-        `outflow ${amountSompi + feeSompi} sompi (amount + fee) exceeds the vault's consensus cap of ${max} sompi; ` +
-          `the network would reject this transaction`
-      );
-    }
     const agentKey = fs.readFileSync(path.join(this.vaultDir, "agent-key"), "utf8").trim();
     return spendVault({
       wallet,
@@ -116,8 +154,8 @@ export class VaultManager {
       fn: "withdraw",
       privateKey: agentKey,
       destination,
-      amountSompi,
-      feeSompi,
+      amount,
+      authorize,
     });
   }
 
@@ -136,14 +174,20 @@ export interface VaultSpendParams {
   fn: "withdraw" | "recover";
   privateKey: string;
   destination: string;
-  /** Withdrawal amount; ignored for recover (full drain). */
-  amountSompi?: bigint;
-  feeSompi: bigint;
+  /** Withdrawal amount or "max"; ignored for recover (full drain). */
+  amount?: bigint | "max";
+  /** Override the estimated fee. */
+  feeSompi?: bigint;
+  /** Called with the resolved amount before broadcast (policy hook). */
+  authorize?: (amountSompi: bigint) => void;
 }
 
+/** Minimum change kept in the vault on a withdrawal (avoids dust and KIP-9 storage-mass blowups). */
+const MIN_VAULT_CHANGE_SOMPI = 100_000_000n;
+
 /** Build, sign, and broadcast a vault spend. Shared by agent send and operator recovery. */
-export async function spendVault(params: VaultSpendParams): Promise<string> {
-  const { wallet, config, fn, destination, feeSompi } = params;
+export async function spendVault(params: VaultSpendParams): Promise<{ txid: string; amountSompi: bigint; feeSompi: bigint }> {
+  const { wallet, config, fn, destination } = params;
   const max = BigInt(config.maxOutflowSompi);
   const redeem = buildRedeemScript(config.agentPublic, config.ownerPublic, max);
   const vaultSpk = payToScriptHashScript(redeem);
@@ -160,13 +204,58 @@ export async function spendVault(params: VaultSpendParams): Promise<string> {
     }))
     .sort((a, b) => (a.amount > b.amount ? -1 : 1))[0];
 
+  const destSpk = payToAddressScript(destination);
+  const destSpkLen = String(destSpk.script).length / 2;
+  const vaultSpkLen = String(vaultSpk.script).length / 2;
+  const estimate = await rpc.getFeeEstimate();
+  const feerate = estimate.estimate?.normalBuckets?.[0]?.feerate ?? 100;
+
+  const estimateFee = (amountSompi: bigint, changeSompi: bigint): bigint => {
+    const shape =
+      fn === "withdraw"
+        ? [
+            { value: amountSompi, spkScriptLen: destSpkLen },
+            { value: changeSompi, spkScriptLen: vaultSpkLen },
+          ]
+        : [{ value: amountSompi, spkScriptLen: destSpkLen }];
+    return estimateVaultSpendFeeSompi(utxo.amount, shape, redeem.length, feerate);
+  };
+
+  let amountSompi: bigint;
+  let feeSompi: bigint;
+  if (fn === "recover") {
+    feeSompi = params.feeSompi ?? estimateFee(utxo.amount, 0n);
+    amountSompi = utxo.amount - feeSompi;
+  } else if (params.amount === "max") {
+    // Largest withdrawal the cap and UTXO allow: iterate the fee estimate
+    // twice since the fee depends on the output amounts.
+    const outflowCap = utxo.amount - MIN_VAULT_CHANGE_SOMPI < max ? utxo.amount - MIN_VAULT_CHANGE_SOMPI : max;
+    if (outflowCap <= 0n) throw new Error(`vault UTXO of ${utxo.amount} sompi is too small to withdraw from`);
+    feeSompi = params.feeSompi ?? estimateFee(outflowCap, utxo.amount - outflowCap);
+    amountSompi = outflowCap - feeSompi;
+    feeSompi = params.feeSompi ?? estimateFee(amountSompi, utxo.amount - outflowCap);
+    amountSompi = outflowCap - feeSompi;
+  } else {
+    amountSompi = params.amount!;
+    feeSompi = params.feeSompi ?? estimateFee(amountSompi, utxo.amount - amountSompi);
+  }
+
+  if (fn === "withdraw" && amountSompi + feeSompi > max) {
+    throw new Error(
+      `outflow ${amountSompi + feeSompi} sompi (amount + estimated fee ${feeSompi}) exceeds the vault's ` +
+        `consensus cap of ${max} sompi — the network would reject it. ` +
+        `Largest sendable amount right now: pass amountSompi "max" (≈ ${max - feeSompi} sompi).`
+    );
+  }
+  params.authorize?.(amountSompi);
+
   const outputs =
     fn === "withdraw"
       ? [
-          { value: params.amountSompi!, scriptPublicKey: payToAddressScript(destination) },
-          { value: utxo.amount - params.amountSompi! - feeSompi, scriptPublicKey: vaultSpk },
+          { value: amountSompi, scriptPublicKey: destSpk },
+          { value: utxo.amount - amountSompi - feeSompi, scriptPublicKey: vaultSpk },
         ]
-      : [{ value: utxo.amount - feeSompi, scriptPublicKey: payToAddressScript(destination) }];
+      : [{ value: amountSompi, scriptPublicKey: destSpk }];
   if (outputs.some((o) => o.value <= 0n)) {
     throw new Error(`vault UTXO of ${utxo.amount} sompi is too small for this spend`);
   }
@@ -201,7 +290,7 @@ export async function spendVault(params: VaultSpendParams): Promise<string> {
   const signatureScript = payToScriptHashSignatureScript(redeem, buildSigArgs(rawSig, fn));
   const transaction = { ...txShape, inputs: [{ ...inputBase, signatureScript }] };
   const { transactionId } = await (rpc as any).submitTransaction({ transaction, allowOrphan: false });
-  return String(transactionId);
+  return { txid: String(transactionId), amountSompi, feeSompi };
 }
 
 export function generateOwnerKey(): { privateKey: string; publicKey: string } {
