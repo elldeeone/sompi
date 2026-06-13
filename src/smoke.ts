@@ -8,9 +8,12 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs";
+import { sha256 } from "@noble/hashes/sha256";
+import { payToScriptHashScript } from "../vendor/kaspa-wasm/kaspa";
 import { PolicyEngine, PolicyViolation } from "./policy";
-import { buildRedeemScript, buildSigArgs, bytesToHex } from "./vault/template";
-import { buildEscrowRedeemScript, buildClaimArgs, buildRefundArgs } from "./x402/escrow-template";
+import { buildRedeemScript, buildSigArgs, bytesToHex, hexToBytes } from "./vault/template";
+import { buildEscrowRedeemScript, buildClaimArgs, buildRefundArgs, voucherMessage } from "./x402/escrow-template";
+import { escrowScriptPubKeyHash, generateChannelKey, makeVoucher, verifyVoucher } from "./x402/escrow";
 import { KaspaWallet, formatKas } from "./wallet";
 
 const NETWORK = process.env.SOMPI_NETWORK ?? "testnet-10";
@@ -103,11 +106,13 @@ async function main() {
     templateMatches === fixtures.length
   );
 
-  // --- offline checks: escrow template byte-equality vs compiler fixtures ---
+  // --- offline checks: escrow template byte-equality vs pinned fixtures ---
+  // Regression guard only; scripts/escrow-live.js is the live consensus proof
+  // for the current pinned bytes.
   const escrowFixtures = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "scripts", "escrow-fixtures.json"), "utf8"));
   let escrowMatches = 0;
   for (const f of escrowFixtures) {
-    const redeem = bytesToHex(buildEscrowRedeemScript(f.client, f.server, BigInt(f.timeout)));
+    const redeem = bytesToHex(buildEscrowRedeemScript(f.client, f.server, BigInt(f.timeout), f.network ?? "testnet-10"));
     const claim = bytesToHex(
       buildClaimArgs(new Uint8Array(65).fill(0xab), new Uint8Array(64).fill(0xcd), new Uint8Array(8).fill(0xef))
     );
@@ -119,9 +124,38 @@ async function main() {
     }
   }
   check(
-    `escrow template: byte-identical to compiler output (${escrowMatches}/${escrowFixtures.length} fixtures)`,
+    `escrow template: byte-identical to pinned fixtures (${escrowMatches}/${escrowFixtures.length})`,
     escrowMatches === escrowFixtures.length
   );
+  const sampleClient = generateChannelKey();
+  const sampleServer = generateChannelKey();
+  const sampleParams = { clientPublic: sampleClient.publicKey, serverPublic: sampleServer.publicKey, timeout: 123n };
+  const sampleOutpoint = { txid: "11".repeat(32), index: 0 };
+  const siblingOutpoint = { txid: sampleOutpoint.txid, index: 1 };
+  const sampleAmount = 42_000n;
+  const sampleSpkHash = escrowScriptPubKeyHash(sampleParams, "testnet-10");
+  const sampleSpk = payToScriptHashScript(
+    buildEscrowRedeemScript(sampleParams.clientPublic, sampleParams.serverPublic, sampleParams.timeout, "testnet-10")
+  );
+  const sampleSpkScript = hexToBytes(String(sampleSpk.script));
+  const sampleSpkVersion = Number(sampleSpk.version ?? 0);
+  const serializedSampleSpk = new Uint8Array(2 + sampleSpkScript.length);
+  serializedSampleSpk[0] = sampleSpkVersion & 0xff;
+  serializedSampleSpk[1] = (sampleSpkVersion >>> 8) & 0xff;
+  serializedSampleSpk.set(sampleSpkScript, 2);
+  const samplePreimage = voucherMessage("testnet-10", sampleSpkHash, sampleOutpoint.txid, sampleOutpoint.index, sampleAmount);
+  const sampleVoucher = makeVoucher(sampleClient.privateKey, sampleParams, "testnet-10", sampleOutpoint, sampleAmount);
+  check("escrow voucher: fixed-width full-outpoint preimage", samplePreimage.length === 140);
+  check("escrow voucher: hashes serialized scriptPublicKey", bytesToHex(sampleSpkHash) === bytesToHex(sha256(serializedSampleSpk)));
+  check(
+    "escrow voucher: same txid different vout rejected",
+    verifyVoucher(sampleParams, "testnet-10", sampleOutpoint, sampleAmount, sampleVoucher.voucherHex) &&
+      !verifyVoucher(sampleParams, "testnet-10", siblingOutpoint, sampleAmount, sampleVoucher.voucherHex)
+  );
+  const sampleRedeem = bytesToHex(buildEscrowRedeemScript(sampleParams.clientPublic, sampleParams.serverPublic, sampleParams.timeout, "testnet-10"));
+  check("escrow template: contains CheckSigFromStack verify", sampleRedeem.includes("d769"));
+  check("escrow template: hashes serialized active input scriptPubKey", sampleRedeem.includes("b9bfa87e"));
+  check("escrow template: encodes vout as fixed le32", sampleRedeem.includes("b9bb54cd7e"));
 
   // --- online checks: live network ---
   if (process.env.SOMPI_SMOKE_OFFLINE) {

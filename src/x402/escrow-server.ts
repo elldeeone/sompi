@@ -2,8 +2,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { KaspaWallet } from "../wallet";
-import { X_PAYMENT_HEADER, decodePaymentHeader } from "./types";
-import { EscrowParams, claimEscrow, deriveEscrowAddress, verifyVoucher } from "./escrow";
+import { KaspaEscrowPaymentHeader, X_PAYMENT_HEADER, decodePaymentHeader } from "./types";
+import { EscrowOutpoint, EscrowParams, claimEscrow, escrowFunding, verifyVoucher } from "./escrow";
 
 /**
  * Trust-minimized x402 server middleware (kaspa-escrow scheme).
@@ -39,20 +39,16 @@ interface ClientChannel {
   authorizedSompi: string;
   /** Latest voucher signature for the authorized amount. */
   voucherHex: string;
-}
-
-interface EscrowPaymentHeader {
-  scheme: "kaspa-escrow";
-  clientPublic: string;
-  voucherAmountSompi: string;
-  voucherHex: string;
+  /** Exact escrow UTXO authorized by the latest voucher. */
+  outpointTxid?: string;
+  outpointIndex?: number;
 }
 
 export class EscrowTabServer {
   private readonly config: EscrowServerConfig;
   private readonly channelsPath: string;
   private channels = new Map<string, ClientChannel>();
-  private fundingCache = new Map<string, [bigint, number]>();
+  private fundingCache = new Map<string, [{ txid: string; index: number; amountSompi: bigint }, number]>();
   private static readonly FUNDING_CACHE_MS = 3_000;
 
   constructor(config: EscrowServerConfig) {
@@ -87,28 +83,39 @@ export class EscrowTabServer {
     };
   }
 
-  private async fundedSompi(address: string): Promise<bigint> {
-    const cached = this.fundingCache.get(address);
+  /** The escrow's exact funding UTXO, or null if it isn't funded/indexed yet. */
+  private async funding(clientPublic: string, outpoint: EscrowOutpoint): Promise<{ txid: string; index: number; amountSompi: bigint } | null> {
+    const cacheKey = `${clientPublic}:${outpoint.txid}:${outpoint.index}`;
+    const cached = this.fundingCache.get(cacheKey);
     if (cached && Date.now() - cached[1] < EscrowTabServer.FUNDING_CACHE_MS) return cached[0];
-    const rpc = await this.config.rpc();
-    const { entries } = await rpc.getUtxosByAddresses([address]);
-    const total = (entries as any[]).reduce((acc, e) => acc + BigInt(e?.amount ?? e?.entry?.amount ?? 0), 0n);
-    this.fundingCache.set(address, [total, Date.now()]);
-    return total;
+    try {
+      const f = await escrowFunding(this.config.wallet(), this.params(clientPublic), outpoint);
+      const value = { txid: f.txid, index: f.index, amountSompi: f.amountSompi };
+      this.fundingCache.set(cacheKey, [value, Date.now()]);
+      return value;
+    } catch {
+      return null; // not funded / not indexed yet
+    }
   }
 
   /** Returns true when the request was answered with a 402 (no payment / insufficient). */
   async gate(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
     const raw = req.headers[X_PAYMENT_HEADER];
-    let header: EscrowPaymentHeader | undefined;
+    let header: KaspaEscrowPaymentHeader | undefined;
     if (typeof raw === "string") {
       try {
-        header = decodePaymentHeader(raw) as unknown as EscrowPaymentHeader;
+        header = decodePaymentHeader(raw) as KaspaEscrowPaymentHeader;
       } catch {
         header = undefined;
       }
     }
-    if (!header || header.scheme !== "kaspa-escrow" || !header.clientPublic) {
+    if (
+      !header ||
+      header.scheme !== "kaspa-escrow" ||
+      !header.clientPublic ||
+      !header.outpointTxid ||
+      !Number.isInteger(header.outpointIndex)
+    ) {
       return this.reply402(res);
     }
 
@@ -118,24 +125,43 @@ export class EscrowTabServer {
       servedCount: 0,
       authorizedSompi: "0",
       voucherHex: "",
+      outpointTxid: header.outpointTxid,
+      outpointIndex: header.outpointIndex,
     };
     const required = BigInt(channel.servedCount + 1) * price;
     const voucherAmount = BigInt(header.voucherAmountSompi);
 
-    // 1. voucher must cryptographically authorize at least the running total.
-    if (voucherAmount < required || !verifyVoucher(header.clientPublic, voucherAmount, header.voucherHex)) {
+    const outpoint = { txid: header.outpointTxid, index: header.outpointIndex };
+    if (
+      (channel.outpointTxid && channel.outpointTxid !== outpoint.txid) ||
+      (channel.outpointIndex !== undefined && channel.outpointIndex !== outpoint.index)
+    ) {
+      return this.reply402(res);
+    }
+
+    // The escrow must be funded at exactly the outpoint signed by the voucher.
+    const funding = await this.funding(header.clientPublic, outpoint);
+    if (!funding) return this.reply402(res);
+
+    // 1. voucher must cryptographically authorize at least the running total,
+    //    bound to THIS escrow UTXO (the same check consensus enforces on claim).
+    if (
+      voucherAmount < required ||
+      !verifyVoucher(this.params(header.clientPublic), this.config.networkId, outpoint, voucherAmount, header.voucherHex)
+    ) {
       return this.reply402(res);
     }
     // 2. the escrow must actually hold at least the authorized amount, so the
     //    server's claim will succeed.
-    const escrowAddr = deriveEscrowAddress(this.params(header.clientPublic), this.config.networkId);
-    if ((await this.fundedSompi(escrowAddr)) < voucherAmount) {
+    if (funding.amountSompi < voucherAmount) {
       return this.reply402(res);
     }
 
     channel.servedCount += 1;
     channel.authorizedSompi = voucherAmount.toString();
     channel.voucherHex = header.voucherHex;
+    channel.outpointTxid = funding.txid;
+    channel.outpointIndex = funding.index;
     this.channels.set(header.clientPublic, channel);
     this.persist();
     res.setHeader("x-payment-authorized-sompi", channel.authorizedSompi);
@@ -155,12 +181,20 @@ export class EscrowTabServer {
   async claim(clientPublic: string, destination: string, feeSompi?: bigint): Promise<string> {
     const channel = this.channels.get(clientPublic);
     if (!channel || channel.authorizedSompi === "0") throw new Error(`no vouchers from client ${clientPublic}`);
+    if (!channel.outpointTxid || channel.outpointIndex === undefined) {
+      throw new Error(`latest voucher from client ${clientPublic} does not record an outpoint`);
+    }
     const authorized = BigInt(channel.authorizedSompi);
     return claimEscrow(
       this.config.wallet(),
       this.params(clientPublic),
       this.config.serverPrivateHex,
-      { amountSompi: authorized, voucherHex: channel.voucherHex },
+      {
+        amountSompi: authorized,
+        voucherHex: channel.voucherHex,
+        outpointTxid: channel.outpointTxid,
+        outpointIndex: channel.outpointIndex,
+      },
       authorized,
       destination,
       feeSompi

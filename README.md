@@ -167,16 +167,25 @@ The basic tab trusts the server with the unspent deposit. The **escrow** scheme
 client issues cumulative off-chain vouchers (BIP340 signatures) authorizing a
 running total, and:
 
-- the **server** can only claim up to what the client signed for, with the
+- the **server** can claim **at most** what the client signed for, with the
   remainder staying in escrow;
 - the **client** can reclaim the unspent balance after a refund timeout if the
   server vanishes.
 
+The voucher's replay protection is **on-chain, not a server promise**. Each
+voucher signs a domain-separated digest over `network`, the active escrow
+`scriptPubKey`, the full funding outpoint (`txid:vout`), and the authorized
+amount. The covenant rebuilds that exact message from transaction introspection
+and verifies it with `OpCheckSigFromStack`. Because the claim's change returns
+to escrow under a *new* outpoint, a voucher is single-use: a server cannot
+replay one voucher against the change to drain the deposit. (See
+[docs/escrow-poc.md](docs/escrow-poc.md) for the live proof harness.)
+
 `paid_fetch` and the bundled `EscrowTabServer` negotiate this automatically when
 the server offers it — `npm run demo:escrow` runs the full flow live (deposit,
 three voucher-paid requests, server claim) on testnet-10. The covenant template
-is byte-pinned (`src/x402/escrow-template.ts`) and verified against the compiler
-in CI; the channel is proven on-chain (`scripts/escrow-live.js`).
+is byte-pinned (`src/x402/escrow-template.ts`); the channel — and its replay
+rejection — is exercised by `scripts/escrow-live.js`.
 
 Sellers collect revenue with `node scripts/sweep-tabs.js <sellerDataDir> <destination>`
 (sweeps exhausted tabs; `--all` also takes unspent client credit, for decommissioning).

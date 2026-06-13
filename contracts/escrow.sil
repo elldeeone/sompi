@@ -1,5 +1,12 @@
 pragma silverscript ^0.1.0;
 
+// Reference semantics only.
+// This file is not compiled into the deployed escrow. The authoritative
+// artifact is the hand-pinned redeem script in src/x402/escrow-template.ts.
+// Current SilverScript work supports checkDataSig/OpCheckSigFromStack and the
+// relevant input-introspection fields, but this source-level sketch is still not
+// the byte-template oracle.
+//
 // SompiEscrow: a one-shot x402 payment channel (trust-minimized tab).
 //
 // The client funds this covenant once. As it consumes API requests it signs
@@ -9,20 +16,44 @@ pragma silverscript ^0.1.0;
 //   claim    — the server closes the channel with the client's latest voucher.
 //              It may take at most the voucher amount; the remainder must
 //              return to this same escrow script so the client can still
-//              reclaim it. checkDataSig proves the client authorized exactly
-//              that amount, so the server cannot over-claim.
+//              reclaim it. OpCheckSigFromStack proves the client authorized
+//              exactly that amount and spend identity, so the server cannot
+//              over-claim or replay a voucher against another UTXO.
 //
 //   refund   — after the timeout the client reclaims everything with its own
 //              signature, so a vanished or unresponsive server cannot strand
 //              the deposit.
 //
-// The voucher message is the 8-byte little-endian claim amount. The client
-// signs sha256(amount_le8); the server presents (amount, signature).
+// The voucher message binds the claim amount to the domain, network, active
+// serialized escrow scriptPubKey, and full outpoint of the UTXO being spent:
+//
+//   sha256(domain32 || network32 || sha256(serializedInputScriptPubKey)
+//       || outpointTxId32 || outpointIndex_le32 || amount_le64)
+//
+// This is the replay protection. A claim's change returns to escrow under a new
+// outpoint, so the same voucher's message no longer matches and
+// checkDataSig fails. The server presents (amount, signature); the covenant
+// reconstructs the message from tx introspection and verifies it on-chain.
 contract SompiEscrow(pubkey client, pubkey server, int timeout) {
+    // sha256("sompi:escrow-voucher:v2")
+    byte[32] constant VOUCHER_DOMAIN_TAG = 0x15436b1356689a0646b884da4d7599ba22dc8b49336224e48983e8e0c90e906a;
+    // sha256("testnet-10"). A compiler-owned template should make this network
+    // binding explicit for every deployed network.
+    byte[32] constant TESTNET_10_NETWORK_HASH = 0x3ce5b9af1d2b2b0f76c7331d4260a2e8ca83bddda2655871cc16183a5fd9f4e9;
+
     // Server claims up to the voucher-authorized amount; change returns to escrow.
     entrypoint function claim(sig serverSig, datasig clientVoucher, byte[8] amountAuthorized) {
         require(checkSig(serverSig, server));
-        require(checkDataSig(clientVoucher, amountAuthorized, client));
+
+        // message = domain32 + network32 + sha256(serialized inputSpk) + txid32 + vout_le4 + amount_le64.
+        byte[] voucherMsg =
+            byte[](VOUCHER_DOMAIN_TAG) +
+            byte[](TESTNET_10_NETWORK_HASH) +
+            byte[](sha256(tx.inputs[this.activeInputIndex].scriptPubKey)) +
+            byte[](tx.inputs[this.activeInputIndex].outpointTransactionHash) +
+            byte[](byte[4](tx.inputs[this.activeInputIndex].outpointIndex)) +
+            byte[](amountAuthorized);
+        require(checkDataSig(clientVoucher, voucherMsg, client));
 
         int authorized = int(amountAuthorized);
         int inputValue = tx.inputs[this.activeInputIndex].value;

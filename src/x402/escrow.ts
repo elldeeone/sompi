@@ -18,6 +18,7 @@ import {
   buildEscrowRedeemScript,
   buildRefundArgs,
   hexToBytes,
+  voucherMessage,
 } from "./escrow-template";
 import { estimateVaultSpendFeeSompi } from "../vault";
 
@@ -25,11 +26,12 @@ import { estimateVaultSpendFeeSompi } from "../vault";
  * Trust-minimized x402 payment channel (SompiEscrow covenant), pure JS.
  *
  * The client funds an escrow address once. As it consumes requests it issues
- * off-chain vouchers — BIP340 schnorr signatures over sha256(amount_le8) —
- * authorizing a running claim total. The server closes with the latest voucher
- * (taking at most the authorized amount, change back to escrow); the client
- * reclaims everything after the timeout if the server goes silent. Neither
- * party has to trust the other.
+ * off-chain vouchers — BIP340 schnorr signatures over a domain-separated
+ * message bound to network, serialized escrow scriptPubKey, full outpoint, and amount —
+ * authorizing a running claim total for one UTXO. The server closes with the
+ * latest voucher (taking at most the authorized amount, change back to escrow);
+ * the client reclaims everything after the timeout if the server goes silent.
+ * Neither party has to trust the other.
  */
 
 const SUBNETWORK_NATIVE = "00".repeat(20);
@@ -40,34 +42,96 @@ export interface EscrowParams {
   timeout: bigint; // DAA score / locktime after which client may refund
 }
 
+export interface EscrowOutpoint {
+  txid: string;
+  index: number;
+}
+
 /** Channel keypair (x-only public, raw private) for one escrow party. */
 export function generateChannelKey(): { privateKey: string; publicKey: string } {
   const priv = schnorr.utils.randomPrivateKey();
   return { privateKey: bytesToHex(priv), publicKey: bytesToHex(schnorr.getPublicKey(priv)) };
 }
 
+function escrowRedeemScript(params: EscrowParams, networkId: string): Uint8Array {
+  return buildEscrowRedeemScript(params.clientPublic, params.serverPublic, params.timeout, networkId);
+}
+
+function escrowScriptPublicKey(params: EscrowParams, networkId: string): any {
+  return payToScriptHashScript(escrowRedeemScript(params, networkId));
+}
+
+function concatBytes(...parts: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
+  let offset = 0;
+  for (const p of parts) {
+    out.set(p, offset);
+    offset += p.length;
+  }
+  return out;
+}
+
+function scriptPublicKeyBytes(spk: any): Uint8Array {
+  const script = hexToBytes(String(spk.script));
+  const version = Number(spk.version ?? 0);
+  if (!Number.isInteger(version) || version < 0 || version > 0xffff) {
+    throw new Error(`invalid scriptPublicKey version: ${spk.version}`);
+  }
+  return concatBytes(Uint8Array.of(version & 0xff, (version >>> 8) & 0xff), script);
+}
+
+export function escrowScriptPubKeyHash(params: EscrowParams, networkId: string): Uint8Array {
+  return sha256(scriptPublicKeyBytes(escrowScriptPublicKey(params, networkId)));
+}
+
 export function deriveEscrowAddress(params: EscrowParams, networkId: string): string {
-  const redeem = buildEscrowRedeemScript(params.clientPublic, params.serverPublic, params.timeout);
-  const address = addressFromScriptPublicKey(payToScriptHashScript(redeem), networkId);
+  const address = addressFromScriptPublicKey(escrowScriptPublicKey(params, networkId), networkId);
   if (!address) throw new Error("could not derive escrow address");
   return address.toString();
 }
 
 /**
  * Client-side: produce a voucher authorizing the server to claim up to
- * `amountSompi`. Vouchers are cumulative — issue a fresh one for the new
- * running total each time the client consumes more service.
+ * `amountSompi` from the escrow UTXO at `outpoint`. Vouchers are
+ * cumulative — issue a fresh one for the new running total each time the client
+ * consumes more service.
+ *
+ * The voucher commits to domain, network, serialized escrow scriptPubKey hash, full
+ * outpoint, and amount, so it is single-use and script-specific.
  */
-export function makeVoucher(clientPrivateHex: string, amountSompi: bigint): { amountSompi: string; voucherHex: string } {
-  const amountLe8 = amountToLe8(amountSompi);
-  const sig = schnorr.sign(sha256(amountLe8), hexToBytes(clientPrivateHex));
-  return { amountSompi: amountSompi.toString(), voucherHex: bytesToHex(sig) };
+export function makeVoucher(
+  clientPrivateHex: string,
+  params: EscrowParams,
+  networkId: string,
+  outpoint: EscrowOutpoint,
+  amountSompi: bigint
+): { amountSompi: string; voucherHex: string; outpointTxid: string; outpointIndex: number } {
+  const sig = schnorr.sign(
+    sha256(voucherMessage(networkId, escrowScriptPubKeyHash(params, networkId), outpoint.txid, outpoint.index, amountSompi)),
+    hexToBytes(clientPrivateHex)
+  );
+  return {
+    amountSompi: amountSompi.toString(),
+    voucherHex: bytesToHex(sig),
+    outpointTxid: outpoint.txid,
+    outpointIndex: outpoint.index,
+  };
 }
 
-/** Verify a voucher off-chain (server checks before serving). */
-export function verifyVoucher(clientPublicHex: string, amountSompi: bigint, voucherHex: string): boolean {
+/** Verify a voucher off-chain (server checks before serving). Mirrors the on-chain check. */
+export function verifyVoucher(
+  params: EscrowParams,
+  networkId: string,
+  outpoint: EscrowOutpoint,
+  amountSompi: bigint,
+  voucherHex: string
+): boolean {
   try {
-    return schnorr.verify(hexToBytes(voucherHex), sha256(amountToLe8(amountSompi)), hexToBytes(clientPublicHex));
+    return schnorr.verify(
+      hexToBytes(voucherHex),
+      sha256(voucherMessage(networkId, escrowScriptPubKeyHash(params, networkId), outpoint.txid, outpoint.index, amountSompi)),
+      hexToBytes(params.clientPublic)
+    );
   } catch {
     return false;
   }
@@ -79,17 +143,35 @@ interface EscrowUtxo {
   amount: bigint;
 }
 
-async function escrowUtxo(wallet: KaspaWallet, address: string): Promise<EscrowUtxo> {
+async function escrowUtxo(wallet: KaspaWallet, address: string, outpoint?: EscrowOutpoint): Promise<EscrowUtxo> {
   const rpc = await wallet.client();
   const { entries } = await rpc.getUtxosByAddresses([address]);
   if (!entries.length) throw new Error(`escrow ${address} has no UTXOs; fund it first`);
-  return (entries as any[])
+  const utxos = (entries as any[])
     .map((e) => ({
       txid: String(e?.outpoint?.transactionId ?? e?.entry?.outpoint?.transactionId),
       index: Number(e?.outpoint?.index ?? e?.entry?.outpoint?.index),
       amount: BigInt(e?.amount ?? e?.entry?.amount ?? 0),
     }))
-    .sort((a, b) => (a.amount > b.amount ? -1 : 1))[0];
+    .sort((a, b) => (a.amount > b.amount ? -1 : 1));
+  if (!outpoint) return utxos[0];
+  const exact = utxos.find((u) => u.txid === outpoint.txid && u.index === outpoint.index);
+  if (!exact) throw new Error(`escrow ${address} has no UTXO ${outpoint.txid}:${outpoint.index}`);
+  return exact;
+}
+
+/**
+ * The funding outpoint of the (largest) UTXO at the escrow address, plus its
+ * value. Pass `outpoint` to require an exact UTXO rather than selecting the
+ * largest one.
+ */
+export async function escrowFunding(
+  wallet: KaspaWallet,
+  params: EscrowParams,
+  outpoint?: EscrowOutpoint
+): Promise<{ txid: string; index: number; amountSompi: bigint }> {
+  const utxo = await escrowUtxo(wallet, deriveEscrowAddress(params, wallet.networkId), outpoint);
+  return { txid: utxo.txid, index: utxo.index, amountSompi: utxo.amount };
 }
 
 // Post-Toccata the live node meters runtime script units at ~100_000 per
@@ -120,7 +202,7 @@ export async function claimEscrow(
   wallet: KaspaWallet,
   params: EscrowParams,
   serverPrivateHex: string,
-  voucher: { amountSompi: bigint; voucherHex: string },
+  voucher: { amountSompi: bigint; voucherHex: string; outpointTxid: string; outpointIndex: number },
   claimSompi: bigint,
   destination: string,
   feeSompi?: bigint
@@ -128,13 +210,21 @@ export async function claimEscrow(
   if (claimSompi > voucher.amountSompi) {
     throw new Error(`claim ${claimSompi} exceeds voucher authorization ${voucher.amountSompi}`);
   }
-  if (!verifyVoucher(params.clientPublic, voucher.amountSompi, voucher.voucherHex)) {
-    throw new Error("voucher signature does not verify against the client public key");
-  }
-  const redeem = buildEscrowRedeemScript(params.clientPublic, params.serverPublic, params.timeout);
+  const redeem = escrowRedeemScript(params, wallet.networkId);
   const escrowSpk = payToScriptHashScript(redeem);
-  const utxo = await escrowUtxo(wallet, deriveEscrowAddress(params, wallet.networkId));
+  const outpoint = { txid: voucher.outpointTxid, index: voucher.outpointIndex };
+  const utxo = await escrowUtxo(wallet, deriveEscrowAddress(params, wallet.networkId), outpoint);
   const rpc = await wallet.client();
+
+  // The voucher must authorize the claim against THIS specific UTXO.
+  // Consensus enforces the same binding via OpCheckSigFromStack; verifying here
+  // first turns a guaranteed on-chain rejection into a clear local error.
+  if (!verifyVoucher(params, wallet.networkId, outpoint, voucher.amountSompi, voucher.voucherHex)) {
+    throw new Error(
+      `voucher does not authorize claiming escrow outpoint ${utxo.txid.slice(0, 16)}:${utxo.index} ` +
+        `for ${voucher.amountSompi} sompi (wrong context, outpoint, amount, or client key)`
+    );
+  }
 
   const destSpk = payToAddressScript(destination);
   // Estimate the claim fee from the node (the demo's per-request price can be
@@ -192,7 +282,7 @@ export async function refundEscrow(
   destination: string,
   feeSompi?: bigint
 ): Promise<string> {
-  const redeem = buildEscrowRedeemScript(params.clientPublic, params.serverPublic, params.timeout);
+  const redeem = escrowRedeemScript(params, wallet.networkId);
   const escrowSpk = payToScriptHashScript(redeem);
   const utxo = await escrowUtxo(wallet, deriveEscrowAddress(params, wallet.networkId));
   const rpc = await wallet.client();

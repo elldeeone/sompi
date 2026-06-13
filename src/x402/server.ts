@@ -118,7 +118,8 @@ export class TabServer {
     let tab: TabRecord | undefined;
     if (xPaymentHeader) {
       try {
-        tab = this.tabs.get(decodePaymentHeader(xPaymentHeader).tabId);
+        const header = decodePaymentHeader(xPaymentHeader);
+        if (header.scheme === "kaspa-tab") tab = this.tabs.get(header.tabId);
       } catch {
         tab = undefined;
       }

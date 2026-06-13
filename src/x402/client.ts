@@ -7,7 +7,7 @@ import {
   X_PAYMENT_HEADER,
   encodePaymentHeader,
 } from "./types";
-import { deriveEscrowAddress, generateChannelKey, makeVoucher } from "./escrow";
+import { EscrowParams, deriveEscrowAddress, escrowFunding, generateChannelKey, makeVoucher } from "./escrow";
 
 interface TabState {
   tabId: string;
@@ -25,6 +25,10 @@ interface EscrowState {
   network: string;
   depositedSompi: string;
   pricePerRequestSompi: string;
+  /** Funding transaction id of the escrow UTXO. */
+  fundingTxid: string;
+  /** Funding output index of the escrow UTXO. Full outpoint binding requires this. */
+  fundingIndex?: number;
   /** Cumulative amount authorized to the server so far, sompi. */
   authorizedSompi: string;
 }
@@ -130,14 +134,13 @@ export class X402Client {
     }
     const client = generateChannelKey();
     const refundTimeout = BigInt(offer.refundTimeout);
-    const escrowAddress = deriveEscrowAddress(
-      { clientPublic: client.publicKey, serverPublic: offer.serverPublic, timeout: refundTimeout },
-      this.wallet.networkId
-    );
+    const params = { clientPublic: client.publicKey, serverPublic: offer.serverPublic, timeout: refundTimeout };
+    const escrowAddress = deriveEscrowAddress(params, this.wallet.networkId);
     const deposit = BigInt(offer.minDepositSompi);
     this.policy.authorize(escrowAddress, deposit);
-    await this.wallet.send(escrowAddress, deposit);
+    const { txid: fundingTxid } = await this.wallet.send(escrowAddress, deposit);
     this.policy.record(deposit);
+    const funding = await this.waitForEscrowFunding(params, fundingTxid);
 
     this.escrows[origin] = {
       clientPrivate: client.privateKey,
@@ -148,10 +151,29 @@ export class X402Client {
       network: offer.network,
       depositedSompi: deposit.toString(),
       pricePerRequestSompi: String(offer.pricePerRequestSompi),
+      fundingTxid: funding.txid,
+      fundingIndex: funding.index,
       authorizedSompi: "0",
     };
     this.persist();
-    await sleep(1_500); // let the deposit confirm before the first voucher
+  }
+
+  private async waitForEscrowFunding(
+    params: EscrowParams,
+    expectedTxid: string
+  ): Promise<{ txid: string; index: number; amountSompi: bigint }> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 15; attempt++) {
+      try {
+        const funding = await escrowFunding(this.wallet, params);
+        if (funding.txid === expectedTxid) return funding;
+        lastError = new Error(`saw escrow UTXO ${funding.txid}:${funding.index}, waiting for ${expectedTxid}`);
+      } catch (e) {
+        lastError = e;
+      }
+      await sleep(1_000);
+    }
+    throw new Error(`escrow funding ${expectedTxid} was not indexed: ${String((lastError as any)?.message ?? lastError)}`);
   }
 
   /** Retire the exhausted escrow and open a fresh one for the same origin. */
@@ -185,13 +207,34 @@ export class X402Client {
       state = this.escrows[origin];
     }
     const nextAuthorized = BigInt(state.authorizedSompi) + price;
-    const voucher = makeVoucher(state.clientPrivate, nextAuthorized);
+    const params = {
+      clientPublic: state.clientPublic,
+      serverPublic: state.serverPublic,
+      timeout: BigInt(state.refundTimeout),
+    };
+    if (state.fundingIndex === undefined) {
+      const funding = await escrowFunding(this.wallet, params, { txid: state.fundingTxid, index: 0 }).catch(() =>
+        escrowFunding(this.wallet, params)
+      );
+      state.fundingTxid = funding.txid;
+      state.fundingIndex = funding.index;
+      this.persist();
+    }
+    const voucher = makeVoucher(
+      state.clientPrivate,
+      params,
+      state.network,
+      { txid: state.fundingTxid, index: state.fundingIndex },
+      nextAuthorized
+    );
     const header = encodePaymentHeader({
       scheme: "kaspa-escrow",
       clientPublic: state.clientPublic,
       voucherAmountSompi: nextAuthorized.toString(),
       voucherHex: voucher.voucherHex,
-    } as any);
+      outpointTxid: voucher.outpointTxid,
+      outpointIndex: voucher.outpointIndex,
+    });
 
     let response: Response | undefined;
     for (let attempt = 0; attempt < 12; attempt++) {
