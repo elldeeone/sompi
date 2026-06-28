@@ -85,7 +85,7 @@ export class EscrowTabServer {
 
   /** The escrow's exact funding UTXO, or null if it isn't funded/indexed yet. */
   private async funding(clientPublic: string, outpoint: EscrowOutpoint): Promise<{ txid: string; index: number; amountSompi: bigint } | null> {
-    const cacheKey = `${clientPublic}:${outpoint.txid}:${outpoint.index}`;
+    const cacheKey = this.fundingCacheKey(clientPublic, outpoint);
     const cached = this.fundingCache.get(cacheKey);
     if (cached && Date.now() - cached[1] < EscrowTabServer.FUNDING_CACHE_MS) return cached[0];
     try {
@@ -96,6 +96,10 @@ export class EscrowTabServer {
     } catch {
       return null; // not funded / not indexed yet
     }
+  }
+
+  private fundingCacheKey(clientPublic: string, outpoint: EscrowOutpoint): string {
+    return `${clientPublic}:${outpoint.txid}:${outpoint.index}`;
   }
 
   /** Returns true when the request was answered with a 402 (no payment / insufficient). */
@@ -185,6 +189,7 @@ export class EscrowTabServer {
       throw new Error(`latest voucher from client ${clientPublic} does not record an outpoint`);
     }
     const authorized = BigInt(channel.authorizedSompi);
+    const outpoint = { txid: channel.outpointTxid, index: channel.outpointIndex };
     const txid = await claimEscrow(
       this.config.wallet(),
       this.params(clientPublic),
@@ -192,13 +197,14 @@ export class EscrowTabServer {
       {
         amountSompi: authorized,
         voucherHex: channel.voucherHex,
-        outpointTxid: channel.outpointTxid,
-        outpointIndex: channel.outpointIndex,
+        outpointTxid: outpoint.txid,
+        outpointIndex: outpoint.index,
       },
       authorized,
       destination,
       feeSompi
     );
+    this.fundingCache.delete(this.fundingCacheKey(clientPublic, outpoint));
     this.channels.delete(clientPublic);
     this.persist();
     return txid;
