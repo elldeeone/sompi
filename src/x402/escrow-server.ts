@@ -245,6 +245,7 @@ export class EscrowTabServer {
 
   private reloadChannels(): void {
     this.channels.clear();
+    this.fundingCache.clear();
     const mtimeMs = this.channelsFileMtimeMs();
     this.channelsMtimeMs = mtimeMs;
     if (mtimeMs < 0) return;

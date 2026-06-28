@@ -375,6 +375,59 @@ async function main() {
   );
   fs.rmSync(escrowReloadDir, { recursive: true, force: true });
 
+  // --- offline checks: external reload invalidates stale positive UTXO cache ---
+  const escrowCacheDir = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-escrow-cache-"));
+  const escrowCachePath = path.join(escrowCacheDir, "escrow-channels.json");
+  fs.writeFileSync(escrowCachePath, JSON.stringify([currentServerChannel]));
+  let cacheFunded = true;
+  let cacheLookups = 0;
+  const cacheReplayServer = new EscrowTabServer({
+    networkId: "testnet-10",
+    rpc: async () => ({}) as any,
+    wallet: () =>
+      ({
+        networkId: "testnet-10",
+        client: async () => ({
+          getUtxosByAddresses: async () => {
+            cacheLookups++;
+            return cacheFunded
+              ? { entries: [{ outpoint: { transactionId: sampleOutpoint.txid, index: sampleOutpoint.index }, amount: sampleAmount }] }
+              : { entries: [] };
+          },
+        }),
+      }) as any,
+    serverPrivateHex: sampleServer.privateKey,
+    serverPublicHex: sampleServer.publicKey,
+    refundTimeout: sampleParams.timeout,
+    minDepositSompi: 1000n,
+    pricePerRequestSompi: 100n,
+    dataDir: escrowCacheDir,
+  });
+  const replayHeader = encodePaymentHeader({
+    scheme: "kaspa-escrow",
+    clientPublic: sampleClient.publicKey,
+    voucherAmountSompi: sampleVoucher.amountSompi,
+    voucherHex: sampleVoucher.voucherHex,
+    outpointTxid: sampleVoucher.outpointTxid,
+    outpointIndex: sampleVoucher.outpointIndex,
+  });
+  const cacheSeedAccepted = !(await cacheReplayServer.gate(
+    { headers: { [X_PAYMENT_HEADER]: replayHeader } } as any,
+    gateRes()
+  ));
+  cacheFunded = false;
+  fs.writeFileSync(escrowCachePath, JSON.stringify([]));
+  fs.utimesSync(escrowCachePath, new Date(), new Date(Date.now() + 1000));
+  const replayRejectedAfterReload = await cacheReplayServer.gate(
+    { headers: { [X_PAYMENT_HEADER]: replayHeader } } as any,
+    gateRes()
+  );
+  check(
+    "x402 server: reload clears stale funding cache before voucher replay",
+    cacheSeedAccepted && replayRejectedAfterReload && cacheLookups === 2
+  );
+  fs.rmSync(escrowCacheDir, { recursive: true, force: true });
+
   // --- offline checks: claim sweeps prune already-spent channel outpoints ---
   const escrowPruneDir = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-escrow-prune-"));
   const escrowPrunePath = path.join(escrowPruneDir, "escrow-channels.json");
