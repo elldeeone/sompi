@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -49,7 +50,7 @@ const POLICY_PATH = process.env.SOMPI_POLICY;
 const wallet = new KaspaWallet({ networkId: NETWORK, dataDir: DATA_DIR, nodeUrl: NODE_URL });
 const policy = new PolicyEngine(DATA_DIR, POLICY_PATH);
 
-const server = new McpServer({ name: "sompi", version: "0.5.1" });
+const server = new McpServer({ name: "sompi", version: packageVersion() });
 
 // The SDK's registerTool generics overflow tsc's instantiation depth with
 // zod 3.25 shapes, so registrations go through this loosely-typed wrapper.
@@ -71,6 +72,12 @@ function fail(message: string) {
 
 function bigintSafe(_key: string, value: unknown) {
   return typeof value === "bigint" ? value.toString() : value;
+}
+
+function packageVersion(): string {
+  const raw = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8")) as { version?: unknown };
+  if (typeof raw.version !== "string" || raw.version.length === 0) throw new Error("package.json has no version");
+  return raw.version;
 }
 
 async function guarded<T>(fn: () => Promise<T>): Promise<{ content: { type: "text"; text: string }[]; isError?: boolean }> {

@@ -56,9 +56,11 @@ export class EscrowTabServer {
     fs.mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
     this.channelsPath = path.join(config.dataDir, "escrow-channels.json");
     if (fs.existsSync(this.channelsPath)) {
-      for (const c of JSON.parse(fs.readFileSync(this.channelsPath, "utf8")) as ClientChannel[]) {
+      const channelStore = normalizeChannelStore(JSON.parse(fs.readFileSync(this.channelsPath, "utf8")));
+      for (const c of channelStore.channels) {
         this.channels.set(c.clientPublic, c);
       }
+      if (channelStore.changed) this.persist();
     }
   }
 
@@ -224,4 +226,57 @@ export class EscrowTabServer {
   private persist(): void {
     fs.writeFileSync(this.channelsPath, JSON.stringify([...this.channels.values()]), { mode: 0o600 });
   }
+}
+
+interface ChannelStore {
+  channels: ClientChannel[];
+  changed: boolean;
+}
+
+function normalizeChannelStore(raw: unknown): ChannelStore {
+  if (!Array.isArray(raw)) return { channels: [], changed: true };
+
+  let changed = false;
+  const channels: ClientChannel[] = [];
+  for (const channel of raw) {
+    if (isCurrentClientChannel(channel)) {
+      channels.push(channel);
+    } else {
+      changed = true;
+    }
+  }
+
+  return { channels, changed };
+}
+
+function isCurrentClientChannel(value: unknown): value is ClientChannel {
+  if (!isRecord(value)) return false;
+  return (
+    isHexBytes(value.clientPublic, 32) &&
+    isServedCount(value.servedCount) &&
+    isDecimalString(value.authorizedSompi) &&
+    typeof value.voucherHex === "string" &&
+    isHexBytes(value.outpointTxid, 32) &&
+    isFundingIndex(value.outpointIndex)
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isHexBytes(value: unknown, bytes: number): value is string {
+  return typeof value === "string" && value.length === bytes * 2 && /^[0-9a-fA-F]+$/.test(value);
+}
+
+function isDecimalString(value: unknown): value is string {
+  return typeof value === "string" && /^(0|[1-9]\d*)$/.test(value);
+}
+
+function isServedCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function isFundingIndex(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }

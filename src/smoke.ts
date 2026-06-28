@@ -15,6 +15,7 @@ import { buildRedeemScript, buildSigArgs, bytesToHex, hexToBytes } from "./vault
 import { buildEscrowRedeemScript, buildClaimArgs, buildRefundArgs, voucherMessage } from "./x402/escrow-template";
 import { escrowScriptPubKeyHash, generateChannelKey, makeVoucher, verifyVoucher } from "./x402/escrow";
 import { X402Client } from "./x402/client";
+import { EscrowTabServer } from "./x402/escrow-server";
 import { KaspaWallet, formatKas } from "./wallet";
 
 const NETWORK = process.env.SOMPI_NETWORK ?? "testnet-10";
@@ -199,6 +200,39 @@ async function main() {
       !sanitizedEscrows.active["https://stale.example"]
   );
   fs.rmSync(escrowStateDir, { recursive: true, force: true });
+
+  // --- offline checks: escrow server persisted channels are current-shape only ---
+  const escrowServerStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-escrow-server-state-"));
+  const currentServerChannel = {
+    clientPublic: sampleClient.publicKey,
+    servedCount: 1,
+    authorizedSompi: sampleAmount.toString(),
+    voucherHex: sampleVoucher.voucherHex,
+    outpointTxid: sampleOutpoint.txid,
+    outpointIndex: sampleOutpoint.index,
+  };
+  const { outpointTxid: _legacyOutpointTxid, outpointIndex: _legacyOutpointIndex, ...legacyServerChannel } = currentServerChannel;
+  fs.writeFileSync(
+    path.join(escrowServerStateDir, "escrow-channels.json"),
+    JSON.stringify([currentServerChannel, legacyServerChannel])
+  );
+  new EscrowTabServer({
+    networkId: "testnet-10",
+    rpc: async () => ({}) as any,
+    wallet: () => ({}) as any,
+    serverPrivateHex: sampleServer.privateKey,
+    serverPublicHex: sampleServer.publicKey,
+    refundTimeout: sampleParams.timeout,
+    minDepositSompi: 1000n,
+    pricePerRequestSompi: 100n,
+    dataDir: escrowServerStateDir,
+  });
+  const sanitizedChannels = JSON.parse(fs.readFileSync(path.join(escrowServerStateDir, "escrow-channels.json"), "utf8"));
+  check(
+    "x402 server: drops non-current persisted escrow channels",
+    sanitizedChannels.length === 1 && sanitizedChannels[0]?.clientPublic === sampleClient.publicKey
+  );
+  fs.rmSync(escrowServerStateDir, { recursive: true, force: true });
 
   // --- online checks: live network ---
   if (process.env.SOMPI_SMOKE_OFFLINE) {
