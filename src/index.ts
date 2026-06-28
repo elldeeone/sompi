@@ -215,9 +215,9 @@ registerTool(
   "paid_fetch",
   {
     description:
-      "Fetch a URL, automatically paying for it if the server responds with HTTP 402 (kaspa-tab scheme). " +
-      "Opens a payment tab with an on-chain KAS deposit (subject to the spending policy), then subsequent " +
-      "requests to the same origin are charged against the tab with no on-chain cost.",
+      "Fetch a URL, automatically paying for it if the server responds with HTTP 402. " +
+      "Prefers trust-minimized kaspa-escrow when offered, otherwise falls back to kaspa-tab. " +
+      "On-chain deposits are subject to the local spending policy; subsequent requests use off-chain authorization.",
     inputSchema: {
       url: z.string().url().describe("URL to fetch"),
       method: z.string().default("GET").describe("HTTP method"),
