@@ -14,6 +14,7 @@ import { PolicyEngine, PolicyViolation } from "./policy";
 import { buildRedeemScript, buildSigArgs, bytesToHex, hexToBytes } from "./vault/template";
 import { buildEscrowRedeemScript, buildClaimArgs, buildRefundArgs, voucherMessage } from "./x402/escrow-template";
 import { escrowScriptPubKeyHash, generateChannelKey, makeVoucher, verifyVoucher } from "./x402/escrow";
+import { X402Client } from "./x402/client";
 import { KaspaWallet, formatKas } from "./wallet";
 
 const NETWORK = process.env.SOMPI_NETWORK ?? "testnet-10";
@@ -156,6 +157,48 @@ async function main() {
   check("escrow template: contains CheckSigFromStack verify", sampleRedeem.includes("d769"));
   check("escrow template: hashes serialized active input scriptPubKey", sampleRedeem.includes("b9bfa87e"));
   check("escrow template: encodes vout as fixed le32", sampleRedeem.includes("b9bb54cd7e"));
+
+  // --- offline checks: escrow client persisted state is current-shape only ---
+  const escrowStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-escrow-state-"));
+  const currentEscrowState = {
+    clientPrivate: sampleClient.privateKey,
+    clientPublic: sampleClient.publicKey,
+    serverPublic: sampleServer.publicKey,
+    refundTimeout: "123",
+    escrowAddress: "kaspatest:qcurrent",
+    network: "testnet-10",
+    depositedSompi: "1000",
+    pricePerRequestSompi: "100",
+    fundingTxid: "22".repeat(32),
+    fundingIndex: 0,
+    authorizedSompi: "0",
+  };
+  const { fundingTxid: _legacyFundingTxid, ...legacyEscrowState } = currentEscrowState;
+  fs.writeFileSync(
+    path.join(escrowStateDir, "client-escrows.json"),
+    JSON.stringify({
+      active: {
+        "https://current.example": currentEscrowState,
+        "https://stale.example": legacyEscrowState,
+      },
+      retired: [currentEscrowState, legacyEscrowState],
+    })
+  );
+  const stateClient = new X402Client(
+    new KaspaWallet({ networkId: "testnet-10", dataDir: path.join(escrowStateDir, "wallet") }),
+    new PolicyEngine(escrowStateDir),
+    escrowStateDir
+  );
+  const stateChannels = stateClient.escrowChannels();
+  const sanitizedEscrows = JSON.parse(fs.readFileSync(path.join(escrowStateDir, "client-escrows.json"), "utf8"));
+  check(
+    "x402 client: drops non-current persisted escrow records",
+    stateChannels.active.length === 1 &&
+      stateChannels.retired.length === 1 &&
+      Boolean(sanitizedEscrows.active["https://current.example"]) &&
+      !sanitizedEscrows.active["https://stale.example"]
+  );
+  fs.rmSync(escrowStateDir, { recursive: true, force: true });
 
   // --- online checks: live network ---
   if (process.env.SOMPI_SMOKE_OFFLINE) {

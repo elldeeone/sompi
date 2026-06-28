@@ -68,10 +68,12 @@ export class X402Client {
     fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
     this.tabsPath = path.join(dataDir, "client-tabs.json");
     this.escrowsPath = path.join(dataDir, "client-escrows.json");
-    const escrowData = fs.existsSync(this.escrowsPath) ? JSON.parse(fs.readFileSync(this.escrowsPath, "utf8")) : {};
     this.tabs = fs.existsSync(this.tabsPath) ? JSON.parse(fs.readFileSync(this.tabsPath, "utf8")) : {};
-    this.escrows = escrowData.active ?? escrowData; // tolerate the older flat shape
-    this.retired = escrowData.retired ?? [];
+    const escrowData = fs.existsSync(this.escrowsPath) ? JSON.parse(fs.readFileSync(this.escrowsPath, "utf8")) : undefined;
+    const escrowStore = normalizeEscrowStore(escrowData);
+    this.escrows = escrowStore.active;
+    this.retired = escrowStore.retired;
+    if (escrowStore.changed) this.persistEscrows();
   }
 
   /** Active and retired escrow channels, for refund tooling. */
@@ -310,8 +312,85 @@ export class X402Client {
 
   private persist(): void {
     fs.writeFileSync(this.tabsPath, JSON.stringify(this.tabs), { mode: 0o600 });
+    this.persistEscrows();
+  }
+
+  private persistEscrows(): void {
     fs.writeFileSync(this.escrowsPath, JSON.stringify({ active: this.escrows, retired: this.retired }), { mode: 0o600 });
   }
+}
+
+interface EscrowStore {
+  active: Record<string, EscrowState>;
+  retired: EscrowState[];
+  changed: boolean;
+}
+
+function normalizeEscrowStore(raw: unknown): EscrowStore {
+  if (raw === undefined) return { active: {}, retired: [], changed: false };
+  if (!isRecord(raw) || !isRecord(raw.active)) return { active: {}, retired: [], changed: true };
+
+  let changed = false;
+  const active: Record<string, EscrowState> = {};
+  for (const [origin, state] of Object.entries(raw.active)) {
+    if (isCurrentEscrowState(state)) {
+      active[origin] = state;
+    } else {
+      changed = true;
+    }
+  }
+
+  const retired: EscrowState[] = [];
+  if (Array.isArray(raw.retired)) {
+    for (const state of raw.retired) {
+      if (isCurrentEscrowState(state)) {
+        retired.push(state);
+      } else {
+        changed = true;
+      }
+    }
+  } else {
+    changed = true;
+  }
+
+  return { active, retired, changed };
+}
+
+function isCurrentEscrowState(value: unknown): value is EscrowState {
+  if (!isRecord(value)) return false;
+  return (
+    isHexBytes(value.clientPrivate, 32) &&
+    isHexBytes(value.clientPublic, 32) &&
+    isHexBytes(value.serverPublic, 32) &&
+    isNonEmptyString(value.escrowAddress) &&
+    isNonEmptyString(value.network) &&
+    isDecimalString(value.refundTimeout) &&
+    isDecimalString(value.depositedSompi) &&
+    isDecimalString(value.pricePerRequestSompi) &&
+    isDecimalString(value.authorizedSompi) &&
+    isNonEmptyString(value.fundingTxid) &&
+    (value.fundingIndex === undefined || isFundingIndex(value.fundingIndex))
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function isHexBytes(value: unknown, bytes: number): value is string {
+  return typeof value === "string" && value.length === bytes * 2 && /^[0-9a-fA-F]+$/.test(value);
+}
+
+function isDecimalString(value: unknown): value is string {
+  return typeof value === "string" && /^(0|[1-9]\d*)$/.test(value);
+}
+
+function isFundingIndex(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
 function sleep(ms: number): Promise<void> {
