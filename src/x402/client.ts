@@ -140,7 +140,6 @@ export class X402Client {
     this.policy.authorize(escrowAddress, deposit);
     const { txid: fundingTxid } = await this.wallet.send(escrowAddress, deposit);
     this.policy.record(deposit);
-    const funding = await this.waitForEscrowFunding(params, fundingTxid);
 
     this.escrows[origin] = {
       clientPrivate: client.privateKey,
@@ -151,10 +150,14 @@ export class X402Client {
       network: offer.network,
       depositedSompi: deposit.toString(),
       pricePerRequestSompi: String(offer.pricePerRequestSompi),
-      fundingTxid: funding.txid,
-      fundingIndex: funding.index,
+      fundingTxid,
       authorizedSompi: "0",
     };
+    this.persist();
+
+    const funding = await this.waitForEscrowFunding(params, fundingTxid);
+    this.escrows[origin].fundingTxid = funding.txid;
+    this.escrows[origin].fundingIndex = funding.index;
     this.persist();
   }
 
@@ -181,6 +184,7 @@ export class X402Client {
     const old = this.escrows[origin];
     this.retired.push(old);
     delete this.escrows[origin];
+    this.persist();
     await this.openEscrow(origin, {
       network: old.network,
       serverPublic: old.serverPublic,
@@ -190,8 +194,36 @@ export class X402Client {
     });
   }
 
+  private escrowParams(state: EscrowState): EscrowParams {
+    return {
+      clientPublic: state.clientPublic,
+      serverPublic: state.serverPublic,
+      timeout: BigInt(state.refundTimeout),
+    };
+  }
+
+  private async resolveFundingIndex(state: EscrowState, params: EscrowParams): Promise<void> {
+    if (state.fundingIndex !== undefined) return;
+    const funding = await escrowFunding(this.wallet, params, { txid: state.fundingTxid, index: 0 }).catch(() =>
+      escrowFunding(this.wallet, params)
+    );
+    state.fundingTxid = funding.txid;
+    state.fundingIndex = funding.index;
+    this.persist();
+  }
+
+  private async voucherOutpointExists(state: EscrowState, params: EscrowParams): Promise<boolean> {
+    if (state.fundingIndex === undefined) return true;
+    try {
+      await escrowFunding(this.wallet, params, { txid: state.fundingTxid, index: state.fundingIndex });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   /** Issue a cumulative voucher and make one escrow-paid request. */
-  private async escrowRequest(origin: string, url: string, init?: RequestInit): Promise<PaidFetchResult> {
+  private async escrowRequest(origin: string, url: string, init?: RequestInit, allowRotate = true): Promise<PaidFetchResult> {
     let state = this.escrows[origin];
     const price = BigInt(state.pricePerRequestSompi);
     // Rotate before the escrow is fully consumed: the claim contract always
@@ -207,24 +239,15 @@ export class X402Client {
       state = this.escrows[origin];
     }
     const nextAuthorized = BigInt(state.authorizedSompi) + price;
-    const params = {
-      clientPublic: state.clientPublic,
-      serverPublic: state.serverPublic,
-      timeout: BigInt(state.refundTimeout),
-    };
-    if (state.fundingIndex === undefined) {
-      const funding = await escrowFunding(this.wallet, params, { txid: state.fundingTxid, index: 0 }).catch(() =>
-        escrowFunding(this.wallet, params)
-      );
-      state.fundingTxid = funding.txid;
-      state.fundingIndex = funding.index;
-      this.persist();
-    }
+    const params = this.escrowParams(state);
+    await this.resolveFundingIndex(state, params);
+    const fundingIndex = state.fundingIndex;
+    if (fundingIndex === undefined) throw new Error(`escrow funding ${state.fundingTxid} is not indexed yet`);
     const voucher = makeVoucher(
       state.clientPrivate,
       params,
       state.network,
-      { txid: state.fundingTxid, index: state.fundingIndex },
+      { txid: state.fundingTxid, index: fundingIndex },
       nextAuthorized
     );
     const header = encodePaymentHeader({
@@ -245,6 +268,11 @@ export class X402Client {
       await sleep(1_000); // deposit may still be confirming
     }
     if (!response) throw new Error("no response");
+    if (response.status === 402 && allowRotate && !(await this.voucherOutpointExists(state, params))) {
+      await this.rotateEscrow(origin);
+      await sleep(1_500);
+      return this.escrowRequest(origin, url, init, false);
+    }
     if (response.status !== 402) {
       state.authorizedSompi = nextAuthorized.toString();
       this.persist();

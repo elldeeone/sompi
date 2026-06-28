@@ -185,7 +185,7 @@ export class EscrowTabServer {
       throw new Error(`latest voucher from client ${clientPublic} does not record an outpoint`);
     }
     const authorized = BigInt(channel.authorizedSompi);
-    return claimEscrow(
+    const txid = await claimEscrow(
       this.config.wallet(),
       this.params(clientPublic),
       this.config.serverPrivateHex,
@@ -199,6 +199,9 @@ export class EscrowTabServer {
       destination,
       feeSompi
     );
+    this.channels.delete(clientPublic);
+    this.persist();
+    return txid;
   }
 
   /** Claim from every client with outstanding vouchers. */

@@ -102,14 +102,25 @@ How it works:
 2. Generate a client keypair. Derive the escrow address from (clientPublic,
    serverPublic, refundTimeout) — the SompiEscrow covenant. Deposit at least
    minDepositSompi to it on testnet-10.
-3. For each request, sign a cumulative voucher: a BIP340 schnorr signature over
-   sha256(le8(totalAuthorizedSompi)), where totalAuthorized grows by
-   pricePerRequestSompi each request. Send:
+3. Wait until the escrow funding UTXO is indexed and record its full outpoint:
+   outpointTxid and outpointIndex.
+4. For each request, sign a cumulative voucher, where totalAuthorized grows by
+   pricePerRequestSompi each request. The BIP340 schnorr signature signs:
+   sha256(
+     sha256("sompi:escrow-voucher:v2") ||
+     sha256(network) ||
+     sha256(uint16le(scriptPublicKey.version) || scriptPublicKey.script bytes) ||
+     outpointTxid32 ||
+     outpointIndex_le32 ||
+     totalAuthorizedSompi_le64
+   )
+   Send:
    X-Payment: base64({"scheme":"kaspa-escrow","clientPublic":"<hex>",
-     "voucherAmountSompi":"<total>","voucherHex":"<64-byte sig hex>"})
-4. The server serves while the voucher authorizes >= the running total it is
-   owed, and claims earned funds with your latest voucher. You can refund the
-   unspent balance after refundTimeout.
+     "voucherAmountSompi":"<total>","voucherHex":"<64-byte sig hex>",
+     "outpointTxid":"<funding txid>","outpointIndex":<funding vout>})
+5. The server serves while the voucher authorizes >= the running total it is
+   owed for that exact outpoint, and claims earned funds with your latest
+   voucher. You can refund the unspent balance after refundTimeout.
 
 Easiest client: the @elldeeone/sompi MCP server (npm). Its paid_fetch tool does
 this whole flow automatically within a local spending policy.
