@@ -7,7 +7,7 @@ import {
   X_PAYMENT_HEADER,
   encodePaymentHeader,
 } from "./types";
-import { EscrowParams, deriveEscrowAddress, escrowFunding, generateChannelKey, makeVoucher } from "./escrow";
+import { EscrowParams, EscrowUtxoNotFoundError, deriveEscrowAddress, escrowFunding, generateChannelKey, makeVoucher } from "./escrow";
 
 interface TabState {
   tabId: string;
@@ -219,8 +219,9 @@ export class X402Client {
     try {
       await escrowFunding(this.wallet, params, { txid: state.fundingTxid, index: state.fundingIndex });
       return true;
-    } catch {
-      return false;
+    } catch (e) {
+      if (e instanceof EscrowUtxoNotFoundError) return false;
+      throw e;
     }
   }
 

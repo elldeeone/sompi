@@ -144,10 +144,17 @@ interface EscrowUtxo {
   amount: bigint;
 }
 
+export class EscrowUtxoNotFoundError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "EscrowUtxoNotFoundError";
+  }
+}
+
 async function escrowUtxo(wallet: KaspaWallet, address: string, outpoint?: EscrowOutpoint): Promise<EscrowUtxo> {
   const rpc = await wallet.client();
   const { entries } = await rpc.getUtxosByAddresses([address]);
-  if (!entries.length) throw new Error(`escrow ${address} has no UTXOs; fund it first`);
+  if (!entries.length) throw new EscrowUtxoNotFoundError(`escrow ${address} has no UTXOs; fund it first`);
   const utxos = (entries as any[])
     .map((e) => ({
       txid: String(e?.outpoint?.transactionId ?? e?.entry?.outpoint?.transactionId),
@@ -157,7 +164,7 @@ async function escrowUtxo(wallet: KaspaWallet, address: string, outpoint?: Escro
     .sort((a, b) => (a.amount > b.amount ? -1 : 1));
   if (!outpoint) return utxos[0];
   const exact = utxos.find((u) => u.txid === outpoint.txid && u.index === outpoint.index);
-  if (!exact) throw new Error(`escrow ${address} has no UTXO ${outpoint.txid}:${outpoint.index}`);
+  if (!exact) throw new EscrowUtxoNotFoundError(`escrow ${address} has no UTXO ${outpoint.txid}:${outpoint.index}`);
   return exact;
 }
 

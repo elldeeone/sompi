@@ -13,9 +13,10 @@ import { payToScriptHashScript } from "../vendor/kaspa-wasm/kaspa";
 import { PolicyEngine, PolicyViolation } from "./policy";
 import { buildRedeemScript, buildSigArgs, bytesToHex, hexToBytes } from "./vault/template";
 import { buildEscrowRedeemScript, buildClaimArgs, buildRefundArgs, voucherMessage } from "./x402/escrow-template";
-import { escrowScriptPubKeyHash, generateChannelKey, makeVoucher, verifyVoucher } from "./x402/escrow";
+import { EscrowUtxoNotFoundError, escrowFunding, escrowScriptPubKeyHash, generateChannelKey, makeVoucher, verifyVoucher } from "./x402/escrow";
 import { X402Client } from "./x402/client";
 import { EscrowTabServer } from "./x402/escrow-server";
+import { X_PAYMENT_HEADER, encodePaymentHeader } from "./x402/types";
 import { KaspaWallet, formatKas } from "./wallet";
 
 const NETWORK = process.env.SOMPI_NETWORK ?? "testnet-10";
@@ -159,6 +160,38 @@ async function main() {
   check("escrow template: hashes serialized active input scriptPubKey", sampleRedeem.includes("b9bfa87e"));
   check("escrow template: encodes vout as fixed le32", sampleRedeem.includes("b9bb54cd7e"));
 
+  let missingOutpointIsTyped = false;
+  try {
+    await escrowFunding(
+      {
+        networkId: "testnet-10",
+        client: async () => ({ getUtxosByAddresses: async () => ({ entries: [] }) }),
+      } as any,
+      sampleParams,
+      sampleOutpoint
+    );
+  } catch (e) {
+    missingOutpointIsTyped = e instanceof EscrowUtxoNotFoundError;
+  }
+  let lookupErrorPropagates = false;
+  try {
+    await escrowFunding(
+      {
+        networkId: "testnet-10",
+        client: async () => ({
+          getUtxosByAddresses: async () => {
+            throw new Error("rpc unavailable");
+          },
+        }),
+      } as any,
+      sampleParams,
+      sampleOutpoint
+    );
+  } catch (e) {
+    lookupErrorPropagates = !(e instanceof EscrowUtxoNotFoundError) && String((e as Error).message ?? e).includes("rpc unavailable");
+  }
+  check("escrow funding: distinguishes missing outpoints from lookup errors", missingOutpointIsTyped && lookupErrorPropagates);
+
   // --- offline checks: escrow client persisted state is current-shape only ---
   const escrowStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-escrow-state-"));
   const currentEscrowState = {
@@ -233,6 +266,63 @@ async function main() {
     sanitizedChannels.length === 1 && sanitizedChannels[0]?.clientPublic === sampleClient.publicKey
   );
   fs.rmSync(escrowServerStateDir, { recursive: true, force: true });
+
+  // --- offline checks: rejected escrow headers do not force funding RPC lookups ---
+  const escrowGateDir = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-escrow-gate-"));
+  let fundingLookups = 0;
+  const gateServer = new EscrowTabServer({
+    networkId: "testnet-10",
+    rpc: async () => ({}) as any,
+    wallet: () =>
+      ({
+        networkId: "testnet-10",
+        client: async () => ({
+          getUtxosByAddresses: async () => {
+            fundingLookups++;
+            return { entries: [] };
+          },
+        }),
+      }) as any,
+    serverPrivateHex: sampleServer.privateKey,
+    serverPublicHex: sampleServer.publicKey,
+    refundTimeout: sampleParams.timeout,
+    minDepositSompi: 1000n,
+    pricePerRequestSompi: 100n,
+    dataDir: escrowGateDir,
+  });
+  const gateRes = () =>
+    ({
+      statusCode: 0,
+      setHeader() {
+        /* smoke response stub */
+      },
+      end() {
+        /* smoke response stub */
+      },
+    }) as any;
+  const underpaidHeader = encodePaymentHeader({
+    scheme: "kaspa-escrow",
+    clientPublic: sampleClient.publicKey,
+    voucherAmountSompi: "1",
+    voucherHex: sampleVoucher.voucherHex,
+    outpointTxid: sampleOutpoint.txid,
+    outpointIndex: sampleOutpoint.index,
+  });
+  const badSigHeader = encodePaymentHeader({
+    scheme: "kaspa-escrow",
+    clientPublic: sampleClient.publicKey,
+    voucherAmountSompi: "100",
+    voucherHex: "00".repeat(64),
+    outpointTxid: sampleOutpoint.txid,
+    outpointIndex: sampleOutpoint.index,
+  });
+  const underpaidRejected = await gateServer.gate({ headers: { [X_PAYMENT_HEADER]: underpaidHeader } } as any, gateRes());
+  const badSigRejected = await gateServer.gate({ headers: { [X_PAYMENT_HEADER]: badSigHeader } } as any, gateRes());
+  check(
+    "x402 server: rejects bad vouchers before funding lookup",
+    underpaidRejected && badSigRejected && fundingLookups === 0
+  );
+  fs.rmSync(escrowGateDir, { recursive: true, force: true });
 
   // --- online checks: live network ---
   if (process.env.SOMPI_SMOKE_OFFLINE) {

@@ -118,12 +118,16 @@ export class EscrowTabServer {
     if (
       !header ||
       header.scheme !== "kaspa-escrow" ||
-      !header.clientPublic ||
-      !header.outpointTxid ||
-      !Number.isInteger(header.outpointIndex)
+      !isHexBytes(header.clientPublic, 32) ||
+      !isHexBytes(header.outpointTxid, 32) ||
+      !isFundingIndex(header.outpointIndex) ||
+      typeof header.voucherHex !== "string"
     ) {
       return this.reply402(res);
     }
+
+    const voucherAmount = parseSompi(header.voucherAmountSompi);
+    if (voucherAmount === null) return this.reply402(res);
 
     const price = this.config.pricePerRequestSompi;
     const channel = this.channels.get(header.clientPublic) ?? {
@@ -135,7 +139,6 @@ export class EscrowTabServer {
       outpointIndex: header.outpointIndex,
     };
     const required = BigInt(channel.servedCount + 1) * price;
-    const voucherAmount = BigInt(header.voucherAmountSompi);
 
     const outpoint = { txid: header.outpointTxid, index: header.outpointIndex };
     if (
@@ -145,10 +148,6 @@ export class EscrowTabServer {
       return this.reply402(res);
     }
 
-    // The escrow must be funded at exactly the outpoint signed by the voucher.
-    const funding = await this.funding(header.clientPublic, outpoint);
-    if (!funding) return this.reply402(res);
-
     // 1. voucher must cryptographically authorize at least the running total,
     //    bound to THIS escrow UTXO (the same check consensus enforces on claim).
     if (
@@ -157,6 +156,11 @@ export class EscrowTabServer {
     ) {
       return this.reply402(res);
     }
+
+    // The escrow must be funded at exactly the outpoint signed by the voucher.
+    const funding = await this.funding(header.clientPublic, outpoint);
+    if (!funding) return this.reply402(res);
+
     // 2. the escrow must actually hold at least the authorized amount, so the
     //    server's claim will succeed.
     if (funding.amountSompi < voucherAmount) {
@@ -271,6 +275,11 @@ function isHexBytes(value: unknown, bytes: number): value is string {
 
 function isDecimalString(value: unknown): value is string {
   return typeof value === "string" && /^(0|[1-9]\d*)$/.test(value);
+}
+
+function parseSompi(value: unknown): bigint | null {
+  if (!isDecimalString(value)) return null;
+  return BigInt(value);
 }
 
 function isServedCount(value: unknown): value is number {
