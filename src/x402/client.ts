@@ -7,7 +7,7 @@ import {
   X_PAYMENT_HEADER,
   encodePaymentHeader,
 } from "./types";
-import { deriveEscrowAddress, generateChannelKey, makeVoucher } from "./escrow";
+import { EscrowParams, EscrowUtxoNotFoundError, deriveEscrowAddress, escrowFunding, generateChannelKey, makeVoucher } from "./escrow";
 
 interface TabState {
   tabId: string;
@@ -25,6 +25,10 @@ interface EscrowState {
   network: string;
   depositedSompi: string;
   pricePerRequestSompi: string;
+  /** Funding transaction id of the escrow UTXO. */
+  fundingTxid: string;
+  /** Funding output index of the escrow UTXO. Full outpoint binding requires this. */
+  fundingIndex?: number;
   /** Cumulative amount authorized to the server so far, sompi. */
   authorizedSompi: string;
 }
@@ -64,10 +68,12 @@ export class X402Client {
     fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
     this.tabsPath = path.join(dataDir, "client-tabs.json");
     this.escrowsPath = path.join(dataDir, "client-escrows.json");
-    const escrowData = fs.existsSync(this.escrowsPath) ? JSON.parse(fs.readFileSync(this.escrowsPath, "utf8")) : {};
     this.tabs = fs.existsSync(this.tabsPath) ? JSON.parse(fs.readFileSync(this.tabsPath, "utf8")) : {};
-    this.escrows = escrowData.active ?? escrowData; // tolerate the older flat shape
-    this.retired = escrowData.retired ?? [];
+    const escrowData = fs.existsSync(this.escrowsPath) ? JSON.parse(fs.readFileSync(this.escrowsPath, "utf8")) : undefined;
+    const escrowStore = normalizeEscrowStore(escrowData);
+    this.escrows = escrowStore.active;
+    this.retired = escrowStore.retired;
+    if (escrowStore.changed) this.persistEscrows();
   }
 
   /** Active and retired escrow channels, for refund tooling. */
@@ -130,13 +136,11 @@ export class X402Client {
     }
     const client = generateChannelKey();
     const refundTimeout = BigInt(offer.refundTimeout);
-    const escrowAddress = deriveEscrowAddress(
-      { clientPublic: client.publicKey, serverPublic: offer.serverPublic, timeout: refundTimeout },
-      this.wallet.networkId
-    );
+    const params = { clientPublic: client.publicKey, serverPublic: offer.serverPublic, timeout: refundTimeout };
+    const escrowAddress = deriveEscrowAddress(params, this.wallet.networkId);
     const deposit = BigInt(offer.minDepositSompi);
     this.policy.authorize(escrowAddress, deposit);
-    await this.wallet.send(escrowAddress, deposit);
+    const { txid: fundingTxid } = await this.wallet.send(escrowAddress, deposit);
     this.policy.record(deposit);
 
     this.escrows[origin] = {
@@ -148,10 +152,33 @@ export class X402Client {
       network: offer.network,
       depositedSompi: deposit.toString(),
       pricePerRequestSompi: String(offer.pricePerRequestSompi),
+      fundingTxid,
       authorizedSompi: "0",
     };
     this.persist();
-    await sleep(1_500); // let the deposit confirm before the first voucher
+
+    const funding = await this.waitForEscrowFunding(params, fundingTxid);
+    this.escrows[origin].fundingTxid = funding.txid;
+    this.escrows[origin].fundingIndex = funding.index;
+    this.persist();
+  }
+
+  private async waitForEscrowFunding(
+    params: EscrowParams,
+    expectedTxid: string
+  ): Promise<{ txid: string; index: number; amountSompi: bigint }> {
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 15; attempt++) {
+      try {
+        const funding = await escrowFunding(this.wallet, params);
+        if (funding.txid === expectedTxid) return funding;
+        lastError = new Error(`saw escrow UTXO ${funding.txid}:${funding.index}, waiting for ${expectedTxid}`);
+      } catch (e) {
+        lastError = e;
+      }
+      await sleep(1_000);
+    }
+    throw new Error(`escrow funding ${expectedTxid} was not indexed: ${String((lastError as any)?.message ?? lastError)}`);
   }
 
   /** Retire the exhausted escrow and open a fresh one for the same origin. */
@@ -159,6 +186,7 @@ export class X402Client {
     const old = this.escrows[origin];
     this.retired.push(old);
     delete this.escrows[origin];
+    this.persist();
     await this.openEscrow(origin, {
       network: old.network,
       serverPublic: old.serverPublic,
@@ -168,8 +196,37 @@ export class X402Client {
     });
   }
 
+  private escrowParams(state: EscrowState): EscrowParams {
+    return {
+      clientPublic: state.clientPublic,
+      serverPublic: state.serverPublic,
+      timeout: BigInt(state.refundTimeout),
+    };
+  }
+
+  private async resolveFundingIndex(state: EscrowState, params: EscrowParams): Promise<void> {
+    if (state.fundingIndex !== undefined) return;
+    const funding = await escrowFunding(this.wallet, params, { txid: state.fundingTxid, index: 0 }).catch(() =>
+      escrowFunding(this.wallet, params)
+    );
+    state.fundingTxid = funding.txid;
+    state.fundingIndex = funding.index;
+    this.persist();
+  }
+
+  private async voucherOutpointExists(state: EscrowState, params: EscrowParams): Promise<boolean> {
+    if (state.fundingIndex === undefined) return true;
+    try {
+      await escrowFunding(this.wallet, params, { txid: state.fundingTxid, index: state.fundingIndex });
+      return true;
+    } catch (e) {
+      if (e instanceof EscrowUtxoNotFoundError) return false;
+      throw e;
+    }
+  }
+
   /** Issue a cumulative voucher and make one escrow-paid request. */
-  private async escrowRequest(origin: string, url: string, init?: RequestInit): Promise<PaidFetchResult> {
+  private async escrowRequest(origin: string, url: string, init?: RequestInit, allowRotate = true): Promise<PaidFetchResult> {
     let state = this.escrows[origin];
     const price = BigInt(state.pricePerRequestSompi);
     // Rotate before the escrow is fully consumed: the claim contract always
@@ -185,13 +242,25 @@ export class X402Client {
       state = this.escrows[origin];
     }
     const nextAuthorized = BigInt(state.authorizedSompi) + price;
-    const voucher = makeVoucher(state.clientPrivate, nextAuthorized);
+    const params = this.escrowParams(state);
+    await this.resolveFundingIndex(state, params);
+    const fundingIndex = state.fundingIndex;
+    if (fundingIndex === undefined) throw new Error(`escrow funding ${state.fundingTxid} is not indexed yet`);
+    const voucher = makeVoucher(
+      state.clientPrivate,
+      params,
+      state.network,
+      { txid: state.fundingTxid, index: fundingIndex },
+      nextAuthorized
+    );
     const header = encodePaymentHeader({
       scheme: "kaspa-escrow",
       clientPublic: state.clientPublic,
       voucherAmountSompi: nextAuthorized.toString(),
       voucherHex: voucher.voucherHex,
-    } as any);
+      outpointTxid: voucher.outpointTxid,
+      outpointIndex: voucher.outpointIndex,
+    });
 
     let response: Response | undefined;
     for (let attempt = 0; attempt < 12; attempt++) {
@@ -202,6 +271,11 @@ export class X402Client {
       await sleep(1_000); // deposit may still be confirming
     }
     if (!response) throw new Error("no response");
+    if (response.status === 402 && allowRotate && !(await this.voucherOutpointExists(state, params))) {
+      await this.rotateEscrow(origin);
+      await sleep(1_500);
+      return this.escrowRequest(origin, url, init, false);
+    }
     if (response.status !== 402) {
       state.authorizedSompi = nextAuthorized.toString();
       this.persist();
@@ -239,8 +313,85 @@ export class X402Client {
 
   private persist(): void {
     fs.writeFileSync(this.tabsPath, JSON.stringify(this.tabs), { mode: 0o600 });
+    this.persistEscrows();
+  }
+
+  private persistEscrows(): void {
     fs.writeFileSync(this.escrowsPath, JSON.stringify({ active: this.escrows, retired: this.retired }), { mode: 0o600 });
   }
+}
+
+interface EscrowStore {
+  active: Record<string, EscrowState>;
+  retired: EscrowState[];
+  changed: boolean;
+}
+
+function normalizeEscrowStore(raw: unknown): EscrowStore {
+  if (raw === undefined) return { active: {}, retired: [], changed: false };
+  if (!isRecord(raw) || !isRecord(raw.active)) return { active: {}, retired: [], changed: true };
+
+  let changed = false;
+  const active: Record<string, EscrowState> = {};
+  for (const [origin, state] of Object.entries(raw.active)) {
+    if (isCurrentEscrowState(state)) {
+      active[origin] = state;
+    } else {
+      changed = true;
+    }
+  }
+
+  const retired: EscrowState[] = [];
+  if (Array.isArray(raw.retired)) {
+    for (const state of raw.retired) {
+      if (isCurrentEscrowState(state)) {
+        retired.push(state);
+      } else {
+        changed = true;
+      }
+    }
+  } else {
+    changed = true;
+  }
+
+  return { active, retired, changed };
+}
+
+function isCurrentEscrowState(value: unknown): value is EscrowState {
+  if (!isRecord(value)) return false;
+  return (
+    isHexBytes(value.clientPrivate, 32) &&
+    isHexBytes(value.clientPublic, 32) &&
+    isHexBytes(value.serverPublic, 32) &&
+    isNonEmptyString(value.escrowAddress) &&
+    isNonEmptyString(value.network) &&
+    isDecimalString(value.refundTimeout) &&
+    isDecimalString(value.depositedSompi) &&
+    isDecimalString(value.pricePerRequestSompi) &&
+    isDecimalString(value.authorizedSompi) &&
+    isNonEmptyString(value.fundingTxid) &&
+    (value.fundingIndex === undefined || isFundingIndex(value.fundingIndex))
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function isHexBytes(value: unknown, bytes: number): value is string {
+  return typeof value === "string" && value.length === bytes * 2 && /^[0-9a-fA-F]+$/.test(value);
+}
+
+function isDecimalString(value: unknown): value is string {
+  return typeof value === "string" && /^(0|[1-9]\d*)$/.test(value);
+}
+
+function isFundingIndex(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
 }
 
 function sleep(ms: number): Promise<void> {

@@ -8,9 +8,15 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs";
+import { sha256 } from "@noble/hashes/sha256";
+import { payToScriptHashScript } from "../vendor/kaspa-wasm/kaspa";
 import { PolicyEngine, PolicyViolation } from "./policy";
-import { buildRedeemScript, buildSigArgs, bytesToHex } from "./vault/template";
-import { buildEscrowRedeemScript, buildClaimArgs, buildRefundArgs } from "./x402/escrow-template";
+import { buildRedeemScript, buildSigArgs, bytesToHex, hexToBytes } from "./vault/template";
+import { buildEscrowRedeemScript, buildClaimArgs, buildRefundArgs, voucherMessage } from "./x402/escrow-template";
+import { EscrowUtxoNotFoundError, escrowFunding, escrowScriptPubKeyHash, generateChannelKey, makeVoucher, verifyVoucher } from "./x402/escrow";
+import { X402Client } from "./x402/client";
+import { EscrowTabServer } from "./x402/escrow-server";
+import { X_PAYMENT_HEADER, encodePaymentHeader } from "./x402/types";
 import { KaspaWallet, formatKas } from "./wallet";
 
 const NETWORK = process.env.SOMPI_NETWORK ?? "testnet-10";
@@ -103,11 +109,13 @@ async function main() {
     templateMatches === fixtures.length
   );
 
-  // --- offline checks: escrow template byte-equality vs compiler fixtures ---
+  // --- offline checks: escrow template byte-equality vs SilverScript compiler fixtures ---
+  // Regression guard only; scripts/escrow-live.js is the live consensus proof
+  // for the current compiler-derived bytes.
   const escrowFixtures = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "scripts", "escrow-fixtures.json"), "utf8"));
   let escrowMatches = 0;
   for (const f of escrowFixtures) {
-    const redeem = bytesToHex(buildEscrowRedeemScript(f.client, f.server, BigInt(f.timeout)));
+    const redeem = bytesToHex(buildEscrowRedeemScript(f.client, f.server, BigInt(f.timeout), f.network ?? "testnet-10"));
     const claim = bytesToHex(
       buildClaimArgs(new Uint8Array(65).fill(0xab), new Uint8Array(64).fill(0xcd), new Uint8Array(8).fill(0xef))
     );
@@ -119,9 +127,202 @@ async function main() {
     }
   }
   check(
-    `escrow template: byte-identical to compiler output (${escrowMatches}/${escrowFixtures.length} fixtures)`,
+    `escrow template: byte-identical to SilverScript compiler output (${escrowMatches}/${escrowFixtures.length})`,
     escrowMatches === escrowFixtures.length
   );
+  const sampleClient = generateChannelKey();
+  const sampleServer = generateChannelKey();
+  const sampleParams = { clientPublic: sampleClient.publicKey, serverPublic: sampleServer.publicKey, timeout: 123n };
+  const sampleOutpoint = { txid: "11".repeat(32), index: 0 };
+  const siblingOutpoint = { txid: sampleOutpoint.txid, index: 1 };
+  const sampleAmount = 42_000n;
+  const sampleSpkHash = escrowScriptPubKeyHash(sampleParams, "testnet-10");
+  const sampleSpk = payToScriptHashScript(
+    buildEscrowRedeemScript(sampleParams.clientPublic, sampleParams.serverPublic, sampleParams.timeout, "testnet-10")
+  );
+  const sampleSpkScript = hexToBytes(String(sampleSpk.script));
+  const sampleSpkVersion = Number(sampleSpk.version ?? 0);
+  const serializedSampleSpk = new Uint8Array(2 + sampleSpkScript.length);
+  serializedSampleSpk[0] = sampleSpkVersion & 0xff;
+  serializedSampleSpk[1] = (sampleSpkVersion >>> 8) & 0xff;
+  serializedSampleSpk.set(sampleSpkScript, 2);
+  const samplePreimage = voucherMessage("testnet-10", sampleSpkHash, sampleOutpoint.txid, sampleOutpoint.index, sampleAmount);
+  const sampleVoucher = makeVoucher(sampleClient.privateKey, sampleParams, "testnet-10", sampleOutpoint, sampleAmount);
+  check("escrow voucher: fixed-width full-outpoint preimage", samplePreimage.length === 140);
+  check("escrow voucher: hashes serialized scriptPublicKey", bytesToHex(sampleSpkHash) === bytesToHex(sha256(serializedSampleSpk)));
+  check(
+    "escrow voucher: same txid different vout rejected",
+    verifyVoucher(sampleParams, "testnet-10", sampleOutpoint, sampleAmount, sampleVoucher.voucherHex) &&
+      !verifyVoucher(sampleParams, "testnet-10", siblingOutpoint, sampleAmount, sampleVoucher.voucherHex)
+  );
+  const sampleRedeem = bytesToHex(buildEscrowRedeemScript(sampleParams.clientPublic, sampleParams.serverPublic, sampleParams.timeout, "testnet-10"));
+  check("escrow template: contains CheckSigFromStack verify", sampleRedeem.includes("d769"));
+  check("escrow template: hashes serialized active input scriptPubKey", sampleRedeem.includes("b9bfa87e"));
+  check("escrow template: encodes vout as fixed le32", sampleRedeem.includes("b9bb54cd7e"));
+
+  let missingOutpointIsTyped = false;
+  try {
+    await escrowFunding(
+      {
+        networkId: "testnet-10",
+        client: async () => ({ getUtxosByAddresses: async () => ({ entries: [] }) }),
+      } as any,
+      sampleParams,
+      sampleOutpoint
+    );
+  } catch (e) {
+    missingOutpointIsTyped = e instanceof EscrowUtxoNotFoundError;
+  }
+  let lookupErrorPropagates = false;
+  try {
+    await escrowFunding(
+      {
+        networkId: "testnet-10",
+        client: async () => ({
+          getUtxosByAddresses: async () => {
+            throw new Error("rpc unavailable");
+          },
+        }),
+      } as any,
+      sampleParams,
+      sampleOutpoint
+    );
+  } catch (e) {
+    lookupErrorPropagates = !(e instanceof EscrowUtxoNotFoundError) && String((e as Error).message ?? e).includes("rpc unavailable");
+  }
+  check("escrow funding: distinguishes missing outpoints from lookup errors", missingOutpointIsTyped && lookupErrorPropagates);
+
+  // --- offline checks: escrow client persisted state is current-shape only ---
+  const escrowStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-escrow-state-"));
+  const currentEscrowState = {
+    clientPrivate: sampleClient.privateKey,
+    clientPublic: sampleClient.publicKey,
+    serverPublic: sampleServer.publicKey,
+    refundTimeout: "123",
+    escrowAddress: "kaspatest:qcurrent",
+    network: "testnet-10",
+    depositedSompi: "1000",
+    pricePerRequestSompi: "100",
+    fundingTxid: "22".repeat(32),
+    fundingIndex: 0,
+    authorizedSompi: "0",
+  };
+  const { fundingTxid: _legacyFundingTxid, ...legacyEscrowState } = currentEscrowState;
+  fs.writeFileSync(
+    path.join(escrowStateDir, "client-escrows.json"),
+    JSON.stringify({
+      active: {
+        "https://current.example": currentEscrowState,
+        "https://stale.example": legacyEscrowState,
+      },
+      retired: [currentEscrowState, legacyEscrowState],
+    })
+  );
+  const stateClient = new X402Client(
+    new KaspaWallet({ networkId: "testnet-10", dataDir: path.join(escrowStateDir, "wallet") }),
+    new PolicyEngine(escrowStateDir),
+    escrowStateDir
+  );
+  const stateChannels = stateClient.escrowChannels();
+  const sanitizedEscrows = JSON.parse(fs.readFileSync(path.join(escrowStateDir, "client-escrows.json"), "utf8"));
+  check(
+    "x402 client: drops non-current persisted escrow records",
+    stateChannels.active.length === 1 &&
+      stateChannels.retired.length === 1 &&
+      Boolean(sanitizedEscrows.active["https://current.example"]) &&
+      !sanitizedEscrows.active["https://stale.example"]
+  );
+  fs.rmSync(escrowStateDir, { recursive: true, force: true });
+
+  // --- offline checks: escrow server persisted channels are current-shape only ---
+  const escrowServerStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-escrow-server-state-"));
+  const currentServerChannel = {
+    clientPublic: sampleClient.publicKey,
+    servedCount: 1,
+    authorizedSompi: sampleAmount.toString(),
+    voucherHex: sampleVoucher.voucherHex,
+    outpointTxid: sampleOutpoint.txid,
+    outpointIndex: sampleOutpoint.index,
+  };
+  const { outpointTxid: _legacyOutpointTxid, outpointIndex: _legacyOutpointIndex, ...legacyServerChannel } = currentServerChannel;
+  fs.writeFileSync(
+    path.join(escrowServerStateDir, "escrow-channels.json"),
+    JSON.stringify([currentServerChannel, legacyServerChannel])
+  );
+  new EscrowTabServer({
+    networkId: "testnet-10",
+    rpc: async () => ({}) as any,
+    wallet: () => ({}) as any,
+    serverPrivateHex: sampleServer.privateKey,
+    serverPublicHex: sampleServer.publicKey,
+    refundTimeout: sampleParams.timeout,
+    minDepositSompi: 1000n,
+    pricePerRequestSompi: 100n,
+    dataDir: escrowServerStateDir,
+  });
+  const sanitizedChannels = JSON.parse(fs.readFileSync(path.join(escrowServerStateDir, "escrow-channels.json"), "utf8"));
+  check(
+    "x402 server: drops non-current persisted escrow channels",
+    sanitizedChannels.length === 1 && sanitizedChannels[0]?.clientPublic === sampleClient.publicKey
+  );
+  fs.rmSync(escrowServerStateDir, { recursive: true, force: true });
+
+  // --- offline checks: rejected escrow headers do not force funding RPC lookups ---
+  const escrowGateDir = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-escrow-gate-"));
+  let fundingLookups = 0;
+  const gateServer = new EscrowTabServer({
+    networkId: "testnet-10",
+    rpc: async () => ({}) as any,
+    wallet: () =>
+      ({
+        networkId: "testnet-10",
+        client: async () => ({
+          getUtxosByAddresses: async () => {
+            fundingLookups++;
+            return { entries: [] };
+          },
+        }),
+      }) as any,
+    serverPrivateHex: sampleServer.privateKey,
+    serverPublicHex: sampleServer.publicKey,
+    refundTimeout: sampleParams.timeout,
+    minDepositSompi: 1000n,
+    pricePerRequestSompi: 100n,
+    dataDir: escrowGateDir,
+  });
+  const gateRes = () =>
+    ({
+      statusCode: 0,
+      setHeader() {
+        /* smoke response stub */
+      },
+      end() {
+        /* smoke response stub */
+      },
+    }) as any;
+  const underpaidHeader = encodePaymentHeader({
+    scheme: "kaspa-escrow",
+    clientPublic: sampleClient.publicKey,
+    voucherAmountSompi: "1",
+    voucherHex: sampleVoucher.voucherHex,
+    outpointTxid: sampleOutpoint.txid,
+    outpointIndex: sampleOutpoint.index,
+  });
+  const badSigHeader = encodePaymentHeader({
+    scheme: "kaspa-escrow",
+    clientPublic: sampleClient.publicKey,
+    voucherAmountSompi: "100",
+    voucherHex: "00".repeat(64),
+    outpointTxid: sampleOutpoint.txid,
+    outpointIndex: sampleOutpoint.index,
+  });
+  const underpaidRejected = await gateServer.gate({ headers: { [X_PAYMENT_HEADER]: underpaidHeader } } as any, gateRes());
+  const badSigRejected = await gateServer.gate({ headers: { [X_PAYMENT_HEADER]: badSigHeader } } as any, gateRes());
+  check(
+    "x402 server: rejects bad vouchers before funding lookup",
+    underpaidRejected && badSigRejected && fundingLookups === 0
+  );
+  fs.rmSync(escrowGateDir, { recursive: true, force: true });
 
   // --- online checks: live network ---
   if (process.env.SOMPI_SMOKE_OFFLINE) {

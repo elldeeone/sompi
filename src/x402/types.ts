@@ -12,7 +12,9 @@ export interface PaymentRequired {
   accepts: PaymentOffer[];
 }
 
-export interface PaymentOffer {
+export type PaymentOffer = KaspaTabOffer | KaspaEscrowOffer;
+
+export interface KaspaTabOffer {
   scheme: "kaspa-tab";
   network: string;
   /** Deposit address unique to this tab. */
@@ -26,12 +28,33 @@ export interface PaymentOffer {
   description?: string;
 }
 
+export interface KaspaEscrowOffer {
+  scheme: "kaspa-escrow";
+  network: string;
+  serverPublic: string;
+  refundTimeout: string;
+  minDepositSompi: string;
+  pricePerRequestSompi: string;
+  description?: string;
+}
+
 /** JSON carried in the X-Payment request header (base64-encoded). */
-export interface PaymentHeader {
+export type PaymentHeader = KaspaTabPaymentHeader | KaspaEscrowPaymentHeader;
+
+export interface KaspaTabPaymentHeader {
   scheme: "kaspa-tab";
   tabId: string;
   /** Optional txid hint after a fresh deposit (server verifies on-chain regardless). */
   depositTxid?: string;
+}
+
+export interface KaspaEscrowPaymentHeader {
+  scheme: "kaspa-escrow";
+  clientPublic: string;
+  voucherAmountSompi: string;
+  voucherHex: string;
+  outpointTxid: string;
+  outpointIndex: number;
 }
 
 export const X_PAYMENT_HEADER = "x-payment";
