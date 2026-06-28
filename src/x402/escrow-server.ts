@@ -3,7 +3,7 @@ import * as path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { KaspaWallet } from "../wallet";
 import { KaspaEscrowPaymentHeader, X_PAYMENT_HEADER, decodePaymentHeader } from "./types";
-import { EscrowOutpoint, EscrowParams, claimEscrow, escrowFunding, verifyVoucher } from "./escrow";
+import { EscrowOutpoint, EscrowParams, EscrowUtxoNotFoundError, claimEscrow, escrowFunding, verifyVoucher } from "./escrow";
 
 /**
  * Trust-minimized server middleware for the kaspa-escrow x402-style scheme.
@@ -48,6 +48,7 @@ export class EscrowTabServer {
   private readonly config: EscrowServerConfig;
   private readonly channelsPath: string;
   private channels = new Map<string, ClientChannel>();
+  private channelsMtimeMs = -1;
   private fundingCache = new Map<string, [{ txid: string; index: number; amountSompi: bigint }, number]>();
   private static readonly FUNDING_CACHE_MS = 3_000;
 
@@ -55,13 +56,7 @@ export class EscrowTabServer {
     this.config = config;
     fs.mkdirSync(config.dataDir, { recursive: true, mode: 0o700 });
     this.channelsPath = path.join(config.dataDir, "escrow-channels.json");
-    if (fs.existsSync(this.channelsPath)) {
-      const channelStore = normalizeChannelStore(JSON.parse(fs.readFileSync(this.channelsPath, "utf8")));
-      for (const c of channelStore.channels) {
-        this.channels.set(c.clientPublic, c);
-      }
-      if (channelStore.changed) this.persist();
-    }
+    this.reloadChannels();
   }
 
   private params(clientPublic: string): EscrowParams {
@@ -106,6 +101,7 @@ export class EscrowTabServer {
 
   /** Returns true when the request was answered with a 402 (no payment / insufficient). */
   async gate(req: IncomingMessage, res: ServerResponse): Promise<boolean> {
+    this.reloadChannelsIfChanged();
     const raw = req.headers[X_PAYMENT_HEADER];
     let header: KaspaEscrowPaymentHeader | undefined;
     if (typeof raw === "string") {
@@ -189,6 +185,7 @@ export class EscrowTabServer {
   /** Claim earned funds from one client's escrow using its latest voucher.
    *  Fee is estimated from the node unless overridden. */
   async claim(clientPublic: string, destination: string, feeSompi?: bigint): Promise<string> {
+    this.reloadChannelsIfChanged();
     const channel = this.channels.get(clientPublic);
     if (!channel || channel.authorizedSompi === "0") throw new Error(`no vouchers from client ${clientPublic}`);
     if (!channel.outpointTxid || channel.outpointIndex === undefined) {
@@ -218,17 +215,61 @@ export class EscrowTabServer {
 
   /** Claim from every client with outstanding vouchers. */
   async claimAll(destination: string): Promise<{ clientPublic: string; txid: string; amountSompi: string }[]> {
+    this.reloadChannelsIfChanged();
     const out: { clientPublic: string; txid: string; amountSompi: string }[] = [];
-    for (const channel of this.channels.values()) {
+    for (const channel of [...this.channels.values()]) {
       if (channel.authorizedSompi === "0") continue;
-      const txid = await this.claim(channel.clientPublic, destination);
-      out.push({ clientPublic: channel.clientPublic, txid, amountSompi: channel.authorizedSompi });
+      try {
+        const txid = await this.claim(channel.clientPublic, destination);
+        out.push({ clientPublic: channel.clientPublic, txid, amountSompi: channel.authorizedSompi });
+      } catch (e) {
+        if (e instanceof EscrowUtxoNotFoundError) {
+          this.deleteChannel(channel);
+          continue;
+        }
+        throw e;
+      }
     }
     return out;
   }
 
   private persist(): void {
     fs.writeFileSync(this.channelsPath, JSON.stringify([...this.channels.values()]), { mode: 0o600 });
+    this.channelsMtimeMs = fs.statSync(this.channelsPath).mtimeMs;
+  }
+
+  private reloadChannelsIfChanged(): void {
+    const mtimeMs = this.channelsFileMtimeMs();
+    if (mtimeMs !== this.channelsMtimeMs) this.reloadChannels();
+  }
+
+  private reloadChannels(): void {
+    this.channels.clear();
+    const mtimeMs = this.channelsFileMtimeMs();
+    this.channelsMtimeMs = mtimeMs;
+    if (mtimeMs < 0) return;
+
+    const channelStore = normalizeChannelStore(JSON.parse(fs.readFileSync(this.channelsPath, "utf8")));
+    for (const c of channelStore.channels) {
+      this.channels.set(c.clientPublic, c);
+    }
+    if (channelStore.changed) this.persist();
+  }
+
+  private channelsFileMtimeMs(): number {
+    try {
+      return fs.statSync(this.channelsPath).mtimeMs;
+    } catch {
+      return -1;
+    }
+  }
+
+  private deleteChannel(channel: ClientChannel): void {
+    if (channel.outpointTxid && channel.outpointIndex !== undefined) {
+      this.fundingCache.delete(this.fundingCacheKey(channel.clientPublic, { txid: channel.outpointTxid, index: channel.outpointIndex }));
+    }
+    this.channels.delete(channel.clientPublic);
+    this.persist();
   }
 }
 

@@ -324,6 +324,84 @@ async function main() {
   );
   fs.rmSync(escrowGateDir, { recursive: true, force: true });
 
+  // --- offline checks: live server notices external channel-file rewrites ---
+  const escrowReloadDir = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-escrow-reload-"));
+  const escrowReloadPath = path.join(escrowReloadDir, "escrow-channels.json");
+  fs.writeFileSync(escrowReloadPath, JSON.stringify([currentServerChannel]));
+  const freshClient = generateChannelKey();
+  const freshParams = { clientPublic: freshClient.publicKey, serverPublic: sampleServer.publicKey, timeout: sampleParams.timeout };
+  const freshOutpoint = { txid: "33".repeat(32), index: 0 };
+  const freshVoucher = makeVoucher(freshClient.privateKey, freshParams, "testnet-10", freshOutpoint, 100n);
+  const reloadServer = new EscrowTabServer({
+    networkId: "testnet-10",
+    rpc: async () => ({}) as any,
+    wallet: () =>
+      ({
+        networkId: "testnet-10",
+        client: async () => ({
+          getUtxosByAddresses: async () => ({
+            entries: [{ outpoint: { transactionId: freshOutpoint.txid, index: freshOutpoint.index }, amount: 1000n }],
+          }),
+        }),
+      }) as any,
+    serverPrivateHex: sampleServer.privateKey,
+    serverPublicHex: sampleServer.publicKey,
+    refundTimeout: sampleParams.timeout,
+    minDepositSompi: 1000n,
+    pricePerRequestSompi: 100n,
+    dataDir: escrowReloadDir,
+  });
+  fs.writeFileSync(escrowReloadPath, JSON.stringify([]));
+  fs.utimesSync(escrowReloadPath, new Date(), new Date(Date.now() + 1000));
+  const reloadAccepted = !(await reloadServer.gate(
+    {
+      headers: {
+        [X_PAYMENT_HEADER]: encodePaymentHeader({
+          scheme: "kaspa-escrow",
+          clientPublic: freshClient.publicKey,
+          voucherAmountSompi: freshVoucher.amountSompi,
+          voucherHex: freshVoucher.voucherHex,
+          outpointTxid: freshVoucher.outpointTxid,
+          outpointIndex: freshVoucher.outpointIndex,
+        }),
+      },
+    } as any,
+    gateRes()
+  ));
+  const reloadedChannels = JSON.parse(fs.readFileSync(escrowReloadPath, "utf8"));
+  check(
+    "x402 server: reloads externally changed channel state before persisting",
+    reloadAccepted && reloadedChannels.length === 1 && reloadedChannels[0]?.clientPublic === freshClient.publicKey
+  );
+  fs.rmSync(escrowReloadDir, { recursive: true, force: true });
+
+  // --- offline checks: claim sweeps prune already-spent channel outpoints ---
+  const escrowPruneDir = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-escrow-prune-"));
+  const escrowPrunePath = path.join(escrowPruneDir, "escrow-channels.json");
+  fs.writeFileSync(escrowPrunePath, JSON.stringify([currentServerChannel]));
+  const pruneServer = new EscrowTabServer({
+    networkId: "testnet-10",
+    rpc: async () => ({}) as any,
+    wallet: () =>
+      ({
+        networkId: "testnet-10",
+        client: async () => ({ getUtxosByAddresses: async () => ({ entries: [] }) }),
+      }) as any,
+    serverPrivateHex: sampleServer.privateKey,
+    serverPublicHex: sampleServer.publicKey,
+    refundTimeout: sampleParams.timeout,
+    minDepositSompi: 1000n,
+    pricePerRequestSompi: 100n,
+    dataDir: escrowPruneDir,
+  });
+  const pruneClaims = await pruneServer.claimAll("kaspatest:qnot-used");
+  const prunedChannels = JSON.parse(fs.readFileSync(escrowPrunePath, "utf8"));
+  check(
+    "x402 server: claim sweep prunes stale spent channels",
+    pruneClaims.length === 0 && Array.isArray(prunedChannels) && prunedChannels.length === 0
+  );
+  fs.rmSync(escrowPruneDir, { recursive: true, force: true });
+
   // --- online checks: live network ---
   if (process.env.SOMPI_SMOKE_OFFLINE) {
     console.log(`\nSOMPI_SMOKE_OFFLINE set; skipping live network checks.`);
