@@ -12,6 +12,8 @@ small parameterized segment template so JS callers can instantiate arbitrary
 client/server/network/timeout values. Those segments and fixtures are checked
 against upstream `silverc` output.
 
+`sompi-escrow-1` is the first public escrow template.
+
 ## Checks
 
 1. **Compiler fixture check.** Regenerate or verify escrow fixtures with:

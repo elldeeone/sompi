@@ -72,6 +72,7 @@ const SEG_3 = "d76976b4529c6900c278a16951c3b9bf876951c2b9be527994a269007a7575757
 const SEG_4 = "ac69";
 const SEG_5 = "b07551677500696868";
 
+// First public escrow template.
 export const ESCROW_TEMPLATE_VERSION = "sompi-escrow-1";
 export const ESCROW_VOUCHER_DOMAIN = "sompi:escrow-voucher:v2";
 

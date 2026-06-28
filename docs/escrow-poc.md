@@ -125,6 +125,7 @@ not prove the current compiler-derived template.
   parameterized runtime form of upstream SilverScript compiler output; verify it
   with `SILVERC=/path/to/silverc npm run fixtures:escrow:check` and `npm run
   smoke`.
+- `sompi-escrow-1` is the first public escrow template.
 - This is independent of the covenant **vault** (KIP-16, `docs/vault-poc.md`),
   which uses only `OpCheckSig` and a per-transaction outflow cap; it has no
   voucher and was not affected by this issue.
