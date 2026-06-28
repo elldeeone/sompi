@@ -90,6 +90,8 @@ path.
 Both opcodes the fix relies on are live in Toccata and can be checked with the
 included harnesses: `OpCat` (`0x7e`) via `scripts/opcat-probe.js`, and
 `OpCheckSigFromStack` (`0xd7`) via the honest claim in `scripts/escrow-live.js`.
+In SilverScript source, the compiler builtin is `checkSigFromStack(...)`; it
+lowers to the `OpCheckSigFromStack` opcode shown above.
 
 Contract: [`contracts/escrow.sil`](../contracts/escrow.sil) ·
 compiler-derived template: [`src/x402/escrow-template.ts`](../src/x402/escrow-template.ts)

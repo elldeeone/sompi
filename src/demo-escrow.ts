@@ -70,7 +70,7 @@ async function main() {
     console.log(`request ${i} (${Date.now() - t0}ms): HTTP ${r.status} ${r.body}  [authorized ${r.authorizedSompi} sompi]`);
   }
 
-  // Seller claims earned funds with the latest voucher (3 requests x 0.5 KAS = 1.5 KAS authorized).
+  // Seller claims earned funds with the latest voucher (3 requests x 0.2 KAS = 0.6 KAS authorized).
   console.log("\n[seller] claiming earned funds with the latest voucher...");
   const claims = await escrow.claimAll(sellerWallet.address);
   for (const c of claims) {

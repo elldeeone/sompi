@@ -29,9 +29,10 @@ pragma silverscript ^0.1.0;
 //
 // This is the replay protection. A claim's change returns to escrow under a new
 // outpoint, so the same voucher's message no longer matches and
-// checkSigFromStack fails. The server presents (amount, signature); the
-// covenant reconstructs the message from tx introspection, hashes it
-// explicitly, and verifies it on-chain.
+// checkSigFromStack fails. This is the SilverScript builtin name; the compiler
+// lowers it to the Toccata OpCheckSigFromStack opcode. The server presents
+// (amount, signature); the covenant reconstructs the message from tx
+// introspection, hashes it explicitly, and verifies it on-chain.
 contract SompiEscrow(pubkey client, pubkey server, byte[32] networkHash, int timeout) {
     // sha256("sompi:escrow-voucher:v2")
     byte[32] constant VOUCHER_DOMAIN_TAG = 0x15436b1356689a0646b884da4d7599ba22dc8b49336224e48983e8e0c90e906a;

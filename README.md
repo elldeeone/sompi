@@ -132,7 +132,7 @@ Point at a policy file with `SOMPI_POLICY=/path/to/policy.json`. Without one, co
 
 ## Micropayment economics (KIP-9)
 
-Kaspa's storage mass (KIP-9) charges roughly `C/amount` grams (C = 10¹²) for creating small outputs — an anti-dust mechanism. Measured on testnet-10 post-Toccata (100 sompi/gram): a 0.5 KAS send costs ~0.02 KAS in fees (4%), a 0.1 KAS send costs ~0.1 KAS (100%). Rule of thumb: **sends below ~1 KAS pay >1% in storage-mass fees**. Agent protocols that need sub-KAS granularity should aggregate (run a tab and settle periodically) rather than pay per-event — this is a design constraint for the Phase 2 x402 middleware.
+Kaspa's storage mass (KIP-9) charges roughly `C/amount` grams (C = 10¹²) for creating small outputs — an anti-dust mechanism. Measured on testnet-10 post-Toccata (100 sompi/gram): a 0.5 KAS send costs ~0.02 KAS in fees (4%), a 0.1 KAS send costs ~0.1 KAS (100%). Rule of thumb: **sends below ~1 KAS pay >1% in storage-mass fees**. Agent protocols that need sub-KAS granularity should aggregate behind an escrow or tab rather than pay on-chain per event — this is a design constraint for the x402 middleware.
 
 ## Security notes
 
@@ -142,30 +142,39 @@ Kaspa's storage mass (KIP-9) charges roughly `C/amount` grams (C = 10¹²) for c
 
 ## x402: agents paying for APIs
 
-The `paid_fetch` MCP tool resolves HTTP 402 responses automatically. Servers using the bundled `TabServer` middleware answer unpaid requests with a `kaspa-tab` offer; the client opens a tab with a single on-chain deposit (policy-gated), then requests are charged against the tab off-chain.
-
-Measured on testnet-10: **first request — including the on-chain deposit confirming — completes in ~1 second**; subsequent requests are 1–2ms with zero on-chain cost. Tab deposits are ≥1 KAS by design so KIP-9 fee overhead stays ~1%.
+The `paid_fetch` MCP tool resolves HTTP 402 responses automatically. The current
+preferred scheme is **`kaspa-escrow`**: the client funds a covenant escrow once,
+then pays each request with a cumulative off-chain voucher. On testnet-10 the
+first paid request includes the on-chain deposit/indexing step; later requests
+reuse the escrow and only send signed vouchers.
 
 Server side (any Node `http`-compatible framework):
 
 ```ts
-import { TabServer } from "sompi/dist/x402/server";
+import { EscrowTabServer } from "@elldeeone/sompi/dist/x402/escrow-server";
 
-const tabs = new TabServer({ networkId, rpc, minDepositSompi: 100_000_000n, pricePerRequestSompi: 1_000n, dataDir });
+const escrow = new EscrowTabServer({
+  networkId,
+  rpc: () => sellerWallet.client(),
+  wallet: () => sellerWallet,
+  serverPrivateHex: serverKey.privateKey,
+  serverPublicHex: serverKey.publicKey,
+  refundTimeout,
+  minDepositSompi: 90_000_000n,
+  pricePerRequestSompi: 1_000_000n,
+  dataDir,
+});
+
 http.createServer(async (req, res) => {
-  if (await tabs.gate(req, res)) return; // replied 402
+  if (await escrow.gate(req, res)) return; // replied 402
   // ... serve the paid content
 });
 ```
 
-Run the full live demo (seller + buyer, real testnet KAS): `npm run demo:x402`.
+Run the full live demo (seller + buyer, real testnet KAS): `npm run demo:escrow`.
 
-### Trust-minimized tabs (covenant escrow)
-
-The basic tab trusts the server with the unspent deposit. The **escrow** scheme
-(`kaspa-escrow`) removes that: the deposit goes into a covenant address, the
-client issues cumulative off-chain vouchers (BIP340 signatures) authorizing a
-running total, and:
+The escrow deposit is never handed to the server. The client issues cumulative
+off-chain vouchers (BIP340 signatures) authorizing a running total, and:
 
 - the **server** can claim **at most** what the client signed for, with the
   remainder staying in escrow;
@@ -176,20 +185,25 @@ The voucher's replay protection is **on-chain, not a server promise**. Each
 voucher signs a domain-separated digest over `network`, the active escrow
 `scriptPubKey`, the full funding outpoint (`txid:vout`), and the authorized
 amount. The covenant rebuilds that exact message from transaction introspection
-and verifies it with `OpCheckSigFromStack`. Because the claim's change returns
-to escrow under a *new* outpoint, a voucher is single-use: a server cannot
-replay one voucher against the change to drain the deposit. (See
-[docs/escrow-poc.md](docs/escrow-poc.md) for the live proof harness.)
+and verifies it with `OpCheckSigFromStack`. In SilverScript source this is the
+`checkSigFromStack(...)` builtin, which lowers to the Toccata opcode. Because
+the claim's change returns to escrow under a *new* outpoint, a voucher is
+single-use: a server cannot replay one voucher against the change to drain the
+deposit. (See [docs/escrow-poc.md](docs/escrow-poc.md) for the live proof
+harness.)
 
-`paid_fetch` and the bundled `EscrowTabServer` negotiate this automatically when
-the server offers it — `npm run demo:escrow` runs the full flow live (deposit,
-three voucher-paid requests, server claim) on testnet-10. The covenant template
-is derived from [`contracts/escrow.sil`](contracts/escrow.sil) with SilverScript
-compiler fixtures; the channel — and its replay rejection — is exercised by
-`scripts/escrow-live.js`.
+`paid_fetch` prefers `kaspa-escrow` when the server offers it. The covenant
+template is derived from [`contracts/escrow.sil`](contracts/escrow.sil) with
+SilverScript compiler fixtures; the channel — and its replay rejection — is
+exercised by `scripts/escrow-live.js`.
 
-Sellers collect revenue with `node scripts/sweep-tabs.js <sellerDataDir> <destination>`
-(sweeps exhausted tabs; `--all` also takes unspent client credit, for decommissioning).
+Sellers collect escrow revenue with
+`node scripts/escrow-claim.js <serviceDataDir> <destination>`. Clients can refund
+unspent balances after the timeout with `scripts/escrow-refund.js`.
+
+The older `kaspa-tab` middleware remains available as a simple fallback/demo
+(`npm run demo:x402`), but it is custodial: unspent tab credit sits at a
+server-controlled deposit key until swept or refunded out of band.
 
 ## Covenant vaults — the agent wallet
 
@@ -204,8 +218,8 @@ recovers everything.
 Proven on-chain — see [docs/vault-poc.md](docs/vault-poc.md) for the three proof
 transactions, including the node rejecting an over-limit spend.
 
-**Zero extra tooling.** The covenant ships inside this package as a byte-pinned
-template (`src/vault/template.ts`), verified byte-for-byte against the
+**Zero extra tooling.** The covenant ships inside this package as a
+compiler-verified template (`src/vault/template.ts`), checked byte-for-byte against the
 [SilverScript compiler](https://github.com/elldeeone/silverscript) in CI. Agents
 can only instantiate this audited rule-shape with their operator's parameters —
 they cannot author covenant logic.
@@ -225,8 +239,8 @@ Owner recovery is likewise *not* an MCP tool — recover from your machine:
 ## Roadmap
 
 1. **Phase 1 (done)** — MCP server with policy-enforced wallet tools.
-2. **Phase 2 (done)** — x402 tab-based HTTP payment middleware + `paid_fetch`: agents paying for API calls with KAS inside the request/retry window.
-3. **Phase 3 (done)** — Covenant vaults (KIP-16): the agent wallet, with spending limits enforced by consensus rather than software. Next: rolling spend windows via covenant state; mainnet after Toccata activation (June 30, 2026).
+2. **Phase 2 (done)** — x402 HTTP payment middleware + `paid_fetch`, with trust-minimized `kaspa-escrow` preferred and `kaspa-tab` retained as fallback.
+3. **Phase 3 (done)** — Covenant vaults (KIP-16): the agent wallet, with spending limits enforced by consensus rather than software. Next: rolling spend windows via covenant state.
 
 ## Development
 

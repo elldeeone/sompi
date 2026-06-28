@@ -1,9 +1,10 @@
 /**
  * Wire types for the sompi x402 flow.
  *
- * Tab-based by design: KIP-9 storage mass makes sub-KAS on-chain sends pay
- * >1% fees, so clients deposit once (>= minDepositSompi) into a per-tab
- * address and the server charges requests against that credit off-chain.
+ * Escrow-first by design: KIP-9 storage mass makes sub-KAS on-chain sends
+ * inefficient, so clients deposit once into a covenant escrow and pay each
+ * request with a cumulative off-chain voucher. `kaspa-tab` remains as a simple
+ * custodial fallback for servers that do not offer `kaspa-escrow`.
  */
 
 /** Body of an HTTP 402 response. */

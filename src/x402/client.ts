@@ -46,11 +46,12 @@ export interface PaidFetchResult {
 }
 
 /**
- * HTTP client that resolves kaspa-tab 402 responses automatically,
+ * HTTP client that resolves x402 HTTP 402 responses automatically,
  * within the local spending policy.
  *
- * Tabs are persisted per origin so credit survives restarts and is reused
- * across requests — the deposit is on-chain once, then requests are free.
+ * Escrow channels are persisted per origin so credit survives restarts and
+ * signed vouchers can be reused across requests. The client prefers
+ * trust-minimized `kaspa-escrow` offers, then falls back to `kaspa-tab`.
  */
 export class X402Client {
   private readonly wallet: KaspaWallet;
