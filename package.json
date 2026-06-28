@@ -31,6 +31,8 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "smoke": "node dist/smoke.js",
+    "fixtures:escrow": "node scripts/compile-escrow-fixtures.js",
+    "fixtures:escrow:check": "node scripts/compile-escrow-fixtures.js --check",
     "demo:x402": "node dist/demo-x402.js",
     "demo:escrow": "node dist/demo-escrow.js",
     "prepublishOnly": "npm run build"

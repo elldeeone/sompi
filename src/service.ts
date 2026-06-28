@@ -1,11 +1,11 @@
 /**
  * The sompi demo service: a public paid API on Kaspa testnet-10.
  *
- * Demonstrates the trust-minimized x402 escrow scheme end to end: unpaid
- * requests get HTTP 402 with a kaspa-escrow offer; the client funds a covenant
- * escrow once, then pays each request with a cumulative off-chain voucher. The
- * server claims earned funds with the latest voucher; the client can refund the
- * unspent balance after a timeout.
+ * Demonstrates the trust-minimized kaspa-escrow scheme for x402-style HTTP
+ * payments end to end: unpaid requests get HTTP 402 with a kaspa-escrow offer;
+ * the client funds a covenant escrow once, then pays each request with a
+ * cumulative off-chain voucher. The server claims earned funds with the latest
+ * voucher; the client can refund the unspent balance after a timeout.
  *
  * Free:  GET /            human landing page
  *        GET /llms.txt    agent-readable instructions

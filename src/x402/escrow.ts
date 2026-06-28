@@ -23,7 +23,8 @@ import {
 import { estimateVaultSpendFeeSompi } from "../vault";
 
 /**
- * Trust-minimized x402 payment channel (SompiEscrow covenant), pure JS.
+ * Trust-minimized kaspa-escrow payment channel backed by the SompiEscrow
+ * covenant, pure JS.
  *
  * The client funds an escrow address once. As it consumes requests it issues
  * off-chain vouchers — BIP340 schnorr signatures over a domain-separated

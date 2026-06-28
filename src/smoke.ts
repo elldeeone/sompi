@@ -106,9 +106,9 @@ async function main() {
     templateMatches === fixtures.length
   );
 
-  // --- offline checks: escrow template byte-equality vs pinned fixtures ---
+  // --- offline checks: escrow template byte-equality vs SilverScript compiler fixtures ---
   // Regression guard only; scripts/escrow-live.js is the live consensus proof
-  // for the current pinned bytes.
+  // for the current compiler-derived bytes.
   const escrowFixtures = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "scripts", "escrow-fixtures.json"), "utf8"));
   let escrowMatches = 0;
   for (const f of escrowFixtures) {
@@ -124,7 +124,7 @@ async function main() {
     }
   }
   check(
-    `escrow template: byte-identical to pinned fixtures (${escrowMatches}/${escrowFixtures.length})`,
+    `escrow template: byte-identical to SilverScript compiler output (${escrowMatches}/${escrowFixtures.length})`,
     escrowMatches === escrowFixtures.length
   );
   const sampleClient = generateChannelKey();

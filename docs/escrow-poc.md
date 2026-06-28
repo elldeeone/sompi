@@ -1,15 +1,16 @@
 # SompiEscrow proof-of-concept: on-chain voucher replay protection
 
-**Network:** Kaspa testnet-10 (Toccata active) · **Status:** vulnerability found; v3 fix live-proven on 2026-06-23 against node `10.0.3.26`
+**Network:** Kaspa testnet-10 (Toccata active) · **Status:** vulnerability found; current SilverScript compiler-derived template live-proven on 2026-06-28 against node `10.0.3.26`
 
 ## Summary
 
-The `kaspa-escrow` x402 channel lets a client fund a covenant once and pay a
-server with cumulative off-chain vouchers, with the promise that **the server
-can claim at most what the client signed for**. The first implementation did not
-deliver that promise on-chain: a malicious server could drain the entire deposit
-with a single voucher. This doc records the flaw, the v3 fix, and the live proof
-harness that must be rerun whenever the pinned bytes change.
+The `kaspa-escrow` scheme for x402-style HTTP payments lets a client fund a
+covenant once and pay a server with cumulative off-chain vouchers, with the
+promise that **the server can claim at most what the client signed for**. The
+first implementation did not deliver that promise on-chain: a malicious server
+could drain the entire deposit with a single voucher. This doc records the flaw,
+the outpoint-bound fix, and the live proof harness that must be rerun whenever
+the compiler-derived escrow template changes.
 
 ## The flaw (original design)
 
@@ -91,20 +92,20 @@ included harnesses: `OpCat` (`0x7e`) via `scripts/opcat-probe.js`, and
 `OpCheckSigFromStack` (`0xd7`) via the honest claim in `scripts/escrow-live.js`.
 
 Contract: [`contracts/escrow.sil`](../contracts/escrow.sil) ·
-byte-pinned template: [`src/x402/escrow-template.ts`](../src/x402/escrow-template.ts)
-(`ESCROW_TEMPLATE_VERSION = "sompi-escrow-3"`).
+compiler-derived template: [`src/x402/escrow-template.ts`](../src/x402/escrow-template.ts)
+(`ESCROW_TEMPLATE_VERSION = "sompi-escrow-1"`).
 
 ## The on-chain proof harness
 
 `scripts/escrow-live.js` builds and submits each transaction to the real node —
 the rejections below are consensus rejections, not client-side guards:
 
-| # | Action | Result | Evidence from 2026-06-23 run |
+| # | Action | Result | Evidence from 2026-06-28 run |
 |---|---|---|---|
-| 1 | Honest claim within the voucher (bound to funding outpoint `3f088f4fe0ee84ff48f5f9fdaf13235733b0f34ce5df8454dea058dd77b336f8:0`) | **Accepted** | claim tx `031f4e9a01dfd4b25042e135d6c65015b95e908c24698820aa6b8d5dd4193638` |
-| 2 | Replay the **same** voucher against the claim's change output | **Rejected by the node** | signed replay tx `099a3a9cac135992d128aba205e2f368750f331189ba5084c7530c12ab1d091c` rejected; cleanup refund `a94d158e32d3e0e41c2ca24de7843be2a6e510223d44f19402f581af5a6249e4` |
-| 3 | Present a 1-KAS voucher but try to take 2 KAS in `outputs[0]` from funding outpoint `a59debbcc502a8cef46294eb8e012e2d1ace0076f5f6db7b23aba44d2ae5d298:0` | **Rejected by the node** | rejected before mempool entry; cleanup refund `8bb41e1ce529366af8bd245facce2ff5634c698c04e537fab9caa6f0beeb1eb0` |
-| 4 | Client refunds the full balance after the timeout from funding outpoint `55b92ed697f079c3eded1d14bbd6ea4ee41f828dc4e653d6372ba3c61b11cf5a:0` | **Accepted** | refund tx `7acb43be038bd21c8d289fb352bd3c9b70be6f7d26f3f8a29792c1be36ed6832` |
+| 1 | Honest claim within the voucher (bound to funding outpoint `f3efcc3c896ae493f08d2c95050068a58902a41a19310c144a810662f14be1e0:0`) | **Accepted** | claim tx `34ad4368d1658a6b42aa3f1261a58a12a7de69f2d143ae228b4a3e5361474b3c` |
+| 2 | Replay the **same** voucher against the claim's change output | **Rejected by the node** | signed replay tx `a6da61c5261379c90fa1c8b22ff5b14be8d2b51fe089b4939fa848b08e7f4c33` rejected; cleanup refund `16dedab955dc0db5dbd92dee411006b1aa69a42753e23711f3a68caa453c00a6` |
+| 3 | Present a 1-KAS voucher but try to take 2 KAS in `outputs[0]` from funding outpoint `b7dc8f32e24cc75a984a99136b0d06d620b5f05ca04f1ad03ff2334f6ddd794c:0` | **Rejected by the node** | rejected before mempool entry; cleanup refund `e139f26eb7874d179fa0f40b9a97b684bf705d8280572d4a881cadcd5a4c5209` |
+| 4 | Client refunds the full balance after the timeout from funding outpoint `629f622d47d63fe96f306d0bb16fb6288d94a81507df2970bc6bcaf5363cc45b:0` | **Accepted** | refund tx `c6172242391b49c35d2e708bb7293cf4e54e78990203017ff82ecbec42b487e8` |
 
 Proof #2 is the point: the server's transaction signature was valid and the
 transaction well-formed — the covenant rejected the replayed voucher because its
@@ -113,16 +114,17 @@ what the client authorized, exactly once, enforced by every node.
 
 Reproduce: `SOMPI_NODE_URL=<node> node scripts/escrow-live.js` after `npm run
 build` (all four checks must print `PASS`). Earlier txid-only branch txids do
-not prove the v3 byte template.
+not prove the current compiler-derived template.
 
 ## Scope / notes
 
 - The binding is to the full outpoint: transaction id plus output index. The
   bundled client stores the funding `txid:vout`, sends both fields with each
   voucher, and the server claims that exact UTXO.
-- The `.sil` file is reference text. The authoritative artifact is the
-  byte-pinned template in `src/x402/escrow-template.ts` until a source-level
-  SilverScript v3 artifact is wired as the template oracle and live-proven.
+- `contracts/escrow.sil` is the source contract. The TypeScript template is a
+  parameterized runtime form of upstream SilverScript compiler output; verify it
+  with `SILVERC=/path/to/silverc npm run fixtures:escrow:check` and `npm run
+  smoke`.
 - This is independent of the covenant **vault** (KIP-16, `docs/vault-poc.md`),
   which uses only `OpCheckSig` and a per-transaction outflow cap; it has no
   voucher and was not affected by this issue.

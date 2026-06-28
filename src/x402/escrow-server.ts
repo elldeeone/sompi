@@ -6,7 +6,7 @@ import { KaspaEscrowPaymentHeader, X_PAYMENT_HEADER, decodePaymentHeader } from 
 import { EscrowOutpoint, EscrowParams, claimEscrow, escrowFunding, verifyVoucher } from "./escrow";
 
 /**
- * Trust-minimized x402 server middleware (kaspa-escrow scheme).
+ * Trust-minimized server middleware for the kaspa-escrow x402-style scheme.
  *
  * Unpaid requests get a 402 offer carrying the server's channel public key and
  * a refund timeout. The client funds an escrow address (derived from both

@@ -1,5 +1,5 @@
 /**
- * Live demo of the trust-minimized x402 escrow channel over HTTP, testnet-10.
+ * Live demo of the trust-minimized kaspa-escrow payment flow over HTTP, testnet-10.
  *
  * A paid API gates requests with EscrowTabServer; a buyer's X402Client funds an
  * escrow, then pays per request with cumulative vouchers (no on-chain cost per

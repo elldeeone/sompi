@@ -184,8 +184,9 @@ replay one voucher against the change to drain the deposit. (See
 `paid_fetch` and the bundled `EscrowTabServer` negotiate this automatically when
 the server offers it — `npm run demo:escrow` runs the full flow live (deposit,
 three voucher-paid requests, server claim) on testnet-10. The covenant template
-is byte-pinned (`src/x402/escrow-template.ts`); the channel — and its replay
-rejection — is exercised by `scripts/escrow-live.js`.
+is derived from [`contracts/escrow.sil`](contracts/escrow.sil) with SilverScript
+compiler fixtures; the channel — and its replay rejection — is exercised by
+`scripts/escrow-live.js`.
 
 Sellers collect revenue with `node scripts/sweep-tabs.js <sellerDataDir> <destination>`
 (sweeps exhausted tabs; `--all` also takes unspent client credit, for decommissioning).

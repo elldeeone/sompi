@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Server-side: claim earned x402 escrow funds to an address.
+ * Server-side: claim earned kaspa-escrow funds to an address.
  *
  * Reads the EscrowTabServer state (server key, refund timeout, client
  * channels) from a service data dir and claims each client's authorized

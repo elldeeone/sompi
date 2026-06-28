@@ -1,9 +1,9 @@
 /**
- * The SompiEscrow covenant template, byte-pinned.
+ * The SompiEscrow covenant template, derived from SilverScript compiler output.
  *
- * Compiled shape of `escrow.sil` (SompiEscrow) with the three constructor
- * values — client pubkey, server pubkey, timeout — as fill-in slots, plus the
- * voucher/spend encodings.
+ * Compiled shape of `contracts/escrow.sil` (SompiEscrow) with the constructor
+ * values — client pubkey, server pubkey, network hash, timeout — as fill-in
+ * slots, plus the voucher/spend encodings.
  *
  * Trust model:
  *   claim  (selector 0): server closes with the client's latest voucher.
@@ -21,15 +21,14 @@
  * trust-minimized: see scripts/escrow-live.js for the live proof harness that
  * submits the replay/drain attempt to a node.
  *
- * Redeem layout (slot order: server, voucher-domain, network-id-hash, client, client, timeout):
+ * Redeem layout (slot order: server, network-id-hash, client, client, timeout):
  *   SEG_0  6b6c76009c63755279
  *          push(server)
- *   SEG_1  ac695179
- *          push(voucher-domain)
+ *   SEG_1  ac6978201543...0e906a
  *          push(network-id-hash)
  *   SEG_2  7eb9bfa87eb9ba7eb9bb54cd7e52797ea8
  *          push(client)            ; CheckSigFromStack pubkey
- *   SEG_3  d769b4529c69...637576
+ *   SEG_3  d76976b4529c69...637576
  *          push(client)            ; refund CheckSig pubkey
  *   SEG_4  ac69
  *          push(timeout)
@@ -42,8 +41,8 @@
  *   52 79            Op2 Pick  -> copy serverSig
  *   <push server>
  *   ac 69            CheckSig Verify             ; server authorized this tx
- *   51 79            Op1 Pick  -> copy voucher (the datasig)
- *   <push domain32>
+ *   78               Over      -> copy voucher (the datasig)
+ *   <push domain32>  ; sha256("sompi:escrow-voucher:v2")
  *   <push network32>
  *   7e               OpCat     -> domain || network
  *   b9 bf a8         TxInputIndex TxInputSpk SHA256
@@ -57,26 +56,26 @@
  *   a8               SHA256    -> message
  *   <push client>
  *   d7 69            CheckSigFromStack Verify
- *   b4 52 9c 69      TxOutputCount Op2 NumEqual Verify   ; exactly 2 outputs
+ *   76 b4 52 9c 69   Dup TxOutputCount Op2 NumEqual Verify ; exactly 2 outputs
  *   00 c2 78 a1 69   outputs[0].value <= amount  (server claim bounded)
  *   51 c3 b9 bf 87 69  outputs[1].spk == input.spk (change returns to escrow)
  *   51 c2 b9 be 52 79 94 a2 69  outputs[1].value >= input - amount (remainder preserved)
- *   75 75 75 51      Drop x3, push true
+ *   00 7a 75 75 75 75 51  Op0 Rot Drop x4, push true
  */
 import { sha256 } from "@noble/hashes/sha256";
 import { hexToBytes, bytesToHex, pushData, pushNumber } from "../vault/template";
 
 const SEG_0 = "6b6c76009c63755279";
-const SEG_1 = "ac695179";
+const SEG_1 = "ac69782015436b1356689a0646b884da4d7599ba22dc8b49336224e48983e8e0c90e906a";
 const SEG_2 = "7eb9bfa87eb9ba7eb9bb54cd7e52797ea8";
-const SEG_3 = "d769b4529c6900c278a16951c3b9bf876951c2b9be527994a269757575516776519c637576";
+const SEG_3 = "d76976b4529c6900c278a16951c3b9bf876951c2b9be527994a269007a75757575516776519c637576";
 const SEG_4 = "ac69";
 const SEG_5 = "b07551677500696868";
 
-export const ESCROW_TEMPLATE_VERSION = "sompi-escrow-3";
+export const ESCROW_TEMPLATE_VERSION = "sompi-escrow-1";
 export const ESCROW_VOUCHER_DOMAIN = "sompi:escrow-voucher:v2";
 
-/** Build the escrow redeem script. Slot order in-script: server, domain, network, client, client, timeout. */
+/** Build the escrow redeem script. Slot order in-script: server, network, client, client, timeout. */
 export function buildEscrowRedeemScript(
   clientPublicHex: string,
   serverPublicHex: string,
@@ -91,7 +90,6 @@ export function buildEscrowRedeemScript(
     hexToBytes(SEG_0),
     pushData(server),
     hexToBytes(SEG_1),
-    pushData(voucherDomainTag()),
     pushData(networkIdHash(networkId)),
     hexToBytes(SEG_2),
     pushData(client),
