@@ -241,8 +241,10 @@ agent cooperation needed).
 ## Roadmap
 
 1. **Phase 1 (done)** — MCP server with policy-enforced wallet tools.
-2. **Phase 2 (done)** — x402 HTTP payment middleware + `paid_fetch`, with trust-minimized `kaspa-escrow`.
-3. **Phase 3 (done)** — Covenant vaults (KIP-16): the agent wallet, with rolling-window spending limits enforced by consensus rather than software.
+2. **Phase 2 (done)** — x402 HTTP payment middleware + `paid_fetch`.
+3. **Phase 3 (done)** — Trust-minimized `kaspa-escrow`: SilverScript-derived covenant template, full-outpoint voucher replay protection, and live proof coverage.
+4. **Phase 4 (done)** — Covenant vaults (KIP-16): the agent wallet, with rolling-window spending limits enforced by consensus rather than software.
+5. **Phase 5 (next)** — Vault-backed agent commerce: make the vault the primary treasury for escrow deposits and paid API usage, with the regular wallet kept as working/fee float.
 
 ## Development
 
