@@ -50,8 +50,7 @@ export interface PaidFetchResult {
  * within the local spending policy.
  *
  * Escrow channels are persisted per origin so credit survives restarts and
- * signed vouchers can be reused across requests. The client prefers
- * trust-minimized `kaspa-escrow` offers, then falls back to `kaspa-tab`.
+ * signed vouchers can be reused across requests.
  */
 export class X402Client {
   private readonly wallet: KaspaWallet;

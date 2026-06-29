@@ -1,6 +1,6 @@
 # SompiEscrow proof-of-concept: on-chain voucher replay protection
 
-**Network:** Kaspa testnet-10 (Toccata active) · **Status:** vulnerability found; current SilverScript compiler-derived template live-proven on 2026-06-28 against node `10.0.3.26`
+**Network:** Kaspa testnet-10 (Toccata active) · **Status:** vulnerability fixed; current SilverScript compiler-derived template live-proven on 2026-06-28 against node `10.0.3.26`
 
 ## Summary
 

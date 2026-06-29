@@ -92,7 +92,7 @@ limits on top of the hard consensus cap.
 | `send_payment` | Send KAS — gated by the spending policy |
 | `await_payment` | Block until an incoming payment of at least N sompi arrives (UTXO subscription, not polling) |
 | `verify_payment` | Confirm a txid paid an address |
-| `paid_fetch` | Fetch a URL, auto-resolving HTTP 402 payment (tab or trust-minimized escrow) |
+| `paid_fetch` | Fetch a URL, auto-resolving HTTP 402 payment with trust-minimized escrow |
 | `estimate_fee` | Live feerate buckets from the node |
 | `network_status` | Node sync state, DAA score, version |
 | `get_policy` | Read-only view of the active spending policy |
@@ -135,7 +135,7 @@ Point at a policy file with `SOMPI_POLICY=/path/to/policy.json`. Without one, co
 
 ## Micropayment economics (KIP-9)
 
-Kaspa's storage mass (KIP-9) charges roughly `C/amount` grams (C = 10¹²) for creating small outputs — an anti-dust mechanism. Measured on testnet-10 post-Toccata (100 sompi/gram): a 0.5 KAS send costs ~0.02 KAS in fees (4%), a 0.1 KAS send costs ~0.1 KAS (100%). Rule of thumb: **sends below ~1 KAS pay >1% in storage-mass fees**. Agent protocols that need sub-KAS granularity should aggregate behind an escrow or tab rather than pay on-chain per event — this is a design constraint for the x402 middleware.
+Kaspa's storage mass (KIP-9) charges roughly `C/amount` grams (C = 10¹²) for creating small outputs — an anti-dust mechanism. Measured on testnet-10 post-Toccata (100 sompi/gram): a 0.5 KAS send costs ~0.02 KAS in fees (4%), a 0.1 KAS send costs ~0.1 KAS (100%). Rule of thumb: **sends below ~1 KAS pay >1% in storage-mass fees**. Agent protocols that need sub-KAS granularity should aggregate behind an escrow rather than pay on-chain per event — this is a design constraint for the x402 middleware.
 
 ## Security notes
 
@@ -145,18 +145,18 @@ Kaspa's storage mass (KIP-9) charges roughly `C/amount` grams (C = 10¹²) for c
 
 ## x402: agents paying for APIs
 
-The `paid_fetch` MCP tool resolves HTTP 402 responses automatically. The current
-preferred scheme is **`kaspa-escrow`**: the client funds a covenant escrow once,
-then pays each request with a cumulative off-chain voucher. On testnet-10 the
-first paid request includes the on-chain deposit/indexing step; later requests
-reuse the escrow and only send signed vouchers.
+The `paid_fetch` MCP tool resolves HTTP 402 responses automatically with
+**`kaspa-escrow`**: the client funds a covenant escrow once, then pays each
+request with a cumulative off-chain voucher. On testnet-10 the first paid
+request includes the on-chain deposit/indexing step; later requests reuse the
+escrow and only send signed vouchers.
 
 Server side (any Node `http`-compatible framework):
 
 ```ts
-import { EscrowTabServer } from "@elldeeone/sompi/dist/x402/escrow-server";
+import { EscrowServer } from "@elldeeone/sompi/dist/x402/escrow-server";
 
-const escrow = new EscrowTabServer({
+const escrow = new EscrowServer({
   networkId,
   rpc: () => sellerWallet.client(),
   wallet: () => sellerWallet,
@@ -195,18 +195,14 @@ single-use: a server cannot replay one voucher against the change to drain the
 deposit. (See [docs/escrow-poc.md](docs/escrow-poc.md) for the live proof
 harness.)
 
-`paid_fetch` prefers `kaspa-escrow` when the server offers it. The covenant
-template is derived from [`contracts/escrow.sil`](contracts/escrow.sil) with
-SilverScript compiler fixtures; the channel — and its replay rejection — is
-exercised by `scripts/escrow-live.js`.
+`paid_fetch` uses `kaspa-escrow` offers. The covenant template is derived from
+[`contracts/escrow.sil`](contracts/escrow.sil) with SilverScript compiler
+fixtures; the channel — and its replay rejection — is exercised by
+`scripts/escrow-live.js`.
 
 Sellers collect escrow revenue with
 `node scripts/escrow-claim.js <serviceDataDir> <destination>`. Clients can refund
 unspent balances after the timeout with `scripts/escrow-refund.js`.
-
-The older `kaspa-tab` middleware remains available as a simple fallback/demo
-(`npm run demo:x402`), but it is custodial: unspent tab credit sits at a
-server-controlled deposit key until swept or refunded out of band.
 
 ## Covenant vaults — the agent wallet
 
@@ -245,8 +241,8 @@ agent cooperation needed).
 ## Roadmap
 
 1. **Phase 1 (done)** — MCP server with policy-enforced wallet tools.
-2. **Phase 2 (done)** — x402 HTTP payment middleware + `paid_fetch`, with trust-minimized `kaspa-escrow` preferred and `kaspa-tab` retained as fallback.
-3. **Phase 3 (current)** — Covenant vaults (KIP-16): the agent wallet, with rolling-window spending limits enforced by consensus rather than software.
+2. **Phase 2 (done)** — x402 HTTP payment middleware + `paid_fetch`, with trust-minimized `kaspa-escrow`.
+3. **Phase 3 (done)** — Covenant vaults (KIP-16): the agent wallet, with rolling-window spending limits enforced by consensus rather than software.
 
 ## Development
 

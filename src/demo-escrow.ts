@@ -1,7 +1,7 @@
 /**
  * Live demo of the trust-minimized kaspa-escrow payment flow over HTTP, testnet-10.
  *
- * A paid API gates requests with EscrowTabServer; a buyer's X402Client funds an
+ * A paid API gates requests with EscrowServer; a buyer's X402Client funds an
  * escrow, then pays per request with cumulative vouchers (no on-chain cost per
  * request). Finally the seller claims its earned funds with the latest voucher.
  *
@@ -14,7 +14,7 @@ import { PolicyEngine } from "./policy";
 import { KaspaWallet, formatKas } from "./wallet";
 import { X402Client } from "./x402/client";
 import { generateChannelKey } from "./x402/escrow";
-import { EscrowTabServer } from "./x402/escrow-server";
+import { EscrowServer } from "./x402/escrow-server";
 
 const NETWORK = process.env.SOMPI_NETWORK ?? "testnet-10";
 const NODE = process.env.SOMPI_NODE_URL;
@@ -32,7 +32,7 @@ async function main() {
   const refundTimeout = BigInt(info.virtualDaaScore) + 1_000_000n;
   const serverKey = generateChannelKey();
 
-  const escrow = new EscrowTabServer({
+  const escrow = new EscrowServer({
     networkId: NETWORK,
     rpc: () => sellerWallet.client(),
     wallet: () => sellerWallet,

@@ -13,8 +13,8 @@ import { EscrowOutpoint, EscrowParams, EscrowUtxoNotFoundError, claimEscrow, esc
  * parties' keys) and presents a cumulative voucher with each request. The
  * server serves while the voucher authorizes at least the running total it is
  * owed, and can `claim` the earned funds at any time with the latest voucher.
- * Unlike the custodial tab, the client can always refund the unspent balance
- * after the timeout, so the server is never trusted with idle funds.
+ * The client can always refund the unspent balance after the timeout, so the
+ * server is never trusted with idle funds.
  */
 
 export interface EscrowServerConfig {
@@ -44,7 +44,7 @@ interface ClientChannel {
   outpointIndex?: number;
 }
 
-export class EscrowTabServer {
+export class EscrowServer {
   private readonly config: EscrowServerConfig;
   private readonly channelsPath: string;
   private channels = new Map<string, ClientChannel>();
@@ -84,7 +84,7 @@ export class EscrowTabServer {
   private async funding(clientPublic: string, outpoint: EscrowOutpoint): Promise<{ txid: string; index: number; amountSompi: bigint } | null> {
     const cacheKey = this.fundingCacheKey(clientPublic, outpoint);
     const cached = this.fundingCache.get(cacheKey);
-    if (cached && Date.now() - cached[1] < EscrowTabServer.FUNDING_CACHE_MS) return cached[0];
+    if (cached && Date.now() - cached[1] < EscrowServer.FUNDING_CACHE_MS) return cached[0];
     try {
       const f = await escrowFunding(this.config.wallet(), this.params(clientPublic), outpoint);
       const value = { txid: f.txid, index: f.index, amountSompi: f.amountSompi };

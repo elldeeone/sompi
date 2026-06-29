@@ -216,7 +216,7 @@ registerTool(
   {
     description:
       "Fetch a URL, automatically paying for it if the server responds with HTTP 402. " +
-      "Prefers trust-minimized kaspa-escrow when offered, otherwise falls back to kaspa-tab. " +
+      "Uses trust-minimized kaspa-escrow when offered. " +
       "On-chain deposits are subject to the local spending policy; subsequent requests use off-chain authorization.",
     inputSchema: {
       url: z.string().url().describe("URL to fetch"),

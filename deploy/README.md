@@ -1,7 +1,8 @@
 # Deploying the sompi demo service
 
-A small VPS (1 vCPU / 1 GB) is plenty — the service holds tab ledgers and
-talks wRPC to a Kaspa node; it does not run a node itself.
+A small VPS (1 vCPU / 1 GB) is plenty. The service keeps its escrow server key
+and channel voucher state in the data dir, and talks wRPC to a Kaspa node; it
+does not run a node itself.
 
 ## Prerequisites
 
@@ -31,17 +32,20 @@ or a Cloudflare Tunnel in front for HTTPS.
 
 ## Operations
 
-- Tab deposits accumulate in per-tab addresses under the service data dir
-  (`/home/sompi/.sompi/testnet-10/service`). Collect earned funds:
-  `node scripts/sweep-tabs.js /home/sompi/.sompi/testnet-10/service <your address>`
+- Escrow channel state lives under the service data dir
+  (`/home/sompi/.sompi/testnet-10/service`). Back it up if you care about open
+  escrows; it contains the server key and latest claimable vouchers.
+- Collect earned escrow funds:
+  `SOMPI_NODE_URL=<node> node scripts/escrow-claim.js /home/sompi/.sompi/testnet-10/service <your address>`
 - `journalctl -u sompi-service -f` for logs.
-- The service is stateless beyond the data dir; back it up if you care about
-  open tabs (it holds the tab deposit keys).
 
 ## Smoke test from anywhere
 
 ```bash
-curl -s https://YOUR_HOST/api/joke          # expect HTTP 402 + offer JSON
-# pay the offer (or let an agent with @elldeeone/sompi paid_fetch do it), then
-curl -s -H "X-Payment: $(echo -n '{"scheme":"kaspa-tab","tabId":"<id>"}' | base64)" https://YOUR_HOST/api/joke
+curl -i https://YOUR_HOST/api/joke          # expect HTTP 402 + kaspa-escrow offer JSON
+curl -s https://YOUR_HOST/llms.txt          # agent-readable payment instructions
 ```
+
+For an end-to-end paid request, use an MCP client with `@elldeeone/sompi` and
+ask it to fetch `https://YOUR_HOST/api/joke`; `paid_fetch` handles the escrow
+deposit and cumulative voucher flow automatically.

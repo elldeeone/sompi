@@ -12,8 +12,8 @@ JS callers can instantiate arbitrary operator parameters. Those segments and
 fixtures are checked against upstream `silverc` output.
 
 `sompi-escrow-1` is the first public escrow template.
-`sompi-vault-1` is the current clean-cutover vault template: a covenant-bound
-singleton with rolling-window state.
+`sompi-vault-1` is the first public vault template: a covenant-bound singleton
+with rolling-window state.
 
 ## Checks
 

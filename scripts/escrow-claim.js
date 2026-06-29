@@ -2,7 +2,7 @@
 /**
  * Server-side: claim earned kaspa-escrow funds to an address.
  *
- * Reads the EscrowTabServer state (server key, refund timeout, client
+ * Reads the EscrowServer state (server key, refund timeout, client
  * channels) from a service data dir and claims each client's authorized
  * amount with its latest voucher.
  *
@@ -13,7 +13,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { KaspaWallet, formatKas } = require("../dist/wallet");
-const { EscrowTabServer } = require("../dist/x402/escrow-server");
+const { EscrowServer } = require("../dist/x402/escrow-server");
 
 async function main() {
   const [dataDirArg, destination] = process.argv.slice(2);
@@ -30,7 +30,7 @@ async function main() {
     dataDir: path.join(os.homedir(), ".sompi", network),
     nodeUrl: process.env.SOMPI_NODE_URL,
   });
-  const server = new EscrowTabServer({
+  const server = new EscrowServer({
     networkId: network,
     rpc: () => wallet.client(),
     wallet: () => wallet,

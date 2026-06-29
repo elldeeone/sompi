@@ -16,7 +16,7 @@ import { buildRedeemScript, buildSigArgs, bytesToHex, hexToBytes } from "./vault
 import { buildEscrowRedeemScript, buildClaimArgs, buildRefundArgs, voucherMessage } from "./x402/escrow-template";
 import { EscrowUtxoNotFoundError, escrowFunding, escrowScriptPubKeyHash, generateChannelKey, makeVoucher, verifyVoucher } from "./x402/escrow";
 import { X402Client } from "./x402/client";
-import { EscrowTabServer } from "./x402/escrow-server";
+import { EscrowServer } from "./x402/escrow-server";
 import { X_PAYMENT_HEADER, encodePaymentHeader } from "./x402/types";
 import { KaspaWallet, formatKas } from "./wallet";
 
@@ -412,7 +412,7 @@ async function main() {
     path.join(escrowServerStateDir, "escrow-channels.json"),
     JSON.stringify([currentServerChannel, legacyServerChannel])
   );
-  new EscrowTabServer({
+  new EscrowServer({
     networkId: "testnet-10",
     rpc: async () => ({}) as any,
     wallet: () => ({}) as any,
@@ -433,7 +433,7 @@ async function main() {
   // --- offline checks: rejected escrow headers do not force funding RPC lookups ---
   const escrowGateDir = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-escrow-gate-"));
   let fundingLookups = 0;
-  const gateServer = new EscrowTabServer({
+  const gateServer = new EscrowServer({
     networkId: "testnet-10",
     rpc: async () => ({}) as any,
     wallet: () =>
@@ -495,7 +495,7 @@ async function main() {
   const freshParams = { clientPublic: freshClient.publicKey, serverPublic: sampleServer.publicKey, timeout: sampleParams.timeout };
   const freshOutpoint = { txid: "33".repeat(32), index: 0 };
   const freshVoucher = makeVoucher(freshClient.privateKey, freshParams, "testnet-10", freshOutpoint, 100n);
-  const reloadServer = new EscrowTabServer({
+  const reloadServer = new EscrowServer({
     networkId: "testnet-10",
     rpc: async () => ({}) as any,
     wallet: () =>
@@ -544,7 +544,7 @@ async function main() {
   fs.writeFileSync(escrowCachePath, JSON.stringify([currentServerChannel]));
   let cacheFunded = true;
   let cacheLookups = 0;
-  const cacheReplayServer = new EscrowTabServer({
+  const cacheReplayServer = new EscrowServer({
     networkId: "testnet-10",
     rpc: async () => ({}) as any,
     wallet: () =>
@@ -595,7 +595,7 @@ async function main() {
   const escrowPruneDir = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-escrow-prune-"));
   const escrowPrunePath = path.join(escrowPruneDir, "escrow-channels.json");
   fs.writeFileSync(escrowPrunePath, JSON.stringify([currentServerChannel]));
-  const pruneServer = new EscrowTabServer({
+  const pruneServer = new EscrowServer({
     networkId: "testnet-10",
     rpc: async () => ({}) as any,
     wallet: () =>

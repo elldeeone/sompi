@@ -1,10 +1,9 @@
 /**
  * Wire types for the sompi x402 flow.
  *
- * Escrow-first by design: KIP-9 storage mass makes sub-KAS on-chain sends
- * inefficient, so clients deposit once into a covenant escrow and pay each
- * request with a cumulative off-chain voucher. `kaspa-tab` remains as a simple
- * custodial fallback for servers that do not offer `kaspa-escrow`.
+ * Escrow by design: KIP-9 storage mass makes sub-KAS on-chain sends inefficient,
+ * so clients deposit once into a covenant escrow and pay each request with a
+ * cumulative off-chain voucher.
  */
 
 /** Body of an HTTP 402 response. */

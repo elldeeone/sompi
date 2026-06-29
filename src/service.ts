@@ -24,7 +24,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { KaspaWallet } from "./wallet";
 import { generateChannelKey } from "./x402/escrow";
-import { EscrowTabServer } from "./x402/escrow-server";
+import { EscrowServer } from "./x402/escrow-server";
 
 const NETWORK = process.env.SOMPI_NETWORK ?? "testnet-10";
 const PORT = Number(process.env.PORT ?? 8642);
@@ -39,8 +39,8 @@ const wallet = new KaspaWallet({ networkId: NETWORK, dataDir: DATA_DIR, nodeUrl:
 fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
 const cfgPath = path.join(DATA_DIR, "escrow-server-config.json");
 
-/** EscrowTabServer, constructed in main() once the refund timeout is known. */
-let tabs: EscrowTabServer;
+/** Escrow server, constructed in main() once the refund timeout is known. */
+let escrow: EscrowServer;
 
 async function loadServerConfig(): Promise<{ privateKey: string; publicKey: string; refundTimeout: bigint }> {
   if (fs.existsSync(cfgPath)) {
@@ -59,7 +59,7 @@ const JOKES = [
   "Why did the UTXO cross the DAG? To get to the other tip.",
   "I'd tell you a storage mass joke, but it's too dusty.",
   "10 blocks per second walk into a bar. The bar reorgs.",
-  "An agent walks into a bar and opens a tab. The bartender is consensus.",
+  "An agent walks into a bar and opens an escrow. The bartender is consensus.",
   "What do you call a covenant that lets you spend anything? A bug.",
 ];
 let served = 0;
@@ -163,8 +163,8 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse): Prom
     return;
   }
 
-  // paid endpoints behind the tab gate
-  if (await tabs.gate(req, res)) return; // answered with 402
+  // paid endpoints behind the escrow gate
+  if (await escrow.gate(req, res)) return; // answered with 402
 
   switch (url.pathname) {
     case "/api/joke":
@@ -215,7 +215,7 @@ const server = http.createServer((req, res) => {
 
 async function main(): Promise<void> {
   const cfg = await loadServerConfig();
-  tabs = new EscrowTabServer({
+  escrow = new EscrowServer({
     networkId: NETWORK,
     rpc: () => wallet.client(),
     wallet: () => wallet,
@@ -229,7 +229,7 @@ async function main(): Promise<void> {
   });
   server.listen(PORT, () => {
     console.log(`sompi escrow demo on :${PORT} (${NETWORK}); ${PRICE} sompi/request, ${MIN_DEPOSIT} sompi escrow, refund@DAA ${cfg.refundTimeout}`);
-    console.log(`claim earnings: in a node REPL, new EscrowTabServer(...).claimAll(<address>)`);
+    console.log(`claim earnings: in a node REPL, new EscrowServer(...).claimAll(<address>)`);
   });
 }
 
