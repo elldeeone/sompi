@@ -130,7 +130,7 @@ async function main() {
   const fragmentedWallet = new KaspaWallet({ networkId: "testnet-10", dataDir: path.join(fragmentedVaultDir, "wallet") });
   const owner = generateVaultOwnerKey();
   const vault = new VaultManager(fragmentedVaultDir, "testnet-10");
-  vault.create(100_000_000n, owner.publicKey, 300n);
+  vault.create(500_000_000n, owner.publicKey, 300n);
   const walletSpk = payToAddressScript(fragmentedWallet.address);
   const walletEntry = (tag: string, index: number, amount: bigint) => ({
     outpoint: { transactionId: tag.repeat(32), index },
@@ -175,10 +175,13 @@ async function main() {
       submittedInputCounts.push(transaction.inputs.length);
       const inputTotal = [...transaction.inputs].reduce((acc: bigint, input: any) => acc + BigInt(input.utxo.amount), 0n);
       const outputTotal = [...transaction.outputs].reduce((acc: bigint, output: any) => acc + BigInt(output.value), 0n);
-      submittedFinalFees.push(inputTotal - outputTotal);
-      submittedMinimumFees.push(calculateTransactionMass("testnet-10", transaction) * 100n);
+      const finalFee = inputTotal - outputTotal;
+      const minimumFee = calculateTransactionMass("testnet-10", transaction) * 100n;
+      if (finalFee < minimumFee) throw new Error(`underfunded vault tx: fee ${finalFee}, required ${minimumFee}`);
+      submittedFinalFees.push(finalFee);
+      submittedMinimumFees.push(minimumFee);
       submitCount += 1;
-      const tag = submitCount === 1 ? "33" : submitCount === 2 ? "44" : "77";
+      const tag = ["33", "44", "77", "88", "99"][submitCount - 1] ?? "aa";
       return { transactionId: tag.repeat(32) };
     },
   });
@@ -187,6 +190,11 @@ async function main() {
   const fragmentedTopup = await vault.deposit(fragmentedWallet, 80_000_000n);
   vaultUtxoAmount = 90_000_000n;
   const smallExplicitSpend = await vault.send(fragmentedWallet, fragmentedWallet.address, 10_000_000n);
+  vaultUtxoAmount = 400_000_000n;
+  const feeStressSpend = await vault.send(fragmentedWallet, fragmentedWallet.address, 200_000_000n);
+  walletEntries = [walletEntry("99", 0, 500_000_000n), walletEntry("aa", 0, 500_000_000n)];
+  const floatTarget = 25_000_000n;
+  const maxFloatDeposit = await vault.deposit(fragmentedWallet, "max", floatTarget);
   check(
     "vault deposit: aggregates fragmented wallet UTXOs",
     fragmentedDeposit.txid === "33".repeat(32) && submittedInputCounts[0] === 2
@@ -198,6 +206,19 @@ async function main() {
   check(
     "vault explicit withdrawal: allows small vaults with positive change",
     smallExplicitSpend.txid === "77".repeat(32) && smallExplicitSpend.amountSompi === 10_000_000n && submittedInputCounts[2] === 1
+  );
+  check(
+    "vault withdrawal: converges fee for small-change final mass",
+    feeStressSpend.txid === "88".repeat(32) && submittedFinalFees[3] >= submittedMinimumFees[3]
+  );
+  check(
+    "vault deposit: preserves requested wallet float after fee",
+    maxFloatDeposit.txid === "99".repeat(32) &&
+      1_000_000_000n - maxFloatDeposit.depositedSompi - maxFloatDeposit.feeSompi === floatTarget
+  );
+  check(
+    "vault deposit: fee covers final signed wallet mass",
+    submittedFinalFees[0] >= submittedMinimumFees[0]
   );
   check(
     "vault top-up: fee covers final signed covenant mass",

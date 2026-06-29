@@ -310,11 +310,12 @@ registerTool(
     guarded(async () => {
       if (!vault.configured) throw new Error("no vault yet — call vault_create first");
       const balance = await wallet.balanceSompi();
-      const amount = amountSompi ? BigInt(amountSompi) : balance - BigInt(keepFloatSompi);
-      if (amount <= 0n) {
+      const amount = amountSompi ? BigInt(amountSompi) : "max";
+      const keepFloat = BigInt(keepFloatSompi);
+      if (amount !== "max" && amount <= 0n) {
         throw new Error(`nothing to deposit: wallet holds ${balance} sompi, float is ${keepFloatSompi}`);
       }
-      const result = await vault.deposit(wallet, amount);
+      const result = await vault.deposit(wallet, amount, amount === "max" ? keepFloat : 0n);
       return {
         txid: result.txid,
         vaultAddress: result.vaultAddress,

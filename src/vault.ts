@@ -65,10 +65,8 @@ const SUBNETWORK_NATIVE = "00".repeat(20);
 const STORAGE_MASS_PARAMETER = 10n ** 12n; // KIP-9 C
 const MASS_PER_SPK_BYTE = 10n;
 const GRAMS_PER_SIGOP = 1_000n;
-const GRAMS_PER_COMPUTE_BUDGET_UNIT = 100n;
 const DEFAULT_WINDOW_SIZE_DAA = 36_000n; // ~1 hour on testnet-10/mainnet at 10 BPS
 const VAULT_INPUT_COMPUTE_BUDGET = 50;
-const VAULT_INPUT_COMPUTE_MASS_GRAMS = BigInt(VAULT_INPUT_COMPUTE_BUDGET) * GRAMS_PER_COMPUTE_BUDGET_UNIT;
 const NON_FINAL_SEQUENCE = 0n;
 
 /**
@@ -189,19 +187,21 @@ export class VaultManager {
 
   async deposit(
     wallet: KaspaWallet,
-    amountSompi: bigint
+    amountSompi: bigint | "max",
+    keepFloatSompi: bigint = 0n
   ): Promise<{ txid: string; depositedSompi: bigint; feeSompi: bigint; vaultAddress: string; covenantId?: string }> {
-    if (amountSompi <= 0n) throw new Error("deposit amount must be positive");
+    if (amountSompi !== "max" && amountSompi <= 0n) throw new Error("deposit amount must be positive");
+    if (keepFloatSompi < 0n) throw new Error("keepFloatSompi must be non-negative");
     const config = this.config();
     const agentKey = fs.readFileSync(path.join(this.vaultDir, "agent-key"), "utf8").trim();
     const result = config.covenantId
-      ? await topUpVault({ wallet, config, privateKey: agentKey, amountSompi })
-      : await fundInitialVault({ wallet, config, amountSompi });
+      ? await topUpVault({ wallet, config, privateKey: agentKey, amountSompi, keepFloatSompi })
+      : await fundInitialVault({ wallet, config, amountSompi, keepFloatSompi });
 
     this.saveConfig({ ...config, ...result.configUpdate });
     return {
       txid: result.txid,
-      depositedSompi: amountSompi,
+      depositedSompi: result.depositedSompi,
       feeSompi: result.feeSompi,
       vaultAddress: result.configUpdate.address ?? config.address,
       covenantId: result.configUpdate.covenantId ?? config.covenantId,
@@ -252,6 +252,7 @@ export interface VaultSpendParams {
 const MIN_VAULT_CHANGE_SOMPI = 100_000_000n;
 const DUMMY_SIGNATURE = new Uint8Array(65).fill(0xab);
 const DUMMY_WALLET_SIGNATURE_SCRIPT = `41${"ab".repeat(65)}`;
+const MAX_FEE_CONVERGENCE_PASSES = 12;
 
 export async function spendVault(
   params: VaultSpendParams
@@ -271,9 +272,24 @@ export async function spendVault(
   const feerate = estimate.estimate?.normalBuckets?.[0]?.feerate ?? 100;
 
   if (fn === "recover") {
-    const feeSompi =
-      params.feeSompi ??
-      estimateVaultSpendFeeSompi(utxo.amount, [{ value: utxo.amount, spkScriptLen: spkLen(destSpk) }], redeem.length, feerate, VAULT_INPUT_COMPUTE_MASS_GRAMS);
+    let feeSompi = params.feeSompi ?? 0n;
+    let converged = params.feeSompi !== undefined;
+    for (let i = 0; i < MAX_FEE_CONVERGENCE_PASSES; i++) {
+      const candidateAmount = utxo.amount - feeSompi;
+      if (candidateAmount <= 0n) throw new Error(`vault UTXO of ${utxo.amount} sompi is too small for recovery fee ${feeSompi}`);
+      const candidateTx = buildTransaction({
+        inputs: [txInput(utxo, "")],
+        outputs: [{ value: candidateAmount, scriptPublicKey: destSpk }],
+        lockTime: 0n,
+      });
+      const nextFee = estimateTxFeeSompi(wallet.networkId, candidateTx, feerate, [dummyVaultSignatureScript(redeem, "recover")]);
+      if (params.feeSompi !== undefined || nextFee <= feeSompi) {
+        converged = true;
+        break;
+      }
+      feeSompi = nextFee;
+    }
+    if (!converged) throw new Error(`vault recovery fee estimate did not converge after ${MAX_FEE_CONVERGENCE_PASSES} passes`);
     const amountSompi = utxo.amount - feeSompi;
     if (amountSompi <= 0n) throw new Error(`vault UTXO of ${utxo.amount} sompi is too small for recovery fee ${feeSompi}`);
     const tx = buildTransaction({
@@ -283,6 +299,7 @@ export async function spendVault(
     });
     const pushedSig = createInputSignature(tx, 0, new PrivateKey(params.privateKey), SighashType.All);
     setInputScripts(tx, [payToScriptHashSignatureScript(redeem, buildSigArgs(hexToBytes(pushedSig).slice(1), "recover"))]);
+    assertFeeCoversSignedTx(wallet.networkId, tx, feerate, feeSompi, "vault recovery");
     const { transactionId } = await (rpc as any).submitTransaction({ transaction: tx, allowOrphan: false });
     return { txid: String(transactionId), amountSompi, feeSompi };
   }
@@ -320,9 +337,16 @@ export async function spendVault(
 
   let amountSompi: bigint;
   let feeSompi = params.feeSompi ?? 0n;
-  for (let i = 0; i < 3; i++) {
+  let converged = params.feeSompi !== undefined;
+  for (let i = 0; i < MAX_FEE_CONVERGENCE_PASSES; i++) {
     amountSompi = withdrawAmount(params.amount, remainingWindow, utxo.amount, feeSompi);
     const outflow = amountSompi + feeSompi;
+    if (outflow > remainingWindow) {
+      throw new Error(
+        `outflow ${outflow} sompi (amount + estimated fee ${feeSompi}) exceeds remaining vault window ` +
+          `${remainingWindow} sompi`
+      );
+    }
     const next = continuationFor(outflow);
     const changeSompi = utxo.amount - outflow;
     if (changeSompi <= 0n) throw new Error(`vault UTXO of ${utxo.amount} sompi is too small for this spend`);
@@ -334,8 +358,14 @@ export async function spendVault(
       ],
       lockTime: lockDaa,
     });
-    feeSompi = params.feeSompi ?? estimateTxFeeSompi(wallet.networkId, tx, feerate, [dummyVaultSignatureScript(redeem, "withdraw")]);
+    const nextFee = estimateTxFeeSompi(wallet.networkId, tx, feerate, [dummyVaultSignatureScript(redeem, "withdraw")]);
+    if (params.feeSompi !== undefined || nextFee <= feeSompi) {
+      converged = true;
+      break;
+    }
+    feeSompi = nextFee;
   }
+  if (!converged) throw new Error(`vault withdrawal fee estimate did not converge after ${MAX_FEE_CONVERGENCE_PASSES} passes`);
 
   amountSompi = withdrawAmount(params.amount, remainingWindow, utxo.amount, feeSompi);
   const outflow = amountSompi + feeSompi;
@@ -362,6 +392,7 @@ export async function spendVault(
   });
   const pushedSig = createInputSignature(tx, 0, new PrivateKey(params.privateKey), SighashType.All);
   setInputScripts(tx, [payToScriptHashSignatureScript(redeem, buildSigArgs(hexToBytes(pushedSig).slice(1), "withdraw"))]);
+  assertFeeCoversSignedTx(wallet.networkId, tx, feerate, feeSompi, "vault withdrawal");
   const { transactionId } = await (rpc as any).submitTransaction({ transaction: tx, allowOrphan: false });
   const txid = String(transactionId);
 
@@ -381,11 +412,12 @@ export async function spendVault(
 async function fundInitialVault(params: {
   wallet: KaspaWallet;
   config: VaultConfig;
-  amountSompi: bigint;
-}): Promise<{ txid: string; feeSompi: bigint; configUpdate: Partial<VaultConfig> }> {
-  const { wallet, config, amountSompi } = params;
+  amountSompi: bigint | "max";
+  keepFloatSompi: bigint;
+}): Promise<{ txid: string; depositedSompi: bigint; feeSompi: bigint; configUpdate: Partial<VaultConfig> }> {
+  const { wallet, config, keepFloatSompi } = params;
   const rpc = await wallet.client();
-  let walletUtxos = await selectWalletUtxos(wallet, amountSompi);
+  let walletUtxos = params.amountSompi === "max" ? await listWalletUtxos(wallet) : await selectWalletUtxos(wallet, params.amountSompi);
   const vaultSpk = payToScriptHashScript(
     buildRedeemScript(config.agentPublic, config.ownerPublic, BigInt(config.maxOutflowSompi), BigInt(config.windowSizeDaa), stateFromConfig(config))
   );
@@ -394,29 +426,44 @@ async function fundInitialVault(params: {
   const feerate = estimate.estimate?.normalBuckets?.[0]?.feerate ?? 100;
 
   let feeSompi = 0n;
-  let tx = buildGenesisDepositTx(walletUtxos, vaultSpk, changeSpk, amountSompi, feeSompi);
-  for (let i = 0; i < 3; i++) {
-    feeSompi = estimateTxFeeSompi(wallet.networkId, tx, feerate, walletUtxos.map(() => DUMMY_WALLET_SIGNATURE_SCRIPT));
-    if (sumUtxoAmounts(walletUtxos) < amountSompi + feeSompi) {
+  let amountSompi = 0n;
+  let tx: Transaction | undefined;
+  let converged = false;
+  for (let i = 0; i < MAX_FEE_CONVERGENCE_PASSES; i++) {
+    let walletTotal = sumUtxoAmounts(walletUtxos);
+    amountSompi = depositAmountFor(params.amountSompi, walletTotal, feeSompi, keepFloatSompi);
+    if (params.amountSompi !== "max" && walletTotal < amountSompi + feeSompi) {
       walletUtxos = await selectWalletUtxos(wallet, amountSompi + feeSompi);
+      walletTotal = sumUtxoAmounts(walletUtxos);
+      amountSompi = depositAmountFor(params.amountSompi, walletTotal, feeSompi, keepFloatSompi);
     }
     tx = buildGenesisDepositTx(walletUtxos, vaultSpk, changeSpk, amountSompi, feeSompi);
+    const nextFee = estimateTxFeeSompi(wallet.networkId, tx, feerate, walletUtxos.map(() => DUMMY_WALLET_SIGNATURE_SCRIPT));
+    if (nextFee <= feeSompi) {
+      converged = true;
+      break;
+    }
+    feeSompi = nextFee;
   }
+  if (!converged || !tx) throw new Error(`vault deposit fee estimate did not converge after ${MAX_FEE_CONVERGENCE_PASSES} passes`);
   const walletTotal = sumUtxoAmounts(walletUtxos);
   if (walletTotal < amountSompi + feeSompi) {
     throw new Error(`wallet UTXOs totaling ${walletTotal} sompi cannot cover deposit ${amountSompi} plus fee ${feeSompi}`);
   }
 
+  tx = buildGenesisDepositTx(walletUtxos, vaultSpk, changeSpk, amountSompi, feeSompi);
   setInputScripts(
     tx,
     walletUtxos.map((_, index) => wallet.signInput(tx, index))
   );
+  assertFeeCoversSignedTx(wallet.networkId, tx, feerate, feeSompi, "vault deposit");
   const covenantId = tx.outputs[0].covenant?.covenantId?.toString();
   if (!covenantId) throw new Error("failed to populate genesis covenant id");
   const { transactionId } = await (rpc as any).submitTransaction({ transaction: tx, allowOrphan: false });
   const txid = String(transactionId);
   return {
     txid,
+    depositedSompi: amountSompi,
     feeSompi,
     configUpdate: {
       covenantId,
@@ -429,13 +476,14 @@ async function topUpVault(params: {
   wallet: KaspaWallet;
   config: VaultConfig;
   privateKey: string;
-  amountSompi: bigint;
-}): Promise<{ txid: string; feeSompi: bigint; configUpdate: Partial<VaultConfig> }> {
-  const { wallet, config, privateKey, amountSompi } = params;
+  amountSompi: bigint | "max";
+  keepFloatSompi: bigint;
+}): Promise<{ txid: string; depositedSompi: bigint; feeSompi: bigint; configUpdate: Partial<VaultConfig> }> {
+  const { wallet, config, privateKey, keepFloatSompi } = params;
   if (!config.covenantId) throw new Error("vault has no covenant id; cannot top up");
   const rpc = await wallet.client();
   const vaultUtxo = await selectCurrentVaultUtxo(wallet, config, true);
-  let walletUtxos = await selectWalletUtxos(wallet, amountSompi);
+  let walletUtxos = params.amountSompi === "max" ? await listWalletUtxos(wallet) : await selectWalletUtxos(wallet, params.amountSompi);
   const state = stateFromConfig(config);
   const redeem = buildRedeemScript(config.agentPublic, config.ownerPublic, BigInt(config.maxOutflowSompi), BigInt(config.windowSizeDaa), state);
   const vaultSpk = payToScriptHashScript(redeem);
@@ -444,30 +492,44 @@ async function topUpVault(params: {
   const feerate = estimate.estimate?.normalBuckets?.[0]?.feerate ?? 100;
 
   let feeSompi = 0n;
-  let tx = buildTopupTx(config, vaultUtxo, walletUtxos, vaultSpk, changeSpk, amountSompi, feeSompi);
-  for (let i = 0; i < 3; i++) {
-    feeSompi = estimateTxFeeSompi(wallet.networkId, tx, feerate, [
+  let amountSompi = 0n;
+  let tx: Transaction | undefined;
+  let converged = false;
+  for (let i = 0; i < MAX_FEE_CONVERGENCE_PASSES; i++) {
+    let walletTotal = sumUtxoAmounts(walletUtxos);
+    amountSompi = depositAmountFor(params.amountSompi, walletTotal, feeSompi, keepFloatSompi);
+    if (params.amountSompi !== "max" && walletTotal < amountSompi + feeSompi) {
+      walletUtxos = await selectWalletUtxos(wallet, amountSompi + feeSompi);
+      walletTotal = sumUtxoAmounts(walletUtxos);
+      amountSompi = depositAmountFor(params.amountSompi, walletTotal, feeSompi, keepFloatSompi);
+    }
+    tx = buildTopupTx(config, vaultUtxo, walletUtxos, vaultSpk, changeSpk, amountSompi, feeSompi);
+    const nextFee = estimateTxFeeSompi(wallet.networkId, tx, feerate, [
       dummyVaultSignatureScript(redeem, "topup"),
       ...walletUtxos.map(() => DUMMY_WALLET_SIGNATURE_SCRIPT),
     ]);
-    if (sumUtxoAmounts(walletUtxos) < amountSompi + feeSompi) {
-      walletUtxos = await selectWalletUtxos(wallet, amountSompi + feeSompi);
+    if (nextFee <= feeSompi) {
+      converged = true;
+      break;
     }
-    tx = buildTopupTx(config, vaultUtxo, walletUtxos, vaultSpk, changeSpk, amountSompi, feeSompi);
+    feeSompi = nextFee;
   }
+  if (!converged || !tx) throw new Error(`vault top-up fee estimate did not converge after ${MAX_FEE_CONVERGENCE_PASSES} passes`);
   const walletTotal = sumUtxoAmounts(walletUtxos);
   if (walletTotal < amountSompi + feeSompi) {
     throw new Error(`wallet UTXOs totaling ${walletTotal} sompi cannot cover top-up ${amountSompi} plus fee ${feeSompi}`);
   }
 
+  tx = buildTopupTx(config, vaultUtxo, walletUtxos, vaultSpk, changeSpk, amountSompi, feeSompi);
   const pushedVaultSig = createInputSignature(tx, 0, new PrivateKey(privateKey), SighashType.All);
   setInputScripts(tx, [
     payToScriptHashSignatureScript(redeem, buildSigArgs(hexToBytes(pushedVaultSig).slice(1), "topup")),
     ...walletUtxos.map((_, index) => wallet.signInput(tx, index + 1)),
   ]);
+  assertFeeCoversSignedTx(wallet.networkId, tx, feerate, feeSompi, "vault top-up");
   const { transactionId } = await (rpc as any).submitTransaction({ transaction: tx, allowOrphan: false });
   const txid = String(transactionId);
-  return { txid, feeSompi, configUpdate: { currentOutpoint: { txid, index: 0 } } };
+  return { txid, depositedSompi: amountSompi, feeSompi, configUpdate: { currentOutpoint: { txid, index: 0 } } };
 }
 
 function buildGenesisDepositTx(walletUtxos: NormalizedUtxo[], vaultSpk: unknown, changeSpk: unknown, amountSompi: bigint, feeSompi: bigint): Transaction {
@@ -576,14 +638,18 @@ async function selectCurrentVaultUtxo(wallet: KaspaWallet, config: VaultSpendCon
   return matches.sort((a, b) => (a.amount > b.amount ? -1 : 1))[0];
 }
 
-async function selectWalletUtxos(wallet: KaspaWallet, amountHint: bigint): Promise<NormalizedUtxo[]> {
+async function listWalletUtxos(wallet: KaspaWallet): Promise<NormalizedUtxo[]> {
   const rpc = await wallet.client();
   const { entries } = await rpc.getUtxosByAddresses([wallet.address]);
   const normalized = normalizeEntries(entries)
     .filter((entry) => !entry.covenantId)
     .sort((a, b) => (a.amount > b.amount ? -1 : 1));
   if (!normalized.length) throw new Error(`no spendable wallet UTXOs for ${wallet.address}; fund the wallet first`);
+  return normalized;
+}
 
+async function selectWalletUtxos(wallet: KaspaWallet, amountHint: bigint): Promise<NormalizedUtxo[]> {
+  const normalized = await listWalletUtxos(wallet);
   const selected: NormalizedUtxo[] = [];
   let total = 0n;
   for (const entry of normalized) {
@@ -603,6 +669,15 @@ function withdrawAmount(amount: bigint | "max" | undefined, remainingWindow: big
   const outflowCap = minBigInt(remainingWindow, utxoAmount - MIN_VAULT_CHANGE_SOMPI);
   if (outflowCap <= 0n) throw new Error(`vault UTXO of ${utxoAmount} sompi is too small to withdraw from`);
   return outflowCap - feeSompi;
+}
+
+function depositAmountFor(requested: bigint | "max", walletTotal: bigint, feeSompi: bigint, keepFloatSompi: bigint): bigint {
+  if (requested !== "max") return requested;
+  const amount = walletTotal - keepFloatSompi - feeSompi;
+  if (amount <= 0n) {
+    throw new Error(`nothing to deposit: wallet UTXOs total ${walletTotal} sompi, float is ${keepFloatSompi}, fee is ${feeSompi}`);
+  }
+  return amount;
 }
 
 function normalizeEntries(entries: any[]): NormalizedUtxo[] {
@@ -641,26 +716,40 @@ function assertCurrentConfig(config: Partial<VaultConfig>): asserts config is Va
   }
 }
 
-function dummyVaultSignatureScript(redeem: Uint8Array, fn: "withdraw" | "topup"): string | Uint8Array {
+function dummyVaultSignatureScript(redeem: Uint8Array, fn: "withdraw" | "topup" | "recover"): string | Uint8Array {
   return payToScriptHashSignatureScript(redeem, buildSigArgs(DUMMY_SIGNATURE, fn));
 }
 
 function estimateTxFeeSompi(networkId: string, tx: Transaction, feerate: number, inputScripts: Array<string | Uint8Array>): bigint {
-  const rate = BigInt(Math.max(Math.ceil(feerate), 100));
   try {
     setInputScripts(tx, inputScripts);
-    return (calculateTransactionMass(networkId, tx) * rate * 110n) / 100n;
+    return withFeeMargin(minimumSignedTxFeeSompi(networkId, tx, feerate));
   } catch {
     return 100_000n * BigInt(inputScripts.length);
   }
 }
 
-function covenantBinding(covenantId: string, authorizingInput: number): CovenantBinding {
-  return new CovenantBinding(authorizingInput, new Hash(covenantId));
+function assertFeeCoversSignedTx(networkId: string, tx: Transaction, feerate: number, feeSompi: bigint, label: string): void {
+  const requiredFee = minimumSignedTxFeeSompi(networkId, tx, feerate);
+  if (feeSompi < requiredFee) {
+    throw new Error(`${label} fee ${feeSompi} sompi is below final signed transaction minimum ${requiredFee} sompi`);
+  }
 }
 
-function spkLen(spk: any): number {
-  return String(spk.script ?? "").length / 2;
+function minimumSignedTxFeeSompi(networkId: string, tx: Transaction, feerate: number): bigint {
+  return calculateTransactionMass(networkId, tx) * feeRateSompiPerGram(feerate);
+}
+
+function feeRateSompiPerGram(feerate: number): bigint {
+  return BigInt(Math.max(Math.ceil(feerate), 100));
+}
+
+function withFeeMargin(feeSompi: bigint): bigint {
+  return (feeSompi * 110n + 99n) / 100n;
+}
+
+function covenantBinding(covenantId: string, authorizingInput: number): CovenantBinding {
+  return new CovenantBinding(authorizingInput, new Hash(covenantId));
 }
 
 function pushDataLength(dataLength: number): number {
