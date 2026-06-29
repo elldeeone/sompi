@@ -23,6 +23,7 @@ const {
   PrivateKey,
   SighashType,
   Transaction,
+  calculateTransactionMass,
   createInputSignature,
   payToAddressScript,
   payToScriptHashScript,
@@ -40,6 +41,7 @@ const VAULT_DATA_DIR = path.join(DATA_DIR, `vault-live-${RUN_ID}`);
 const RECOVERY_PATH = path.join(DATA_DIR, `vault-live-recovery-${RUN_ID}.json`);
 const SUBNETWORK_NATIVE = "00".repeat(20);
 const VAULT_INPUT_COMPUTE_BUDGET = 50;
+const GRAMS_PER_COMPUTE_BUDGET_UNIT = 100n;
 const NON_FINAL_SEQUENCE = 0n;
 const FINAL_SEQUENCE = 0xffffffffffffffffn;
 
@@ -48,7 +50,7 @@ const TOPUP = BigInt(process.env.SOMPI_VAULT_LIVE_TOPUP ?? "50000000");
 const MAX_OUTFLOW = BigInt(process.env.SOMPI_VAULT_LIVE_MAX_OUTFLOW ?? "100000000");
 const WINDOW_DAA = BigInt(process.env.SOMPI_VAULT_LIVE_WINDOW_DAA ?? "300");
 const WITHDRAW = BigInt(process.env.SOMPI_VAULT_LIVE_WITHDRAW ?? "40000000");
-const RAW_FEE = BigInt(process.env.SOMPI_VAULT_LIVE_RAW_FEE ?? "2000000");
+const RAW_FEE_FLOOR = BigInt(process.env.SOMPI_VAULT_LIVE_RAW_FEE ?? "2000000");
 const WAIT_SECONDS = Number(process.env.SOMPI_VAULT_LIVE_WAIT_SECONDS ?? "240");
 
 if (WINDOW_DAA < 10n) throw new Error("SOMPI_VAULT_LIVE_WINDOW_DAA must be at least 10 for the over-window probe");
@@ -181,10 +183,31 @@ function resetTargetDaa(config, utxo) {
   return maxBigInt(BigInt(config.windowStartDaa), utxo.blockDaaScore) + BigInt(config.windowSizeDaa);
 }
 
+function feeRateSompiPerGram(feerate) {
+  return BigInt(Math.max(Math.ceil(feerate), 100));
+}
+
+function rawProbeFeeSompi(tx, feerate) {
+  const computeBudgetMass = [...tx.inputs].reduce((acc, input) => acc + BigInt(input.computeBudget ?? 0) * GRAMS_PER_COMPUTE_BUDGET_UNIT, 0n);
+  const minimum = (calculateTransactionMass(NETWORK, tx) + computeBudgetMass) * feeRateSompiPerGram(feerate);
+  return (minimum * 125n + 99n) / 100n;
+}
+
+function isScriptVerificationFailure(error) {
+  const msg = String(error?.message ?? error);
+  const lower = msg.toLowerCase();
+  if (/not standard|fee|fees|under the required|required amount|mass|mempool|orphan|dust|double spend|already accepted/.test(lower)) {
+    return false;
+  }
+  return /script|verif|opcode|op_|rejected transaction [0-9a-f]{64}: fail\b/.test(lower);
+}
+
 async function rawOverWindowWithdraw(wallet, config, agentPrivate, destination, options = {}) {
   if (!config.covenantId) throw new Error("vault has no covenant id");
   const rpc = await wallet.client();
   const virtualDaa = BigInt((await rpc.getServerInfo()).virtualDaaScore);
+  const estimate = await rpc.getFeeEstimate();
+  const feerate = estimate.estimate?.normalBuckets?.[0]?.feerate ?? 100;
   const now = virtualDaa > 0n ? virtualDaa - 1n : 0n;
   const windowStart = BigInt(config.windowStartDaa);
   const windowSize = BigInt(config.windowSizeDaa);
@@ -202,38 +225,45 @@ async function rawOverWindowWithdraw(wallet, config, agentPrivate, destination, 
   const remaining = max - spent;
   if (remaining <= 0n) throw new Error("window already exhausted before over-window probe");
 
-  let amount = remaining + 10_000_000n;
-  if (resetWindow && amount + RAW_FEE > max) {
-    amount = max - RAW_FEE;
-  }
-  if (amount <= remaining) {
-    throw new Error(`raw probe cannot exceed remaining window ${remaining} while staying within reset cap ${max}`);
-  }
-  const outflow = amount + RAW_FEE;
-  const change = utxo.amount - outflow;
-  if (change <= 100_000_000n) {
-    throw new Error(`vault UTXO ${utxo.amount} too small for raw over-window probe`);
-  }
-
   const currentState = { windowStartDaa: windowStart, spentInWindowSompi: spent };
-  const nextState = resetWindow
-    ? { windowStartDaa: lockTime, spentInWindowSompi: outflow }
-    : { windowStartDaa: windowStart, spentInWindowSompi: spent + outflow };
   const redeem = buildRedeemScript(config.agentPublic, config.ownerPublic, max, windowSize, currentState);
-  const nextRedeem = buildRedeemScript(config.agentPublic, config.ownerPublic, max, windowSize, nextState);
   const vaultSpk = payToScriptHashScript(redeem);
-  const nextSpk = payToScriptHashScript(nextRedeem);
   const destSpk = payToAddressScript(destination);
-  const tx = buildTransaction({
-    inputs: [txInput({ ...utxo, scriptPublicKey: vaultSpk }, "", sequence)],
-    outputs: [
-      { value: amount, scriptPublicKey: destSpk },
-      { value: change, scriptPublicKey: nextSpk, covenant: covenantBinding(config.covenantId, 0) },
-    ],
-    lockTime,
-  });
-  const pushedSig = createInputSignature(tx, 0, new PrivateKey(agentPrivate), SighashType.All);
-  setInputScripts(tx, [payToScriptHashSignatureScript(redeem, buildSigArgs(hexToBytes(pushedSig).slice(1), "withdraw"))]);
+
+  let fee = RAW_FEE_FLOOR;
+  let tx;
+  for (let i = 0; i < 8; i++) {
+    let amount = remaining + 10_000_000n;
+    if (resetWindow && amount + fee > max) amount = max - fee;
+    if (amount <= remaining) {
+      throw new Error(`raw probe cannot exceed remaining window ${remaining} while staying within reset cap ${max} and fee ${fee}`);
+    }
+    const outflow = amount + fee;
+    const change = utxo.amount - outflow;
+    if (change <= 100_000_000n) {
+      throw new Error(`vault UTXO ${utxo.amount} too small for raw over-window probe with fee ${fee}`);
+    }
+    const nextState = resetWindow
+      ? { windowStartDaa: lockTime, spentInWindowSompi: outflow }
+      : { windowStartDaa: windowStart, spentInWindowSompi: spent + outflow };
+    const nextRedeem = buildRedeemScript(config.agentPublic, config.ownerPublic, max, windowSize, nextState);
+    const nextSpk = payToScriptHashScript(nextRedeem);
+    tx = buildTransaction({
+      inputs: [txInput({ ...utxo, scriptPublicKey: vaultSpk }, "", sequence)],
+      outputs: [
+        { value: amount, scriptPublicKey: destSpk },
+        { value: change, scriptPublicKey: nextSpk, covenant: covenantBinding(config.covenantId, 0) },
+      ],
+      lockTime,
+    });
+    const pushedSig = createInputSignature(tx, 0, new PrivateKey(agentPrivate), SighashType.All);
+    setInputScripts(tx, [payToScriptHashSignatureScript(redeem, buildSigArgs(hexToBytes(pushedSig).slice(1), "withdraw"))]);
+    const nextFee = rawProbeFeeSompi(tx, feerate);
+    if (nextFee <= fee) break;
+    fee = nextFee;
+    tx = undefined;
+  }
+  if (!tx) throw new Error("raw probe fee did not converge");
   const { transactionId } = await rpc.submitTransaction({ transaction: tx, allowOrphan: false });
   return String(transactionId);
 }
@@ -302,7 +332,7 @@ async function main() {
       check("over-window withdrawal rejected by consensus", false, `accepted ${txid.slice(0, 16)}`);
     } catch (error) {
       const msg = String(error.message ?? error);
-      check("over-window withdrawal rejected by consensus", /verif|script|reject|invalid|failed/i.test(msg), msg.slice(0, 120));
+      check("over-window withdrawal rejected by covenant script", isScriptVerificationFailure(error), msg.slice(0, 120));
     }
 
     try {
@@ -317,7 +347,7 @@ async function main() {
       check("historical locktime reset rejected by covenant", false, `accepted ${txid.slice(0, 16)}`);
     } catch (error) {
       const msg = String(error.message ?? error);
-      check("historical locktime reset rejected by covenant", /verif|script|reject|invalid|failed/i.test(msg), msg.slice(0, 120));
+      check("historical locktime reset rejected by covenant script", isScriptVerificationFailure(error), msg.slice(0, 120));
     }
 
     try {
@@ -333,7 +363,7 @@ async function main() {
       check("finalized future-locktime reset rejected by covenant", false, `accepted ${txid.slice(0, 16)}`);
     } catch (error) {
       const msg = String(error.message ?? error);
-      check("finalized future-locktime reset rejected by covenant", /verif|script|reject|invalid|failed/i.test(msg), msg.slice(0, 120));
+      check("finalized future-locktime reset rejected by covenant script", isScriptVerificationFailure(error), msg.slice(0, 120));
     }
 
     const topup = await vault.deposit(wallet, TOPUP);

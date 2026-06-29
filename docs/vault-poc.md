@@ -114,15 +114,15 @@ Results:
 
 | Step | Result | Evidence |
 |---|---|---|
-| Genesis covenant-bound deposit | Accepted | `642e828a7cbcc6118d13c741f1f1e5c1141eff1406e157b0e588cfc2fc3b5fdb` |
-| Agent withdrawal inside active window | Accepted | `88c006bdffb5798c738e5880d6af92ce762f0181a29f55ae93ab9819a2c57382` |
-| Agent over-window withdrawal | Rejected by node consensus | attempted tx `d73c38beb99ab4220b5dac6e537199e62da50a4885e4b7eac5b1d70557b1213c` |
-| Historical locktime reset | Rejected by covenant | attempted tx `5e5d0fcfead8dfe3075cad170b3a99cfa3fa8c915c0b63de3168afbbb8f0100d` |
-| Finalized future-locktime reset | Rejected by covenant | attempted tx `02d18eda06bf5a1f2eb388315a6c4a96ae5f0f0be80f9885ed8a1a37fdf2da5f` |
-| Singleton top-up | Accepted | `e2906c9416589e7cb275502b5c5deba3e4a83f5cb4e7f3e691602cde54469dda` |
-| Agent withdrawal after window reset | Accepted | `1ff5d74e2585334bc8840b10732b1d4514c78bfca0e47ce3009247eeb589d356` |
-| Owner recovery | Accepted | `1f95baff89d8c43fa42ec0d8317b2b1c406cee92bda3c81ea4d6317b9d780980` |
+| Genesis covenant-bound deposit | Accepted | `15815f4ddefe61e8f0e155632f762be72bae60f9528b794fc0ff5a87985c68fb` |
+| Agent withdrawal inside active window | Accepted | `c67cf554ec7d84a8b631d2225a5fe6037a08bf22b753917fdc82cd7856bb7a9b` |
+| Agent over-window withdrawal | Rejected by covenant script | attempted tx `8b2288eb80013c7b75ff284bb9e6bd6c8f0c231742400dc1203f7bb08767ecf2` |
+| Historical locktime reset | Rejected by covenant script | attempted tx `98c2088aa5ce6ef6f3bf7339e1e22bc6a1d73d24614f97d625dd16cbe560a3b4` |
+| Finalized future-locktime reset | Rejected by covenant script | attempted tx `b89beb589f3fb8802463e76a0e27747a5e16ea01d49e3c4f34e8b56b3b6726b3` |
+| Singleton top-up | Accepted | `83f812db99d331d6ce6862c6df84d4619d21999fff533d30a8db52ba752e74c4` |
+| Agent withdrawal after window reset | Accepted | `c5eac251b4297fef449c98ba1ab8f7fe67e206b862e736da7735da53a5387b67` |
+| Owner recovery | Accepted | `7b1fa5ce830b2821b8a36cf80b87a66e8fd085788cf1eb998b45065f1fff261e` |
 
-The reset target was DAA `503581392`; the proof waited until DAA `503581397`
+The reset target was DAA `503605037`; the proof waited until DAA `503605040`
 so the node enforced both non-final input locktime and active-input-age gating
 before the reset spend.
