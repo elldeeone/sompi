@@ -22,12 +22,14 @@ const SEGMENT_6 =
   "94765193bc7c7eb976c976";
 const SEGMENT_7 = "940113937cbc7eaa02000001aa7e01207e7c7e01877e5679c38769007a75007a75007a75007a75007a75007a75007a75757575516776519c63755279";
 const SEGMENT_8 =
-  "ac69b352a269b9009c69b9cf76d0519c697600d1b99c6976d2519c697600d376009c6976c2b9bea269537958cd01087c7e537958cd01087c7e7eb976c9";
-const SEGMENT_9 = "94765193bc7c7eb976c976";
-const SEGMENT_10 = "940113937cbc7eaa02000001aa7e01207e7c7e01877e78c38769007a75007a75757575516776529c63755279";
-const SEGMENT_11 = "ac697575755167750069686868";
+  "ac69b352a269b9009c69b9bd0058cd8769b9cf76d0519c697600d1b99c6976d2519c697600d376009c6976c2b9bea26953795379b55679";
+const SEGMENT_9 = "93a2b5b9c0";
+const SEGMENT_10 = "93a29a63b57b75007b756878787858cd01087c7e7858cd01087c7e7eb976c9";
+const SEGMENT_11 = "94765193bc7c7eb976c976";
+const SEGMENT_12 = "940113937cbc7eaa02000001aa7e01207e7c7e01877e5579c38769007a75007a75007a75007a75007a75007a75757575516776529c63755279";
+const SEGMENT_13 = "ac697575755167750069686868";
 
-const SCRIPT_BASE_LEN = 439;
+const SCRIPT_BASE_LEN = 482;
 
 export const VAULT_TEMPLATE_VERSION = "sompi-vault-1";
 
@@ -107,7 +109,7 @@ export function buildRedeemScript(
   if (windowSizeDaa <= 0n) throw new Error("windowSizeDaa must be positive");
   const maxOutflowPush = pushNumber(maxOutflowSompi);
   const windowSizePush = pushNumber(windowSizeDaa);
-  const scriptSizePush = pushNumber(BigInt(SCRIPT_BASE_LEN + maxOutflowPush.length + 2 * windowSizePush.length));
+  const scriptSizePush = pushNumber(BigInt(SCRIPT_BASE_LEN + maxOutflowPush.length + 4 * windowSizePush.length));
   return concat(
     hexToBytes(SEGMENT_0),
     pushStateInt(state.windowStartDaa),
@@ -127,12 +129,16 @@ export function buildRedeemScript(
     hexToBytes(SEGMENT_7),
     pushData(agent),
     hexToBytes(SEGMENT_8),
-    scriptSizePush,
+    windowSizePush,
     hexToBytes(SEGMENT_9),
-    scriptSizePush,
+    windowSizePush,
     hexToBytes(SEGMENT_10),
+    scriptSizePush,
+    hexToBytes(SEGMENT_11),
+    scriptSizePush,
+    hexToBytes(SEGMENT_12),
     pushData(owner),
-    hexToBytes(SEGMENT_11)
+    hexToBytes(SEGMENT_13)
   );
 }
 

@@ -39,7 +39,9 @@ Entrypoints:
   UTXO's own DAA score to have aged at least one full window, so historical
   locktimes cannot be chained through fresh continuation outputs.
 - `topup(sig agentSig)` merges regular wallet funds into the current singleton
-  vault UTXO without changing state.
+  vault UTXO. It preserves active state, but if the saved window and active
+  vault UTXO are already reset-eligible it starts a fresh zero-spent window
+  instead of carrying exhausted state into the new top-up output.
 - `recover(sig ownerSig)` lets the owner drain the current vault address without
   agent cooperation.
 
@@ -112,15 +114,15 @@ Results:
 
 | Step | Result | Evidence |
 |---|---|---|
-| Genesis covenant-bound deposit | Accepted | `6209a868b55f86100d6e4506cb371b85b1d53465f00105b9bea1286d7934d6c5` |
-| Agent withdrawal inside active window | Accepted | `c51d29bf2b2d4faf2ea3d1ec9ba1c72cd08bba5dfcf30af44328afda6dea4d88` |
-| Agent over-window withdrawal | Rejected by node consensus | attempted tx `ac8eac5c6867f867903a8feef4dc5abc2851890c403da86537bc971468263bd6` |
-| Historical locktime reset | Rejected by covenant | attempted tx `5815f4024f1851eee2fe743466c41f7fb594e60c3272d85e786a6f6ed2de392a` |
-| Finalized future-locktime reset | Rejected by covenant | attempted tx `f9fd62a55c1aed5d61316123bb8a3d8ee10fe46b17e94f1032cc1f357f434bff` |
-| Singleton top-up | Accepted | `d452d196f7eb95892d4dfad120a0e9bb743b1b46109d122d6699a2e5970f08fc` |
-| Agent withdrawal after window reset | Accepted | `2429dad44712ad7c069729f1d0123a975f096282450191666cae4d2bcdec2743` |
-| Owner recovery | Accepted | `e0af37bfe1b4b89dd56834822ffaf269cbfc7259a95d1bcee2e9c81c6f79a293` |
+| Genesis covenant-bound deposit | Accepted | `642e828a7cbcc6118d13c741f1f1e5c1141eff1406e157b0e588cfc2fc3b5fdb` |
+| Agent withdrawal inside active window | Accepted | `88c006bdffb5798c738e5880d6af92ce762f0181a29f55ae93ab9819a2c57382` |
+| Agent over-window withdrawal | Rejected by node consensus | attempted tx `d73c38beb99ab4220b5dac6e537199e62da50a4885e4b7eac5b1d70557b1213c` |
+| Historical locktime reset | Rejected by covenant | attempted tx `5e5d0fcfead8dfe3075cad170b3a99cfa3fa8c915c0b63de3168afbbb8f0100d` |
+| Finalized future-locktime reset | Rejected by covenant | attempted tx `02d18eda06bf5a1f2eb388315a6c4a96ae5f0f0be80f9885ed8a1a37fdf2da5f` |
+| Singleton top-up | Accepted | `e2906c9416589e7cb275502b5c5deba3e4a83f5cb4e7f3e691602cde54469dda` |
+| Agent withdrawal after window reset | Accepted | `1ff5d74e2585334bc8840b10732b1d4514c78bfca0e47ce3009247eeb589d356` |
+| Owner recovery | Accepted | `1f95baff89d8c43fa42ec0d8317b2b1c406cee92bda3c81ea4d6317b9d780980` |
 
-The reset target was DAA `503391392`; the proof waited until DAA `503391400`
+The reset target was DAA `503581392`; the proof waited until DAA `503581397`
 so the node enforced both non-final input locktime and active-input-age gating
 before the reset spend.

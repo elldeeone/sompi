@@ -33,7 +33,8 @@ singleton with rolling-window state.
 
 2. **Offline package smoke.** `npm run build && SOMPI_SMOKE_OFFLINE=1 npm run
    smoke` asserts the JS template produces the committed compiler-derived
-   fixtures and that vault deposit/top-up aggregate fragmented wallet UTXOs.
+   fixtures, vault deposit/top-up aggregate fragmented wallet UTXOs, and
+   top-up resets an expired exhausted window instead of extending it.
 
 3. **Live consensus proof.** Re-run the live proof script for the changed
    contract against a Toccata node. For escrow, `scripts/escrow-live.js` proves

@@ -8,7 +8,7 @@
  *   3. a validly signed over-window withdrawal is rejected by consensus
  *   4. a historical locktime reset attempt is rejected by the covenant
  *   5. a finalized future-locktime reset attempt is rejected by the covenant
- *   6. top-up preserves the current state while adding funds to the singleton
+ *   6. top-up preserves active state, or resets it when the saved window is expired
  *   7. after the DAA window resets, another withdrawal is accepted
  *   8. owner recovery drains the remaining vault balance
  *

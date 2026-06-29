@@ -45,6 +45,7 @@ contract SompiVault(
         require(checkSig(agentSig, agent));
         require(tx.inputs.length >= 2);
         require(this.activeInputIndex == 0);
+        require(byte[8](OpTxInputSeq(this.activeInputIndex)) == byte[8](0));
 
         byte[32] covId = OpInputCovenantId(this.activeInputIndex);
         require(OpCovInputCount(covId) == 1);
@@ -55,7 +56,16 @@ contract SompiVault(
 
         int inputValue = tx.inputs[this.activeInputIndex].value;
         require(tx.outputs[continuationIndex].value >= inputValue);
-        validateOutputState(continuationIndex, { windowStart: windowStart, spentInWindow: spentInWindow });
+
+        int nextWindowStart = windowStart;
+        int nextSpentInWindow = spentInWindow;
+        int inputDaa = OpTxInputDaaScore(this.activeInputIndex);
+        if (tx.locktime >= windowStart + windowSize && tx.locktime >= inputDaa + windowSize) {
+            nextWindowStart = tx.locktime;
+            nextSpentInWindow = 0;
+        }
+
+        validateOutputState(continuationIndex, { windowStart: nextWindowStart, spentInWindow: nextSpentInWindow });
     }
 
     entrypoint function recover(sig ownerSig) {

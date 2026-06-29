@@ -121,8 +121,8 @@ async function main() {
     templateMatches === fixtures.length
   );
   check(
-    "vault template: reset path reads active input DAA score",
-    fixtures.every((f: any) => f.redeemScript.includes("b9c0"))
+    "vault template: withdraw/top-up reset paths read active input DAA score",
+    fixtures.every((f: any) => (f.redeemScript.match(/b9c0/g) ?? []).length >= 2)
   );
 
   // --- offline checks: vault deposits aggregate fragmented wallet UTXOs ---
@@ -145,6 +145,7 @@ async function main() {
   let submittedFinalFees: bigint[] = [];
   let submittedMinimumFees: bigint[] = [];
   let vaultUtxoAmount = 120_000_000n;
+  let virtualDaaScore = 1n;
   let submitCount = 0;
   (fragmentedWallet as any).client = async () => ({
     getUtxosByAddresses: async (addresses: string[]) => {
@@ -182,13 +183,14 @@ async function main() {
       };
     },
     getFeeEstimate: async () => ({ estimate: { normalBuckets: [{ feerate: 100 }] } }),
-    getServerInfo: async () => ({ virtualDaaScore: "1" }),
+    getServerInfo: async () => ({ virtualDaaScore: virtualDaaScore.toString() }),
     submitTransaction: async ({ transaction }: any) => {
       submittedInputCounts.push(transaction.inputs.length);
       const inputTotal = [...transaction.inputs].reduce((acc: bigint, input: any) => acc + BigInt(input.utxo.amount), 0n);
       const outputTotal = [...transaction.outputs].reduce((acc: bigint, output: any) => acc + BigInt(output.value), 0n);
       const finalFee = inputTotal - outputTotal;
-      const minimumFee = calculateTransactionMass("testnet-10", transaction) * 100n;
+      const computeBudgetMass = [...transaction.inputs].reduce((acc: bigint, input: any) => acc + BigInt(input.computeBudget ?? 0) * 100n, 0n);
+      const minimumFee = (calculateTransactionMass("testnet-10", transaction) + computeBudgetMass) * 100n;
       if (finalFee < minimumFee) throw new Error(`underfunded vault tx: fee ${finalFee}, required ${minimumFee}`);
       submittedFinalFees.push(finalFee);
       submittedMinimumFees.push(minimumFee);
@@ -209,6 +211,18 @@ async function main() {
   walletEntries = [walletEntry("99", 0, 500_000_000n), walletEntry("aa", 0, 500_000_000n)];
   const floatTarget = 25_000_000n;
   const maxFloatDeposit = await vault.deposit(fragmentedWallet, "max", floatTarget);
+  const exhaustedConfig = {
+    ...vault.config(),
+    windowStartDaa: "1",
+    spentInWindowSompi: "500000000",
+    currentOutpoint: { txid: "cc".repeat(32), index: 0 },
+  };
+  fs.writeFileSync(path.join(fragmentedVaultDir, "vault", "config.json"), JSON.stringify(exhaustedConfig, null, 2));
+  vaultUtxoAmount = 700_000_000n;
+  walletEntries = [walletEntry("dd", 0, 200_000_000n)];
+  virtualDaaScore = 350n;
+  const resetTopup = await vault.deposit(fragmentedWallet, 50_000_000n);
+  const resetTopupConfig = vault.config();
   check(
     "vault deposit: aggregates fragmented wallet UTXOs",
     fragmentedDeposit.txid === "33".repeat(32) && submittedInputCounts[0] === 2
@@ -237,6 +251,12 @@ async function main() {
     "vault deposit: preserves requested wallet float after fee",
     maxFloatDeposit.txid === "99".repeat(32) &&
       1_000_000_000n - maxFloatDeposit.depositedSompi - maxFloatDeposit.feeSompi === floatTarget
+  );
+  check(
+    "vault top-up: resets expired exhausted window",
+    resetTopup.txid === "aa".repeat(32) &&
+      resetTopupConfig.windowStartDaa === "349" &&
+      resetTopupConfig.spentInWindowSompi === "0"
   );
   check(
     "vault deposit: fee covers final signed wallet mass",

@@ -71,7 +71,8 @@ agent's host.
 **4. Fund the agent's regular wallet**, from the
 [faucet](https://faucet-tn10.kaspanet.io/) or your wallet, then ask it to run
 `vault_deposit`. The first deposit creates the covenant-bound vault UTXO; later
-deposits top up the same singleton vault. Verify with `vault_status`.
+deposits top up the same singleton vault and reset an already-expired window
+instead of extending exhausted state. Verify with `vault_status`.
 
 Now the agent can spend (`vault_send`, capped by consensus) and pay for services
 (`paid_fetch`), and **you** can drain or recover the vault any time with your key

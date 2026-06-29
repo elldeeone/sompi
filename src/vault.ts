@@ -65,6 +65,7 @@ const SUBNETWORK_NATIVE = "00".repeat(20);
 const STORAGE_MASS_PARAMETER = 10n ** 12n; // KIP-9 C
 const MASS_PER_SPK_BYTE = 10n;
 const GRAMS_PER_SIGOP = 1_000n;
+const GRAMS_PER_COMPUTE_BUDGET_UNIT = 100n;
 const DEFAULT_WINDOW_SIZE_DAA = 36_000n; // ~1 hour on testnet-10/mainnet at 10 BPS
 const VAULT_INPUT_COMPUTE_BUDGET = 50;
 const NON_FINAL_SEQUENCE = 0n;
@@ -497,8 +498,17 @@ async function topUpVault(params: {
   const vaultUtxo = await selectCurrentVaultUtxo(wallet, config, true);
   let walletUtxos = params.amountSompi === "max" ? await listWalletUtxos(wallet) : await selectWalletUtxos(wallet, params.amountSompi);
   const state = stateFromConfig(config);
-  const redeem = buildRedeemScript(config.agentPublic, config.ownerPublic, BigInt(config.maxOutflowSompi), BigInt(config.windowSizeDaa), state);
-  const vaultSpk = payToScriptHashScript(redeem);
+  const windowSize = BigInt(config.windowSizeDaa);
+  const redeem = buildRedeemScript(config.agentPublic, config.ownerPublic, BigInt(config.maxOutflowSompi), windowSize, state);
+  const info = await rpc.getServerInfo();
+  const virtualDaa = BigInt(info.virtualDaaScore);
+  const lockDaa = virtualDaa > 0n ? virtualDaa - 1n : 0n;
+  const resetTargetDaa = maxBigInt(state.windowStartDaa, vaultUtxo.blockDaaScore) + windowSize;
+  const nextState = lockDaa >= resetTargetDaa ? { windowStartDaa: lockDaa, spentInWindowSompi: 0n } : state;
+  const nextRedeem = buildRedeemScript(config.agentPublic, config.ownerPublic, BigInt(config.maxOutflowSompi), windowSize, nextState);
+  const nextSpk = payToScriptHashScript(nextRedeem);
+  const nextAddress = addressFromScriptPublicKey(nextSpk, wallet.networkId)?.toString();
+  if (!nextAddress) throw new Error("could not derive next vault address");
   const changeSpk = payToAddressScript(wallet.address);
   const estimate = await rpc.getFeeEstimate();
   const feerate = estimate.estimate?.normalBuckets?.[0]?.feerate ?? 100;
@@ -515,7 +525,7 @@ async function topUpVault(params: {
       walletTotal = sumUtxoAmounts(walletUtxos);
       amountSompi = depositAmountFor(params.amountSompi, walletTotal, feeSompi, keepFloatSompi);
     }
-    tx = buildTopupTx(config, vaultUtxo, walletUtxos, vaultSpk, changeSpk, amountSompi, feeSompi);
+    tx = buildTopupTx(config, vaultUtxo, walletUtxos, nextSpk, changeSpk, amountSompi, feeSompi, lockDaa);
     const nextFee = estimateTxFeeSompi(wallet.networkId, tx, feerate, [
       dummyVaultSignatureScript(redeem, "topup"),
       ...walletUtxos.map(() => DUMMY_WALLET_SIGNATURE_SCRIPT),
@@ -532,7 +542,7 @@ async function topUpVault(params: {
     throw new Error(`wallet UTXOs totaling ${walletTotal} sompi cannot cover top-up ${amountSompi} plus fee ${feeSompi}`);
   }
 
-  tx = buildTopupTx(config, vaultUtxo, walletUtxos, vaultSpk, changeSpk, amountSompi, feeSompi);
+  tx = buildTopupTx(config, vaultUtxo, walletUtxos, nextSpk, changeSpk, amountSompi, feeSompi, lockDaa);
   const pushedVaultSig = createInputSignature(tx, 0, new PrivateKey(privateKey), SighashType.All);
   setInputScripts(tx, [
     payToScriptHashSignatureScript(redeem, buildSigArgs(hexToBytes(pushedVaultSig).slice(1), "topup")),
@@ -541,7 +551,17 @@ async function topUpVault(params: {
   assertFeeCoversSignedTx(wallet.networkId, tx, feerate, feeSompi, "vault top-up");
   const { transactionId } = await (rpc as any).submitTransaction({ transaction: tx, allowOrphan: false });
   const txid = String(transactionId);
-  return { txid, depositedSompi: amountSompi, feeSompi, configUpdate: { currentOutpoint: { txid, index: 0 } } };
+  return {
+    txid,
+    depositedSompi: amountSompi,
+    feeSompi,
+    configUpdate: {
+      windowStartDaa: nextState.windowStartDaa.toString(),
+      spentInWindowSompi: nextState.spentInWindowSompi.toString(),
+      address: nextAddress,
+      currentOutpoint: { txid, index: 0 },
+    },
+  };
 }
 
 function buildGenesisDepositTx(walletUtxos: NormalizedUtxo[], vaultSpk: unknown, changeSpk: unknown, amountSompi: bigint, feeSompi: bigint): Transaction {
@@ -560,7 +580,8 @@ function buildTopupTx(
   vaultSpk: unknown,
   changeSpk: unknown,
   amountSompi: bigint,
-  feeSompi: bigint
+  feeSompi: bigint,
+  lockTime: bigint
 ): Transaction {
   if (!config.covenantId) throw new Error("missing covenant id");
   const change = sumUtxoAmounts(walletUtxos) - amountSompi - feeSompi;
@@ -575,7 +596,7 @@ function buildTopupTx(
   return buildTransaction({
     inputs: [txInput(vaultUtxo, ""), ...walletUtxos.map((utxo) => txInput(utxo, ""))],
     outputs,
-    lockTime: 0n,
+    lockTime,
   });
 }
 
@@ -749,7 +770,8 @@ function assertFeeCoversSignedTx(networkId: string, tx: Transaction, feerate: nu
 }
 
 function minimumSignedTxFeeSompi(networkId: string, tx: Transaction, feerate: number): bigint {
-  return calculateTransactionMass(networkId, tx) * feeRateSompiPerGram(feerate);
+  const computeBudgetMass = [...tx.inputs].reduce((acc, input: any) => acc + BigInt(input.computeBudget ?? 0) * GRAMS_PER_COMPUTE_BUDGET_UNIT, 0n);
+  return (calculateTransactionMass(networkId, tx) + computeBudgetMass) * feeRateSompiPerGram(feerate);
 }
 
 function feeRateSompiPerGram(feerate: number): bigint {
