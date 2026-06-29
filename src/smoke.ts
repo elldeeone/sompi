@@ -9,8 +9,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import { sha256 } from "@noble/hashes/sha256";
-import { payToScriptHashScript } from "../vendor/kaspa-wasm/kaspa";
+import { payToAddressScript, payToScriptHashScript } from "../vendor/kaspa-wasm/kaspa";
 import { PolicyEngine, PolicyViolation } from "./policy";
+import { VaultManager, generateOwnerKey as generateVaultOwnerKey } from "./vault";
 import { buildRedeemScript, buildSigArgs, bytesToHex, hexToBytes } from "./vault/template";
 import { buildEscrowRedeemScript, buildClaimArgs, buildRefundArgs, voucherMessage } from "./x402/escrow-template";
 import { EscrowUtxoNotFoundError, escrowFunding, escrowScriptPubKeyHash, generateChannelKey, makeVoucher, verifyVoucher } from "./x402/escrow";
@@ -95,10 +96,21 @@ async function main() {
   const fixtures = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "scripts", "vault-fixtures.json"), "utf8"));
   let templateMatches = 0;
   for (const f of fixtures) {
-    const redeem = bytesToHex(buildRedeemScript(f.agent, f.owner, BigInt(f.maxOutflow)));
+    const redeem = bytesToHex(
+      buildRedeemScript(f.agent, f.owner, BigInt(f.maxOutflow), BigInt(f.windowSize), {
+        windowStartDaa: BigInt(f.windowStart),
+        spentInWindowSompi: BigInt(f.spentInWindow),
+      })
+    );
     const withdrawArgs = bytesToHex(buildSigArgs(new Uint8Array(65).fill(0xab), "withdraw"));
+    const topupArgs = bytesToHex(buildSigArgs(new Uint8Array(65).fill(0xab), "topup"));
     const recoverArgs = bytesToHex(buildSigArgs(new Uint8Array(65).fill(0xab), "recover"));
-    if (redeem === f.redeemScript && withdrawArgs === f.withdrawArgsWithDummySig && recoverArgs === f.recoverArgsWithDummySig) {
+    if (
+      redeem === f.redeemScript &&
+      withdrawArgs === f.withdrawArgsWithDummySig &&
+      topupArgs === f.topupArgsWithDummySig &&
+      recoverArgs === f.recoverArgsWithDummySig
+    ) {
       templateMatches++;
     } else {
       console.log(`  fixture mismatch: agent=${f.agent.slice(0, 8)} max=${f.maxOutflow}`);
@@ -108,6 +120,67 @@ async function main() {
     `vault template: byte-identical to compiler output (${templateMatches}/${fixtures.length} fixtures)`,
     templateMatches === fixtures.length
   );
+
+  // --- offline checks: vault deposits aggregate fragmented wallet UTXOs ---
+  const fragmentedVaultDir = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-vault-fragmented-"));
+  const fragmentedWallet = new KaspaWallet({ networkId: "testnet-10", dataDir: path.join(fragmentedVaultDir, "wallet") });
+  const owner = generateVaultOwnerKey();
+  const vault = new VaultManager(fragmentedVaultDir, "testnet-10");
+  vault.create(100_000_000n, owner.publicKey, 300n);
+  const walletSpk = payToAddressScript(fragmentedWallet.address);
+  const walletEntry = (tag: string, index: number, amount: bigint) => ({
+    outpoint: { transactionId: tag.repeat(32), index },
+    amount,
+    scriptPublicKey: walletSpk,
+    blockDaaScore: 1n,
+    isCoinbase: false,
+  });
+  let walletEntries = [walletEntry("11", 0, 90_000_000n), walletEntry("22", 0, 90_000_000n)];
+  let submittedInputCounts: number[] = [];
+  let submitCount = 0;
+  (fragmentedWallet as any).client = async () => ({
+    getUtxosByAddresses: async (addresses: string[]) => {
+      if (addresses[0] === fragmentedWallet.address) return { entries: walletEntries };
+      const current = vault.config();
+      if (addresses[0] !== current.address || !current.covenantId || !current.currentOutpoint) return { entries: [] };
+      const state = {
+        windowStartDaa: BigInt(current.windowStartDaa),
+        spentInWindowSompi: BigInt(current.spentInWindowSompi),
+      };
+      return {
+        entries: [
+          {
+            outpoint: { transactionId: current.currentOutpoint.txid, index: current.currentOutpoint.index },
+            amount: 120_000_000n,
+            scriptPublicKey: payToScriptHashScript(
+              buildRedeemScript(current.agentPublic, current.ownerPublic, BigInt(current.maxOutflowSompi), BigInt(current.windowSizeDaa), state)
+            ),
+            blockDaaScore: 1n,
+            isCoinbase: false,
+            covenantId: current.covenantId,
+          },
+        ],
+      };
+    },
+    getFeeEstimate: async () => ({ estimate: { normalBuckets: [{ feerate: 100 }] } }),
+    submitTransaction: async ({ transaction }: any) => {
+      submittedInputCounts.push(transaction.inputs.length);
+      submitCount += 1;
+      return { transactionId: `${submitCount === 1 ? "33" : "44"}`.repeat(32) };
+    },
+  });
+  const fragmentedDeposit = await vault.deposit(fragmentedWallet, 120_000_000n);
+  walletEntries = [walletEntry("55", 0, 60_000_000n), walletEntry("66", 0, 60_000_000n)];
+  const fragmentedTopup = await vault.deposit(fragmentedWallet, 80_000_000n);
+  check(
+    "vault deposit: aggregates fragmented wallet UTXOs",
+    fragmentedDeposit.txid === "33".repeat(32) && submittedInputCounts[0] === 2
+  );
+  check(
+    "vault top-up: aggregates fragmented wallet UTXOs",
+    fragmentedTopup.txid === "44".repeat(32) && submittedInputCounts[1] === 3
+  );
+  fs.rmSync(fragmentedVaultDir, { recursive: true, force: true });
 
   // --- offline checks: escrow template byte-equality vs SilverScript compiler fixtures ---
   // Regression guard only; scripts/escrow-live.js is the live consensus proof

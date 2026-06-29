@@ -129,5 +129,5 @@ not prove the current compiler-derived template.
   smoke`.
 - `sompi-escrow-1` is the first public escrow template.
 - This is independent of the covenant **vault** (KIP-16, `docs/vault-poc.md`),
-  which uses only `OpCheckSig` and a per-transaction outflow cap; it has no
-  voucher and was not affected by this issue.
+  which uses `OpCheckSig` and covenant state for a rolling-window outflow cap;
+  it has no voucher and was not affected by this issue.

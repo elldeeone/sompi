@@ -1,77 +1,121 @@
-# SompiVault proof-of-concept: consensus-enforced agent spending limits
+# SompiVault: stateful rolling-window agent vault
 
-**Date:** 2026-06-11 · **Network:** Kaspa testnet-10 (Toccata active) · **Status:** all proofs passed
+**Date:** 2026-06-29 · **Network:** Kaspa testnet-10 (Toccata active) · **Status:** live proof passed
 
-## What was proven
+## What this proves
 
-A KIP-16 covenant vault whose spending limit is enforced by Kaspa consensus
-rather than wallet software. The agent key can withdraw at most 1 KAS per
-transaction (withdrawal + fee), with the remainder forced back into the
-vault; the owner key is unrestricted.
+SompiVault is a KIP-16 covenant vault for agent funds. The operator keeps an
+unrestricted owner recovery key. The agent gets its own key, but that key can
+only withdraw up to `maxOutflowSompi` per `windowSizeDaa` rolling DAA window.
+The cap counts withdrawal amount plus fee, and the remaining balance must
+continue back into the same singleton covenant with updated state.
 
-Contract: [`vault-driver/vault.sil`](https://github.com/elldeeone/silverscript/tree/toccata-docs/vault-driver)
-(SilverScript, ~30 lines), compiled to a 117-byte P2SH script.
+This is consensus enforcement, not an MCP policy promise. If the agent key is
+stolen, the attacker still has to satisfy the vault script on-chain.
 
-Vault address: `kaspatest:pq0cxnn290flgkuu42ku28taaa9wc3w6luq3pjh7z295qn4mg8newq2f7tupk`
+## Current contract
 
-## The three on-chain proofs
+Source: [`contracts/vault.sil`](../contracts/vault.sil)
 
-| # | Action | Result | Evidence |
-|---|---|---|---|
-| 1 | Agent withdraws 0.5 KAS (outflow 0.52 ≤ 1 KAS cap) | **Accepted** | txid `659202ec34e432ebd3e349dddcd141b0476cae828a8780b027c824315e56cc1c` |
-| 2 | Agent attempts 2 KAS withdrawal (outflow 2.02 > cap) | **Rejected by the node**: `failed to verify the signature script: script ran, but verification failed` | tx `5b6e7dff…` never entered the mempool |
-| 3 | Owner recovers full remaining balance | **Accepted** | txid `caebd325964e58e96b2f7e986de1b448351b04537ec168d25cd38ecafd4295cc` |
+The static parameters are:
 
-Proof 2 is the point: the signature was valid, the transaction well-formed —
-only the covenant said no. A fully compromised agent key faces the same
-limit the agent does, enforced by every node on the network.
+- `agent`: x-only public key allowed to spend through the capped path
+- `owner`: x-only public key allowed to recover everything
+- `maxOutflow`: maximum amount plus fee per rolling window
+- `windowSize`: DAA window size
 
-Local consensus-VM selftests additionally covered: redirected-change drain
-attempt (rejected) and agent attempting the owner recovery path (rejected).
-Run them with `vault-driver selftest 100000000`.
+The mutable state is:
 
-## How it works
+- `windowStart`: DAA score where the active window began
+- `spentInWindow`: cumulative outflow in the active window
 
+Entrypoints:
+
+- `withdraw(sig agentSig)` requires the agent signature, one covenant input,
+  sequence `0`, one covenant continuation output, a valid next state, and
+  `spentInWindow + outflow <= maxOutflow`. The sequence check keeps the spend
+  non-final, so a compromised agent key cannot use a finalized future-locktime
+  transaction to reset the window early.
+- `topup(sig agentSig)` merges regular wallet funds into the current singleton
+  vault UTXO without changing state.
+- `recover(sig ownerSig)` lets the owner drain the current vault address without
+  agent cooperation.
+
+## Runtime shape
+
+The package has no runtime SilverScript dependency. The TypeScript template in
+[`src/vault/template.ts`](../src/vault/template.ts) is derived from compiler
+output and parameterized by the operator's keys, cap, window, and state.
+
+The first `vault_deposit` creates a genesis covenant-bound UTXO. Later
+`vault_deposit` calls top up that same singleton. Both paths aggregate regular
+wallet UTXOs when the wallet balance is fragmented. `vault_send` spends the
+current vault UTXO, advances the state, derives the next vault address, and saves
+the new outpoint. Owner recovery reconstructs the current vault address from
+public parameters plus state.
+
+## Checks
+
+Compiler-derived fixture check:
+
+```bash
+SILVERC=/path/to/silverc npm run fixtures:vault:check
 ```
-contract SompiVault(pubkey agent, pubkey owner, int maxOutflow) {
-    entrypoint function withdraw(sig agentSig) {
-        require(checkSig(agentSig, agent));
-        require(tx.outputs.length == 2);
-        byte[] vaultScriptPubKey = tx.inputs[this.activeInputIndex].scriptPubKey;
-        require(tx.outputs[1].scriptPubKey == vaultScriptPubKey);   // change returns to vault
-        int inputValue = tx.inputs[this.activeInputIndex].value;
-        require(tx.outputs[1].value >= inputValue - maxOutflow);    // outflow capped
-    }
-    entrypoint function recover(sig ownerSig) {
-        require(checkSig(ownerSig, owner));
-    }
-}
+
+Offline package smoke:
+
+```bash
+npm run build
+SOMPI_SMOKE_OFFLINE=1 npm run smoke
 ```
 
-Tooling split:
+Live consensus proof:
 
-- **Rust** (`vault-driver` in the [silverscript fork](https://github.com/elldeeone/silverscript)):
-  compiles the contract, derives the P2SH address, builds the entrypoint
-  signature script via the compiler's own `build_sig_script` (which handles
-  entrypoint selection and argument encoding), computes the Schnorr sighash,
-  and emits the signed transaction as JSON.
-- **JS** (`scripts/submit-tx.js` here): converts the JSON and submits via wRPC.
+```bash
+npm run build
+SOMPI_NODE_URL=10.0.3.26 npm run proof:vault
+```
 
-Notes for reproducing:
+The live proof exercises:
 
-- v0 transactions with `sigOpCount: 1` per input — post-Toccata sigops are
-  runtime-counted, and each vault path executes exactly one `OpCheckSig`.
-- The engine runs covenant/introspection opcodes for P2SH spends without any
-  v1-transaction requirement.
-- The change output returning to the vault is itself a P2SH output — standard,
-  relayable, no special handling.
-- Mainnet gets these consensus rules at DAA 474,165,565 (~2026-06-30); the
-  same artifacts work there unchanged (test first; tooling is experimental).
+1. genesis covenant-bound deposit accepted on-chain
+2. agent withdrawal inside the active window accepted on-chain
+3. deliberately over-window withdrawal rejected by consensus
+4. finalized future-locktime reset attempt rejected by the covenant
+5. singleton top-up accepted on-chain
+6. second withdrawal accepted after the DAA window resets
+7. owner recovery accepted on-chain
 
-## What's next (Phase 3 proper)
+The recovery file printed by `proof:vault` contains temporary testnet keys and
+the latest vault config so funds can be recovered if the harness exits early.
 
-- Rolling spend windows via covenant state (the `#[covenant]` declaration
-  layer) instead of a flat per-transaction cap.
-- Integrate vault spends into the sompi MCP server (`send_payment` from a
-  vault-backed wallet).
-- Sweep/top-up lifecycle management.
+## Latest live evidence
+
+Run:
+
+```bash
+SOMPI_NODE_URL=10.0.3.26 npm run proof:vault
+```
+
+Parameters:
+
+- `maxOutflowSompi`: `100000000`
+- `windowSizeDaa`: `300`
+- first withdrawal: `40000000` sompi
+- top-up: `50000000` sompi
+- second withdrawal after reset: `40000000` sompi
+
+Results:
+
+| Step | Result | Evidence |
+|---|---|---|
+| Genesis covenant-bound deposit | Accepted | `df35d67db329aee339ad0eb86db6e986ed818622b1390c8a8098e56d320e3fe3` |
+| Agent withdrawal inside active window | Accepted | `cecb02f777929a02d2eb459be683887da4f6c7c7e44cb7efc6b32aa78818d5c9` |
+| Agent over-window withdrawal | Rejected by node consensus | attempted tx `019cd8e520426cb63c74433169a7053f5fa6153d7f2d6d25b81488abd1392075` |
+| Finalized future-locktime reset | Rejected by covenant | attempted tx `b82d525d82db46db01c2c9e26bc662cf41140c2af267e45e1955b4af65fc75c2` |
+| Singleton top-up | Accepted | `f56ed0fd04556b475417f28604244e64c3f7d36cf94d32e9f87b5677c3bc4f3e` |
+| Agent withdrawal after window reset | Accepted | `f55c00d427c486ed1a6eec30355a065f12fd15439bb6c85f7db8247e92a356cb` |
+| Owner recovery | Accepted | `ae5e198e425e482d0c23c0d15b00c5ba1c379d5413fd898be00f33f9523812b5` |
+
+The reset target was DAA `503368664`; the proof waited until DAA `503368665`
+so the node enforced the non-final input locktime before the reset spend.

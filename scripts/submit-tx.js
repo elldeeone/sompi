@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Submit a raw transaction (vault-driver JSON format) to a Kaspa node.
+ * Submit a raw transaction JSON object to a Kaspa node.
  *
  * Usage: SOMPI_NODE_URL=<node> node scripts/submit-tx.js <tx.json>
  */

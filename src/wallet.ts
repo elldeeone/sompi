@@ -13,6 +13,9 @@ import {
   PrivateKey,
   Resolver,
   RpcClient,
+  SighashType,
+  Transaction,
+  createInputSignature,
   createTransactions,
   initConsolePanicHook,
   kaspaToSompi,
@@ -139,6 +142,10 @@ export class KaspaWallet {
   async feeEstimate() {
     const rpc = await this.client();
     return rpc.getFeeEstimate();
+  }
+
+  signInput(transaction: Transaction, inputIndex: number): string {
+    return createInputSignature(transaction, inputIndex, this.privateKey, SighashType.All);
   }
 
   /**

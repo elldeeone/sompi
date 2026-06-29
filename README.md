@@ -45,9 +45,9 @@ Or to any MCP client config:
 The right way to give an agent money is **not** to hand it a private key. Instead,
 the agent's main funds live in a **covenant vault that you control**: your key can
 recover everything at any time, while the agent's own key can only spend up to a
-per-transaction cap enforced by Kaspa consensus. A stolen or prompt-injected agent
-cannot exceed that cap. The agent asks *you* for your key during setup — you never
-give it yours.
+rolling-window cap enforced by Kaspa consensus. A stolen or prompt-injected agent
+cannot exceed that on-chain window. The agent asks *you* for your public recovery
+key during setup — you never give it the private key.
 
 **1. Connect the agent** (no key yet — it just needs the tools):
 ```json
@@ -64,12 +64,14 @@ npx -y @elldeeone/sompi gen-owner-key
 
 **3. Tell the agent to set up its vault.** Plain English: *"set up your vault."*
 Its `vault_create` tool will ask you for two things — give it your **public** key
-from step 2 and a per-transaction cap (e.g. `100000000` = 1 KAS). It generates its
-own key, derives the vault address, and reports it back. Your private key never
-touches the agent's host.
+from step 2 and a rolling-window cap (e.g. `100000000` = 1 KAS). It generates its
+own agent key and saves the vault config. Your private key never touches the
+agent's host.
 
-**4. Fund the vault address** it returns, from the [faucet](https://faucet-tn10.kaspanet.io/)
-or your wallet. Verify with `vault_status`.
+**4. Fund the agent's regular wallet**, from the
+[faucet](https://faucet-tn10.kaspanet.io/) or your wallet, then ask it to run
+`vault_deposit`. The first deposit creates the covenant-bound vault UTXO; later
+deposits top up the same singleton vault. Verify with `vault_status`.
 
 Now the agent can spend (`vault_send`, capped by consensus) and pay for services
 (`paid_fetch`), and **you** can drain or recover the vault any time with your key
@@ -93,7 +95,7 @@ limits on top of the hard consensus cap.
 | `estimate_fee` | Live feerate buckets from the node |
 | `network_status` | Node sync state, DAA score, version |
 | `get_policy` | Read-only view of the active spending policy |
-| `vault_create` / `vault_status` / `vault_send` / `vault_deposit` | Covenant vault: spending caps enforced by consensus (see below) |
+| `vault_create` / `vault_status` / `vault_send` / `vault_deposit` | Covenant vault: rolling-window spending cap enforced by consensus (see below) |
 
 Connections to public resolver nodes are verified against the explorer's
 chain tip (a **canonical-chain guard**): nodes that are unsynced, missing a
@@ -210,13 +212,14 @@ server-controlled deposit key until swept or refunded out of band.
 This is how an agent should hold money (see onboarding above). A software policy is
 just a suggestion a stolen key ignores; the vault moves the spending limit into
 Kaspa consensus (KIP-16, live on testnet-10). The vault's agent path can withdraw at
-most `maxOutflowSompi` per transaction — withdrawal plus fee — with the remainder
-forced back into the vault by script. **Every node on the network enforces this; a
-fully compromised agent key cannot exceed it.** The owner key (yours, kept offline)
+most `maxOutflowSompi` per `windowSizeDaa` rolling DAA window, counting the
+withdrawal amount plus fee, with the remainder forced back into the vault under
+the next state. **Every node on the network enforces this; a fully compromised
+agent key cannot exceed the active window.** The owner key (yours, kept offline)
 recovers everything.
 
-Proven on-chain — see [docs/vault-poc.md](docs/vault-poc.md) for the three proof
-transactions, including the node rejecting an over-limit spend.
+See [docs/vault-poc.md](docs/vault-poc.md) for the current stateful vault design,
+fixture checks, and live proof coverage.
 
 **Zero extra tooling.** The covenant ships inside this package as a
 compiler-verified template (`src/vault/template.ts`), checked byte-for-byte against the
@@ -230,17 +233,19 @@ they cannot author covenant logic.
    keep the private line, give the agent the public line plus the chosen cap.
 2. Agent: `vault_create` with those two values. It generates only its own key;
    the unrestricted owner key never exists on the agent's host.
-3. Operator funds the returned vault address.
+3. Operator funds the agent's regular wallet, then the agent runs `vault_deposit`
+   to create the covenant-bound singleton vault UTXO.
 
 Owner recovery is likewise *not* an MCP tool — recover from your machine:
-`node scripts/vault-recover.js <ownerPriv> <agentPublic> <maxOutflowSompi> <destination>`
-(it re-derives the vault address from public parameters; no agent cooperation needed).
+`node scripts/vault-recover.js <ownerPriv> <agentPublic> <maxOutflowSompi> <windowSizeDaa> <windowStartDaa> <spentInWindowSompi> <destination>`
+(it re-derives the current vault address from public parameters and state; no
+agent cooperation needed).
 
 ## Roadmap
 
 1. **Phase 1 (done)** — MCP server with policy-enforced wallet tools.
 2. **Phase 2 (done)** — x402 HTTP payment middleware + `paid_fetch`, with trust-minimized `kaspa-escrow` preferred and `kaspa-tab` retained as fallback.
-3. **Phase 3 (done)** — Covenant vaults (KIP-16): the agent wallet, with spending limits enforced by consensus rather than software. Next: rolling spend windows via covenant state.
+3. **Phase 3 (current)** — Covenant vaults (KIP-16): the agent wallet, with rolling-window spending limits enforced by consensus rather than software.
 
 ## Development
 

@@ -1,27 +1,60 @@
 pragma silverscript ^0.1.0;
 
-// SompiVault: consensus-enforced spending limits for agent wallets.
-//
-// The agent key can withdraw, but the total outflow of any single spend
-// (withdrawal + fee) is capped at maxOutflow, and the remainder must
-// return to this same vault script. A stolen agent key faces the same
-// limit the agent does — enforced by every node, not by wallet software.
-//
-// The owner key is unrestricted and serves as the recovery path.
-contract SompiVault(pubkey agent, pubkey owner, int maxOutflow) {
+contract SompiVault(
+    pubkey agent,
+    pubkey owner,
+    int maxOutflow,
+    int windowSize,
+    int initWindowStart,
+    int initSpent
+) {
+    int windowStart = initWindowStart;
+    int spentInWindow = initSpent;
+
     entrypoint function withdraw(sig agentSig) {
         require(checkSig(agentSig, agent));
-
-        // exactly: [0] destination, [1] vault continuation
+        require(tx.inputs.length == 1);
+        require(byte[8](OpTxInputSeq(this.activeInputIndex)) == byte[8](0));
         require(tx.outputs.length == 2);
 
-        // change must return to this exact vault script
-        byte[] vaultScriptPubKey = tx.inputs[this.activeInputIndex].scriptPubKey;
-        require(tx.outputs[1].scriptPubKey == vaultScriptPubKey);
+        byte[32] covId = OpInputCovenantId(this.activeInputIndex);
+        require(OpCovInputCount(covId) == 1);
+        require(OpCovInputIdx(covId, 0) == this.activeInputIndex);
+        require(OpCovOutputCount(covId) == 1);
+        int continuationIndex = OpCovOutputIdx(covId, 0);
+        require(continuationIndex == 1);
 
-        // outflow (withdrawal + fee) bounded by maxOutflow
         int inputValue = tx.inputs[this.activeInputIndex].value;
-        require(tx.outputs[1].value >= inputValue - maxOutflow);
+        int changeValue = tx.outputs[continuationIndex].value;
+        int outflow = inputValue - changeValue;
+        require(outflow >= 0);
+
+        int nextWindowStart = windowStart;
+        int nextSpentInWindow = spentInWindow + outflow;
+        if (tx.locktime >= windowStart + windowSize) {
+            nextWindowStart = tx.locktime;
+            nextSpentInWindow = outflow;
+        }
+
+        require(nextSpentInWindow <= maxOutflow);
+        validateOutputState(continuationIndex, { windowStart: nextWindowStart, spentInWindow: nextSpentInWindow });
+    }
+
+    entrypoint function topup(sig agentSig) {
+        require(checkSig(agentSig, agent));
+        require(tx.inputs.length >= 2);
+        require(this.activeInputIndex == 0);
+
+        byte[32] covId = OpInputCovenantId(this.activeInputIndex);
+        require(OpCovInputCount(covId) == 1);
+        require(OpCovInputIdx(covId, 0) == this.activeInputIndex);
+        require(OpCovOutputCount(covId) == 1);
+        int continuationIndex = OpCovOutputIdx(covId, 0);
+        require(continuationIndex == 0);
+
+        int inputValue = tx.inputs[this.activeInputIndex].value;
+        require(tx.outputs[continuationIndex].value >= inputValue);
+        validateOutputState(continuationIndex, { windowStart: windowStart, spentInWindow: spentInWindow });
     }
 
     entrypoint function recover(sig ownerSig) {
