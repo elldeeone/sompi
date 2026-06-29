@@ -109,13 +109,13 @@ Results:
 
 | Step | Result | Evidence |
 |---|---|---|
-| Genesis covenant-bound deposit | Accepted | `df35d67db329aee339ad0eb86db6e986ed818622b1390c8a8098e56d320e3fe3` |
-| Agent withdrawal inside active window | Accepted | `cecb02f777929a02d2eb459be683887da4f6c7c7e44cb7efc6b32aa78818d5c9` |
-| Agent over-window withdrawal | Rejected by node consensus | attempted tx `019cd8e520426cb63c74433169a7053f5fa6153d7f2d6d25b81488abd1392075` |
-| Finalized future-locktime reset | Rejected by covenant | attempted tx `b82d525d82db46db01c2c9e26bc662cf41140c2af267e45e1955b4af65fc75c2` |
-| Singleton top-up | Accepted | `f56ed0fd04556b475417f28604244e64c3f7d36cf94d32e9f87b5677c3bc4f3e` |
-| Agent withdrawal after window reset | Accepted | `f55c00d427c486ed1a6eec30355a065f12fd15439bb6c85f7db8247e92a356cb` |
-| Owner recovery | Accepted | `ae5e198e425e482d0c23c0d15b00c5ba1c379d5413fd898be00f33f9523812b5` |
+| Genesis covenant-bound deposit | Accepted | `f5f5a12ecef4bf39de39f32915d2de4788fab4c42392a9ab86e4499346196efb` |
+| Agent withdrawal inside active window | Accepted | `402f81696a2e510649475cdbf94e5ff621697098d79ca8f5bfd629f93ece1d8d` |
+| Agent over-window withdrawal | Rejected by node consensus | attempted tx `525785efe0dd3e7bf4f72431c3a39f50289854362ecc60c9a748f39a23afdde2` |
+| Finalized future-locktime reset | Rejected by covenant | attempted tx `548f7fecdcf470e4b7958cbf6284d9a08ccd99abe8b68cdae89dcdb050349b0c` |
+| Singleton top-up | Accepted | `ed203335155d79a8a6993ef6233b3f2cd8c759885296f1fd3df1b5b0c5118371` |
+| Agent withdrawal after window reset | Accepted | `32ee77ad99a5172e6f330de7666d3ee9a345c594910a44481ebb5aefae2d6309` |
+| Owner recovery | Accepted | `d3f8eb67911f124fe783caca1839171ed7018b246a10fa762e3de07f8e48d7d9` |
 
-The reset target was DAA `503368664`; the proof waited until DAA `503368665`
+The reset target was DAA `503379797`; the proof waited until DAA `503379799`
 so the node enforced the non-final input locktime before the reset spend.

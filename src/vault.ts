@@ -250,6 +250,8 @@ export interface VaultSpendParams {
 }
 
 const MIN_VAULT_CHANGE_SOMPI = 100_000_000n;
+const DUMMY_SIGNATURE = new Uint8Array(65).fill(0xab);
+const DUMMY_WALLET_SIGNATURE_SCRIPT = `41${"ab".repeat(65)}`;
 
 export async function spendVault(
   params: VaultSpendParams
@@ -317,12 +319,11 @@ export async function spendVault(
   let amountSompi: bigint;
   let feeSompi = params.feeSompi ?? 0n;
   for (let i = 0; i < 3; i++) {
-    const outflowCap = minBigInt(remainingWindow, utxo.amount - MIN_VAULT_CHANGE_SOMPI);
-    if (outflowCap <= 0n) throw new Error(`vault UTXO of ${utxo.amount} sompi is too small to withdraw from`);
-    amountSompi = params.amount === "max" ? outflowCap - feeSompi : params.amount!;
+    amountSompi = withdrawAmount(params.amount, remainingWindow, utxo.amount, feeSompi);
     const outflow = amountSompi + feeSompi;
     const next = continuationFor(outflow);
     const changeSompi = utxo.amount - outflow;
+    if (changeSompi <= 0n) throw new Error(`vault UTXO of ${utxo.amount} sompi is too small for this spend`);
     const tx = buildTransaction({
       inputs: [txInput(utxo, "")],
       outputs: [
@@ -331,10 +332,10 @@ export async function spendVault(
       ],
       lockTime: lockDaa,
     });
-    feeSompi = params.feeSompi ?? estimateTxFeeSompi(wallet.networkId, tx, feerate, 1);
+    feeSompi = params.feeSompi ?? estimateTxFeeSompi(wallet.networkId, tx, feerate, [dummyVaultSignatureScript(redeem, "withdraw")]);
   }
 
-  amountSompi = params.amount === "max" ? minBigInt(remainingWindow, utxo.amount - MIN_VAULT_CHANGE_SOMPI) - feeSompi : params.amount!;
+  amountSompi = withdrawAmount(params.amount, remainingWindow, utxo.amount, feeSompi);
   const outflow = amountSompi + feeSompi;
   if (outflow > remainingWindow) {
     throw new Error(
@@ -393,7 +394,7 @@ async function fundInitialVault(params: {
   let feeSompi = 0n;
   let tx = buildGenesisDepositTx(walletUtxos, vaultSpk, changeSpk, amountSompi, feeSompi);
   for (let i = 0; i < 3; i++) {
-    feeSompi = estimateTxFeeSompi(wallet.networkId, tx, feerate, walletUtxos.length);
+    feeSompi = estimateTxFeeSompi(wallet.networkId, tx, feerate, walletUtxos.map(() => DUMMY_WALLET_SIGNATURE_SCRIPT));
     if (sumUtxoAmounts(walletUtxos) < amountSompi + feeSompi) {
       walletUtxos = await selectWalletUtxos(wallet, amountSompi + feeSompi);
     }
@@ -443,7 +444,10 @@ async function topUpVault(params: {
   let feeSompi = 0n;
   let tx = buildTopupTx(config, vaultUtxo, walletUtxos, vaultSpk, changeSpk, amountSompi, feeSompi);
   for (let i = 0; i < 3; i++) {
-    feeSompi = estimateTxFeeSompi(wallet.networkId, tx, feerate, 1 + walletUtxos.length);
+    feeSompi = estimateTxFeeSompi(wallet.networkId, tx, feerate, [
+      dummyVaultSignatureScript(redeem, "topup"),
+      ...walletUtxos.map(() => DUMMY_WALLET_SIGNATURE_SCRIPT),
+    ]);
     if (sumUtxoAmounts(walletUtxos) < amountSompi + feeSompi) {
       walletUtxos = await selectWalletUtxos(wallet, amountSompi + feeSompi);
     }
@@ -592,6 +596,13 @@ function sumUtxoAmounts(utxos: NormalizedUtxo[]): bigint {
   return utxos.reduce((acc, utxo) => acc + utxo.amount, 0n);
 }
 
+function withdrawAmount(amount: bigint | "max" | undefined, remainingWindow: bigint, utxoAmount: bigint, feeSompi: bigint): bigint {
+  if (amount !== "max") return amount!;
+  const outflowCap = minBigInt(remainingWindow, utxoAmount - MIN_VAULT_CHANGE_SOMPI);
+  if (outflowCap <= 0n) throw new Error(`vault UTXO of ${utxoAmount} sompi is too small to withdraw from`);
+  return outflowCap - feeSompi;
+}
+
 function normalizeEntries(entries: any[]): NormalizedUtxo[] {
   return (entries ?? []).map((raw) => {
     const entry = raw?.entry ?? raw;
@@ -628,12 +639,17 @@ function assertCurrentConfig(config: Partial<VaultConfig>): asserts config is Va
   }
 }
 
-function estimateTxFeeSompi(networkId: string, tx: Transaction, feerate: number, minimumSignatures: number): bigint {
+function dummyVaultSignatureScript(redeem: Uint8Array, fn: "withdraw" | "topup"): string | Uint8Array {
+  return payToScriptHashSignatureScript(redeem, buildSigArgs(DUMMY_SIGNATURE, fn));
+}
+
+function estimateTxFeeSompi(networkId: string, tx: Transaction, feerate: number, inputScripts: Array<string | Uint8Array>): bigint {
   const rate = BigInt(Math.max(Math.ceil(feerate), 100));
   try {
-    return (calculateTransactionMass(networkId, tx, minimumSignatures) * rate * 110n) / 100n;
+    setInputScripts(tx, inputScripts);
+    return (calculateTransactionMass(networkId, tx) * rate * 110n) / 100n;
   } catch {
-    return 100_000n * BigInt(minimumSignatures);
+    return 100_000n * BigInt(inputScripts.length);
   }
 }
 

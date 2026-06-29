@@ -9,7 +9,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import { sha256 } from "@noble/hashes/sha256";
-import { payToAddressScript, payToScriptHashScript } from "../vendor/kaspa-wasm/kaspa";
+import { calculateTransactionMass, payToAddressScript, payToScriptHashScript } from "../vendor/kaspa-wasm/kaspa";
 import { PolicyEngine, PolicyViolation } from "./policy";
 import { VaultManager, generateOwnerKey as generateVaultOwnerKey } from "./vault";
 import { buildRedeemScript, buildSigArgs, bytesToHex, hexToBytes } from "./vault/template";
@@ -137,6 +137,9 @@ async function main() {
   });
   let walletEntries = [walletEntry("11", 0, 90_000_000n), walletEntry("22", 0, 90_000_000n)];
   let submittedInputCounts: number[] = [];
+  let submittedFinalFees: bigint[] = [];
+  let submittedMinimumFees: bigint[] = [];
+  let vaultUtxoAmount = 120_000_000n;
   let submitCount = 0;
   (fragmentedWallet as any).client = async () => ({
     getUtxosByAddresses: async (addresses: string[]) => {
@@ -151,7 +154,7 @@ async function main() {
         entries: [
           {
             outpoint: { transactionId: current.currentOutpoint.txid, index: current.currentOutpoint.index },
-            amount: 120_000_000n,
+            amount: vaultUtxoAmount,
             scriptPublicKey: payToScriptHashScript(
               buildRedeemScript(current.agentPublic, current.ownerPublic, BigInt(current.maxOutflowSompi), BigInt(current.windowSizeDaa), state)
             ),
@@ -163,15 +166,23 @@ async function main() {
       };
     },
     getFeeEstimate: async () => ({ estimate: { normalBuckets: [{ feerate: 100 }] } }),
+    getServerInfo: async () => ({ virtualDaaScore: "1" }),
     submitTransaction: async ({ transaction }: any) => {
       submittedInputCounts.push(transaction.inputs.length);
+      const inputTotal = [...transaction.inputs].reduce((acc: bigint, input: any) => acc + BigInt(input.utxo.amount), 0n);
+      const outputTotal = [...transaction.outputs].reduce((acc: bigint, output: any) => acc + BigInt(output.value), 0n);
+      submittedFinalFees.push(inputTotal - outputTotal);
+      submittedMinimumFees.push(calculateTransactionMass("testnet-10", transaction) * 100n);
       submitCount += 1;
-      return { transactionId: `${submitCount === 1 ? "33" : "44"}`.repeat(32) };
+      const tag = submitCount === 1 ? "33" : submitCount === 2 ? "44" : "77";
+      return { transactionId: tag.repeat(32) };
     },
   });
   const fragmentedDeposit = await vault.deposit(fragmentedWallet, 120_000_000n);
   walletEntries = [walletEntry("55", 0, 60_000_000n), walletEntry("66", 0, 60_000_000n)];
   const fragmentedTopup = await vault.deposit(fragmentedWallet, 80_000_000n);
+  vaultUtxoAmount = 90_000_000n;
+  const smallExplicitSpend = await vault.send(fragmentedWallet, fragmentedWallet.address, 10_000_000n);
   check(
     "vault deposit: aggregates fragmented wallet UTXOs",
     fragmentedDeposit.txid === "33".repeat(32) && submittedInputCounts[0] === 2
@@ -179,6 +190,18 @@ async function main() {
   check(
     "vault top-up: aggregates fragmented wallet UTXOs",
     fragmentedTopup.txid === "44".repeat(32) && submittedInputCounts[1] === 3
+  );
+  check(
+    "vault explicit withdrawal: allows small vaults with positive change",
+    smallExplicitSpend.txid === "77".repeat(32) && smallExplicitSpend.amountSompi === 10_000_000n && submittedInputCounts[2] === 1
+  );
+  check(
+    "vault top-up: fee covers final signed covenant mass",
+    submittedFinalFees[1] >= submittedMinimumFees[1]
+  );
+  check(
+    "vault withdrawal: fee covers final signed covenant mass",
+    submittedFinalFees[2] >= submittedMinimumFees[2]
   );
   fs.rmSync(fragmentedVaultDir, { recursive: true, force: true });
 
