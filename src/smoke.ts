@@ -120,6 +120,10 @@ async function main() {
     `vault template: byte-identical to compiler output (${templateMatches}/${fixtures.length} fixtures)`,
     templateMatches === fixtures.length
   );
+  check(
+    "vault template: reset path reads active input DAA score",
+    fixtures.every((f: any) => f.redeemScript.includes("b9c0"))
+  );
 
   // --- offline checks: vault deposits aggregate fragmented wallet UTXOs ---
   const fragmentedVaultDir = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-vault-fragmented-"));

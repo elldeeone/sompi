@@ -39,8 +39,8 @@ singleton with rolling-window state.
    contract against a Toccata node. For escrow, `scripts/escrow-live.js` proves
    honest claim/refund paths and rejects replay/over-claim attempts. For vault,
    `npm run proof:vault` proves allowed withdrawal, over-window rejection,
-   finalized future-locktime reset rejection, window reset, top-up, and owner
-   recovery.
+   historical-locktime reset rejection, finalized future-locktime reset rejection,
+   window reset, top-up, and owner recovery.
 
 ## When a contract changes
 

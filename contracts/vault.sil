@@ -31,7 +31,8 @@ contract SompiVault(
 
         int nextWindowStart = windowStart;
         int nextSpentInWindow = spentInWindow + outflow;
-        if (tx.locktime >= windowStart + windowSize) {
+        int inputDaa = OpTxInputDaaScore(this.activeInputIndex);
+        if (tx.locktime >= windowStart + windowSize && tx.locktime >= inputDaa + windowSize) {
             nextWindowStart = tx.locktime;
             nextSpentInWindow = outflow;
         }

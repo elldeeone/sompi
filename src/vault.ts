@@ -291,16 +291,18 @@ export async function spendVault(
 
   const info = await rpc.getServerInfo();
   const virtualDaa = BigInt(info.virtualDaaScore);
-  // Keep the input non-final so header context enforces this DAA locktime;
-  // otherwise an agent could set a future locktime and reset the window early.
+  // Keep the input non-final so header context enforces this DAA locktime.
+  // The contract also requires the active vault UTXO itself to have aged a
+  // full window, so stale-but-final historical locktimes cannot reset windows.
   const lockDaa = virtualDaa > 0n ? virtualDaa - 1n : 0n;
-  const reset = lockDaa >= currentState.windowStartDaa + windowSize;
+  const resetTargetDaa = maxBigInt(currentState.windowStartDaa, utxo.blockDaaScore) + windowSize;
+  const reset = lockDaa >= resetTargetDaa;
   const spentAtWindowStart = reset ? 0n : currentState.spentInWindowSompi;
   const remainingWindow = max - spentAtWindowStart;
   if (remainingWindow <= 0n) {
     throw new Error(
       `vault window exhausted: spent ${spentAtWindowStart} of ${max} sompi; ` +
-        `next reset at DAA ${currentState.windowStartDaa + windowSize}`
+        `next reset at DAA ${resetTargetDaa}`
     );
   }
 
@@ -670,6 +672,10 @@ function pushDataLength(dataLength: number): number {
 
 function minBigInt(a: bigint, b: bigint): bigint {
   return a < b ? a : b;
+}
+
+function maxBigInt(a: bigint, b: bigint): bigint {
+  return a > b ? a : b;
 }
 
 export function generateOwnerKey(): { privateKey: string; publicKey: string } {

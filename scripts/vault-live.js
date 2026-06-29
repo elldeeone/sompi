@@ -6,10 +6,11 @@
  *   1. first deposit creates a covenant-bound singleton vault UTXO
  *   2. agent withdrawal within the active rolling window is accepted on-chain
  *   3. a validly signed over-window withdrawal is rejected by consensus
- *   4. a finalized future-locktime reset attempt is rejected by the covenant
- *   5. top-up preserves the current state while adding funds to the singleton
- *   6. after the DAA window resets, another withdrawal is accepted
- *   7. owner recovery drains the remaining vault balance
+ *   4. a historical locktime reset attempt is rejected by the covenant
+ *   5. a finalized future-locktime reset attempt is rejected by the covenant
+ *   6. top-up preserves the current state while adding funds to the singleton
+ *   7. after the DAA window resets, another withdrawal is accepted
+ *   8. owner recovery drains the remaining vault balance
  *
  * Usage: npm run build && SOMPI_NODE_URL=<node> npm run proof:vault
  */
@@ -172,6 +173,14 @@ function covenantBinding(covenantId, authorizingInput) {
   return new CovenantBinding(authorizingInput, new Hash(covenantId));
 }
 
+function maxBigInt(a, b) {
+  return a > b ? a : b;
+}
+
+function resetTargetDaa(config, utxo) {
+  return maxBigInt(BigInt(config.windowStartDaa), utxo.blockDaaScore) + BigInt(config.windowSizeDaa);
+}
+
 async function rawOverWindowWithdraw(wallet, config, agentPrivate, destination, options = {}) {
   if (!config.covenantId) throw new Error("vault has no covenant id");
   const rpc = await wallet.client();
@@ -179,12 +188,13 @@ async function rawOverWindowWithdraw(wallet, config, agentPrivate, destination, 
   const now = virtualDaa > 0n ? virtualDaa - 1n : 0n;
   const windowStart = BigInt(config.windowStartDaa);
   const windowSize = BigInt(config.windowSizeDaa);
-  const resetTarget = windowStart + windowSize;
   const lockTime = options.lockTime ?? now;
   const sequence = options.sequence ?? NON_FINAL_SEQUENCE;
   const resetWindow = Boolean(options.resetWindow);
+  const utxo = await currentVaultUtxo(wallet, config);
+  const resetTarget = resetTargetDaa(config, utxo);
   if (!resetWindow && now >= resetTarget) {
-    throw new Error(`window already reset before over-window probe (locktime ${now}, reset ${windowStart + windowSize})`);
+    throw new Error(`window already reset before over-window probe (locktime ${now}, reset ${resetTarget})`);
   }
 
   const max = BigInt(config.maxOutflowSompi);
@@ -192,7 +202,6 @@ async function rawOverWindowWithdraw(wallet, config, agentPrivate, destination, 
   const remaining = max - spent;
   if (remaining <= 0n) throw new Error("window already exhausted before over-window probe");
 
-  const utxo = await currentVaultUtxo(wallet, config);
   let amount = remaining + 10_000_000n;
   if (resetWindow && amount + RAW_FEE > max) {
     amount = max - RAW_FEE;
@@ -298,7 +307,23 @@ async function main() {
 
     try {
       const current = vault.config();
-      const futureLockTime = BigInt(current.windowStartDaa) + BigInt(current.windowSizeDaa);
+      const historicalLockTime = BigInt(current.windowStartDaa) + BigInt(current.windowSizeDaa);
+      const txid = await rawOverWindowWithdraw(wallet, current, readAgentPrivate(), wallet.address, {
+        lockTime: historicalLockTime,
+        sequence: NON_FINAL_SEQUENCE,
+        resetWindow: true,
+      });
+      record("historical-locktime-reset-accepted", { txid, historicalLockTime: historicalLockTime.toString() });
+      check("historical locktime reset rejected by covenant", false, `accepted ${txid.slice(0, 16)}`);
+    } catch (error) {
+      const msg = String(error.message ?? error);
+      check("historical locktime reset rejected by covenant", /verif|script|reject|invalid|failed/i.test(msg), msg.slice(0, 120));
+    }
+
+    try {
+      const current = vault.config();
+      const currentUtxo = await currentVaultUtxo(wallet, current);
+      const futureLockTime = resetTargetDaa(current, currentUtxo);
       const txid = await rawOverWindowWithdraw(wallet, current, readAgentPrivate(), wallet.address, {
         lockTime: futureLockTime,
         sequence: FINAL_SEQUENCE,
@@ -313,10 +338,10 @@ async function main() {
 
     const topup = await vault.deposit(wallet, TOPUP);
     record("topup", { txid: topup.txid, depositedSompi: topup.depositedSompi.toString(), feeSompi: topup.feeSompi.toString() });
-    await waitForVaultUtxo(wallet, vault, "top-up");
+    const topupUtxo = await waitForVaultUtxo(wallet, vault, "top-up");
     check("top-up through singleton covenant accepted on-chain", true, topup.txid.slice(0, 16));
 
-    const resetTarget = BigInt(vault.config().windowStartDaa) + BigInt(vault.config().windowSizeDaa);
+    const resetTarget = resetTargetDaa(vault.config(), topupUtxo);
     const resetDaa = await waitForDaa(wallet, resetTarget + 1n);
     record("window-reset-reached", { resetDaa: resetDaa.toString(), resetTarget: resetTarget.toString() });
     const second = await vault.send(wallet, wallet.address, WITHDRAW);

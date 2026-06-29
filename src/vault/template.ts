@@ -14,19 +14,20 @@ const SEGMENT_0 = "6b";
 const SEGMENT_1 = "6c76009c63755279";
 const SEGMENT_2 =
   "ac69b3519c69b9bd0058cd8769b4529c69b9cf76d0519c697600d1b99c6976d2519c697600d376519c69b9be78c2947600a26954795479527993b55779";
-const SEGMENT_3 = "93a263b57b7552797b756876";
-const SEGMENT_4 =
-  "a16978787858cd01087c7e7858cd01087c7e7eb976c9";
+const SEGMENT_3 = "93a2b5b9c0";
+const SEGMENT_4 = "93a29a63b57b7552797b756876";
 const SEGMENT_5 =
+  "a16978787858cd01087c7e7858cd01087c7e7eb976c9";
+const SEGMENT_6 =
   "94765193bc7c7eb976c976";
-const SEGMENT_6 = "940113937cbc7eaa02000001aa7e01207e7c7e01877e5679c38769007a75007a75007a75007a75007a75007a75007a75757575516776519c63755279";
-const SEGMENT_7 =
+const SEGMENT_7 = "940113937cbc7eaa02000001aa7e01207e7c7e01877e5679c38769007a75007a75007a75007a75007a75007a75007a75757575516776519c63755279";
+const SEGMENT_8 =
   "ac69b352a269b9009c69b9cf76d0519c697600d1b99c6976d2519c697600d376009c6976c2b9bea269537958cd01087c7e537958cd01087c7e7eb976c9";
-const SEGMENT_8 = "94765193bc7c7eb976c976";
-const SEGMENT_9 = "940113937cbc7eaa02000001aa7e01207e7c7e01877e78c38769007a75007a75757575516776529c63755279";
-const SEGMENT_10 = "ac697575755167750069686868";
+const SEGMENT_9 = "94765193bc7c7eb976c976";
+const SEGMENT_10 = "940113937cbc7eaa02000001aa7e01207e7c7e01877e78c38769007a75007a75757575516776529c63755279";
+const SEGMENT_11 = "ac697575755167750069686868";
 
-const SCRIPT_BASE_LEN = 433;
+const SCRIPT_BASE_LEN = 439;
 
 export const VAULT_TEMPLATE_VERSION = "sompi-vault-1";
 
@@ -106,7 +107,7 @@ export function buildRedeemScript(
   if (windowSizeDaa <= 0n) throw new Error("windowSizeDaa must be positive");
   const maxOutflowPush = pushNumber(maxOutflowSompi);
   const windowSizePush = pushNumber(windowSizeDaa);
-  const scriptSizePush = pushNumber(BigInt(SCRIPT_BASE_LEN + maxOutflowPush.length + windowSizePush.length));
+  const scriptSizePush = pushNumber(BigInt(SCRIPT_BASE_LEN + maxOutflowPush.length + 2 * windowSizePush.length));
   return concat(
     hexToBytes(SEGMENT_0),
     pushStateInt(state.windowStartDaa),
@@ -116,20 +117,22 @@ export function buildRedeemScript(
     hexToBytes(SEGMENT_2),
     windowSizePush,
     hexToBytes(SEGMENT_3),
-    maxOutflowPush,
+    windowSizePush,
     hexToBytes(SEGMENT_4),
-    scriptSizePush,
+    maxOutflowPush,
     hexToBytes(SEGMENT_5),
     scriptSizePush,
     hexToBytes(SEGMENT_6),
-    pushData(agent),
-    hexToBytes(SEGMENT_7),
     scriptSizePush,
+    hexToBytes(SEGMENT_7),
+    pushData(agent),
     hexToBytes(SEGMENT_8),
     scriptSizePush,
     hexToBytes(SEGMENT_9),
+    scriptSizePush,
+    hexToBytes(SEGMENT_10),
     pushData(owner),
-    hexToBytes(SEGMENT_10)
+    hexToBytes(SEGMENT_11)
   );
 }
 
