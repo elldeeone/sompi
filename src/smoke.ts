@@ -139,6 +139,7 @@ async function main() {
     blockDaaScore: 1n,
     isCoinbase: false,
   });
+  const directVaultAmount = 50_000_000n;
   let walletEntries = [walletEntry("11", 0, 90_000_000n), walletEntry("22", 0, 90_000_000n)];
   let submittedInputCounts: number[] = [];
   let submittedFinalFees: bigint[] = [];
@@ -149,13 +150,24 @@ async function main() {
     getUtxosByAddresses: async (addresses: string[]) => {
       if (addresses[0] === fragmentedWallet.address) return { entries: walletEntries };
       const current = vault.config();
-      if (addresses[0] !== current.address || !current.covenantId || !current.currentOutpoint) return { entries: [] };
+      if (addresses[0] !== current.address) return { entries: [] };
       const state = {
         windowStartDaa: BigInt(current.windowStartDaa),
         spentInWindowSompi: BigInt(current.spentInWindowSompi),
       };
+      const directEntry = {
+        outpoint: { transactionId: "bb".repeat(32), index: 0 },
+        amount: directVaultAmount,
+        scriptPublicKey: payToScriptHashScript(
+          buildRedeemScript(current.agentPublic, current.ownerPublic, BigInt(current.maxOutflowSompi), BigInt(current.windowSizeDaa), state)
+        ),
+        blockDaaScore: 1n,
+        isCoinbase: false,
+      };
+      if (!current.covenantId || !current.currentOutpoint) return { entries: [directEntry] };
       return {
         entries: [
+          directEntry,
           {
             outpoint: { transactionId: current.currentOutpoint.txid, index: current.currentOutpoint.index },
             amount: vaultUtxoAmount,
@@ -185,7 +197,9 @@ async function main() {
       return { transactionId: tag.repeat(32) };
     },
   });
+  const preCovenantBalances = await vault.balanceBreakdown(fragmentedWallet);
   const fragmentedDeposit = await vault.deposit(fragmentedWallet, 120_000_000n);
+  const postDepositBalances = await vault.balanceBreakdown(fragmentedWallet);
   walletEntries = [walletEntry("55", 0, 60_000_000n), walletEntry("66", 0, 60_000_000n)];
   const fragmentedTopup = await vault.deposit(fragmentedWallet, 80_000_000n);
   vaultUtxoAmount = 90_000_000n;
@@ -198,6 +212,14 @@ async function main() {
   check(
     "vault deposit: aggregates fragmented wallet UTXOs",
     fragmentedDeposit.txid === "33".repeat(32) && submittedInputCounts[0] === 2
+  );
+  check(
+    "vault status: direct pre-covenant funds are unbound",
+    preCovenantBalances.spendableSompi === 0n && preCovenantBalances.unboundSompi === directVaultAmount
+  );
+  check(
+    "vault status: unbound funds stay separate after covenant deposit",
+    postDepositBalances.spendableSompi === 120_000_000n && postDepositBalances.unboundSompi === directVaultAmount
   );
   check(
     "vault top-up: aggregates fragmented wallet UTXOs",

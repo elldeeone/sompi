@@ -343,14 +343,19 @@ registerTool(
         };
       }
       const config = vault.config();
-      const balance = await vault.balanceSompi(wallet);
+      const balances = await vault.balanceBreakdown(wallet);
       return {
         configured: true,
         ...config,
-        balanceSompi: balance.toString(),
-        balanceKas: formatKas(balance),
+        balanceSompi: balances.spendableSompi.toString(),
+        balanceKas: formatKas(balances.spendableSompi),
+        unboundSompi: balances.unboundSompi.toString(),
+        unboundKas: formatKas(balances.unboundSompi),
         dayToDayPolicyMaxPerTxSompi: policy.policy.maxSompiPerTx.toString(),
-        note: "maxOutflowSompi is the consensus-enforced rolling-window cap; the policy cap governs normal operation and remains editable",
+        note:
+          balances.unboundSompi > 0n
+            ? "balanceSompi only counts covenant-bound funds spendable by vault_send; unboundSompi was sent directly to the vault address and is owner-recoverable only"
+            : "maxOutflowSompi is the consensus-enforced rolling-window cap; the policy cap governs normal operation and remains editable",
       };
     })
 );

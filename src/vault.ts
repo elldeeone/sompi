@@ -177,12 +177,24 @@ export class VaultManager {
   }
 
   async balanceSompi(wallet: KaspaWallet): Promise<bigint> {
+    const { spendableSompi } = await this.balanceBreakdown(wallet);
+    return spendableSompi;
+  }
+
+  async balanceBreakdown(wallet: KaspaWallet): Promise<{ spendableSompi: bigint; unboundSompi: bigint }> {
     const config = this.config();
     const rpc = await wallet.client();
     const { entries } = await rpc.getUtxosByAddresses([config.address]);
-    return normalizeEntries(entries)
-      .filter((entry) => !config.covenantId || entry.covenantId === config.covenantId)
+    const normalized = normalizeEntries(entries);
+    const spendableSompi = config.covenantId
+      ? normalized
+          .filter((entry) => entry.covenantId === config.covenantId)
+          .reduce((acc, entry) => acc + entry.amount, 0n)
+      : 0n;
+    const unboundSompi = normalized
+      .filter((entry) => !config.covenantId || entry.covenantId !== config.covenantId)
       .reduce((acc, entry) => acc + entry.amount, 0n);
+    return { spendableSompi, unboundSompi };
   }
 
   async deposit(
