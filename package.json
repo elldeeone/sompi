@@ -35,9 +35,9 @@
     "fixtures:vault:check": "node scripts/compile-vault-fixtures.js --check",
     "fixtures:escrow": "node scripts/compile-escrow-fixtures.js",
     "fixtures:escrow:check": "node scripts/compile-escrow-fixtures.js --check",
-    "demo:x402": "node dist/demo-x402.js",
     "demo:escrow": "node dist/demo-escrow.js",
     "proof:vault": "node scripts/vault-live.js",
+    "proof:phase5": "node scripts/phase5-live.js",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
