@@ -243,18 +243,19 @@ registerTool(
   "vault_create",
   {
     description:
-      "Create a covenant vault: a P2SH address whose agent spending path is capped at maxOutflowSompi " +
-      "per transaction by Kaspa consensus (not by software). The owner/recovery key belongs to your " +
+      "Create a covenant vault config whose agent spending path is capped at maxOutflowSompi " +
+      "per rolling window by Kaspa consensus (not by software). The owner/recovery key belongs to your " +
       "HUMAN OPERATOR: before calling this, ask them to run `npx @elldeeone/sompi gen-owner-key` on " +
-      "their own machine and give you (1) the public key and (2) the spending cap they want. Never " +
-      "generate or ask for the owner private key. Returns the vault address for them to fund. " +
-      "Testnet proof-of-concept.",
+      "their own machine and give you (1) the public key, (2) the rolling window cap, and optionally " +
+      "(3) the window size in DAA. Never generate or ask for the owner private key. After creation, " +
+      "use vault_deposit to create the covenant-bound vault UTXO.",
     inputSchema: {
-      maxOutflowSompi: z.string().optional().describe("Consensus-enforced cap per withdrawal (amount + fee), in sompi — chosen by the operator"),
+      maxOutflowSompi: z.string().optional().describe("Consensus-enforced cap per rolling window (amount + fee), in sompi — chosen by the operator"),
+      windowSizeDaa: z.string().optional().describe("Rolling window size in DAA score units; default 36000, about one hour at 10 BPS"),
       ownerPublicKey: z.string().optional().describe("The operator's 32-byte x-only public key (64 hex chars); its private half stays with them"),
     },
   },
-  async ({ maxOutflowSompi, ownerPublicKey }) =>
+  async ({ maxOutflowSompi, windowSizeDaa, ownerPublicKey }) =>
     guarded(async () => {
       if (!ownerPublicKey || !maxOutflowSompi) {
         const policyCap = policy.policy.maxSompiPerTx;
@@ -262,25 +263,23 @@ registerTool(
           "Vault setup needs two things from your human operator. Relay BOTH questions clearly: " +
             "(1) Ask them to run `npx -y @elldeeone/sompi gen-owner-key` on THEIR machine and send you the " +
             "`public:` line (64 hex chars — never the private line). " +
-            "(2) Ask what the vault's UNCHANGEABLE disaster cap should be, in sompi. Explain the two layers " +
+            "(2) Ask what the vault's UNCHANGEABLE rolling-window cap should be, in sompi. Explain the two layers " +
             `when you ask: their day-to-day spending policy (currently ${policyCap} sompi per tx) stays in ` +
-            "force and can be edited anytime; the vault cap is different — it is baked into the vault address " +
-            "forever and only limits what a THIEF with this agent's key could take per transaction. It must be " +
-            "at or above the day-to-day policy cap, and closer to it is safer (changing it later means creating " +
-            "a new vault and moving the funds). " +
-            "Then call vault_create again with ownerPublicKey and maxOutflowSompi. " +
-            "After it returns the vault address, use vault_deposit to move your funds in."
+            "force and can be edited anytime; the vault cap is different — it is enforced by consensus " +
+            "over a rolling DAA window. It must be at or above the day-to-day policy cap, and closer to it " +
+            "is safer. The default windowSizeDaa is 36000 (about one hour at 10 BPS). " +
+            "Then call vault_create again with ownerPublicKey and maxOutflowSompi, then use vault_deposit."
         );
       }
-      const created = vault.create(BigInt(maxOutflowSompi), ownerPublicKey);
+      const created = vault.create(BigInt(maxOutflowSompi), ownerPublicKey, windowSizeDaa ? BigInt(windowSizeDaa) : undefined);
       const policyCap = policy.policy.maxSompiPerTx;
       const cap = BigInt(maxOutflowSompi);
       const alignment =
         cap >= policyCap
           ? cap / policyCap > 10n
-            ? `note for your operator: the vault cap is ${cap / policyCap}x the day-to-day policy cap ` +
+            ? `note for your operator: the vault window cap is ${cap / policyCap}x the day-to-day policy cap ` +
               `(${policyCap} sompi). Day-to-day nothing changes, but a key thief could drain in ` +
-              `${cap}-sompi steps; keeping the two caps close is safer.`
+              `${cap}-sompi windows; keeping the two caps close is safer.`
             : "vault cap and day-to-day policy are reasonably aligned"
           : `warning: the vault cap (${cap} sompi) is BELOW the day-to-day policy cap (${policyCap} sompi) — ` +
             "withdrawals above the vault cap will be rejected by the network regardless of policy";
@@ -288,8 +287,8 @@ registerTool(
         ...created,
         capAlignment: alignment,
         nextStep:
-          "use vault_deposit to move funds in (your operator can also fund the address directly); " +
-          "only the operator's key can ever drain the vault past the cap",
+          "fund this agent's regular wallet, then use vault_deposit to create the covenant-bound vault UTXO; " +
+          "only the operator's key can drain the vault outside the rolling cap",
       };
     })
 );
@@ -298,9 +297,10 @@ registerTool(
   "vault_deposit",
   {
     description:
-      "Move KAS from this agent's regular wallet INTO its covenant vault. Exempt from the spending " +
-      "policy: deposits make funds MORE constrained, not less. Omit amountSompi to deposit everything " +
-      "except a working float.",
+      "Move KAS from this agent's regular wallet INTO its covenant vault. The first deposit creates the " +
+      "genesis covenant-bound vault UTXO; later deposits merge through the current singleton vault UTXO. " +
+      "Exempt from spending policy because deposits make funds more constrained. Omit amountSompi to " +
+      "deposit everything except a working float.",
     inputSchema: {
       amountSompi: z.string().optional().describe("Amount in sompi; omit to deposit all but the float"),
       keepFloatSompi: z.string().default("1000000000").describe("Float to keep in the regular wallet when amountSompi is omitted (default 10 KAS)"),
@@ -309,22 +309,21 @@ registerTool(
   async ({ amountSompi, keepFloatSompi }) =>
     guarded(async () => {
       if (!vault.configured) throw new Error("no vault yet — call vault_create first");
-      const config = vault.config();
       const balance = await wallet.balanceSompi();
-      const amount = amountSompi ? BigInt(amountSompi) : balance - BigInt(keepFloatSompi);
-      if (amount <= 0n) {
+      const amount = amountSompi ? BigInt(amountSompi) : "max";
+      const keepFloat = BigInt(keepFloatSompi);
+      if (amount !== "max" && amount <= 0n) {
         throw new Error(`nothing to deposit: wallet holds ${balance} sompi, float is ${keepFloatSompi}`);
       }
-      // Deliberately NOT policy-gated: the destination is this agent's own
-      // vault, where funds become strictly harder to move.
-      const { txid, feeSompi } = await wallet.send(config.address, amount);
+      const result = await vault.deposit(wallet, amount, amount === "max" ? keepFloat : 0n);
       return {
-        txid,
-        vaultAddress: config.address,
-        depositedSompi: amount.toString(),
-        depositedKas: formatKas(amount),
-        feeSompi: feeSompi.toString(),
-        remainingWalletFloat: formatKas(balance - amount - feeSompi),
+        txid: result.txid,
+        vaultAddress: result.vaultAddress,
+        covenantId: result.covenantId,
+        depositedSompi: result.depositedSompi.toString(),
+        depositedKas: formatKas(result.depositedSompi),
+        feeSompi: result.feeSompi.toString(),
+        remainingWalletFloat: formatKas(balance - result.depositedSompi - result.feeSompi),
       };
     })
 );
@@ -332,7 +331,7 @@ registerTool(
 registerTool(
   "vault_status",
   {
-    description: "Show the covenant vault's address, consensus spending cap, and on-chain balance.",
+    description: "Show the covenant vault's current address, rolling-window state, consensus spending cap, and on-chain balance.",
   },
   async () =>
     guarded(async () => {
@@ -344,14 +343,19 @@ registerTool(
         };
       }
       const config = vault.config();
-      const balance = await vault.balanceSompi(wallet);
+      const balances = await vault.balanceBreakdown(wallet);
       return {
         configured: true,
         ...config,
-        balanceSompi: balance.toString(),
-        balanceKas: formatKas(balance),
+        balanceSompi: balances.spendableSompi.toString(),
+        balanceKas: formatKas(balances.spendableSompi),
+        unboundSompi: balances.unboundSompi.toString(),
+        unboundKas: formatKas(balances.unboundSompi),
         dayToDayPolicyMaxPerTxSompi: policy.policy.maxSompiPerTx.toString(),
-        note: "maxOutflowSompi is the consensus-enforced disaster cap (unchangeable); the policy cap governs normal operation (editable)",
+        note:
+          balances.unboundSompi > 0n
+            ? "balanceSompi only counts covenant-bound funds spendable by vault_send; unboundSompi was sent directly to the vault address and is owner-recoverable only"
+            : "maxOutflowSompi is the consensus-enforced rolling-window cap; the policy cap governs normal operation and remains editable",
       };
     })
 );
@@ -361,8 +365,8 @@ registerTool(
   {
     description:
       "Withdraw from the covenant vault via the consensus-capped agent path. Also passes through the " +
-      "local spending policy (defense in depth). Change returns to the vault automatically. The fee is " +
-      'estimated from the node; pass amountSompi "max" to send the largest amount the covenant cap allows.',
+      "local spending policy (defense in depth). Change advances to the vault's next state/address automatically. " +
+      'The fee is estimated from the node; pass amountSompi "max" to send the largest amount the current window allows.',
     inputSchema: {
       to: z.string().describe("Destination Kaspa address"),
       amountSompi: z.string().describe('Amount in sompi, or "max" for the largest cap-compliant amount'),

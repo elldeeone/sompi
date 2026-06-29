@@ -9,8 +9,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import { sha256 } from "@noble/hashes/sha256";
-import { payToScriptHashScript } from "../vendor/kaspa-wasm/kaspa";
+import { calculateTransactionMass, payToAddressScript, payToScriptHashScript } from "../vendor/kaspa-wasm/kaspa";
 import { PolicyEngine, PolicyViolation } from "./policy";
+import { VaultManager, generateOwnerKey as generateVaultOwnerKey } from "./vault";
 import { buildRedeemScript, buildSigArgs, bytesToHex, hexToBytes } from "./vault/template";
 import { buildEscrowRedeemScript, buildClaimArgs, buildRefundArgs, voucherMessage } from "./x402/escrow-template";
 import { EscrowUtxoNotFoundError, escrowFunding, escrowScriptPubKeyHash, generateChannelKey, makeVoucher, verifyVoucher } from "./x402/escrow";
@@ -95,10 +96,21 @@ async function main() {
   const fixtures = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "scripts", "vault-fixtures.json"), "utf8"));
   let templateMatches = 0;
   for (const f of fixtures) {
-    const redeem = bytesToHex(buildRedeemScript(f.agent, f.owner, BigInt(f.maxOutflow)));
+    const redeem = bytesToHex(
+      buildRedeemScript(f.agent, f.owner, BigInt(f.maxOutflow), BigInt(f.windowSize), {
+        windowStartDaa: BigInt(f.windowStart),
+        spentInWindowSompi: BigInt(f.spentInWindow),
+      })
+    );
     const withdrawArgs = bytesToHex(buildSigArgs(new Uint8Array(65).fill(0xab), "withdraw"));
+    const topupArgs = bytesToHex(buildSigArgs(new Uint8Array(65).fill(0xab), "topup"));
     const recoverArgs = bytesToHex(buildSigArgs(new Uint8Array(65).fill(0xab), "recover"));
-    if (redeem === f.redeemScript && withdrawArgs === f.withdrawArgsWithDummySig && recoverArgs === f.recoverArgsWithDummySig) {
+    if (
+      redeem === f.redeemScript &&
+      withdrawArgs === f.withdrawArgsWithDummySig &&
+      topupArgs === f.topupArgsWithDummySig &&
+      recoverArgs === f.recoverArgsWithDummySig
+    ) {
       templateMatches++;
     } else {
       console.log(`  fixture mismatch: agent=${f.agent.slice(0, 8)} max=${f.maxOutflow}`);
@@ -108,6 +120,157 @@ async function main() {
     `vault template: byte-identical to compiler output (${templateMatches}/${fixtures.length} fixtures)`,
     templateMatches === fixtures.length
   );
+  check(
+    "vault template: withdraw/top-up reset paths read active input DAA score",
+    fixtures.every((f: any) => (f.redeemScript.match(/b9c0/g) ?? []).length >= 2)
+  );
+
+  // --- offline checks: vault deposits aggregate fragmented wallet UTXOs ---
+  const fragmentedVaultDir = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-vault-fragmented-"));
+  const fragmentedWallet = new KaspaWallet({ networkId: "testnet-10", dataDir: path.join(fragmentedVaultDir, "wallet") });
+  const owner = generateVaultOwnerKey();
+  const vault = new VaultManager(fragmentedVaultDir, "testnet-10");
+  vault.create(500_000_000n, owner.publicKey, 300n);
+  const walletSpk = payToAddressScript(fragmentedWallet.address);
+  const walletEntry = (tag: string, index: number, amount: bigint) => ({
+    outpoint: { transactionId: tag.repeat(32), index },
+    amount,
+    scriptPublicKey: walletSpk,
+    blockDaaScore: 1n,
+    isCoinbase: false,
+  });
+  const directVaultAmount = 50_000_000n;
+  let walletEntries = [walletEntry("11", 0, 90_000_000n), walletEntry("22", 0, 90_000_000n)];
+  let submittedInputCounts: number[] = [];
+  let submittedFinalFees: bigint[] = [];
+  let submittedMinimumFees: bigint[] = [];
+  let vaultUtxoAmount = 120_000_000n;
+  let virtualDaaScore = 1n;
+  let submitCount = 0;
+  (fragmentedWallet as any).client = async () => ({
+    getUtxosByAddresses: async (addresses: string[]) => {
+      if (addresses[0] === fragmentedWallet.address) return { entries: walletEntries };
+      const current = vault.config();
+      if (addresses[0] !== current.address) return { entries: [] };
+      const state = {
+        windowStartDaa: BigInt(current.windowStartDaa),
+        spentInWindowSompi: BigInt(current.spentInWindowSompi),
+      };
+      const directEntry = {
+        outpoint: { transactionId: "bb".repeat(32), index: 0 },
+        amount: directVaultAmount,
+        scriptPublicKey: payToScriptHashScript(
+          buildRedeemScript(current.agentPublic, current.ownerPublic, BigInt(current.maxOutflowSompi), BigInt(current.windowSizeDaa), state)
+        ),
+        blockDaaScore: 1n,
+        isCoinbase: false,
+      };
+      if (!current.covenantId || !current.currentOutpoint) return { entries: [directEntry] };
+      return {
+        entries: [
+          directEntry,
+          {
+            outpoint: { transactionId: current.currentOutpoint.txid, index: current.currentOutpoint.index },
+            amount: vaultUtxoAmount,
+            scriptPublicKey: payToScriptHashScript(
+              buildRedeemScript(current.agentPublic, current.ownerPublic, BigInt(current.maxOutflowSompi), BigInt(current.windowSizeDaa), state)
+            ),
+            blockDaaScore: 1n,
+            isCoinbase: false,
+            covenantId: current.covenantId,
+          },
+        ],
+      };
+    },
+    getFeeEstimate: async () => ({ estimate: { normalBuckets: [{ feerate: 100 }] } }),
+    getServerInfo: async () => ({ virtualDaaScore: virtualDaaScore.toString() }),
+    submitTransaction: async ({ transaction }: any) => {
+      submittedInputCounts.push(transaction.inputs.length);
+      const inputTotal = [...transaction.inputs].reduce((acc: bigint, input: any) => acc + BigInt(input.utxo.amount), 0n);
+      const outputTotal = [...transaction.outputs].reduce((acc: bigint, output: any) => acc + BigInt(output.value), 0n);
+      const finalFee = inputTotal - outputTotal;
+      const computeBudgetMass = [...transaction.inputs].reduce((acc: bigint, input: any) => acc + BigInt(input.computeBudget ?? 0) * 100n, 0n);
+      const minimumFee = (calculateTransactionMass("testnet-10", transaction) + computeBudgetMass) * 100n;
+      if (finalFee < minimumFee) throw new Error(`underfunded vault tx: fee ${finalFee}, required ${minimumFee}`);
+      submittedFinalFees.push(finalFee);
+      submittedMinimumFees.push(minimumFee);
+      submitCount += 1;
+      const tag = ["33", "44", "77", "88", "99"][submitCount - 1] ?? "aa";
+      return { transactionId: tag.repeat(32) };
+    },
+  });
+  const preCovenantBalances = await vault.balanceBreakdown(fragmentedWallet);
+  const fragmentedDeposit = await vault.deposit(fragmentedWallet, 120_000_000n);
+  const postDepositBalances = await vault.balanceBreakdown(fragmentedWallet);
+  walletEntries = [walletEntry("55", 0, 60_000_000n), walletEntry("66", 0, 60_000_000n)];
+  const fragmentedTopup = await vault.deposit(fragmentedWallet, 80_000_000n);
+  vaultUtxoAmount = 90_000_000n;
+  const smallExplicitSpend = await vault.send(fragmentedWallet, fragmentedWallet.address, 10_000_000n);
+  vaultUtxoAmount = 400_000_000n;
+  const feeStressSpend = await vault.send(fragmentedWallet, fragmentedWallet.address, 200_000_000n);
+  walletEntries = [walletEntry("99", 0, 500_000_000n), walletEntry("aa", 0, 500_000_000n)];
+  const floatTarget = 25_000_000n;
+  const maxFloatDeposit = await vault.deposit(fragmentedWallet, "max", floatTarget);
+  const exhaustedConfig = {
+    ...vault.config(),
+    windowStartDaa: "1",
+    spentInWindowSompi: "500000000",
+    currentOutpoint: { txid: "cc".repeat(32), index: 0 },
+  };
+  fs.writeFileSync(path.join(fragmentedVaultDir, "vault", "config.json"), JSON.stringify(exhaustedConfig, null, 2));
+  vaultUtxoAmount = 700_000_000n;
+  walletEntries = [walletEntry("dd", 0, 200_000_000n)];
+  virtualDaaScore = 350n;
+  const resetTopup = await vault.deposit(fragmentedWallet, 50_000_000n);
+  const resetTopupConfig = vault.config();
+  check(
+    "vault deposit: aggregates fragmented wallet UTXOs",
+    fragmentedDeposit.txid === "33".repeat(32) && submittedInputCounts[0] === 2
+  );
+  check(
+    "vault status: direct pre-covenant funds are unbound",
+    preCovenantBalances.spendableSompi === 0n && preCovenantBalances.unboundSompi === directVaultAmount
+  );
+  check(
+    "vault status: unbound funds stay separate after covenant deposit",
+    postDepositBalances.spendableSompi === 120_000_000n && postDepositBalances.unboundSompi === directVaultAmount
+  );
+  check(
+    "vault top-up: aggregates fragmented wallet UTXOs",
+    fragmentedTopup.txid === "44".repeat(32) && submittedInputCounts[1] === 3
+  );
+  check(
+    "vault explicit withdrawal: allows small vaults with positive change",
+    smallExplicitSpend.txid === "77".repeat(32) && smallExplicitSpend.amountSompi === 10_000_000n && submittedInputCounts[2] === 1
+  );
+  check(
+    "vault withdrawal: converges fee for small-change final mass",
+    feeStressSpend.txid === "88".repeat(32) && submittedFinalFees[3] >= submittedMinimumFees[3]
+  );
+  check(
+    "vault deposit: preserves requested wallet float after fee",
+    maxFloatDeposit.txid === "99".repeat(32) &&
+      1_000_000_000n - maxFloatDeposit.depositedSompi - maxFloatDeposit.feeSompi === floatTarget
+  );
+  check(
+    "vault top-up: resets expired exhausted window",
+    resetTopup.txid === "aa".repeat(32) &&
+      resetTopupConfig.windowStartDaa === "349" &&
+      resetTopupConfig.spentInWindowSompi === "0"
+  );
+  check(
+    "vault deposit: fee covers final signed wallet mass",
+    submittedFinalFees[0] >= submittedMinimumFees[0]
+  );
+  check(
+    "vault top-up: fee covers final signed covenant mass",
+    submittedFinalFees[1] >= submittedMinimumFees[1]
+  );
+  check(
+    "vault withdrawal: fee covers final signed covenant mass",
+    submittedFinalFees[2] >= submittedMinimumFees[2]
+  );
+  fs.rmSync(fragmentedVaultDir, { recursive: true, force: true });
 
   // --- offline checks: escrow template byte-equality vs SilverScript compiler fixtures ---
   // Regression guard only; scripts/escrow-live.js is the live consensus proof
