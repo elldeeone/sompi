@@ -223,12 +223,12 @@ export class X402Client {
   }
 
   /** Retire the exhausted escrow and open a fresh one for the same origin. */
-  private async rotateEscrow(origin: string): Promise<void> {
+  private async rotateEscrow(origin: string): Promise<PaidFetchDeposit> {
     const old = this.escrows[origin];
     this.retired.push(old);
     delete this.escrows[origin];
     this.persist();
-    await this.openEscrow(origin, {
+    return this.openEscrow(origin, {
       network: old.network,
       serverPublic: old.serverPublic,
       refundTimeout: old.refundTimeout,
@@ -269,6 +269,7 @@ export class X402Client {
   /** Issue a cumulative voucher and make one escrow-paid request. */
   private async escrowRequest(origin: string, url: string, init?: RequestInit, allowRotate = true): Promise<PaidFetchResult> {
     let state = this.escrows[origin];
+    let rotatedDeposit: PaidFetchDeposit | undefined;
     const price = BigInt(state.pricePerRequestSompi);
     // Rotate before the escrow is fully consumed: the claim contract always
     // returns change to escrow, so authorized must stay strictly below the
@@ -278,7 +279,7 @@ export class X402Client {
       // is retired (its remaining balance stays refundable after the timeout)
       // and a new deposit opens a clean channel — the agent sees no
       // interruption. A fresh channel avoids multi-UTXO claim ambiguity.
-      await this.rotateEscrow(origin);
+      rotatedDeposit = await this.rotateEscrow(origin);
       await sleep(1_500); // let the new deposit confirm before the first voucher
       state = this.escrows[origin];
     }
@@ -313,9 +314,11 @@ export class X402Client {
     }
     if (!response) throw new Error("no response");
     if (response.status === 402 && allowRotate && !(await this.voucherOutpointExists(state, params))) {
-      await this.rotateEscrow(origin);
+      const deposit = await this.rotateEscrow(origin);
       await sleep(1_500);
-      return this.escrowRequest(origin, url, init, false);
+      const result = await this.escrowRequest(origin, url, init, false);
+      result.deposit = deposit;
+      return result;
     }
     if (response.status !== 402) {
       state.authorizedSompi = nextAuthorized.toString();
@@ -325,6 +328,7 @@ export class X402Client {
     result.scheme = "kaspa-escrow";
     result.fundingSource = state.fundingSource;
     result.authorizedSompi = state.authorizedSompi;
+    if (rotatedDeposit) result.deposit = rotatedDeposit;
     return result;
   }
 

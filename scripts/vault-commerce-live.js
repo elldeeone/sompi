@@ -134,6 +134,7 @@ function persistedClientEscrowState() {
     throw new Error("vault-commerce proof resume supports one active paid_fetch escrow origin; use a fresh SOMPI_VAULT_COMMERCE_DIR");
   }
   return {
+    hasActive: active.length > 0,
     serverPublic: serverPublics[0],
     refundTimeout: refundTimeouts[0],
   };
@@ -219,6 +220,7 @@ async function main() {
   const vault = new VaultManager(DATA_DIR, NETWORK);
   const configuredVault = vault.configured ? vault.config() : undefined;
   const persistedEscrow = persistedClientEscrowState();
+  const expectFreshEscrowDeposit = !persistedEscrow.hasActive;
   let existingVaultBalance = configuredVault?.covenantId ? await vault.balanceSompi(buyerWallet) : 0n;
   const buyerBalance = await buyerWallet.balanceSompi();
   if (existingVaultBalance < MIN_ESCROW_DEPOSIT && buyerBalance < BUYER_FUNDING) {
@@ -319,8 +321,11 @@ async function main() {
 
     const first = await x402.paidFetch(`http://127.0.0.1:${PORT}/api/joke`);
     if (first.status !== 200) throw new Error(`first paid_fetch returned ${first.status}: ${first.body}`);
-    if (first.deposit?.source !== "vault" || first.fundingSource !== "vault") {
+    if (first.fundingSource !== "vault" || first.deposit?.source === "wallet") {
       throw new Error(`first paid_fetch was not vault-backed: ${JSON.stringify(first)}`);
+    }
+    if (expectFreshEscrowDeposit && first.deposit?.source !== "vault") {
+      throw new Error(`first paid_fetch did not report its fresh vault-backed escrow deposit: ${JSON.stringify(first)}`);
     }
     recovery.firstPaidFetch = first;
     recovery.escrows = x402.escrowChannels();

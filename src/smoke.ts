@@ -410,6 +410,78 @@ async function main() {
   );
   fs.rmSync(vaultFundedEscrowDir, { recursive: true, force: true });
 
+  // --- offline checks: escrow rotation reports the fresh vault-funded deposit ---
+  const rotationEscrowDir = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-escrow-rotation-"));
+  const rotationFundingTxid = "88".repeat(32);
+  let rotationFundedAddress = "";
+  const rotatingEscrowState = {
+    clientPrivate: sampleClient.privateKey,
+    clientPublic: sampleClient.publicKey,
+    serverPublic: sampleServer.publicKey,
+    refundTimeout: "123456",
+    escrowAddress: "kaspatest:qrotating",
+    network: "testnet-10",
+    depositedSompi: "1000",
+    pricePerRequestSompi: "100",
+    fundingSource: "vault",
+    fundingTxid: "99".repeat(32),
+    fundingIndex: 0,
+    authorizedSompi: "900",
+  };
+  fs.writeFileSync(
+    path.join(rotationEscrowDir, "client-escrows.json"),
+    JSON.stringify({ active: { "https://rotate.example": rotatingEscrowState }, retired: [] })
+  );
+  const previousFetch = (globalThis as any).fetch;
+  let rotationFetches = 0;
+  (globalThis as any).fetch = async () => {
+    rotationFetches++;
+    return new Response("rotated-ok", { status: 200 });
+  };
+  try {
+    const rotationClient = new X402Client(
+      {
+        networkId: "testnet-10",
+        client: async () => ({
+          getUtxosByAddresses: async (addresses: string[]) => ({
+            entries:
+              addresses[0] === rotationFundedAddress
+                ? [{ outpoint: { transactionId: rotationFundingTxid, index: 0 }, amount: 1000n }]
+                : [],
+          }),
+        }),
+      } as any,
+      new PolicyEngine(rotationEscrowDir),
+      rotationEscrowDir,
+      {
+        requiredEscrowFundingSource: "vault",
+        fundEscrowDeposit: async (request) => {
+          rotationFundedAddress = request.escrowAddress;
+          return { txid: rotationFundingTxid, source: "vault", feeSompi: 456n };
+        },
+      }
+    );
+    const rotationResult = await rotationClient.paidFetch("https://rotate.example/api");
+    const rotationChannels = rotationClient.escrowChannels();
+    check(
+      "x402 client: reports deposit when rotating vault-funded escrows",
+      rotationResult.status === 200 &&
+        rotationResult.body === "rotated-ok" &&
+        rotationResult.deposit?.txid === rotationFundingTxid &&
+        rotationResult.deposit?.source === "vault" &&
+        rotationResult.deposit?.feeSompi === "456" &&
+        rotationResult.fundingSource === "vault" &&
+        rotationResult.authorizedSompi === "100" &&
+        rotationFetches === 1 &&
+        rotationChannels.active.length === 1 &&
+        rotationChannels.active[0]?.fundingTxid === rotationFundingTxid &&
+        rotationChannels.retired.length === 1
+    );
+  } finally {
+    (globalThis as any).fetch = previousFetch;
+    fs.rmSync(rotationEscrowDir, { recursive: true, force: true });
+  }
+
   // --- offline checks: vault-required mode fails before any wallet-funded fallback send ---
   const vaultRequiredEscrowDir = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-escrow-vault-required-"));
   let forbiddenWalletSends = 0;
