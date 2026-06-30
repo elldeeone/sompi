@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Live proof for Phase 5 vault-backed agent commerce.
+ * Live proof for vault-backed agent commerce.
  *
  * The harness creates a disposable buyer wallet, creates/funds a covenant
  * vault, serves a local kaspa-escrow paid API, and proves paid_fetch opens the
@@ -9,8 +9,8 @@
  *
  * Usage:
  *   SOMPI_NODE_URL=<node> \
- *   SOMPI_PHASE5_LIVE_FUNDER_PRIVATE_KEY=<funded-testnet-key> \
- *   npm run proof:phase5
+ *   SOMPI_VAULT_COMMERCE_FUNDER_PRIVATE_KEY=<funded-testnet-key> \
+ *   npm run proof:vault-commerce
  */
 const fs = require("node:fs");
 const http = require("node:http");
@@ -22,23 +22,23 @@ const { PolicyEngine } = require("../dist/policy");
 const { VaultManager, generateOwnerKey, spendVault } = require("../dist/vault");
 const { X402Client } = require("../dist/x402/client");
 const { EscrowServer } = require("../dist/x402/escrow-server");
-const { generateChannelKey, refundEscrow } = require("../dist/x402/escrow");
+const { EscrowUtxoNotFoundError, escrowFunding, generateChannelKey, refundEscrow } = require("../dist/x402/escrow");
 
 const NETWORK = process.env.SOMPI_NETWORK ?? "testnet-10";
 const NODE = process.env.SOMPI_NODE_URL;
 const RUN_ID = new Date().toISOString().replace(/[:.]/g, "-");
 const DATA_ROOT = process.env.SOMPI_DATA_DIR ?? path.join(os.homedir(), ".sompi", NETWORK);
-const DATA_DIR = process.env.SOMPI_PHASE5_LIVE_DIR ?? path.join(DATA_ROOT, `phase5-live-${RUN_ID}`);
-const RECOVERY_PATH = path.join(DATA_ROOT, `phase5-live-recovery-${RUN_ID}.json`);
-const PORT = Number(process.env.SOMPI_PHASE5_LIVE_PORT ?? "8767");
+const DATA_DIR = process.env.SOMPI_VAULT_COMMERCE_DIR ?? path.join(DATA_ROOT, `vault-commerce-live-${RUN_ID}`);
+const RECOVERY_PATH = path.join(DATA_ROOT, `vault-commerce-recovery-${RUN_ID}.json`);
+const PORT = Number(process.env.SOMPI_VAULT_COMMERCE_PORT ?? "8767");
 
-const BUYER_FUNDING = BigInt(process.env.SOMPI_PHASE5_LIVE_BUYER_FUNDING ?? "900000000");
-const VAULT_DEPOSIT = BigInt(process.env.SOMPI_PHASE5_LIVE_VAULT_DEPOSIT ?? "600000000");
-const VAULT_CAP = BigInt(process.env.SOMPI_PHASE5_LIVE_VAULT_CAP ?? "300000000");
-const WINDOW_DAA = BigInt(process.env.SOMPI_PHASE5_LIVE_WINDOW_DAA ?? "300");
-const MIN_ESCROW_DEPOSIT = BigInt(process.env.SOMPI_PHASE5_LIVE_MIN_ESCROW_DEPOSIT ?? "90000000");
-const PRICE = BigInt(process.env.SOMPI_PHASE5_LIVE_PRICE ?? "30000000");
-const REFUND_TIMEOUT_DELTA = BigInt(process.env.SOMPI_PHASE5_LIVE_REFUND_TIMEOUT_DELTA ?? "120");
+const BUYER_FUNDING = BigInt(process.env.SOMPI_VAULT_COMMERCE_BUYER_FUNDING ?? "900000000");
+const VAULT_DEPOSIT = BigInt(process.env.SOMPI_VAULT_COMMERCE_VAULT_DEPOSIT ?? "600000000");
+const VAULT_CAP = BigInt(process.env.SOMPI_VAULT_COMMERCE_VAULT_CAP ?? "300000000");
+const WINDOW_DAA = BigInt(process.env.SOMPI_VAULT_COMMERCE_WINDOW_DAA ?? "300");
+const MIN_ESCROW_DEPOSIT = BigInt(process.env.SOMPI_VAULT_COMMERCE_MIN_ESCROW_DEPOSIT ?? "90000000");
+const PRICE = BigInt(process.env.SOMPI_VAULT_COMMERCE_PRICE ?? "30000000");
+const REFUND_TIMEOUT_DELTA = BigInt(process.env.SOMPI_VAULT_COMMERCE_REFUND_TIMEOUT_DELTA ?? "120");
 
 async function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -90,20 +90,112 @@ function readIfExists(file) {
   return fs.existsSync(file) ? fs.readFileSync(file, "utf8").trim() : undefined;
 }
 
+function readJsonIfExists(file) {
+  if (!fs.existsSync(file)) return undefined;
+  return JSON.parse(fs.readFileSync(file, "utf8"));
+}
+
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function loadRecoveryHistoryForDataDir() {
+  if (!fs.existsSync(DATA_ROOT)) return [];
+  return fs
+    .readdirSync(DATA_ROOT)
+    .filter((name) => /^vault-commerce-recovery-.*\.json$/.test(name))
+    .map((name) => path.join(DATA_ROOT, name))
+    .map((file) => {
+      try {
+        return { file, mtimeMs: fs.statSync(file).mtimeMs, recovery: readJsonIfExists(file) };
+      } catch {
+        return undefined;
+      }
+    })
+    .filter((entry) => entry?.recovery?.dataDir === DATA_DIR)
+    .sort((a, b) => a.mtimeMs - b.mtimeMs);
+}
+
+function mergeRecoveryHistory(history) {
+  const merged = {};
+  for (const { recovery } of history) {
+    Object.assign(merged, recovery);
+    merged.txids = { ...(merged.txids ?? {}), ...(recovery.txids ?? {}) };
+  }
+  return merged;
+}
+
+function persistedClientEscrowState() {
+  const raw = readJsonIfExists(path.join(DATA_DIR, "client-escrows.json"));
+  const active = isRecord(raw?.active) ? Object.values(raw.active).filter(isRecord) : [];
+  const serverPublics = uniqueStrings(active.map((channel) => channel.serverPublic));
+  const refundTimeouts = uniqueStrings(active.map((channel) => channel.refundTimeout));
+  if (serverPublics.length > 1 || refundTimeouts.length > 1) {
+    throw new Error("vault-commerce proof resume supports one active paid_fetch escrow origin; use a fresh SOMPI_VAULT_COMMERCE_DIR");
+  }
+  return {
+    serverPublic: serverPublics[0],
+    refundTimeout: refundTimeouts[0],
+  };
+}
+
+function uniqueStrings(values) {
+  return [...new Set(values.filter((value) => typeof value === "string" && value.length > 0))];
+}
+
+function isChannelKey(value) {
+  return isRecord(value) && /^[0-9a-f]{64}$/i.test(value.privateKey ?? "") && /^[0-9a-f]{64}$/i.test(value.publicKey ?? "");
+}
+
+function savedServerKey(history, mergedRecovery, requiredPublic) {
+  if (requiredPublic) {
+    const matched = [...history].reverse().find((entry) => isChannelKey(entry.recovery?.server) && entry.recovery.server.publicKey === requiredPublic);
+    if (!matched) {
+      throw new Error(
+        `existing client escrow state is bound to server ${requiredPublic}, but no matching vault-commerce recovery file was found`
+      );
+    }
+    return matched.recovery.server;
+  }
+  return isChannelKey(mergedRecovery.server) ? mergedRecovery.server : undefined;
+}
+
 function writeRecovery(state) {
   fs.mkdirSync(path.dirname(RECOVERY_PATH), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(RECOVERY_PATH, JSON.stringify(state, null, 2), { mode: 0o600 });
+  fs.writeFileSync(RECOVERY_PATH, JSON.stringify(state, bigintSafe, 2), { mode: 0o600 });
+}
+
+async function waitForEscrowClaimChange(wallet, params, originalOutpoint, claimTxid) {
+  return waitFor("escrow claim change indexing", async () => {
+    const change = await escrowFunding(wallet, params, { txid: claimTxid, index: 1 });
+    try {
+      await escrowFunding(wallet, params, originalOutpoint);
+      return undefined;
+    } catch (error) {
+      if (error instanceof EscrowUtxoNotFoundError || error?.name === "EscrowUtxoNotFoundError") {
+        return change;
+      }
+      throw error;
+    }
+  });
+}
+
+function bigintSafe(_key, value) {
+  return typeof value === "bigint" ? value.toString() : value;
 }
 
 async function main() {
   fs.mkdirSync(DATA_DIR, { recursive: true, mode: 0o700 });
+  const recoveryHistory = loadRecoveryHistoryForDataDir();
+  const previousRecovery = mergeRecoveryHistory(recoveryHistory);
   const recovery = {
+    ...previousRecovery,
     runId: RUN_ID,
     network: NETWORK,
     node: NODE ?? "(resolver)",
     dataDir: DATA_DIR,
     recoveryPath: RECOVERY_PATH,
-    txids: {},
+    txids: { ...(previousRecovery.txids ?? {}) },
   };
 
   const buyerWallet = withPrivateKey(undefined, () => new KaspaWallet({ networkId: NETWORK, dataDir: DATA_DIR, nodeUrl: NODE }));
@@ -113,10 +205,10 @@ async function main() {
   };
   writeRecovery(recovery);
 
-  const funderPrivate = process.env.SOMPI_PHASE5_LIVE_FUNDER_PRIVATE_KEY;
+  const funderPrivate = process.env.SOMPI_VAULT_COMMERCE_FUNDER_PRIVATE_KEY;
   const funderWallet = funderPrivate
     ? withPrivateKey(funderPrivate, () =>
-        new KaspaWallet({ networkId: NETWORK, dataDir: path.join(DATA_ROOT, "phase5-live-funder"), nodeUrl: NODE })
+        new KaspaWallet({ networkId: NETWORK, dataDir: path.join(DATA_ROOT, "vault-commerce-funder"), nodeUrl: NODE })
       )
     : undefined;
 
@@ -126,13 +218,14 @@ async function main() {
   const policy = new PolicyEngine(DATA_DIR);
   const vault = new VaultManager(DATA_DIR, NETWORK);
   const configuredVault = vault.configured ? vault.config() : undefined;
+  const persistedEscrow = persistedClientEscrowState();
   let existingVaultBalance = configuredVault?.covenantId ? await vault.balanceSompi(buyerWallet) : 0n;
   const buyerBalance = await buyerWallet.balanceSompi();
   if (existingVaultBalance < MIN_ESCROW_DEPOSIT && buyerBalance < BUYER_FUNDING) {
     if (!funderWallet) {
       throw new Error(
         `buyer wallet ${buyerWallet.address} has ${buyerBalance} sompi; set ` +
-          `SOMPI_PHASE5_LIVE_FUNDER_PRIVATE_KEY to fund it with ${BUYER_FUNDING} sompi`
+          `SOMPI_VAULT_COMMERCE_FUNDER_PRIVATE_KEY to fund it with ${BUYER_FUNDING} sompi`
       );
     }
     const funding = await funderWallet.send(buyerWallet.address, BUYER_FUNDING);
@@ -144,18 +237,18 @@ async function main() {
 
   const owner = configuredVault
     ? {
-        privateKey: process.env.SOMPI_PHASE5_LIVE_OWNER_PRIVATE_KEY,
+        privateKey: process.env.SOMPI_VAULT_COMMERCE_OWNER_PRIVATE_KEY ?? previousRecovery.owner?.privateKey,
         publicKey: configuredVault.ownerPublic,
       }
     : generateOwnerKey();
   if (!owner.privateKey) {
     throw new Error(
-      `vault already exists in ${DATA_DIR}; set SOMPI_PHASE5_LIVE_OWNER_PRIVATE_KEY from the recovery file to resume`
+      `vault already exists in ${DATA_DIR}; set SOMPI_VAULT_COMMERCE_OWNER_PRIVATE_KEY from the recovery file to resume`
     );
   }
-  const serverKey = generateChannelKey();
+  const serverKey = savedServerKey(recoveryHistory, previousRecovery, persistedEscrow.serverPublic) ?? generateChannelKey();
   const info = await requireHealthyNode(buyerWallet, "buyer");
-  const refundTimeout = BigInt(info.virtualDaaScore) + REFUND_TIMEOUT_DELTA;
+  const refundTimeout = BigInt(persistedEscrow.refundTimeout ?? previousRecovery.refundTimeout ?? BigInt(info.virtualDaaScore) + REFUND_TIMEOUT_DELTA);
 
   recovery.owner = owner;
   recovery.server = serverKey;
@@ -189,7 +282,7 @@ async function main() {
     minDepositSompi: MIN_ESCROW_DEPOSIT,
     pricePerRequestSompi: PRICE,
     dataDir: sellerDir,
-    description: "phase5 live vault-backed paid_fetch proof",
+    description: "vault-backed commerce live proof",
   });
 
   let served = 0;
@@ -203,7 +296,7 @@ async function main() {
       }
       if (await escrowServer.gate(req, res)) return;
       res.setHeader("content-type", "application/json");
-      res.end(JSON.stringify({ ok: true, joke: `phase5-${++served}` }));
+      res.end(JSON.stringify({ ok: true, joke: `vault-commerce-${++served}` }));
     } catch (error) {
       res.statusCode = 500;
       res.end(String(error.message ?? error));
@@ -253,21 +346,34 @@ async function main() {
     recovery.txids.vaultRecovery = vaultRecovery.txid;
     writeRecovery(recovery);
 
-    const claims = await escrowServer.claimAll(buyerWallet.address);
-    if (claims.length !== 1) throw new Error(`expected one escrow claim, got ${claims.length}`);
-    recovery.claims = claims;
-    recovery.txids.escrowClaim = claims[0].txid;
-    writeRecovery(recovery);
-
     const channel = x402.escrowChannels().active[0];
     if (!channel) throw new Error("missing active escrow channel after paid_fetch");
+    if (channel.fundingIndex === undefined) throw new Error("active escrow channel has no funding index");
+    const channelParams = {
+      clientPublic: channel.clientPublic,
+      serverPublic: channel.serverPublic,
+      timeout: BigInt(channel.refundTimeout),
+    };
+    const originalEscrowOutpoint = { txid: channel.fundingTxid, index: channel.fundingIndex };
+
+    const claims = await escrowServer.claimAll(buyerWallet.address);
+    const claim = claims.find((entry) => entry.clientPublic === channel.clientPublic);
+    if (!claim) throw new Error(`expected one escrow claim for ${channel.clientPublic}, got ${claims.length}`);
+    recovery.claims = claims;
+    recovery.txids.escrowClaim = claim.txid;
+    writeRecovery(recovery);
+
+    const claimChange = await waitForEscrowClaimChange(buyerWallet, channelParams, originalEscrowOutpoint, claim.txid);
+    recovery.escrowClaimChange = claimChange;
+    writeRecovery(recovery);
+
     await waitFor("escrow refund timeout", async () => {
       const current = await (await buyerWallet.client()).getServerInfo();
-      return BigInt(current.virtualDaaScore) >= refundTimeout;
+      return BigInt(current.virtualDaaScore) >= channelParams.timeout;
     });
     const refund = await refundEscrow(
       buyerWallet,
-      { clientPublic: channel.clientPublic, serverPublic: channel.serverPublic, timeout: BigInt(channel.refundTimeout) },
+      channelParams,
       channel.clientPrivate,
       buyerWallet.address
     );
@@ -284,7 +390,7 @@ async function main() {
           firstPaidFetch: first,
           secondPaidFetch: second,
           vaultRecoveryTxid: vaultRecovery.txid,
-          escrowClaimTxid: claims[0].txid,
+          escrowClaimTxid: claim.txid,
           escrowRefundTxid: refund,
           served,
         },
@@ -300,7 +406,7 @@ async function main() {
 }
 
 main().catch((error) => {
-  console.error("phase5-live failed:", error.message ?? error);
+  console.error("vault-commerce-live failed:", error.message ?? error);
   console.error(`recovery file: ${RECOVERY_PATH}`);
   process.exit(1);
 });

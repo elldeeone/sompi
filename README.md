@@ -249,19 +249,19 @@ agent cooperation needed).
 2. **Phase 2 (done)** — x402 HTTP payment middleware + `paid_fetch`.
 3. **Phase 3 (done)** — Trust-minimized `kaspa-escrow`: SilverScript-derived covenant template, full-outpoint voucher replay protection, and live proof coverage.
 4. **Phase 4 (done)** — Covenant vaults (KIP-16): the agent wallet, with rolling-window spending limits enforced by consensus rather than software.
-5. **Phase 5 (done)** — Vault-backed agent commerce: the vault is the treasury for escrow deposits and paid API usage, with the regular wallet kept as setup/top-up working float.
+5. **Vault-backed commerce (done)** — The vault is the treasury for escrow deposits and paid API usage, with the regular wallet kept as setup/top-up working float.
 
 ## Development
 
 ```bash
 npm run build   # compile
 npm run smoke   # offline policy checks + live testnet-10 checks
-SOMPI_NODE_URL=<node> SOMPI_PHASE5_LIVE_FUNDER_PRIVATE_KEY=<funded-testnet-key> npm run proof:phase5
+SOMPI_NODE_URL=<node> SOMPI_VAULT_COMMERCE_FUNDER_PRIVATE_KEY=<funded-testnet-key> npm run proof:vault-commerce
 ```
 
-Live proofs require a synced node with UTXO index enabled. The Phase 5 harness
-writes a mode-0600 recovery file containing disposable testnet keys before it
-spends.
+Live proofs require a synced node with UTXO index enabled. The vault-backed
+commerce harness writes a mode-0600 recovery file containing disposable testnet
+keys before it spends.
 
 The Kaspa WASM SDK (v2.0.0, Toccata) is vendored under `vendor/kaspa-wasm` because the npm `kaspa` package is unmaintained (2023). Sourced from the official [rusty-kaspa v2.0.0 release](https://github.com/kaspanet/rusty-kaspa/releases/tag/v2.0.0).
 

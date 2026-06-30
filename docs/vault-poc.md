@@ -60,7 +60,7 @@ public parameters plus state.
 
 In MCP mode, `paid_fetch` uses this same capped agent path to fund new
 `kaspa-escrow` deposits. The ordinary wallet remains setup/top-up working float;
-active paid API escrow channels must be vault-funded. `npm run proof:phase5`
+active paid API escrow channels must be vault-funded. `npm run proof:vault-commerce`
 exercises this end to end and writes a recovery file before spending.
 
 ## Checks
@@ -83,12 +83,12 @@ Live consensus proof:
 ```bash
 npm run build
 SOMPI_NODE_URL=10.0.3.26 npm run proof:vault
-SOMPI_NODE_URL=10.0.3.26 SOMPI_PHASE5_LIVE_FUNDER_PRIVATE_KEY=<funded-testnet-key> npm run proof:phase5
+SOMPI_NODE_URL=10.0.3.26 SOMPI_VAULT_COMMERCE_FUNDER_PRIVATE_KEY=<funded-testnet-key> npm run proof:vault-commerce
 ```
 
-Use a synced node with UTXO index enabled. The Phase 5 proof writes a mode-0600
-recovery file with disposable testnet keys before spending so interrupted runs
-can be resumed or recovered.
+Use a synced node with UTXO index enabled. The vault-backed commerce proof writes
+a mode-0600 recovery file with disposable testnet keys before spending so
+interrupted runs can be resumed or recovered.
 
 The live proof exercises:
 
