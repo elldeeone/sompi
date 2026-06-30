@@ -181,6 +181,15 @@ export class X402Client {
   }
 
   private async fundEscrowDeposit(request: EscrowDepositFundingRequest): Promise<EscrowDepositFundingResult> {
+    if (
+      this.options.requiredEscrowFundingSource &&
+      this.options.requiredEscrowFundingSource !== "wallet" &&
+      !this.options.fundEscrowDeposit
+    ) {
+      throw new Error(
+        `escrow deposit requires ${this.options.requiredEscrowFundingSource} funding but no escrow funding provider is configured`
+      );
+    }
     this.policy.authorize(request.escrowAddress, request.amountSompi);
     const funding = this.options.fundEscrowDeposit
       ? await this.options.fundEscrowDeposit(request)
@@ -348,8 +357,10 @@ function normalizeEscrowStore(raw: unknown): EscrowStore {
   let changed = false;
   const active: Record<string, EscrowState> = {};
   for (const [origin, state] of Object.entries(raw.active)) {
-    if (isCurrentEscrowState(state)) {
-      active[origin] = state;
+    const normalized = normalizeEscrowState(state);
+    if (normalized.state) {
+      active[origin] = normalized.state;
+      if (normalized.changed) changed = true;
     } else {
       changed = true;
     }
@@ -358,8 +369,10 @@ function normalizeEscrowStore(raw: unknown): EscrowStore {
   const retired: EscrowState[] = [];
   if (Array.isArray(raw.retired)) {
     for (const state of raw.retired) {
-      if (isCurrentEscrowState(state)) {
-        retired.push(state);
+      const normalized = normalizeEscrowState(state);
+      if (normalized.state) {
+        retired.push(normalized.state);
+        if (normalized.changed) changed = true;
       } else {
         changed = true;
       }
@@ -369,6 +382,46 @@ function normalizeEscrowStore(raw: unknown): EscrowStore {
   }
 
   return { active, retired, changed };
+}
+
+function normalizeEscrowState(value: unknown): { state?: EscrowState; changed: boolean } {
+  if (!isRecord(value)) return { changed: true };
+  const fundingSource = value.fundingSource === undefined ? "wallet" : value.fundingSource;
+  if (
+    !(
+      isHexBytes(value.clientPrivate, 32) &&
+      isHexBytes(value.clientPublic, 32) &&
+      isHexBytes(value.serverPublic, 32) &&
+      isNonEmptyString(value.escrowAddress) &&
+      isNonEmptyString(value.network) &&
+      isDecimalString(value.refundTimeout) &&
+      isDecimalString(value.depositedSompi) &&
+      isDecimalString(value.pricePerRequestSompi) &&
+      isFundingSource(fundingSource) &&
+      isDecimalString(value.authorizedSompi) &&
+      isNonEmptyString(value.fundingTxid) &&
+      (value.fundingIndex === undefined || isFundingIndex(value.fundingIndex))
+    )
+  ) {
+    return { changed: true };
+  }
+  return {
+    state: {
+      clientPrivate: value.clientPrivate,
+      clientPublic: value.clientPublic,
+      serverPublic: value.serverPublic,
+      refundTimeout: value.refundTimeout,
+      escrowAddress: value.escrowAddress,
+      network: value.network,
+      depositedSompi: value.depositedSompi,
+      pricePerRequestSompi: value.pricePerRequestSompi,
+      fundingSource,
+      fundingTxid: value.fundingTxid,
+      fundingIndex: value.fundingIndex,
+      authorizedSompi: value.authorizedSompi,
+    },
+    changed: value.fundingSource === undefined,
+  };
 }
 
 function requireEscrowFundingSource(store: EscrowStore, required?: EscrowDepositFundingSource): EscrowStore {
@@ -385,24 +438,6 @@ function requireEscrowFundingSource(store: EscrowStore, required?: EscrowDeposit
     }
   }
   return { active, retired, changed };
-}
-
-function isCurrentEscrowState(value: unknown): value is EscrowState {
-  if (!isRecord(value)) return false;
-  return (
-    isHexBytes(value.clientPrivate, 32) &&
-    isHexBytes(value.clientPublic, 32) &&
-    isHexBytes(value.serverPublic, 32) &&
-    isNonEmptyString(value.escrowAddress) &&
-    isNonEmptyString(value.network) &&
-    isDecimalString(value.refundTimeout) &&
-    isDecimalString(value.depositedSompi) &&
-    isDecimalString(value.pricePerRequestSompi) &&
-    isFundingSource(value.fundingSource) &&
-    isDecimalString(value.authorizedSompi) &&
-    isNonEmptyString(value.fundingTxid) &&
-    (value.fundingIndex === undefined || isFundingIndex(value.fundingIndex))
-  );
 }
 
 function isFundingSource(value: unknown): value is EscrowDepositFundingSource {

@@ -410,6 +410,37 @@ async function main() {
   );
   fs.rmSync(vaultFundedEscrowDir, { recursive: true, force: true });
 
+  // --- offline checks: vault-required mode fails before any wallet-funded fallback send ---
+  const vaultRequiredEscrowDir = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-escrow-vault-required-"));
+  let forbiddenWalletSends = 0;
+  const vaultRequiredClient = new X402Client(
+    {
+      networkId: "testnet-10",
+      send: async () => {
+        forbiddenWalletSends++;
+        return { txid: "77".repeat(32), feeSompi: 0n };
+      },
+    } as any,
+    new PolicyEngine(vaultRequiredEscrowDir),
+    vaultRequiredEscrowDir,
+    { requiredEscrowFundingSource: "vault" }
+  );
+  let rejectedBeforeWalletSend = false;
+  try {
+    await (vaultRequiredClient as any).openEscrow("https://vault-required.example", {
+      network: "testnet-10",
+      serverPublic: sampleServer.publicKey,
+      refundTimeout: "123456",
+      minDepositSompi: "1000",
+      pricePerRequestSompi: "100",
+    });
+  } catch (e) {
+    rejectedBeforeWalletSend =
+      String((e as Error).message ?? e).includes("no escrow funding provider") && forbiddenWalletSends === 0;
+  }
+  check("x402 client: vault-required mode rejects before wallet funding", rejectedBeforeWalletSend);
+  fs.rmSync(vaultRequiredEscrowDir, { recursive: true, force: true });
+
   // --- offline checks: escrow client persisted state is current-shape only ---
   const escrowStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-escrow-state-"));
   const currentEscrowState = {
@@ -455,6 +486,11 @@ async function main() {
 
   // --- offline checks: MCP-style x402 clients do not keep wallet-funded escrows active ---
   const escrowVaultOnlyDir = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-escrow-vault-only-"));
+  const { fundingSource: _mainFundingSource, ...mainEscrowState } = {
+    ...currentEscrowState,
+    escrowAddress: "kaspatest:qmain",
+    fundingTxid: "66".repeat(32),
+  };
   const walletFundedEscrowState = {
     ...currentEscrowState,
     fundingSource: "wallet",
@@ -466,6 +502,7 @@ async function main() {
       active: {
         "https://vault.example": currentEscrowState,
         "https://wallet.example": walletFundedEscrowState,
+        "https://main-shaped.example": mainEscrowState,
       },
       retired: [],
     })
@@ -479,13 +516,16 @@ async function main() {
   const vaultOnlyStore = vaultOnlyClient.escrowChannels();
   const vaultOnlyPersisted = JSON.parse(fs.readFileSync(path.join(escrowVaultOnlyDir, "client-escrows.json"), "utf8"));
   check(
-    "x402 client: vault mode retires wallet-funded escrow channels",
+    "x402 client: vault mode preserves and retires wallet-funded escrow channels",
     vaultOnlyStore.active.length === 1 &&
       vaultOnlyStore.active[0]?.fundingSource === "vault" &&
-      vaultOnlyStore.retired.length === 1 &&
-      vaultOnlyStore.retired[0]?.fundingSource === "wallet" &&
+      vaultOnlyStore.retired.length === 2 &&
+      vaultOnlyStore.retired.every((channel) => channel.fundingSource === "wallet") &&
+      vaultOnlyStore.retired.some((channel) => channel.clientPrivate === mainEscrowState.clientPrivate) &&
       Boolean(vaultOnlyPersisted.active["https://vault.example"]) &&
-      !vaultOnlyPersisted.active["https://wallet.example"]
+      !vaultOnlyPersisted.active["https://wallet.example"] &&
+      !vaultOnlyPersisted.active["https://main-shaped.example"] &&
+      vaultOnlyPersisted.retired.some((channel: any) => channel.fundingSource === "wallet" && channel.fundingTxid === mainEscrowState.fundingTxid)
   );
   fs.rmSync(escrowVaultOnlyDir, { recursive: true, force: true });
 
