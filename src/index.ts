@@ -67,7 +67,7 @@ function ok(payload: unknown) {
 }
 
 function fail(message: string) {
-  return { content: [{ type: "text" as const, text: JSON.stringify({ error: message }) }], isError: true };
+  return { content: [{ type: "text" as const, text: JSON.stringify({ summary: message, error: message }) }], isError: true };
 }
 
 function bigintSafe(_key: string, value: unknown) {
@@ -78,6 +78,60 @@ function packageVersion(): string {
   const raw = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8")) as { version?: unknown };
   if (typeof raw.version !== "string" || raw.version.length === 0) throw new Error("package.json has no version");
   return raw.version;
+}
+
+function kasUnit(): "KAS" | "tKAS" {
+  return NETWORK.startsWith("testnet") ? "tKAS" : "KAS";
+}
+
+function kasValue(sompi: bigint | string): string {
+  return formatKas(BigInt(sompi));
+}
+
+function kasDisplay(sompi: bigint | string): string {
+  return `${kasValue(sompi)} ${kasUnit()}`;
+}
+
+function amountFields(prefix: string, sompi: bigint | string): Record<string, string> {
+  const value = BigInt(sompi);
+  return {
+    [`${prefix}Sompi`]: value.toString(),
+    [`${prefix}Kas`]: kasValue(value),
+    [`${prefix}Display`]: kasDisplay(value),
+  };
+}
+
+function paidFetchDepositView(deposit: { txid: string; amountSompi: string; payTo: string; source: string; feeSompi?: string }) {
+  return {
+    ...deposit,
+    amountKas: kasValue(deposit.amountSompi),
+    amountDisplay: kasDisplay(deposit.amountSompi),
+    feeKas: deposit.feeSompi ? kasValue(deposit.feeSompi) : undefined,
+    feeDisplay: deposit.feeSompi ? kasDisplay(deposit.feeSompi) : undefined,
+  };
+}
+
+function paidFetchSummary(result: {
+  status: number;
+  scheme?: string;
+  fundingSource?: string;
+  authorizedSompi?: string;
+  deposit?: { amountSompi: string; source: string };
+}): string {
+  if (result.scheme !== "kaspa-escrow") {
+    return `Fetched the URL without needing payment. HTTP status ${result.status}.`;
+  }
+  const authorized = result.authorizedSompi ? kasDisplay(result.authorizedSompi) : "an unknown amount";
+  if (result.deposit) {
+    return (
+      `Fetched the paid URL using a new ${result.deposit.source}-funded escrow. ` +
+      `The escrow deposit was ${kasDisplay(result.deposit.amountSompi)} and the service is authorized for ${authorized} total.`
+    );
+  }
+  return (
+    `Fetched the paid URL using the existing ${result.fundingSource ?? "escrow"} payment channel. ` +
+    `No new deposit was needed; the service is authorized for ${authorized} total.`
+  );
 }
 
 async function guarded<T>(fn: () => Promise<T>): Promise<{ content: { type: "text"; text: string }[]; isError?: boolean }> {
@@ -95,7 +149,12 @@ registerTool(
     description:
       "Get this agent's Kaspa receive address and network. Share this address to receive payments.",
   },
-  async () => guarded(async () => ({ address: wallet.address, network: NETWORK }))
+  async () =>
+    guarded(async () => ({
+      summary: `This agent receives ${kasUnit()} on ${NETWORK} at ${wallet.address}.`,
+      address: wallet.address,
+      network: NETWORK,
+    }))
 );
 
 registerTool(
@@ -108,7 +167,15 @@ registerTool(
   async ({ address }) =>
     guarded(async () => {
       const sompi = await wallet.balanceSompi(address);
-      return { address: address ?? wallet.address, sompi: sompi.toString(), kas: formatKas(sompi) };
+      return {
+        summary: `${address ? "That address" : "This agent's wallet"} holds ${kasDisplay(sompi)}.`,
+        address: address ?? wallet.address,
+        balanceSompi: sompi.toString(),
+        balanceKas: kasValue(sompi),
+        balanceDisplay: kasDisplay(sompi),
+        sompi: sompi.toString(),
+        kas: kasValue(sompi),
+      };
     })
 );
 
@@ -133,11 +200,11 @@ registerTool(
       const { txid, feeSompi } = await wallet.send(to, amount);
       policy.record(amount);
       return {
+        summary: `Sent ${kasDisplay(amount)} to ${to}. Network fee was ${kasDisplay(feeSompi)}.`,
         txid,
         to,
-        amountSompi: amount.toString(),
-        amountKas: formatKas(amount),
-        feeSompi: feeSompi.toString(),
+        ...amountFields("amount", amount),
+        ...amountFields("fee", feeSompi),
         network: NETWORK,
       };
     })
@@ -159,8 +226,8 @@ registerTool(
     guarded(async () => {
       const result = await wallet.awaitPayment(address ?? wallet.address, BigInt(minAmountSompi), timeoutSeconds * 1000);
       return {
-        receivedSompi: result.receivedSompi.toString(),
-        receivedKas: formatKas(result.receivedSompi),
+        summary: `Received ${kasDisplay(result.receivedSompi)} at ${address ?? wallet.address}.`,
+        ...amountFields("received", result.receivedSompi),
         txids: result.txids,
       };
     })
@@ -179,7 +246,13 @@ registerTool(
   async ({ txid, address }) =>
     guarded(async () => {
       const result = await wallet.verifyPayment(txid, address ?? wallet.address);
-      return { found: result.found, amountSompi: result.amountSompi.toString(), amountKas: formatKas(result.amountSompi) };
+      return {
+        summary: result.found
+          ? `Transaction ${txid} paid ${kasDisplay(result.amountSompi)} to ${address ?? wallet.address}.`
+          : `I could not find a current UTXO from transaction ${txid} paying ${address ?? wallet.address}.`,
+        found: result.found,
+        ...amountFields("amount", result.amountSompi),
+      };
     })
 );
 
@@ -200,6 +273,10 @@ registerTool(
     guarded(async () => {
       const info = await wallet.serverInfo();
       return {
+        summary:
+          info.isSynced === true && info.hasUtxoIndex === true
+            ? `Connected to a synced ${NETWORK} node with UTXO index enabled.`
+            : `Connected to ${NETWORK}, but the node is not fully ready for payments.`,
         network: NETWORK,
         isSynced: info.isSynced,
         serverVersion: info.serverVersion,
@@ -246,13 +323,17 @@ registerTool(
   async ({ url, method, body }) =>
     guarded(async () => {
       const result = await x402.paidFetch(url, { method, body });
+      const deposit = result.deposit ? paidFetchDepositView(result.deposit) : undefined;
       return {
+        summary: paidFetchSummary({ ...result, deposit }),
         status: result.status,
         body: result.body.length > 10_000 ? result.body.slice(0, 10_000) + "…[truncated]" : result.body,
         scheme: result.scheme,
         fundingSource: result.fundingSource,
+        authorizedKas: result.authorizedSompi ? kasValue(result.authorizedSompi) : undefined,
+        authorizedDisplay: result.authorizedSompi ? kasDisplay(result.authorizedSompi) : undefined,
         authorizedSompi: result.authorizedSompi,
-        deposit: result.deposit,
+        deposit,
       };
     })
 );
