@@ -51,6 +51,15 @@ The service assumes `cloudflared` is installed at `/usr/local/bin/cloudflared`.
 If your package manager installs it elsewhere, update
 `deploy/sompi-cloudflared.service` before copying it.
 
+Or run the installer from a built checkout:
+
+```bash
+sudo deploy/install-public-demo.sh \
+  --node-url "$SOMPI_NODE_URL" \
+  --tunnel-token "$CLOUDFLARED_TOKEN" \
+  --public-url https://YOUR_HOST
+```
+
 Accountless `trycloudflare.com` quick tunnels are useful for one-off external
 proofs, but they are not a stable public endpoint. The checker rejects those
 hostnames unless you pass `--allow-temporary-tunnel`.
