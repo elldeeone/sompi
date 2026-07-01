@@ -47,5 +47,18 @@ curl -s https://YOUR_HOST/llms.txt          # agent-readable payment instruction
 ```
 
 For an end-to-end paid request, use an MCP client with `@elldeeone/sompi` and
-ask it to fetch `https://YOUR_HOST/api/joke`; `paid_fetch` handles the escrow
-deposit and cumulative voucher flow automatically.
+ask the agent:
+
+```text
+Fetch https://YOUR_HOST/api/joke and tell me what you spent.
+```
+
+The user should not need to say "with Sompi". If the endpoint requires payment,
+the agent's payment rail is `paid_fetch`. A good user-facing receipt is:
+
+```text
+I paid 0.01 tKAS using the existing vault-funded escrow and got the result.
+No new deposit was needed.
+```
+
+The HTTP wire offer still uses exact integer sompi fields for interoperability.

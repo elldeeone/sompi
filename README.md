@@ -62,11 +62,12 @@ npx -y @elldeeone/sompi gen-owner-key
 # prints:  public: <hex>   private: <hex>
 ```
 
-**3. Tell the agent to set up its vault.** Plain English: *"set up your vault."*
+**3. Tell the agent to prepare for payments.** Plain English: *"prepare yourself
+to pay for APIs."*
 Its `vault_create` tool will ask you for two things — give it your **public** key
-from step 2 and a rolling-window cap (e.g. `100000000` = 1 KAS). It generates its
-own agent key and saves the vault config. Your private key never touches the
-agent's host.
+from step 2 and a rolling-window cap in KAS (for example, `1` = 1 KAS). It
+generates its own agent key and saves the vault config. Your private key never
+touches the agent's host.
 
 **4. Fund the agent's regular wallet**, from the
 [faucet](https://faucet-tn10.kaspanet.io/) or your wallet, then ask it to run
@@ -74,12 +75,13 @@ agent's host.
 deposits top up the same singleton vault and reset an already-expired window
 instead of extending exhausted state. Verify with `vault_status`.
 
-Now the agent can spend (`vault_send`, capped by consensus) and pay for services
-(`paid_fetch`). New x402 escrow deposits are funded from the vault treasury, not
-from the ordinary hot wallet. The regular wallet is only setup/top-up working
-float, and **you** can drain or recover the vault any time with your key
-(`scripts/vault-recover.js`). Add a `SOMPI_POLICY` file for softer day-to-day
-limits on top of the hard consensus cap.
+Now the agent can spend (`vault_send`, capped by consensus) and pay for services.
+You do not need to say "with Sompi"; if the agent needs to pay for an HTTP 402
+endpoint, its payment rail is `paid_fetch`. New x402 escrow deposits are funded
+from the vault treasury, not from the ordinary hot wallet. The regular wallet is
+only setup/top-up working float, and **you** can drain or recover the vault any
+time with your key (`scripts/vault-recover.js`). Add a `SOMPI_POLICY` file for
+softer day-to-day limits on top of the hard consensus cap.
 
 > A plain hot wallet (auto-created, or `gen-wallet-key` + `SOMPI_PRIVATE_KEY`) also
 > exists for small working float — but the agent's real balance belongs in the
@@ -92,9 +94,11 @@ limits on top of the hard consensus cap.
 | `get_address` | The agent's receive address |
 | `get_balance` | Balance of own or any address |
 | `send_payment` | Send KAS — gated by the spending policy |
-| `await_payment` | Block until an incoming payment of at least N sompi arrives (UTXO subscription, not polling) |
+| `await_payment` | Block until an incoming KAS payment arrives (UTXO subscription, not polling) |
 | `verify_payment` | Confirm a txid paid an address |
 | `paid_fetch` | Fetch a URL, auto-resolving HTTP 402 payment with vault-backed trust-minimized escrow |
+| `payment_status` | Plain-English readiness check for wallet, vault, policy, and escrows |
+| `escrow_status` / `escrow_refund` | Show escrow reuse/refund state and refund retired escrows after timeout |
 | `estimate_fee` | Live feerate buckets from the node |
 | `network_status` | Node sync state, DAA score, version |
 | `get_policy` | Read-only view of the active spending policy |
@@ -130,6 +134,7 @@ Point at a policy file with `SOMPI_POLICY=/path/to/policy.json`. Without one, co
 | Env var | Default | Purpose |
 |---|---|---|
 | `SOMPI_NETWORK` | `testnet-10` | `mainnet`, `testnet-10`, ... |
+| `SOMPI_ENABLE_MAINNET` | unset | Must be `1` before any mainnet wallet is allowed |
 | `SOMPI_NODE_URL` | (public resolver) | Your own node's wRPC (borsh) URL |
 | `SOMPI_PRIVATE_KEY` | (generated keyfile) | Hex private key override |
 | `SOMPI_DATA_DIR` | `~/.sompi/<network>` | Keyfile + spend-log location |
@@ -207,7 +212,9 @@ compiler fixtures; the channel — and its replay rejection — is exercised by
 
 Sellers collect escrow revenue with
 `node scripts/escrow-claim.js <serviceDataDir> <destination>`. Clients can refund
-unspent balances after the timeout with `scripts/escrow-refund.js`.
+unspent balances after the timeout with `escrow_refund` or
+`scripts/escrow-refund.js`. See the wire spec:
+[`docs/kaspa-escrow-x402.md`](docs/kaspa-escrow-x402.md).
 
 ## Covenant vaults — the agent wallet
 
@@ -250,6 +257,7 @@ agent cooperation needed).
 3. **Phase 3 (done)** — Trust-minimized `kaspa-escrow`: SilverScript-derived covenant template, full-outpoint voucher replay protection, and live proof coverage.
 4. **Phase 4 (done)** — Covenant vaults (KIP-16): the agent wallet, with rolling-window spending limits enforced by consensus rather than software.
 5. **Vault-backed commerce (done)** — The vault is the treasury for escrow deposits and paid API usage, with the regular wallet kept as setup/top-up working float.
+6. **Agent-native payment UX (in progress)** — Users express intent in normal language; the agent handles payment mechanics. KAS-first responses, payment/escrow status, guided setup, refund lifecycle tools, public demo polish, interop docs, and mainnet safety gates.
 
 ## Development
 
@@ -262,6 +270,10 @@ SOMPI_NODE_URL=<node> SOMPI_VAULT_COMMERCE_FUNDER_PRIVATE_KEY=<funded-testnet-ke
 Live proofs require a synced node with UTXO index enabled. The vault-backed
 commerce harness writes a mode-0600 recovery file containing disposable testnet
 keys before it spends.
+
+The demo service can be deployed as a public paid endpoint with
+[`deploy/README.md`](deploy/README.md). Its HTTP 402 offer uses exact sompi wire
+fields, while the landing page and agent receipts use KAS/tKAS first.
 
 The Kaspa WASM SDK (v2.0.0, Toccata) is vendored under `vendor/kaspa-wasm` because the npm `kaspa` package is unmaintained (2023). Sourced from the official [rusty-kaspa v2.0.0 release](https://github.com/kaspanet/rusty-kaspa/releases/tag/v2.0.0).
 

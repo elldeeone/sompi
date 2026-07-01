@@ -22,7 +22,7 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
-import { KaspaWallet } from "./wallet";
+import { KaspaWallet, formatKas } from "./wallet";
 import { generateChannelKey } from "./x402/escrow";
 import { EscrowServer } from "./x402/escrow-server";
 
@@ -31,6 +31,9 @@ const PORT = Number(process.env.PORT ?? 8642);
 const DATA_DIR = process.env.SOMPI_DATA_DIR ?? path.join(os.homedir(), ".sompi", NETWORK, "service");
 const MIN_DEPOSIT = BigInt(process.env.X402_MIN_DEPOSIT_SOMPI ?? "90000000"); // 0.9 KAS
 const PRICE = BigInt(process.env.X402_PRICE_SOMPI ?? "1000000"); // 0.01 KAS
+const UNIT = NETWORK.startsWith("testnet") ? "tKAS" : "KAS";
+const MIN_DEPOSIT_DISPLAY = `${formatKas(MIN_DEPOSIT)} ${UNIT}`;
+const PRICE_DISPLAY = `${formatKas(PRICE)} ${UNIT}`;
 
 const wallet = new KaspaWallet({ networkId: NETWORK, dataDir: DATA_DIR, nodeUrl: process.env.SOMPI_NODE_URL });
 
@@ -73,7 +76,7 @@ a{color:#70c7ba}code,pre{background:#16191d;padding:.15rem .4rem;border-radius:4
 <p>A paid API on <b>Kaspa testnet-10</b>. Machines pay for it autonomously using
 HTTP 402 and KAS — fund a trust-minimized covenant escrow once (~1 second), then
 each request is paid by an instant off-chain voucher.</p>
-<p><b>Paid endpoints</b> (${PRICE} sompi each, ${Number(MIN_DEPOSIT) / 1e8} tKAS escrow deposit):</p>
+<p><b>Paid endpoints</b> (${PRICE_DISPLAY} each, ${MIN_DEPOSIT_DISPLAY} escrow deposit):</p>
 <ul>
 <li><code>GET /api/network</code> — live network stats + canonical-chain verdict</li>
 <li><code>GET /api/verify?txid=&lt;txid&gt;&amp;address=&lt;addr&gt;</code> — did a payment land?</li>
@@ -95,7 +98,9 @@ const LLMS_TXT = `# sompi demo API (Kaspa testnet-10)
 This is a paid API. Payment protocol: x402, trust-minimized kaspa-escrow scheme.
 
 How it works:
-1. GET any /api/* endpoint. You will receive HTTP 402 with a JSON body:
+1. GET any /api/* endpoint. You will receive HTTP 402 with a JSON body.
+   Human amount: ${PRICE_DISPLAY} per request, ${MIN_DEPOSIT_DISPLAY} escrow deposit.
+   Wire amounts stay exact integer sompi:
    { "x402Version": 1, "accepts": [{ "scheme": "kaspa-escrow", "network": "testnet-10",
      "serverPublic": "<32-byte hex>", "refundTimeout": "<DAA score>",
      "minDepositSompi": "${MIN_DEPOSIT}", "pricePerRequestSompi": "${PRICE}" }] }
