@@ -355,6 +355,164 @@ async function main() {
   }
   check("escrow funding: distinguishes missing outpoints from lookup errors", missingOutpointIsTyped && lookupErrorPropagates);
 
+  // --- offline checks: escrow client can fund new deposits from the vault treasury path ---
+  const vaultFundedEscrowDir = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-escrow-vault-funded-"));
+  const vaultFundingTxid = "44".repeat(32);
+  let vaultFundingProviderCalls = 0;
+  let hotWalletSends = 0;
+  let fundedEscrowAddress = "";
+  const vaultFundingPolicy = new PolicyEngine(vaultFundedEscrowDir);
+  const vaultFundedClient = new X402Client(
+    {
+      networkId: "testnet-10",
+      send: async () => {
+        hotWalletSends++;
+        throw new Error("hot wallet send should not fund escrow deposits when a vault funding source is configured");
+      },
+      client: async () => ({
+        getUtxosByAddresses: async (addresses: string[]) => ({
+          entries:
+            addresses[0] === fundedEscrowAddress
+              ? [{ outpoint: { transactionId: vaultFundingTxid, index: 0 }, amount: 1000n }]
+              : [],
+        }),
+      }),
+    } as any,
+    vaultFundingPolicy,
+    vaultFundedEscrowDir,
+    {
+      fundEscrowDeposit: async (request) => {
+        vaultFundingProviderCalls++;
+        fundedEscrowAddress = request.escrowAddress;
+        return { txid: vaultFundingTxid, feeSompi: 123n, source: "vault" };
+      },
+    }
+  );
+  const vaultDeposit = await (vaultFundedClient as any).openEscrow("https://vault-funded.example", {
+    network: "testnet-10",
+    serverPublic: sampleServer.publicKey,
+    refundTimeout: "123456",
+    minDepositSompi: "1000",
+    pricePerRequestSompi: "100",
+  });
+  const vaultFundedChannels = vaultFundedClient.escrowChannels().active;
+  check(
+    "x402 client: opens escrow deposits through vault funding source",
+    vaultFundingProviderCalls === 1 &&
+      hotWalletSends === 0 &&
+      vaultDeposit.source === "vault" &&
+      vaultDeposit.feeSompi === "123" &&
+      vaultFundingPolicy.spentLastHour() === 1000n &&
+      vaultFundedChannels.length === 1 &&
+      vaultFundedChannels[0]?.fundingTxid === vaultFundingTxid &&
+      vaultFundedChannels[0]?.fundingIndex === 0 &&
+      vaultFundedChannels[0]?.fundingSource === "vault"
+  );
+  fs.rmSync(vaultFundedEscrowDir, { recursive: true, force: true });
+
+  // --- offline checks: escrow rotation reports the fresh vault-funded deposit ---
+  const rotationEscrowDir = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-escrow-rotation-"));
+  const rotationFundingTxid = "88".repeat(32);
+  let rotationFundedAddress = "";
+  const rotatingEscrowState = {
+    clientPrivate: sampleClient.privateKey,
+    clientPublic: sampleClient.publicKey,
+    serverPublic: sampleServer.publicKey,
+    refundTimeout: "123456",
+    escrowAddress: "kaspatest:qrotating",
+    network: "testnet-10",
+    depositedSompi: "1000",
+    pricePerRequestSompi: "100",
+    fundingSource: "vault",
+    fundingTxid: "99".repeat(32),
+    fundingIndex: 0,
+    authorizedSompi: "900",
+  };
+  fs.writeFileSync(
+    path.join(rotationEscrowDir, "client-escrows.json"),
+    JSON.stringify({ active: { "https://rotate.example": rotatingEscrowState }, retired: [] })
+  );
+  const previousFetch = (globalThis as any).fetch;
+  let rotationFetches = 0;
+  (globalThis as any).fetch = async () => {
+    rotationFetches++;
+    return new Response("rotated-ok", { status: 200 });
+  };
+  try {
+    const rotationClient = new X402Client(
+      {
+        networkId: "testnet-10",
+        client: async () => ({
+          getUtxosByAddresses: async (addresses: string[]) => ({
+            entries:
+              addresses[0] === rotationFundedAddress
+                ? [{ outpoint: { transactionId: rotationFundingTxid, index: 0 }, amount: 1000n }]
+                : [],
+          }),
+        }),
+      } as any,
+      new PolicyEngine(rotationEscrowDir),
+      rotationEscrowDir,
+      {
+        requiredEscrowFundingSource: "vault",
+        fundEscrowDeposit: async (request) => {
+          rotationFundedAddress = request.escrowAddress;
+          return { txid: rotationFundingTxid, source: "vault", feeSompi: 456n };
+        },
+      }
+    );
+    const rotationResult = await rotationClient.paidFetch("https://rotate.example/api");
+    const rotationChannels = rotationClient.escrowChannels();
+    check(
+      "x402 client: reports deposit when rotating vault-funded escrows",
+      rotationResult.status === 200 &&
+        rotationResult.body === "rotated-ok" &&
+        rotationResult.deposit?.txid === rotationFundingTxid &&
+        rotationResult.deposit?.source === "vault" &&
+        rotationResult.deposit?.feeSompi === "456" &&
+        rotationResult.fundingSource === "vault" &&
+        rotationResult.authorizedSompi === "100" &&
+        rotationFetches === 1 &&
+        rotationChannels.active.length === 1 &&
+        rotationChannels.active[0]?.fundingTxid === rotationFundingTxid &&
+        rotationChannels.retired.length === 1
+    );
+  } finally {
+    (globalThis as any).fetch = previousFetch;
+    fs.rmSync(rotationEscrowDir, { recursive: true, force: true });
+  }
+
+  // --- offline checks: vault-required mode fails before any wallet-funded fallback send ---
+  const vaultRequiredEscrowDir = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-escrow-vault-required-"));
+  let forbiddenWalletSends = 0;
+  const vaultRequiredClient = new X402Client(
+    {
+      networkId: "testnet-10",
+      send: async () => {
+        forbiddenWalletSends++;
+        return { txid: "77".repeat(32), feeSompi: 0n };
+      },
+    } as any,
+    new PolicyEngine(vaultRequiredEscrowDir),
+    vaultRequiredEscrowDir,
+    { requiredEscrowFundingSource: "vault" }
+  );
+  let rejectedBeforeWalletSend = false;
+  try {
+    await (vaultRequiredClient as any).openEscrow("https://vault-required.example", {
+      network: "testnet-10",
+      serverPublic: sampleServer.publicKey,
+      refundTimeout: "123456",
+      minDepositSompi: "1000",
+      pricePerRequestSompi: "100",
+    });
+  } catch (e) {
+    rejectedBeforeWalletSend =
+      String((e as Error).message ?? e).includes("no escrow funding provider") && forbiddenWalletSends === 0;
+  }
+  check("x402 client: vault-required mode rejects before wallet funding", rejectedBeforeWalletSend);
+  fs.rmSync(vaultRequiredEscrowDir, { recursive: true, force: true });
+
   // --- offline checks: escrow client persisted state is current-shape only ---
   const escrowStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-escrow-state-"));
   const currentEscrowState = {
@@ -366,6 +524,7 @@ async function main() {
     network: "testnet-10",
     depositedSompi: "1000",
     pricePerRequestSompi: "100",
+    fundingSource: "vault",
     fundingTxid: "22".repeat(32),
     fundingIndex: 0,
     authorizedSompi: "0",
@@ -396,6 +555,51 @@ async function main() {
       !sanitizedEscrows.active["https://stale.example"]
   );
   fs.rmSync(escrowStateDir, { recursive: true, force: true });
+
+  // --- offline checks: MCP-style x402 clients do not keep wallet-funded escrows active ---
+  const escrowVaultOnlyDir = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-escrow-vault-only-"));
+  const { fundingSource: _mainFundingSource, ...mainEscrowState } = {
+    ...currentEscrowState,
+    escrowAddress: "kaspatest:qmain",
+    fundingTxid: "66".repeat(32),
+  };
+  const walletFundedEscrowState = {
+    ...currentEscrowState,
+    fundingSource: "wallet",
+    fundingTxid: "55".repeat(32),
+  };
+  fs.writeFileSync(
+    path.join(escrowVaultOnlyDir, "client-escrows.json"),
+    JSON.stringify({
+      active: {
+        "https://vault.example": currentEscrowState,
+        "https://wallet.example": walletFundedEscrowState,
+        "https://main-shaped.example": mainEscrowState,
+      },
+      retired: [],
+    })
+  );
+  const vaultOnlyClient = new X402Client(
+    new KaspaWallet({ networkId: "testnet-10", dataDir: path.join(escrowVaultOnlyDir, "wallet") }),
+    new PolicyEngine(escrowVaultOnlyDir),
+    escrowVaultOnlyDir,
+    { requiredEscrowFundingSource: "vault" }
+  );
+  const vaultOnlyStore = vaultOnlyClient.escrowChannels();
+  const vaultOnlyPersisted = JSON.parse(fs.readFileSync(path.join(escrowVaultOnlyDir, "client-escrows.json"), "utf8"));
+  check(
+    "x402 client: vault mode preserves and retires wallet-funded escrow channels",
+    vaultOnlyStore.active.length === 1 &&
+      vaultOnlyStore.active[0]?.fundingSource === "vault" &&
+      vaultOnlyStore.retired.length === 2 &&
+      vaultOnlyStore.retired.every((channel) => channel.fundingSource === "wallet") &&
+      vaultOnlyStore.retired.some((channel) => channel.clientPrivate === mainEscrowState.clientPrivate) &&
+      Boolean(vaultOnlyPersisted.active["https://vault.example"]) &&
+      !vaultOnlyPersisted.active["https://wallet.example"] &&
+      !vaultOnlyPersisted.active["https://main-shaped.example"] &&
+      vaultOnlyPersisted.retired.some((channel: any) => channel.fundingSource === "wallet" && channel.fundingTxid === mainEscrowState.fundingTxid)
+  );
+  fs.rmSync(escrowVaultOnlyDir, { recursive: true, force: true });
 
   // --- offline checks: escrow server persisted channels are current-shape only ---
   const escrowServerStateDir = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-escrow-server-state-"));

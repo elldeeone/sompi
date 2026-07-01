@@ -209,14 +209,33 @@ registerTool(
     })
 );
 
-const x402 = new X402Client(wallet, policy, DATA_DIR);
+const vault = new VaultManager(DATA_DIR, NETWORK);
+
+const x402 = new X402Client(wallet, policy, DATA_DIR, {
+  requiredEscrowFundingSource: "vault",
+  fundEscrowDeposit: async ({ escrowAddress, amountSompi }) => {
+    if (!vault.configured) {
+      throw new Error(
+        "paid_fetch requires a funded covenant vault treasury. Call vault_create, fund the regular wallet, " +
+          "then call vault_deposit before opening paid API escrows."
+      );
+    }
+    const config = vault.config();
+    if (!config.covenantId) {
+      throw new Error("paid_fetch requires a covenant-funded vault. Call vault_deposit before opening paid API escrows.");
+    }
+    const result = await vault.send(wallet, escrowAddress, amountSompi);
+    return { txid: result.txid, feeSompi: result.feeSompi, source: "vault" };
+  },
+});
 
 registerTool(
   "paid_fetch",
   {
     description:
       "Fetch a URL, automatically paying for it if the server responds with HTTP 402. " +
-      "Uses trust-minimized kaspa-escrow when offered. " +
+      "Uses trust-minimized kaspa-escrow when offered, and funds new escrow deposits from " +
+      "the configured covenant vault treasury. Call vault_create and vault_deposit first. " +
       "On-chain deposits are subject to the local spending policy; subsequent requests use off-chain authorization.",
     inputSchema: {
       url: z.string().url().describe("URL to fetch"),
@@ -230,14 +249,13 @@ registerTool(
       return {
         status: result.status,
         body: result.body.length > 10_000 ? result.body.slice(0, 10_000) + "…[truncated]" : result.body,
-        tabId: result.tabId,
-        remainingSompi: result.remainingSompi,
+        scheme: result.scheme,
+        fundingSource: result.fundingSource,
+        authorizedSompi: result.authorizedSompi,
         deposit: result.deposit,
       };
     })
 );
-
-const vault = new VaultManager(DATA_DIR, NETWORK);
 
 registerTool(
   "vault_create",

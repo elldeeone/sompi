@@ -75,7 +75,9 @@ deposits top up the same singleton vault and reset an already-expired window
 instead of extending exhausted state. Verify with `vault_status`.
 
 Now the agent can spend (`vault_send`, capped by consensus) and pay for services
-(`paid_fetch`), and **you** can drain or recover the vault any time with your key
+(`paid_fetch`). New x402 escrow deposits are funded from the vault treasury, not
+from the ordinary hot wallet. The regular wallet is only setup/top-up working
+float, and **you** can drain or recover the vault any time with your key
 (`scripts/vault-recover.js`). Add a `SOMPI_POLICY` file for softer day-to-day
 limits on top of the hard consensus cap.
 
@@ -92,7 +94,7 @@ limits on top of the hard consensus cap.
 | `send_payment` | Send KAS — gated by the spending policy |
 | `await_payment` | Block until an incoming payment of at least N sompi arrives (UTXO subscription, not polling) |
 | `verify_payment` | Confirm a txid paid an address |
-| `paid_fetch` | Fetch a URL, auto-resolving HTTP 402 payment with trust-minimized escrow |
+| `paid_fetch` | Fetch a URL, auto-resolving HTTP 402 payment with vault-backed trust-minimized escrow |
 | `estimate_fee` | Live feerate buckets from the node |
 | `network_status` | Node sync state, DAA score, version |
 | `get_policy` | Read-only view of the active spending policy |
@@ -146,10 +148,11 @@ Kaspa's storage mass (KIP-9) charges roughly `C/amount` grams (C = 10¹²) for c
 ## x402: agents paying for APIs
 
 The `paid_fetch` MCP tool resolves HTTP 402 responses automatically with
-**`kaspa-escrow`**: the client funds a covenant escrow once, then pays each
-request with a cumulative off-chain voucher. On testnet-10 the first paid
-request includes the on-chain deposit/indexing step; later requests reuse the
-escrow and only send signed vouchers.
+**`kaspa-escrow`**: the client funds a covenant escrow once from its vault
+treasury, then pays each request with a cumulative off-chain voucher. On
+testnet-10 the first paid request includes the vault withdrawal, escrow
+deposit, and indexing step; later requests reuse the escrow and only send signed
+vouchers.
 
 Server side (any Node `http`-compatible framework):
 
@@ -195,9 +198,11 @@ single-use: a server cannot replay one voucher against the change to drain the
 deposit. (See [docs/escrow-poc.md](docs/escrow-poc.md) for the live proof
 harness.)
 
-`paid_fetch` uses `kaspa-escrow` offers. The covenant template is derived from
-[`contracts/escrow.sil`](contracts/escrow.sil) with SilverScript compiler
-fixtures; the channel — and its replay rejection — is exercised by
+`paid_fetch` uses `kaspa-escrow` offers. In the MCP server it requires a funded
+vault and only keeps vault-funded escrow channels active; non-vault channels are
+retired for refund instead of used for new requests. The covenant template is
+derived from [`contracts/escrow.sil`](contracts/escrow.sil) with SilverScript
+compiler fixtures; the channel — and its replay rejection — is exercised by
 `scripts/escrow-live.js`.
 
 Sellers collect escrow revenue with
@@ -244,14 +249,19 @@ agent cooperation needed).
 2. **Phase 2 (done)** — x402 HTTP payment middleware + `paid_fetch`.
 3. **Phase 3 (done)** — Trust-minimized `kaspa-escrow`: SilverScript-derived covenant template, full-outpoint voucher replay protection, and live proof coverage.
 4. **Phase 4 (done)** — Covenant vaults (KIP-16): the agent wallet, with rolling-window spending limits enforced by consensus rather than software.
-5. **Phase 5 (next)** — Vault-backed agent commerce: make the vault the primary treasury for escrow deposits and paid API usage, with the regular wallet kept as working/fee float.
+5. **Vault-backed commerce (done)** — The vault is the treasury for escrow deposits and paid API usage, with the regular wallet kept as setup/top-up working float.
 
 ## Development
 
 ```bash
 npm run build   # compile
 npm run smoke   # offline policy checks + live testnet-10 checks
+SOMPI_NODE_URL=<node> SOMPI_VAULT_COMMERCE_FUNDER_PRIVATE_KEY=<funded-testnet-key> npm run proof:vault-commerce
 ```
+
+Live proofs require a synced node with UTXO index enabled. The vault-backed
+commerce harness writes a mode-0600 recovery file containing disposable testnet
+keys before it spends.
 
 The Kaspa WASM SDK (v2.0.0, Toccata) is vendored under `vendor/kaspa-wasm` because the npm `kaspa` package is unmaintained (2023). Sourced from the official [rusty-kaspa v2.0.0 release](https://github.com/kaspanet/rusty-kaspa/releases/tag/v2.0.0).
 
