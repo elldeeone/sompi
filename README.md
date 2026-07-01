@@ -258,7 +258,7 @@ agent cooperation needed).
 3. **Phase 3 (done)** — Trust-minimized `kaspa-escrow`: SilverScript-derived covenant template, full-outpoint voucher replay protection, and live proof coverage.
 4. **Phase 4 (done)** — Covenant vaults (KIP-16): the agent wallet, with rolling-window spending limits enforced by consensus rather than software.
 5. **Vault-backed commerce (done)** — The vault is the treasury for escrow deposits and paid API usage, with the regular wallet kept as setup/top-up working float.
-6. **Agent-native payment UX (in progress)** — Users express intent in normal language; the agent handles payment mechanics. KAS-first responses, payment/escrow status, guided setup, refund lifecycle tools, public demo polish, interop docs, and mainnet safety gates.
+6. **Agent-native payment UX (in progress)** — Users express intent in normal language; the agent handles payment mechanics. KAS-first responses, payment/escrow status, guided setup, refund lifecycle tools, public demo polish, interop docs, and mainnet safety gates. See [`docs/agent-interaction-ux.md`](docs/agent-interaction-ux.md).
 
 ## Development
 
