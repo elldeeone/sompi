@@ -102,8 +102,11 @@ export class X402Client {
   }
 
   /** Active and retired escrow channels, for refund tooling. */
-  escrowChannels(): { active: EscrowState[]; retired: EscrowState[] } {
-    return { active: Object.values(this.escrows), retired: [...this.retired] };
+  escrowChannels(): { active: Array<EscrowState & { origin: string }>; retired: EscrowState[] } {
+    return {
+      active: Object.entries(this.escrows).map(([origin, state]) => ({ origin, ...state })),
+      retired: [...this.retired],
+    };
   }
 
   async paidFetch(url: string, init?: RequestInit): Promise<PaidFetchResult> {

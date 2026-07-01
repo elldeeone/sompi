@@ -134,6 +134,211 @@ function paidFetchSummary(result: {
   );
 }
 
+function policyView() {
+  const p = policy.policy;
+  const spent = policy.spentLastHour();
+  return {
+    summary: `Day-to-day policy allows up to ${kasDisplay(p.maxSompiPerTx)} per payment and ${kasDisplay(p.maxSompiPerHour)} per hour.`,
+    maxSompiPerTx: p.maxSompiPerTx.toString(),
+    maxKasPerTx: kasValue(p.maxSompiPerTx),
+    maxPerTxDisplay: kasDisplay(p.maxSompiPerTx),
+    maxSompiPerHour: p.maxSompiPerHour.toString(),
+    maxKasPerHour: kasValue(p.maxSompiPerHour),
+    maxPerHourDisplay: kasDisplay(p.maxSompiPerHour),
+    spentLastHourSompi: spent.toString(),
+    spentLastHourKas: kasValue(spent),
+    spentLastHourDisplay: kasDisplay(spent),
+    remainingHourSompi: p.maxSompiPerHour > spent ? (p.maxSompiPerHour - spent).toString() : "0",
+    remainingHourKas: kasValue(p.maxSompiPerHour > spent ? p.maxSompiPerHour - spent : 0n),
+    remainingHourDisplay: kasDisplay(p.maxSompiPerHour > spent ? p.maxSompiPerHour - spent : 0n),
+    allowlist: p.allowlist,
+    requireApprovalAboveSompi: p.requireApprovalAboveSompi.toString(),
+    requireApprovalAboveKas: kasValue(p.requireApprovalAboveSompi),
+    requireApprovalAboveDisplay:
+      p.requireApprovalAboveSompi > 0n ? kasDisplay(p.requireApprovalAboveSompi) : "disabled",
+  };
+}
+
+function publicEscrowChannel(channel: any, currentDaa?: bigint) {
+  const deposited = BigInt(channel.depositedSompi);
+  const authorized = BigInt(channel.authorizedSompi);
+  const price = BigInt(channel.pricePerRequestSompi);
+  const refundableEstimate = deposited > authorized ? deposited - authorized : 0n;
+  const refundTimeout = BigInt(channel.refundTimeout);
+  const refundAvailable = currentDaa === undefined ? undefined : currentDaa >= refundTimeout;
+  const nextRequestNeedsDeposit = authorized + price >= deposited;
+  return {
+    origin: channel.origin,
+    network: channel.network,
+    escrowAddress: channel.escrowAddress,
+    fundingSource: channel.fundingSource,
+    fundingTxid: channel.fundingTxid,
+    fundingIndex: channel.fundingIndex,
+    depositedSompi: deposited.toString(),
+    depositedKas: kasValue(deposited),
+    depositedDisplay: kasDisplay(deposited),
+    authorizedSompi: authorized.toString(),
+    authorizedKas: kasValue(authorized),
+    authorizedDisplay: kasDisplay(authorized),
+    pricePerRequestSompi: price.toString(),
+    pricePerRequestKas: kasValue(price),
+    pricePerRequestDisplay: kasDisplay(price),
+    refundableEstimateSompi: refundableEstimate.toString(),
+    refundableEstimateKas: kasValue(refundableEstimate),
+    refundableEstimateDisplay: kasDisplay(refundableEstimate),
+    refundTimeoutDaa: channel.refundTimeout,
+    refundAvailable,
+    daaUntilRefund: currentDaa === undefined || currentDaa >= refundTimeout ? "0" : (refundTimeout - currentDaa).toString(),
+    nextRequest: nextRequestNeedsDeposit ? "opens a new escrow deposit" : "reuses this escrow",
+  };
+}
+
+async function paymentReadiness() {
+  const blockers: string[] = [];
+  const warnings: string[] = [];
+
+  let node:
+    | { network: string; isSynced: unknown; serverVersion: unknown; virtualDaaScore: string; hasUtxoIndex: unknown }
+    | undefined;
+  let currentDaa: bigint | undefined;
+  try {
+    const info = await wallet.serverInfo();
+    currentDaa = BigInt(info.virtualDaaScore);
+    node = {
+      network: NETWORK,
+      isSynced: info.isSynced,
+      serverVersion: info.serverVersion,
+      virtualDaaScore: info.virtualDaaScore?.toString?.() ?? String(info.virtualDaaScore),
+      hasUtxoIndex: info.hasUtxoIndex,
+    };
+    if (info.isSynced !== true) blockers.push("The connected node is not synced.");
+    if (info.hasUtxoIndex !== true) blockers.push("The connected node does not have UTXO index enabled.");
+  } catch (error) {
+    blockers.push(`I cannot reach a usable Kaspa node: ${String((error as Error)?.message ?? error)}`);
+  }
+
+  let regularWalletBalance: bigint | undefined;
+  try {
+    regularWalletBalance = await wallet.balanceSompi();
+  } catch (error) {
+    warnings.push(`I could not read the regular wallet balance: ${String((error as Error)?.message ?? error)}`);
+  }
+
+  let policyStatus;
+  try {
+    policyStatus = policyView();
+  } catch (error) {
+    blockers.push(`The spending policy is not readable: ${String((error as Error)?.message ?? error)}`);
+  }
+
+  let vaultStatus:
+    | {
+        configured: boolean;
+        covenantFunded: boolean;
+        balanceSompi?: string;
+        balanceKas?: string;
+        balanceDisplay?: string;
+        unboundSompi?: string;
+        unboundKas?: string;
+        unboundDisplay?: string;
+        maxOutflowSompi?: string;
+        maxOutflowKas?: string;
+        maxOutflowDisplay?: string;
+        spentInWindowSompi?: string;
+        spentInWindowKas?: string;
+        spentInWindowDisplay?: string;
+        currentOutpoint?: { txid: string; index: number };
+        address?: string;
+        covenantId?: string;
+      }
+    | undefined;
+  if (!vault.configured) {
+    blockers.push("The vault has not been set up yet.");
+    vaultStatus = { configured: false, covenantFunded: false };
+  } else {
+    const config = vault.config();
+    const covenantFunded = Boolean(config.covenantId);
+    if (!covenantFunded) blockers.push("The vault exists but has not been funded with a covenant deposit yet.");
+    try {
+      const balances = await vault.balanceBreakdown(wallet);
+      if (covenantFunded && balances.spendableSompi <= 0n) blockers.push("The vault has no spendable balance.");
+      if (balances.unboundSompi > 0n) warnings.push("Some funds were sent directly to the vault address and are owner-recoverable only.");
+      vaultStatus = {
+        configured: true,
+        covenantFunded,
+        address: config.address,
+        covenantId: config.covenantId,
+        currentOutpoint: config.currentOutpoint,
+        balanceSompi: balances.spendableSompi.toString(),
+        balanceKas: kasValue(balances.spendableSompi),
+        balanceDisplay: kasDisplay(balances.spendableSompi),
+        unboundSompi: balances.unboundSompi.toString(),
+        unboundKas: kasValue(balances.unboundSompi),
+        unboundDisplay: kasDisplay(balances.unboundSompi),
+        maxOutflowSompi: config.maxOutflowSompi,
+        maxOutflowKas: kasValue(config.maxOutflowSompi),
+        maxOutflowDisplay: kasDisplay(config.maxOutflowSompi),
+        spentInWindowSompi: config.spentInWindowSompi,
+        spentInWindowKas: kasValue(config.spentInWindowSompi),
+        spentInWindowDisplay: kasDisplay(config.spentInWindowSompi),
+      };
+    } catch (error) {
+      blockers.push(`I could not read the vault balance: ${String((error as Error)?.message ?? error)}`);
+      vaultStatus = { configured: true, covenantFunded, address: config.address, covenantId: config.covenantId };
+    }
+  }
+
+  const channels = x402.escrowChannels();
+  const activeEscrows = channels.active.map((channel) => publicEscrowChannel(channel, currentDaa));
+  const retiredEscrows = channels.retired.map((channel) => publicEscrowChannel(channel, currentDaa));
+  const refundableNow = retiredEscrows.filter((channel) => channel.refundAvailable === true);
+  if (refundableNow.length > 0) warnings.push(`${refundableNow.length} retired escrow channel(s) are refundable now.`);
+
+  const ready = blockers.length === 0;
+  return {
+    summary: ready
+      ? `Ready to pay for APIs. Vault balance is ${vaultStatus?.balanceDisplay ?? "unknown"}; ${activeEscrows.length} active escrow channel(s).`
+      : `Not ready to pay yet: ${blockers[0]}`,
+    status: ready ? (warnings.length > 0 ? "ready_with_warnings" : "ready") : "blocked",
+    userAction: ready ? "none" : paymentStatusNextStep(blockers[0]),
+    blockers,
+    warnings,
+    network: node,
+    regularWallet: {
+      address: wallet.address,
+      balanceSompi: regularWalletBalance?.toString(),
+      balanceKas: regularWalletBalance === undefined ? undefined : kasValue(regularWalletBalance),
+      balanceDisplay: regularWalletBalance === undefined ? undefined : kasDisplay(regularWalletBalance),
+    },
+    vault: vaultStatus,
+    policy: policyStatus,
+    escrows: {
+      activeCount: activeEscrows.length,
+      retiredCount: retiredEscrows.length,
+      refundableNowCount: refundableNow.length,
+      active: activeEscrows,
+      retired: retiredEscrows,
+    },
+  };
+}
+
+function paymentStatusNextStep(blocker?: string): string {
+  if (!blocker) return "none";
+  if (blocker.includes("vault has not been set up")) {
+    return "Ask the operator for a vault owner public key and spending cap, then call vault_create.";
+  }
+  if (blocker.includes("covenant deposit")) {
+    return "Fund the regular wallet, then call vault_deposit to move funds into the safer covenant vault.";
+  }
+  if (blocker.includes("no spendable balance")) {
+    return "Top up the regular wallet, then call vault_deposit.";
+  }
+  if (blocker.includes("node")) {
+    return "Use a synced Kaspa node with UTXO index enabled, or wait for the current node to recover.";
+  }
+  return "Report the blocker to the operator and do not bypass the policy or vault controls.";
+}
+
 async function guarded<T>(fn: () => Promise<T>): Promise<{ content: { type: "text"; text: string }[]; isError?: boolean }> {
   try {
     return ok(await fn());
@@ -305,6 +510,59 @@ const x402 = new X402Client(wallet, policy, DATA_DIR, {
     return { txid: result.txid, feeSompi: result.feeSompi, source: "vault" };
   },
 });
+
+registerTool(
+  "payment_status",
+  {
+    description:
+      "Answer whether this agent is ready to pay for APIs. Returns a plain-English summary, wallet/vault/policy status, " +
+      "and active escrow visibility using KAS-first amounts.",
+  },
+  async () => guarded(async () => paymentReadiness())
+);
+
+registerTool(
+  "escrow_status",
+  {
+    description:
+      "Show active and retired paid API escrow channels. Use this when the user asks whether a future paid request " +
+      "will reuse an escrow, open a new deposit, or whether anything is refundable.",
+    inputSchema: {
+      url: z.string().url().optional().describe("Optional paid URL to check whether its origin already has an active escrow"),
+    },
+  },
+  async ({ url }) =>
+    guarded(async () => {
+      let currentDaa: bigint | undefined;
+      try {
+        const info = await wallet.serverInfo();
+        currentDaa = BigInt(info.virtualDaaScore);
+      } catch {
+        currentDaa = undefined;
+      }
+      const origin = url ? new URL(url).origin : undefined;
+      const channels = x402.escrowChannels();
+      const active = channels.active.map((channel) => publicEscrowChannel(channel, currentDaa));
+      const retired = channels.retired.map((channel) => publicEscrowChannel(channel, currentDaa));
+      const matching = origin ? active.find((channel) => channel.origin === origin) : undefined;
+      const refundableNow = retired.filter((channel) => channel.refundAvailable === true);
+      const summary = origin
+        ? matching
+          ? `The next paid request to ${origin} will ${matching.nextRequest}.`
+          : `There is no active escrow for ${origin}; the next paid request will open a new vault-funded escrow if payment is required.`
+        : `${active.length} active escrow channel(s), ${retired.length} retired channel(s), ${refundableNow.length} refundable now.`;
+      return {
+        summary,
+        status: "ok",
+        checkedOrigin: origin,
+        activeCount: active.length,
+        retiredCount: retired.length,
+        refundableNowCount: refundableNow.length,
+        active,
+        retired,
+      };
+    })
+);
 
 registerTool(
   "paid_fetch",
