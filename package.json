@@ -21,7 +21,12 @@
     "sompi-mcp": "dist/index.js"
   },
   "files": [
+    "contracts",
+    "deploy",
     "dist",
+    "docs",
+    "policy.example.json",
+    "scripts",
     "vendor/kaspa-wasm"
   ],
   "engines": {
