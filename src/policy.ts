@@ -106,12 +106,13 @@ export class PolicyEngine {
     }
     if (amountSompi > p.maxSompiPerTx) {
       throw new PolicyViolation(
-        `amount ${amountSompi} sompi exceeds per-transaction limit of ${p.maxSompiPerTx} sompi` + OPERATOR_BOUNDARY
+        `amount ${displayAmount(amountSompi)} exceeds the per-payment limit of ${displayAmount(p.maxSompiPerTx)}` +
+          OPERATOR_BOUNDARY
       );
     }
     if (p.requireApprovalAboveSompi > 0n && amountSompi > p.requireApprovalAboveSompi) {
       throw new PolicyViolation(
-        `amount ${amountSompi} sompi exceeds the approval threshold of ${p.requireApprovalAboveSompi} sompi. ` +
+        `amount ${displayAmount(amountSompi)} exceeds the approval threshold of ${displayAmount(p.requireApprovalAboveSompi)}. ` +
           `Relay this to your human operator and wait for them to either perform the payment themselves or ` +
           `adjust the policy — do not edit the policy file or work around this tool yourself`
       );
@@ -124,8 +125,9 @@ export class PolicyEngine {
     const spent = this.spentLastHour();
     if (spent + amountSompi > p.maxSompiPerHour) {
       throw new PolicyViolation(
-        `send of ${amountSompi} sompi would exceed the rolling hourly limit ` +
-          `(${spent} of ${p.maxSompiPerHour} sompi already spent in the last hour)` + OPERATOR_BOUNDARY
+        `send of ${displayAmount(amountSompi)} would exceed the rolling hourly limit ` +
+          `(${displayAmount(spent)} of ${displayAmount(p.maxSompiPerHour)} already spent in the last hour)` +
+          OPERATOR_BOUNDARY
       );
     }
   }
@@ -183,4 +185,16 @@ function loadPolicy(policyPath?: string): Policy {
 function toBigInt(v: string | number | undefined, fallback: bigint): bigint {
   if (v === undefined) return fallback;
   return BigInt(v);
+}
+
+function displayAmount(sompi: bigint): string {
+  return `${formatKas(sompi)} KAS (${sompi} sompi)`;
+}
+
+function formatKas(sompi: bigint): string {
+  const sign = sompi < 0n ? "-" : "";
+  const absolute = sompi < 0n ? -sompi : sompi;
+  const whole = absolute / 100_000_000n;
+  const fraction = (absolute % 100_000_000n).toString().padStart(8, "0").replace(/0+$/, "");
+  return `${sign}${whole}${fraction ? `.${fraction}` : ""}`;
 }

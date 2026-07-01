@@ -133,7 +133,7 @@ export class VaultManager {
           "give you the `public:` line; the private half must stay with them."
       );
     }
-    if (maxOutflowSompi <= 0n) throw new Error("maxOutflowSompi must be positive");
+    if (maxOutflowSompi <= 0n) throw new Error("Vault spending cap must be positive.");
     if (windowSizeDaa <= 0n) throw new Error("windowSizeDaa must be positive");
 
     const agent = Keypair.random();
@@ -203,7 +203,7 @@ export class VaultManager {
     amountSompi: bigint | "max",
     keepFloatSompi: bigint = 0n
   ): Promise<{ txid: string; depositedSompi: bigint; feeSompi: bigint; vaultAddress: string; covenantId?: string }> {
-    if (amountSompi !== "max" && amountSompi <= 0n) throw new Error("deposit amount must be positive");
+    if (amountSompi !== "max" && amountSompi <= 0n) throw new Error("Vault deposit amount must be positive.");
     if (keepFloatSompi < 0n) throw new Error("keepFloatSompi must be non-negative");
     const config = this.config();
     const agentKey = fs.readFileSync(path.join(this.vaultDir, "agent-key"), "utf8").trim();
@@ -289,7 +289,9 @@ export async function spendVault(
     let converged = params.feeSompi !== undefined;
     for (let i = 0; i < MAX_FEE_CONVERGENCE_PASSES; i++) {
       const candidateAmount = utxo.amount - feeSompi;
-      if (candidateAmount <= 0n) throw new Error(`vault UTXO of ${utxo.amount} sompi is too small for recovery fee ${feeSompi}`);
+      if (candidateAmount <= 0n) {
+        throw new Error(`Vault balance ${displayAmount(utxo.amount)} is too small for recovery fee ${displayAmount(feeSompi)}.`);
+      }
       const candidateTx = buildTransaction({
         inputs: [txInput(utxo, "")],
         outputs: [{ value: candidateAmount, scriptPublicKey: destSpk }],
@@ -304,7 +306,9 @@ export async function spendVault(
     }
     if (!converged) throw new Error(`vault recovery fee estimate did not converge after ${MAX_FEE_CONVERGENCE_PASSES} passes`);
     const amountSompi = utxo.amount - feeSompi;
-    if (amountSompi <= 0n) throw new Error(`vault UTXO of ${utxo.amount} sompi is too small for recovery fee ${feeSompi}`);
+    if (amountSompi <= 0n) {
+      throw new Error(`Vault balance ${displayAmount(utxo.amount)} is too small for recovery fee ${displayAmount(feeSompi)}.`);
+    }
     const tx = buildTransaction({
       inputs: [txInput(utxo, "")],
       outputs: [{ value: amountSompi, scriptPublicKey: destSpk }],
@@ -331,7 +335,7 @@ export async function spendVault(
   const remainingWindow = max - spentAtWindowStart;
   if (remainingWindow <= 0n) {
     throw new Error(
-      `vault window exhausted: spent ${spentAtWindowStart} of ${max} sompi; ` +
+      `Vault window exhausted: spent ${displayAmount(spentAtWindowStart)} of ${displayAmount(max)}; ` +
         `next reset at DAA ${resetTargetDaa}`
     );
   }
@@ -356,13 +360,13 @@ export async function spendVault(
     const outflow = amountSompi + feeSompi;
     if (outflow > remainingWindow) {
       throw new Error(
-        `outflow ${outflow} sompi (amount + estimated fee ${feeSompi}) exceeds remaining vault window ` +
-          `${remainingWindow} sompi`
+        `Outflow ${displayAmount(outflow)} (amount + estimated fee ${displayAmount(feeSompi)}) exceeds remaining vault window ` +
+          `${displayAmount(remainingWindow)}.`
       );
     }
     const next = continuationFor(outflow);
     const changeSompi = utxo.amount - outflow;
-    if (changeSompi <= 0n) throw new Error(`vault UTXO of ${utxo.amount} sompi is too small for this spend`);
+    if (changeSompi <= 0n) throw new Error(`Vault balance ${displayAmount(utxo.amount)} is too small for this spend.`);
     const tx = buildTransaction({
       inputs: [txInput(utxo, "")],
       outputs: [
@@ -384,16 +388,16 @@ export async function spendVault(
   const outflow = amountSompi + feeSompi;
   if (outflow > remainingWindow) {
     throw new Error(
-      `outflow ${outflow} sompi (amount + estimated fee ${feeSompi}) exceeds remaining vault window ` +
-        `${remainingWindow} sompi`
+      `Outflow ${displayAmount(outflow)} (amount + estimated fee ${displayAmount(feeSompi)}) exceeds remaining vault window ` +
+        `${displayAmount(remainingWindow)}.`
     );
   }
-  if (amountSompi <= 0n) throw new Error(`vault UTXO of ${utxo.amount} sompi is too small for this spend`);
+  if (amountSompi <= 0n) throw new Error(`Vault balance ${displayAmount(utxo.amount)} is too small for this spend.`);
   params.authorize?.(amountSompi);
 
   const next = continuationFor(outflow);
   const changeSompi = utxo.amount - outflow;
-  if (changeSompi <= 0n) throw new Error(`vault UTXO of ${utxo.amount} sompi is too small for this spend`);
+  if (changeSompi <= 0n) throw new Error(`Vault balance ${displayAmount(utxo.amount)} is too small for this spend.`);
 
   const tx = buildTransaction({
     inputs: [txInput({ ...utxo, scriptPublicKey: vaultSpk }, "")],
@@ -461,7 +465,9 @@ async function fundInitialVault(params: {
   if (!converged || !tx) throw new Error(`vault deposit fee estimate did not converge after ${MAX_FEE_CONVERGENCE_PASSES} passes`);
   const walletTotal = sumUtxoAmounts(walletUtxos);
   if (walletTotal < amountSompi + feeSompi) {
-    throw new Error(`wallet UTXOs totaling ${walletTotal} sompi cannot cover deposit ${amountSompi} plus fee ${feeSompi}`);
+    throw new Error(
+      `Regular wallet balance ${displayAmount(walletTotal)} cannot cover vault deposit ${displayAmount(amountSompi)} plus fee ${displayAmount(feeSompi)}.`
+    );
   }
 
   tx = buildGenesisDepositTx(walletUtxos, vaultSpk, changeSpk, amountSompi, feeSompi);
@@ -539,7 +545,9 @@ async function topUpVault(params: {
   if (!converged || !tx) throw new Error(`vault top-up fee estimate did not converge after ${MAX_FEE_CONVERGENCE_PASSES} passes`);
   const walletTotal = sumUtxoAmounts(walletUtxos);
   if (walletTotal < amountSompi + feeSompi) {
-    throw new Error(`wallet UTXOs totaling ${walletTotal} sompi cannot cover top-up ${amountSompi} plus fee ${feeSompi}`);
+    throw new Error(
+      `Regular wallet balance ${displayAmount(walletTotal)} cannot cover vault top-up ${displayAmount(amountSompi)} plus fee ${displayAmount(feeSompi)}.`
+    );
   }
 
   tx = buildTopupTx(config, vaultUtxo, walletUtxos, nextSpk, changeSpk, amountSompi, feeSompi, lockDaa);
@@ -690,7 +698,7 @@ async function selectWalletUtxos(wallet: KaspaWallet, amountHint: bigint): Promi
     total += entry.amount;
     if (total >= amountHint) return selected;
   }
-  throw new Error(`wallet UTXOs totaling ${total} sompi cannot cover required amount ${amountHint}`);
+  throw new Error(`Regular wallet balance ${displayAmount(total)} cannot cover required amount ${displayAmount(amountHint)}.`);
 }
 
 function sumUtxoAmounts(utxos: NormalizedUtxo[]): bigint {
@@ -700,7 +708,7 @@ function sumUtxoAmounts(utxos: NormalizedUtxo[]): bigint {
 function withdrawAmount(amount: bigint | "max" | undefined, remainingWindow: bigint, utxoAmount: bigint, feeSompi: bigint): bigint {
   if (amount !== "max") return amount!;
   const outflowCap = minBigInt(remainingWindow, utxoAmount - MIN_VAULT_CHANGE_SOMPI);
-  if (outflowCap <= 0n) throw new Error(`vault UTXO of ${utxoAmount} sompi is too small to withdraw from`);
+  if (outflowCap <= 0n) throw new Error(`Vault balance ${displayAmount(utxoAmount)} is too small to withdraw from.`);
   return outflowCap - feeSompi;
 }
 
@@ -708,7 +716,9 @@ function depositAmountFor(requested: bigint | "max", walletTotal: bigint, feeSom
   if (requested !== "max") return requested;
   const amount = walletTotal - keepFloatSompi - feeSompi;
   if (amount <= 0n) {
-    throw new Error(`nothing to deposit: wallet UTXOs total ${walletTotal} sompi, float is ${keepFloatSompi}, fee is ${feeSompi}`);
+    throw new Error(
+      `Nothing to deposit: regular wallet has ${displayAmount(walletTotal)}, requested float is ${displayAmount(keepFloatSompi)}, and estimated fee is ${displayAmount(feeSompi)}.`
+    );
   }
   return amount;
 }
@@ -765,7 +775,7 @@ function estimateTxFeeSompi(networkId: string, tx: Transaction, feerate: number,
 function assertFeeCoversSignedTx(networkId: string, tx: Transaction, feerate: number, feeSompi: bigint, label: string): void {
   const requiredFee = minimumSignedTxFeeSompi(networkId, tx, feerate);
   if (feeSompi < requiredFee) {
-    throw new Error(`${label} fee ${feeSompi} sompi is below final signed transaction minimum ${requiredFee} sompi`);
+    throw new Error(`${label} fee ${displayAmount(feeSompi)} is below final signed transaction minimum ${displayAmount(requiredFee)}.`);
   }
 }
 
@@ -780,6 +790,18 @@ function feeRateSompiPerGram(feerate: number): bigint {
 
 function withFeeMargin(feeSompi: bigint): bigint {
   return (feeSompi * 110n + 99n) / 100n;
+}
+
+function displayAmount(sompi: bigint): string {
+  return `${formatKas(sompi)} KAS (${sompi} sompi)`;
+}
+
+function formatKas(sompi: bigint): string {
+  const sign = sompi < 0n ? "-" : "";
+  const absolute = sompi < 0n ? -sompi : sompi;
+  const whole = absolute / 100_000_000n;
+  const fraction = (absolute % 100_000_000n).toString().padStart(8, "0").replace(/0+$/, "");
+  return `${sign}${whole}${fraction ? `.${fraction}` : ""}`;
 }
 
 function covenantBinding(covenantId: string, authorizingInput: number): CovenantBinding {

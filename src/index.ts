@@ -390,7 +390,7 @@ registerTool(
     description:
       "Send KAS to a destination address, subject to the local spending policy " +
       "(per-transaction cap, rolling hourly cap, optional allowlist). " +
-      "Specify the amount in sompi (1 KAS = 100,000,000 sompi) or as a KAS decimal string.",
+      "Prefer amountKas for user-facing requests; amountSompi remains available for exact technical calls.",
     inputSchema: {
       to: z.string().describe("Destination Kaspa address"),
       amountSompi: z.string().optional().describe("Amount in sompi (integer string)"),
@@ -422,14 +422,17 @@ registerTool(
       "Wait for an incoming payment of at least the given amount to an address " +
       "(defaults to the agent's own address). Resolves when the payment arrives or the timeout passes.",
     inputSchema: {
-      minAmountSompi: z.string().describe("Minimum amount in sompi to wait for"),
+      minAmountKas: z.string().optional().describe("Minimum amount in KAS to wait for"),
+      minAmountSompi: z.string().optional().describe("Minimum amount in sompi to wait for"),
       address: z.string().optional().describe("Address to watch; omit for own wallet"),
       timeoutSeconds: z.number().int().min(1).max(600).default(120).describe("How long to wait"),
     },
   },
-  async ({ minAmountSompi, address, timeoutSeconds }) =>
+  async ({ minAmountKas, minAmountSompi, address, timeoutSeconds }) =>
     guarded(async () => {
-      const result = await wallet.awaitPayment(address ?? wallet.address, BigInt(minAmountSompi), timeoutSeconds * 1000);
+      if (!minAmountKas && !minAmountSompi) throw new Error("provide minAmountKas or minAmountSompi");
+      const minimum = minAmountSompi ? BigInt(minAmountSompi) : parseKasToSompi(minAmountKas!);
+      const result = await wallet.awaitPayment(address ?? wallet.address, minimum, timeoutSeconds * 1000);
       return {
         summary: `Received ${kasDisplay(result.receivedSompi)} at ${address ?? wallet.address}.`,
         ...amountFields("received", result.receivedSompi),
@@ -607,45 +610,58 @@ registerTool(
       "(3) the window size in DAA. Never generate or ask for the owner private key. After creation, " +
       "use vault_deposit to create the covenant-bound vault UTXO.",
     inputSchema: {
-      maxOutflowSompi: z.string().optional().describe("Consensus-enforced cap per rolling window (amount + fee), in sompi — chosen by the operator"),
+      maxOutflowKas: z.string().optional().describe("Consensus-enforced cap per rolling window, in KAS. Prefer this for user-facing setup."),
+      maxOutflowSompi: z.string().optional().describe("Consensus-enforced cap per rolling window, in sompi. Exact technical alternative to maxOutflowKas."),
       windowSizeDaa: z.string().optional().describe("Rolling window size in DAA score units; default 36000, about one hour at 10 BPS"),
       ownerPublicKey: z.string().optional().describe("The operator's 32-byte x-only public key (64 hex chars); its private half stays with them"),
     },
   },
-  async ({ maxOutflowSompi, windowSizeDaa, ownerPublicKey }) =>
+  async ({ maxOutflowKas, maxOutflowSompi, windowSizeDaa, ownerPublicKey }) =>
     guarded(async () => {
-      if (!ownerPublicKey || !maxOutflowSompi) {
+      const capSompi = maxOutflowSompi ? BigInt(maxOutflowSompi) : maxOutflowKas ? parseKasToSompi(maxOutflowKas) : undefined;
+      if (!ownerPublicKey || capSompi === undefined) {
         const policyCap = policy.policy.maxSompiPerTx;
-        throw new Error(
-          "Vault setup needs two things from your human operator. Relay BOTH questions clearly: " +
-            "(1) Ask them to run `npx -y @elldeeone/sompi gen-owner-key` on THEIR machine and send you the " +
-            "`public:` line (64 hex chars — never the private line). " +
-            "(2) Ask what the vault's UNCHANGEABLE rolling-window cap should be, in sompi. Explain the two layers " +
-            `when you ask: their day-to-day spending policy (currently ${policyCap} sompi per tx) stays in ` +
-            "force and can be edited anytime; the vault cap is different — it is enforced by consensus " +
-            "over a rolling DAA window. It must be at or above the day-to-day policy cap, and closer to it " +
-            "is safer. The default windowSizeDaa is 36000 (about one hour at 10 BPS). " +
-            "Then call vault_create again with ownerPublicKey and maxOutflowSompi, then use vault_deposit."
-        );
+        return {
+          summary: "I need two setup values from the operator before I can create the safer vault.",
+          status: "needs_input",
+          userAction: "Send the owner public key and a vault spending cap.",
+          whatINeed: [
+            "The `public:` line from `npx -y @elldeeone/sompi gen-owner-key`.",
+            `A rolling-window spending cap, preferably in ${kasUnit()}. The current day-to-day policy cap is ${kasDisplay(policyCap)} per payment.`,
+          ],
+          whyINeedIt:
+            "The public key lets the operator recover the vault later. The cap limits how much this agent key can spend per window even if it is compromised.",
+          safeToShare:
+            "The owner public key is safe to share. Never share the owner private key. The cap is a policy decision, not a secret.",
+          nextStep:
+            "After you provide those values, I will create the vault config and then ask for funding so I can make the first vault deposit.",
+          technical: {
+            ownerPublicKey: ownerPublicKey ?? "missing",
+            maxOutflowSompi: capSompi?.toString() ?? "missing",
+            defaultWindowSizeDaa: "36000",
+          },
+        };
       }
-      const created = vault.create(BigInt(maxOutflowSompi), ownerPublicKey, windowSizeDaa ? BigInt(windowSizeDaa) : undefined);
+      const created = vault.create(capSompi, ownerPublicKey, windowSizeDaa ? BigInt(windowSizeDaa) : undefined);
       const policyCap = policy.policy.maxSompiPerTx;
-      const cap = BigInt(maxOutflowSompi);
+      const cap = capSompi;
       const alignment =
         cap >= policyCap
           ? cap / policyCap > 10n
-            ? `note for your operator: the vault window cap is ${cap / policyCap}x the day-to-day policy cap ` +
-              `(${policyCap} sompi). Day-to-day nothing changes, but a key thief could drain in ` +
-              `${cap}-sompi windows; keeping the two caps close is safer.`
+            ? `The vault window cap is ${cap / policyCap}x the day-to-day policy cap (${kasDisplay(policyCap)}). ` +
+              `Day-to-day policy still applies, but a stolen agent key could spend up to ${kasDisplay(cap)} per vault window.`
             : "vault cap and day-to-day policy are reasonably aligned"
-          : `warning: the vault cap (${cap} sompi) is BELOW the day-to-day policy cap (${policyCap} sompi) — ` +
+          : `warning: the vault cap (${kasDisplay(cap)}) is BELOW the day-to-day policy cap (${kasDisplay(policyCap)}) — ` +
             "withdrawals above the vault cap will be rejected by the network regardless of policy";
       return {
+        summary: `Vault config created with a ${kasDisplay(cap)} consensus spending cap. It still needs a vault deposit before I can pay for APIs.`,
+        status: "created_needs_deposit",
         ...created,
+        maxOutflowKas: kasValue(cap),
+        maxOutflowDisplay: kasDisplay(cap),
         capAlignment: alignment,
         nextStep:
-          "fund this agent's regular wallet, then use vault_deposit to create the covenant-bound vault UTXO; " +
-          "only the operator's key can drain the vault outside the rolling cap",
+          "Fund this agent's regular wallet, then call vault_deposit to move funds into the safer covenant vault. Only the operator's key can recover the vault outside the rolling cap.",
       };
     })
 );
@@ -656,31 +672,45 @@ registerTool(
     description:
       "Move KAS from this agent's regular wallet INTO its covenant vault. The first deposit creates the " +
       "genesis covenant-bound vault UTXO; later deposits merge through the current singleton vault UTXO. " +
-      "Exempt from spending policy because deposits make funds more constrained. Omit amountSompi to " +
+      "Exempt from spending policy because deposits make funds more constrained. Omit amountKas/amountSompi to " +
       "deposit everything except a working float.",
     inputSchema: {
-      amountSompi: z.string().optional().describe("Amount in sompi; omit to deposit all but the float"),
-      keepFloatSompi: z.string().default("1000000000").describe("Float to keep in the regular wallet when amountSompi is omitted (default 10 KAS)"),
+      amountKas: z.string().optional().describe("Amount in KAS to move into the vault"),
+      amountSompi: z.string().optional().describe("Amount in sompi; exact technical alternative to amountKas"),
+      keepFloatKas: z.string().optional().describe("Float to keep in the regular wallet when amount is omitted; default 10 KAS"),
+      keepFloatSompi: z.string().optional().describe("Float to keep in sompi; exact technical alternative to keepFloatKas"),
     },
   },
-  async ({ amountSompi, keepFloatSompi }) =>
+  async ({ amountKas, amountSompi, keepFloatKas, keepFloatSompi }) =>
     guarded(async () => {
-      if (!vault.configured) throw new Error("no vault yet — call vault_create first");
+      if (!vault.configured) {
+        throw new Error(
+          "The vault has not been set up yet. Ask the operator for the owner public key and spending cap, then call vault_create."
+        );
+      }
       const balance = await wallet.balanceSompi();
-      const amount = amountSompi ? BigInt(amountSompi) : "max";
-      const keepFloat = BigInt(keepFloatSompi);
+      const amount = amountSompi ? BigInt(amountSompi) : amountKas ? parseKasToSompi(amountKas) : "max";
+      const keepFloat = keepFloatSompi ? BigInt(keepFloatSompi) : keepFloatKas ? parseKasToSompi(keepFloatKas) : 1_000_000_000n;
       if (amount !== "max" && amount <= 0n) {
-        throw new Error(`nothing to deposit: wallet holds ${balance} sompi, float is ${keepFloatSompi}`);
+        throw new Error(`Deposit amount must be positive. Wallet holds ${kasDisplay(balance)}; requested float is ${kasDisplay(keepFloat)}.`);
       }
       const result = await vault.deposit(wallet, amount, amount === "max" ? keepFloat : 0n);
+      const remaining = balance - result.depositedSompi - result.feeSompi;
       return {
+        summary: `Moved ${kasDisplay(result.depositedSompi)} into the vault. Network fee was ${kasDisplay(result.feeSompi)}.`,
+        status: "deposited",
         txid: result.txid,
         vaultAddress: result.vaultAddress,
         covenantId: result.covenantId,
         depositedSompi: result.depositedSompi.toString(),
-        depositedKas: formatKas(result.depositedSompi),
+        depositedKas: kasValue(result.depositedSompi),
+        depositedDisplay: kasDisplay(result.depositedSompi),
         feeSompi: result.feeSompi.toString(),
-        remainingWalletFloat: formatKas(balance - result.depositedSompi - result.feeSompi),
+        feeKas: kasValue(result.feeSompi),
+        feeDisplay: kasDisplay(result.feeSompi),
+        remainingWalletFloatSompi: remaining.toString(),
+        remainingWalletFloatKas: kasValue(remaining),
+        remainingWalletFloatDisplay: kasDisplay(remaining),
       };
     })
 );
@@ -694,21 +724,35 @@ registerTool(
     guarded(async () => {
       if (!vault.configured) {
         return {
+          summary: "The vault has not been set up yet, so I cannot pay for APIs from the vault.",
+          status: "needs_setup",
           configured: false,
           nextStep:
-            "no vault yet — call vault_create (it will tell you what to ask your human operator for)",
+            "Ask the operator for the owner public key and spending cap, then call vault_create.",
         };
       }
       const config = vault.config();
       const balances = await vault.balanceBreakdown(wallet);
       return {
+        summary: config.covenantId
+          ? `Vault is configured with ${kasDisplay(balances.spendableSompi)} spendable and a ${kasDisplay(config.maxOutflowSompi)} rolling-window cap.`
+          : "Vault config exists, but it still needs a vault deposit before it can fund paid API escrows.",
+        status: config.covenantId ? "ready" : "needs_deposit",
         configured: true,
         ...config,
         balanceSompi: balances.spendableSompi.toString(),
-        balanceKas: formatKas(balances.spendableSompi),
+        balanceKas: kasValue(balances.spendableSompi),
+        balanceDisplay: kasDisplay(balances.spendableSompi),
         unboundSompi: balances.unboundSompi.toString(),
-        unboundKas: formatKas(balances.unboundSompi),
+        unboundKas: kasValue(balances.unboundSompi),
+        unboundDisplay: kasDisplay(balances.unboundSompi),
+        maxOutflowKas: kasValue(config.maxOutflowSompi),
+        maxOutflowDisplay: kasDisplay(config.maxOutflowSompi),
+        spentInWindowKas: kasValue(config.spentInWindowSompi),
+        spentInWindowDisplay: kasDisplay(config.spentInWindowSompi),
         dayToDayPolicyMaxPerTxSompi: policy.policy.maxSompiPerTx.toString(),
+        dayToDayPolicyMaxPerTxKas: kasValue(policy.policy.maxSompiPerTx),
+        dayToDayPolicyMaxPerTxDisplay: kasDisplay(policy.policy.maxSompiPerTx),
         note:
           balances.unboundSompi > 0n
             ? "balanceSompi only counts covenant-bound funds spendable by vault_send; unboundSompi was sent directly to the vault address and is owner-recoverable only"
@@ -723,23 +767,30 @@ registerTool(
     description:
       "Withdraw from the covenant vault via the consensus-capped agent path. Also passes through the " +
       "local spending policy (defense in depth). Change advances to the vault's next state/address automatically. " +
-      'The fee is estimated from the node; pass amountSompi "max" to send the largest amount the current window allows.',
+      'The fee is estimated from the node; pass amountKas or amountSompi as "max" to send the largest amount the current window allows.',
     inputSchema: {
       to: z.string().describe("Destination Kaspa address"),
-      amountSompi: z.string().describe('Amount in sompi, or "max" for the largest cap-compliant amount'),
+      amountKas: z.string().optional().describe('Amount in KAS, or "max" for the largest cap-compliant amount'),
+      amountSompi: z.string().optional().describe('Amount in sompi, or "max" for the largest cap-compliant amount'),
     },
   },
-  async ({ to, amountSompi }) =>
+  async ({ to, amountKas, amountSompi }) =>
     guarded(async () => {
-      const amount = amountSompi === "max" ? ("max" as const) : BigInt(amountSompi);
+      if (!amountKas && !amountSompi) throw new Error("provide amountKas or amountSompi");
+      const requested = amountSompi ?? amountKas;
+      const amount = requested === "max" ? ("max" as const) : amountSompi ? BigInt(amountSompi) : parseKasToSompi(amountKas!);
       const result = await vault.send(wallet, to, amount, (resolved) => policy.authorize(to, resolved));
       policy.record(result.amountSompi);
       return {
+        summary: `Sent ${kasDisplay(result.amountSompi)} from the vault to ${to}. Network fee was ${kasDisplay(result.feeSompi)}.`,
         txid: result.txid,
         to,
         amountSompi: result.amountSompi.toString(),
-        amountKas: formatKas(result.amountSompi),
+        amountKas: kasValue(result.amountSompi),
+        amountDisplay: kasDisplay(result.amountSompi),
         feeSompi: result.feeSompi.toString(),
+        feeKas: kasValue(result.feeSompi),
+        feeDisplay: kasDisplay(result.feeSompi),
         enforcement: "consensus (covenant) + local policy",
       };
     })
@@ -753,7 +804,7 @@ registerTool(
       "The policy belongs to your human operator: never edit the policy file or bypass these tools to get around " +
       "a limit — when something is blocked, report it to your operator and let them decide.",
   },
-  async () => guarded(async () => policy.describe())
+  async () => guarded(async () => policyView())
 );
 
 async function main() {
