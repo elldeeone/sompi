@@ -179,7 +179,7 @@ function checkPaidFetch() {
     { cwd: path.join(__dirname, ".."), encoding: "utf8", env: process.env }
   );
   if (child.status !== 0) {
-    throw new Error(`paid_fetch failed:\n${child.stderr || child.stdout}`);
+    throw new Error(`paid_fetch failed:\n${[child.stderr, child.stdout].filter(Boolean).join("\n").trim()}`);
   }
   let receipt;
   try {
