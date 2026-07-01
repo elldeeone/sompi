@@ -44,6 +44,7 @@ or a Cloudflare Tunnel in front for HTTPS.
 ```bash
 curl -i https://YOUR_HOST/api/joke          # expect HTTP 402 + kaspa-escrow offer JSON
 curl -s https://YOUR_HOST/llms.txt          # agent-readable payment instructions
+npm run check:public-demo -- https://YOUR_HOST
 ```
 
 For an end-to-end paid request, use an MCP client with `@elldeeone/sompi` and
@@ -62,3 +63,20 @@ No new deposit was needed.
 ```
 
 The HTTP wire offer still uses exact integer sompi fields for interoperability.
+
+For a repeatable command-line proof from a configured agent host:
+
+```bash
+npm run build
+npm run check:public-demo -- https://YOUR_HOST --paid
+```
+
+Default `check:public-demo` mode does not spend. The `--paid` mode makes one
+real `paid_fetch` request to `/api/joke`; it should report `fundingSource:
+vault`, and `depositSource: vault` when a new escrow deposit was needed.
+
+Local or LAN checks are intentionally explicit:
+
+```bash
+npm run check:public-demo -- http://127.0.0.1:8642 --allow-private --allow-http
+```

@@ -279,6 +279,17 @@ keys before it spends.
 The demo service can be deployed as a public paid endpoint with
 [`deploy/README.md`](deploy/README.md). Its HTTP 402 offer uses exact sompi wire
 fields, while the landing page and agent receipts use KAS/tKAS first.
+Validate a hosted demo without spending:
+
+```bash
+npm run check:public-demo -- https://YOUR_HOST
+```
+
+Run the full agent payment proof only from a configured vault-backed agent host:
+
+```bash
+npm run check:public-demo -- https://YOUR_HOST --paid
+```
 
 The Kaspa WASM SDK (v2.0.0, Toccata) is vendored under `vendor/kaspa-wasm` because the npm `kaspa` package is unmaintained (2023). Sourced from the official [rusty-kaspa v2.0.0 release](https://github.com/kaspanet/rusty-kaspa/releases/tag/v2.0.0).
 

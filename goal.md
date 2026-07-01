@@ -312,6 +312,9 @@ Acceptance criteria:
 - The agent pays through vault-backed `paid_fetch`.
 - The user receives a simple receipt.
 - The docs do not require users to understand x402 internals.
+- The hosted endpoint can be checked with `npm run check:public-demo -- <url>`.
+- A configured agent host can run the explicit paid proof with
+  `npm run check:public-demo -- <url> --paid`.
 
 ## Workstream 8: Interop and Wire Spec
 
