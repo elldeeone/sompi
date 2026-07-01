@@ -140,6 +140,10 @@ Point at a policy file with `SOMPI_POLICY=/path/to/policy.json`. Without one, co
 | `SOMPI_DATA_DIR` | `~/.sompi/<network>` | Keyfile + spend-log location |
 | `SOMPI_POLICY` | (built-in defaults) | Path to policy JSON |
 
+Mainnet is disabled by default. See
+[`docs/mainnet-readiness.md`](docs/mainnet-readiness.md) before setting
+`SOMPI_ENABLE_MAINNET=1`.
+
 ## Micropayment economics (KIP-9)
 
 Kaspa's storage mass (KIP-9) charges roughly `C/amount` grams (C = 10¹²) for creating small outputs — an anti-dust mechanism. Measured on testnet-10 post-Toccata (100 sompi/gram): a 0.5 KAS send costs ~0.02 KAS in fees (4%), a 0.1 KAS send costs ~0.1 KAS (100%). Rule of thumb: **sends below ~1 KAS pay >1% in storage-mass fees**. Agent protocols that need sub-KAS granularity should aggregate behind an escrow rather than pay on-chain per event — this is a design constraint for the x402 middleware.
