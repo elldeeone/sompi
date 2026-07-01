@@ -109,6 +109,14 @@ export class X402Client {
     };
   }
 
+  forgetRetiredEscrow(fundingTxid: string, fundingIndex?: number): void {
+    const before = this.retired.length;
+    this.retired = this.retired.filter(
+      (state) => state.fundingTxid !== fundingTxid || (fundingIndex !== undefined && state.fundingIndex !== fundingIndex)
+    );
+    if (this.retired.length !== before) this.persist();
+  }
+
   async paidFetch(url: string, init?: RequestInit): Promise<PaidFetchResult> {
     const origin = new URL(url).origin;
 

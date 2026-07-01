@@ -9,6 +9,7 @@ import { PolicyEngine, PolicyViolation } from "./policy";
 import { KaspaWallet, formatKas, parseKasToSompi } from "./wallet";
 import { VaultManager } from "./vault";
 import { X402Client } from "./x402/client";
+import { refundEscrow } from "./x402/escrow";
 
 // Operator-side CLI: `npx @elldeeone/sompi gen-wallet-key [network]` — generate
 // the agent's wallet key yourself so you control and can back it up, and know
@@ -563,6 +564,83 @@ registerTool(
         refundableNowCount: refundableNow.length,
         active,
         retired,
+      };
+    })
+);
+
+registerTool(
+  "escrow_refund",
+  {
+    description:
+      "Preview or refund retired paid API escrow channels after their timeout. Defaults to preview mode; set execute=true to submit refunds.",
+    inputSchema: {
+      execute: z.boolean().default(false).describe("False previews refundable retired escrows; true submits refund transactions"),
+      destination: z.string().optional().describe("Destination address for refunds; defaults to this agent's regular wallet"),
+    },
+  },
+  async ({ execute, destination }) =>
+    guarded(async () => {
+      const info = await wallet.serverInfo();
+      const currentDaa = BigInt(info.virtualDaaScore);
+      const refundDestination = destination ?? wallet.address;
+      const retired = x402.escrowChannels().retired;
+      const refundable = retired.filter((channel) => currentDaa >= BigInt(channel.refundTimeout));
+      const previews = refundable.map((channel) => publicEscrowChannel(channel, currentDaa));
+      const totalEstimate = refundable.reduce((sum, channel) => {
+        const deposited = BigInt(channel.depositedSompi);
+        const authorized = BigInt(channel.authorizedSompi);
+        return sum + (deposited > authorized ? deposited - authorized : 0n);
+      }, 0n);
+
+      if (!execute) {
+        return {
+          summary:
+            refundable.length > 0
+              ? `${refundable.length} retired escrow channel(s) can be refunded, with about ${kasDisplay(totalEstimate)} still unspent.`
+              : "No retired escrow refunds are available right now.",
+          status: refundable.length > 0 ? "refund_available" : "nothing_refundable",
+          userAction:
+            refundable.length > 0
+              ? "Call escrow_refund with execute=true to submit refund transactions."
+              : "none",
+          currentDaa: currentDaa.toString(),
+          refundableCount: refundable.length,
+          refundableEstimateSompi: totalEstimate.toString(),
+          refundableEstimateKas: kasValue(totalEstimate),
+          refundableEstimateDisplay: kasDisplay(totalEstimate),
+          destination: refundDestination,
+          refundable: previews,
+        };
+      }
+
+      const refunds: Array<{ escrowAddress: string; txid: string; refundableEstimateDisplay: string }> = [];
+      const failures: Array<{ escrowAddress: string; error: string }> = [];
+      for (const channel of refundable) {
+        const preview = publicEscrowChannel(channel, currentDaa);
+        try {
+          const txid = await refundEscrow(
+            wallet,
+            { clientPublic: channel.clientPublic, serverPublic: channel.serverPublic, timeout: BigInt(channel.refundTimeout) },
+            channel.clientPrivate,
+            refundDestination
+          );
+          x402.forgetRetiredEscrow(channel.fundingTxid, channel.fundingIndex);
+          refunds.push({ escrowAddress: channel.escrowAddress, txid, refundableEstimateDisplay: preview.refundableEstimateDisplay });
+        } catch (error) {
+          failures.push({ escrowAddress: channel.escrowAddress, error: String((error as Error)?.message ?? error) });
+        }
+      }
+      return {
+        summary:
+          refunds.length > 0
+            ? `Submitted ${refunds.length} escrow refund transaction(s) to ${refundDestination}.`
+            : "No escrow refunds were submitted.",
+        status: failures.length > 0 ? "partial" : "submitted",
+        destination: refundDestination,
+        refundedCount: refunds.length,
+        failedCount: failures.length,
+        refunds,
+        failures,
       };
     })
 );
