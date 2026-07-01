@@ -27,7 +27,9 @@ async function main() {
   }
   const dataDir = dataDirArg.replace(/^~/, os.homedir());
   const network = process.env.SOMPI_NETWORK ?? "testnet-10";
-  const cfg = JSON.parse(fs.readFileSync(path.join(dataDir, "escrow-server-config.json"), "utf8"));
+  const cfgPath = path.join(dataDir, "escrow-server-config.json");
+  const cfg = loadServerConfig(cfgPath, preview);
+  if (!cfg) process.exit(preview ? 0 : 1);
 
   const wallet = new KaspaWallet({
     networkId: network,
@@ -106,6 +108,39 @@ async function main() {
   }
   await wallet.disconnect();
   process.exit(0);
+}
+
+function loadServerConfig(cfgPath, preview) {
+  if (!fs.existsSync(cfgPath)) {
+    const response = {
+      summary: "No escrow service state was found, so there is nothing claimable from this directory.",
+      status: "not_configured",
+      claimableCount: 0,
+      configPath: cfgPath,
+      userAction:
+        "Start the demo service once to create seller escrow state, or pass the correct service data directory.",
+    };
+    console[preview ? "log" : "error"](JSON.stringify(response, null, 2));
+    return null;
+  }
+  try {
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+    if (!cfg.privateKey || !cfg.publicKey || cfg.refundTimeout === undefined) {
+      throw new Error("missing privateKey, publicKey, or refundTimeout");
+    }
+    return cfg;
+  } catch (error) {
+    const response = {
+      summary: "The escrow service state exists but is not readable.",
+      status: "invalid_config",
+      claimableCount: 0,
+      configPath: cfgPath,
+      userAction: "Restore the service data directory from backup or restart the demo service with fresh state.",
+      error: String(error.message ?? error),
+    };
+    console.error(JSON.stringify(response, null, 2));
+    return null;
+  }
 }
 
 main().catch((e) => {

@@ -216,7 +216,7 @@ function publicEscrowChannel(channel: any, currentDaa?: bigint) {
     refundTimeoutDaa: channel.refundTimeout,
     refundAvailable,
     daaUntilRefund: currentDaa === undefined || currentDaa >= refundTimeout ? "0" : (refundTimeout - currentDaa).toString(),
-    nextRequest: nextRequestNeedsDeposit ? "opens a new escrow deposit" : "reuses this escrow",
+    nextRequest: nextRequestNeedsDeposit ? "open a new escrow deposit" : "reuse this escrow",
   };
 }
 
