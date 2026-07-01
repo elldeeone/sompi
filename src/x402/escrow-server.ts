@@ -213,6 +213,26 @@ export class EscrowServer {
     return txid;
   }
 
+  /** Claimable channels without private server key material. */
+  claimableChannels(): {
+    clientPublic: string;
+    servedCount: number;
+    authorizedSompi: string;
+    outpointTxid?: string;
+    outpointIndex?: number;
+  }[] {
+    this.reloadChannelsIfChanged();
+    return [...this.channels.values()]
+      .filter((channel) => channel.authorizedSompi !== "0")
+      .map((channel) => ({
+        clientPublic: channel.clientPublic,
+        servedCount: channel.servedCount,
+        authorizedSompi: channel.authorizedSompi,
+        outpointTxid: channel.outpointTxid,
+        outpointIndex: channel.outpointIndex,
+      }));
+  }
+
   /** Claim from every client with outstanding vouchers. */
   async claimAll(destination: string): Promise<{ clientPublic: string; txid: string; amountSompi: string }[]> {
     this.reloadChannelsIfChanged();

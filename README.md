@@ -211,6 +211,7 @@ compiler fixtures; the channel — and its replay rejection — is exercised by
 `scripts/escrow-live.js`.
 
 Sellers collect escrow revenue with
+`node scripts/escrow-claim.js --preview <serviceDataDir>` and then
 `node scripts/escrow-claim.js <serviceDataDir> <destination>`. Clients can refund
 unspent balances after the timeout with `escrow_refund` or
 `scripts/escrow-refund.js`. See the wire spec:
