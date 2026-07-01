@@ -16,6 +16,7 @@ let paid = false;
 let jsonOutput = false;
 let allowPrivate = false;
 let allowHttp = false;
+let allowTemporaryTunnel = false;
 let timeoutMs = 10_000;
 
 function usage(exitCode = 2) {
@@ -27,6 +28,8 @@ function usage(exitCode = 2) {
     "  --json             print machine-readable JSON",
     "  --allow-private    allow localhost/private/LAN hosts for local smoke checks",
     "  --allow-http       allow plain HTTP for local smoke checks",
+    "  --allow-temporary-tunnel",
+    "                     allow ephemeral tunnel hostnames for proof-only checks",
     "  --timeout <sec>    per-request timeout, default 10",
   ].join("\n");
   console.error(msg);
@@ -50,6 +53,10 @@ for (let i = 0; i < args.length; i += 1) {
   }
   if (arg === "--allow-http") {
     allowHttp = true;
+    continue;
+  }
+  if (arg === "--allow-temporary-tunnel") {
+    allowTemporaryTunnel = true;
     continue;
   }
   if (arg === "--timeout") {
@@ -87,6 +94,12 @@ if (url.protocol !== "https:" && !allowHttp) {
 if (isPrivateHost(url.hostname) && !allowPrivate) {
   fail("Demo URL points at localhost or a private network. Pass --allow-private only for local or LAN smoke checks.");
 }
+if (isTemporaryTunnelHost(url.hostname) && !allowTemporaryTunnel) {
+  fail(
+    "Demo URL is an ephemeral tunnel hostname. Use a named tunnel or stable host for the public demo, " +
+      "or pass --allow-temporary-tunnel only for proof-only checks."
+  );
+}
 
 main().catch((error) => fail(error.message ?? String(error)));
 
@@ -109,6 +122,7 @@ async function main() {
       ? "Public paid demo is reachable and a vault-backed paid_fetch completed."
       : "Public paid demo is reachable and advertises a valid kaspa-escrow offer.",
     url: normalizedBase,
+    stability: demoStability(url.hostname),
     paidFetchRan: paid,
     checks,
     paidFetch,
@@ -249,6 +263,17 @@ function isPrivateHost(hostname) {
     (parts[0] === 192 && parts[1] === 168) ||
     (parts[0] === 169 && parts[1] === 254)
   );
+}
+
+function isTemporaryTunnelHost(hostname) {
+  const host = hostname.toLowerCase();
+  return host.endsWith(".trycloudflare.com") || host.endsWith(".loca.lt") || host.endsWith(".ngrok-free.app");
+}
+
+function demoStability(hostname) {
+  if (isTemporaryTunnelHost(hostname)) return "temporary_tunnel";
+  if (isPrivateHost(hostname)) return "local_or_private";
+  return "stable_host_expected";
 }
 
 function fail(message) {

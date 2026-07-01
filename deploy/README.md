@@ -27,8 +27,33 @@ sudo systemctl enable --now sompi-service
 curl -s localhost:8642/healthz
 ```
 
-Put a TLS reverse proxy (caddy is one line: `reverse_proxy localhost:8642`)
-or a Cloudflare Tunnel in front for HTTPS.
+Put a TLS reverse proxy or named Cloudflare Tunnel in front for HTTPS.
+
+## Stable public tunnel
+
+For a Cloudflare Tunnel, create a named tunnel in the Zero Trust dashboard and
+route your public hostname to `http://localhost:8642`. Then install
+`cloudflared` on the host and run it under systemd:
+
+```bash
+sudo useradd -r -s /usr/sbin/nologin cloudflared
+sudo mkdir -p /etc/sompi
+sudo cp deploy/cloudflared.env.example /etc/sompi/cloudflared.env
+sudo chmod 600 /etc/sompi/cloudflared.env
+sudo nano /etc/sompi/cloudflared.env        # set CLOUDFLARED_TOKEN
+
+sudo cp deploy/sompi-cloudflared.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now sompi-cloudflared
+```
+
+The service assumes `cloudflared` is installed at `/usr/local/bin/cloudflared`.
+If your package manager installs it elsewhere, update
+`deploy/sompi-cloudflared.service` before copying it.
+
+Accountless `trycloudflare.com` quick tunnels are useful for one-off external
+proofs, but they are not a stable public endpoint. The checker rejects those
+hostnames unless you pass `--allow-temporary-tunnel`.
 
 ## Operations
 
@@ -79,4 +104,11 @@ Local or LAN checks are intentionally explicit:
 
 ```bash
 npm run check:public-demo -- http://127.0.0.1:8642 --allow-private --allow-http
+```
+
+Temporary tunnel checks are also explicit:
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:8642
+npm run check:public-demo -- https://TEMP.trycloudflare.com --allow-temporary-tunnel
 ```

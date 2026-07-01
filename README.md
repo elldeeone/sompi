@@ -276,9 +276,10 @@ Live proofs require a synced node with UTXO index enabled. The vault-backed
 commerce harness writes a mode-0600 recovery file containing disposable testnet
 keys before it spends.
 
-The demo service can be deployed as a public paid endpoint with
-[`deploy/README.md`](deploy/README.md). Its HTTP 402 offer uses exact sompi wire
-fields, while the landing page and agent receipts use KAS/tKAS first.
+The demo service can be deployed as a stable public paid endpoint with
+[`deploy/README.md`](deploy/README.md), including a systemd unit for a named
+Cloudflare Tunnel. Its HTTP 402 offer uses exact sompi wire fields, while the
+landing page and agent receipts use KAS/tKAS first.
 Validate a hosted demo without spending:
 
 ```bash
