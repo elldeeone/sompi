@@ -68,6 +68,7 @@ export interface PaidFetchResult {
   /** Set for escrow payments. */
   scheme?: "kaspa-escrow";
   fundingSource?: EscrowDepositFundingSource;
+  pricePerRequestSompi?: string;
   authorizedSompi?: string;
 }
 
@@ -338,6 +339,7 @@ export class X402Client {
     const result = await this.toResult(response);
     result.scheme = "kaspa-escrow";
     result.fundingSource = state.fundingSource;
+    result.pricePerRequestSompi = price.toString();
     result.authorizedSompi = state.authorizedSompi;
     if (rotatedDeposit) result.deposit = rotatedDeposit;
     return result;

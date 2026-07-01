@@ -139,6 +139,7 @@ function paidFetchSummary(result: {
   status: number;
   scheme?: string;
   fundingSource?: string;
+  pricePerRequestSompi?: string;
   authorizedSompi?: string;
   deposit?: { amountSompi: string; source: string };
 }): string {
@@ -146,15 +147,17 @@ function paidFetchSummary(result: {
     return `Fetched the URL without needing payment. HTTP status ${result.status}.`;
   }
   const authorized = result.authorizedSompi ? kasDisplay(result.authorizedSompi) : "an unknown amount";
+  const price = result.pricePerRequestSompi ? kasDisplay(result.pricePerRequestSompi) : "the requested price";
   if (result.deposit) {
     return (
       `Fetched the paid URL using a new ${result.deposit.source}-funded escrow. ` +
-      `The escrow deposit was ${kasDisplay(result.deposit.amountSompi)} and the service is authorized for ${authorized} total.`
+      `This request cost ${price}; the escrow deposit was ${kasDisplay(result.deposit.amountSompi)}. ` +
+      `The service is authorized for ${authorized} total.`
     );
   }
   return (
     `Fetched the paid URL using the existing ${result.fundingSource ?? "escrow"} payment channel. ` +
-    `No new deposit was needed; the service is authorized for ${authorized} total.`
+    `This request cost ${price}. No new deposit was needed; the service is authorized for ${authorized} total.`
   );
 }
 
@@ -493,7 +496,18 @@ registerTool(
   {
     description: "Get current network fee estimates (feerate buckets in sompi per gram) from the connected node.",
   },
-  async () => guarded(async () => wallet.feeEstimate())
+  async () =>
+    guarded(async () => {
+      const estimate = await wallet.feeEstimate();
+      const normal = (estimate as any).estimate?.normalBuckets?.[0]?.feerate ?? null;
+      return {
+        summary:
+          normal === null
+            ? "Fetched network fee estimates."
+            : `Current normal feerate is about ${normal} sompi per gram.`,
+        ...estimate,
+      };
+    })
 );
 
 registerTool(
@@ -692,6 +706,9 @@ registerTool(
         body: result.body.length > 10_000 ? result.body.slice(0, 10_000) + "…[truncated]" : result.body,
         scheme: result.scheme,
         fundingSource: result.fundingSource,
+        pricePerRequestKas: result.pricePerRequestSompi ? kasValue(result.pricePerRequestSompi) : undefined,
+        pricePerRequestDisplay: result.pricePerRequestSompi ? kasDisplay(result.pricePerRequestSompi) : undefined,
+        pricePerRequestSompi: result.pricePerRequestSompi,
         authorizedKas: result.authorizedSompi ? kasValue(result.authorizedSompi) : undefined,
         authorizedDisplay: result.authorizedSompi ? kasDisplay(result.authorizedSompi) : undefined,
         authorizedSompi: result.authorizedSompi,

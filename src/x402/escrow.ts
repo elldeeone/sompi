@@ -216,7 +216,7 @@ export async function claimEscrow(
   feeSompi?: bigint
 ): Promise<string> {
   if (claimSompi > voucher.amountSompi) {
-    throw new Error(`claim ${claimSompi} exceeds voucher authorization ${voucher.amountSompi}`);
+    throw new Error(`claim ${displayAmount(claimSompi)} exceeds voucher authorization ${displayAmount(voucher.amountSompi)}`);
   }
   const redeem = escrowRedeemScript(params, wallet.networkId);
   const escrowSpk = payToScriptHashScript(redeem);
@@ -230,7 +230,7 @@ export async function claimEscrow(
   if (!verifyVoucher(params, wallet.networkId, outpoint, voucher.amountSompi, voucher.voucherHex)) {
     throw new Error(
       `voucher does not authorize claiming escrow outpoint ${utxo.txid.slice(0, 16)}:${utxo.index} ` +
-        `for ${voucher.amountSompi} sompi (wrong context, outpoint, amount, or client key)`
+        `for ${displayAmount(voucher.amountSompi)} (wrong context, outpoint, amount, or client key)`
     );
   }
 
@@ -253,7 +253,7 @@ export async function claimEscrow(
   }
   if (claimSompi <= resolvedFee) {
     throw new Error(
-      `claim ${claimSompi} sompi does not cover the estimated fee ${resolvedFee} sompi — ` +
+      `claim ${displayAmount(claimSompi)} does not cover the estimated fee ${displayAmount(resolvedFee)} — ` +
         `accumulate more before claiming`
     );
   }
@@ -262,7 +262,9 @@ export async function claimEscrow(
     { value: claimSompi - resolvedFee, scriptPublicKey: destSpk },
     { value: utxo.amount - claimSompi, scriptPublicKey: escrowSpk },
   ];
-  if (outputs.some((o) => o.value <= 0n)) throw new Error("escrow UTXO too small for this claim");
+  if (outputs.some((o) => o.value <= 0n)) {
+    throw new Error(`escrow balance ${displayAmount(utxo.amount)} is too small for this claim`);
+  }
 
   const base = inputBase(utxo, escrowSpk, 0n, 3); // claim: 2 sig ops + sha256/introspection
   const txShape = { version: 0, outputs, lockTime: 0n, subnetworkId: SUBNETWORK_NATIVE, gas: 0n, payload: "" };
@@ -314,7 +316,9 @@ export async function refundEscrow(
     );
   }
   const outputs = [{ value: utxo.amount - resolvedFee, scriptPublicKey: destSpk }];
-  if (outputs[0].value <= 0n) throw new Error("escrow UTXO too small to refund");
+  if (outputs[0].value <= 0n) {
+    throw new Error(`escrow balance ${displayAmount(utxo.amount)} is too small for refund fee ${displayAmount(resolvedFee)}`);
+  }
 
   // lockTime = timeout satisfies `tx.time >= timeout`; sequence 0 keeps the input non-final.
   const base = inputBase(utxo, escrowSpk, 0n, 1); // refund: single checkSig
@@ -328,4 +332,16 @@ export async function refundEscrow(
   const transaction = { ...txShape, inputs: [{ ...base, signatureScript }] };
   const { transactionId } = await (rpc as any).submitTransaction({ transaction, allowOrphan: false });
   return String(transactionId);
+}
+
+function displayAmount(sompi: bigint): string {
+  return `${formatKas(sompi)} KAS (${sompi} sompi)`;
+}
+
+function formatKas(sompi: bigint): string {
+  const sign = sompi < 0n ? "-" : "";
+  const absolute = sompi < 0n ? -sompi : sompi;
+  const whole = absolute / 100_000_000n;
+  const fraction = (absolute % 100_000_000n).toString().padStart(8, "0").replace(/0+$/, "");
+  return `${sign}${whole}${fraction ? `.${fraction}` : ""}`;
 }

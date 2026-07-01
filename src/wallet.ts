@@ -209,7 +209,13 @@ export class KaspaWallet {
       };
 
       const timer = setTimeout(
-        () => finish(new Error(`timed out after ${timeoutMs}ms; received ${received} of ${minAmountSompi} sompi`)),
+        () =>
+          finish(
+            new Error(
+              `timed out after ${timeoutMs}ms; received ${formatKas(received)} KAS (${received} sompi) ` +
+                `of ${formatKas(minAmountSompi)} KAS (${minAmountSompi} sompi)`
+            )
+          ),
         timeoutMs
       );
 
