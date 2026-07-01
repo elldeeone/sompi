@@ -55,6 +55,16 @@ Accountless `trycloudflare.com` quick tunnels are useful for one-off external
 proofs, but they are not a stable public endpoint. The checker rejects those
 hostnames unless you pass `--allow-temporary-tunnel`.
 
+Run the deployment preflight on the host:
+
+```bash
+npm run check:public-demo-deploy -- --url https://YOUR_HOST
+```
+
+It checks the local demo service, systemd units, Cloudflare Tunnel token config,
+and the public URL. Add `--paid` only when the agent host is configured with a
+funded vault and you want the full paid proof.
+
 ## Operations
 
 - Escrow channel state lives under the service data dir

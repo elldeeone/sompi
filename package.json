@@ -47,6 +47,7 @@
     "fixtures:escrow:check": "node scripts/compile-escrow-fixtures.js --check",
     "demo:escrow": "node dist/demo-escrow.js",
     "check:public-demo": "node scripts/public-demo-check.js",
+    "check:public-demo-deploy": "node scripts/public-demo-deploy-check.js",
     "proof:vault": "node scripts/vault-live.js",
     "proof:vault-commerce": "node scripts/vault-commerce-live.js",
     "prepublishOnly": "npm run build"

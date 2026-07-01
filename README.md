@@ -284,6 +284,7 @@ Validate a hosted demo without spending:
 
 ```bash
 npm run check:public-demo -- https://YOUR_HOST
+npm run check:public-demo-deploy -- --url https://YOUR_HOST
 ```
 
 Run the full agent payment proof only from a configured vault-backed agent host:
