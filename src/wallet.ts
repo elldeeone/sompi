@@ -39,6 +39,7 @@ export class KaspaWallet {
   private rpc?: RpcClient;
 
   constructor(config: WalletConfig) {
+    assertNetworkAllowed(config.networkId);
     this.config = config;
     this.networkId = config.networkId;
     this.privateKey = loadOrCreateKey(config.dataDir);
@@ -265,6 +266,18 @@ export function parseKasToSompi(kas: string): bigint {
   const sompi = kaspaToSompi(kas);
   if (sompi === undefined) throw new Error(`invalid KAS amount: ${kas}`);
   return sompi;
+}
+
+function assertNetworkAllowed(network: string): void {
+  if (!isMainnetNetwork(network)) return;
+  if (process.env.SOMPI_ENABLE_MAINNET === "1") return;
+  throw new Error(
+    "Mainnet is disabled by default. Set SOMPI_ENABLE_MAINNET=1 only after the operator confirms they intend to use real KAS."
+  );
+}
+
+function isMainnetNetwork(network: string): boolean {
+  return network === "mainnet" || network === "kaspa" || network === "kaspa-mainnet";
 }
 
 /** Generate a wallet keypair locally (operator-controlled). Returns the private

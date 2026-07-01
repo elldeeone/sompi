@@ -18,6 +18,7 @@ if (process.argv[2] === "gen-wallet-key") {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { generateWalletKey } = require("./wallet") as typeof import("./wallet");
   const net = process.argv[3] ?? process.env.SOMPI_NETWORK ?? "testnet-10";
+  exitIfNetworkDisabled(net);
   const key = generateWalletKey(net);
   console.log(`Agent wallet keypair (${net}) — generated locally, back up the private line:`);
   console.log(`private: ${key.privateKey}`);
@@ -44,6 +45,7 @@ if (process.argv[2] === "gen-owner-key") {
 }
 
 const NETWORK = process.env.SOMPI_NETWORK ?? "testnet-10";
+exitIfNetworkDisabled(NETWORK);
 const DATA_DIR = process.env.SOMPI_DATA_DIR ?? path.join(os.homedir(), ".sompi", NETWORK);
 const NODE_URL = process.env.SOMPI_NODE_URL;
 const POLICY_PATH = process.env.SOMPI_POLICY;
@@ -79,6 +81,27 @@ function packageVersion(): string {
   const raw = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8")) as { version?: unknown };
   if (typeof raw.version !== "string" || raw.version.length === 0) throw new Error("package.json has no version");
   return raw.version;
+}
+
+function assertNetworkAllowed(network: string): void {
+  if (!isMainnetNetwork(network)) return;
+  if (process.env.SOMPI_ENABLE_MAINNET === "1") return;
+  throw new Error(
+    "Mainnet is disabled by default. Set SOMPI_ENABLE_MAINNET=1 only after the operator confirms they intend to use real KAS."
+  );
+}
+
+function exitIfNetworkDisabled(network: string): void {
+  try {
+    assertNetworkAllowed(network);
+  } catch (error) {
+    console.error(`fatal: ${String((error as Error)?.message ?? error)}`);
+    process.exit(1);
+  }
+}
+
+function isMainnetNetwork(network: string): boolean {
+  return network === "mainnet" || network === "kaspa" || network === "kaspa-mainnet";
 }
 
 function kasUnit(): "KAS" | "tKAS" {
