@@ -1,5 +1,11 @@
 # Phase 6: Agent-Native Payment UX
 
+> **Historical plan:** this file describes the completed/pre-cutover Phase 6
+> direction. It is not the plan for the accepted AP2 + Kaspa-x402 architecture.
+> Future implementation work starts from `CONTEXT.md`,
+> `docs/architecture/SOMPI_ARCHITECTURE.md`, the accepted records in
+> `docs/adr/`, `docs/IMPLEMENTATION_PLAN.md`, and `CURRENT_STATE.md`.
+
 ## Objective
 
 Make Sompi feel like ambient payment infrastructure for agents.
