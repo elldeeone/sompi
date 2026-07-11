@@ -31,6 +31,7 @@ import {
 } from "./live-testnet-support.js";
 import {
   assertLiveTestnetProofPaths,
+  createLiveMerchant,
   LiveMerchantPaidEndpoint,
   preflightLiveTestnetProofReportTarget,
   writeLiveTestnetProofReport,
@@ -39,6 +40,8 @@ import {
 import { KaspaTestnet10AddressCodec } from "../adapters/kaspa-x402/index.js";
 import { SUPPORTED_PROTOCOL_PROFILES } from "../protocols/profiles.js";
 import { assertPurchaseId, createPaymentIdentifier } from "../purchase/identity.js";
+import { SqliteExactServerStateStore } from "../demo/exact-server-store.js";
+import { SqliteDemoCommerceAuthorizationStore } from "../demo/commerce-authorization-store.js";
 import type { KaspaWallet } from "../wallet.js";
 import type {
   TreasuryOperationModule,
@@ -382,6 +385,45 @@ test("Merchant verifier rejects a valid-shaped reservation outside configured li
     );
     await closeInitialized(initialized);
   } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("live Merchant composition validates before any funded Purchase begins", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-live-merchant-compose-"));
+  const exactStore = new SqliteExactServerStateStore(":memory:");
+  const authorizationStore = new SqliteDemoCommerceAuthorizationStore(":memory:");
+  try {
+    const initialized = initializeLiveProof(
+      path.join(root, "proof"),
+      path.join(root, "source"),
+      TEST_NODE_URL
+    );
+    const borrow = chainMilestone(
+      "35".repeat(32),
+      initialized.config.borrow.address,
+      LIVE_BORROW_AMOUNT_ATOMIC
+    );
+    await createLiveMerchant(
+      initialized,
+      {
+        version: 1,
+        runId: initialized.config.runId,
+        updatedAt: new Date().toISOString(),
+        borrowInventory: borrow,
+      },
+      exactStore,
+      authorizationStore,
+      {
+        verifyExactPayment: async () => {
+          throw new Error("composition test must not verify a payment");
+        },
+      } as unknown as LiveMerchantExactVerifier
+    );
+    await closeInitialized(initialized);
+  } finally {
+    exactStore.close();
+    authorizationStore.close();
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

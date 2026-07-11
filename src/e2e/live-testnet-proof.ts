@@ -982,7 +982,7 @@ function readMerchantPaidIngress(
   return record;
 }
 
-async function createLiveMerchant(
+export async function createLiveMerchant(
   initialized: InitializedLiveProof,
   progress: LiveProofProgress,
   store: SqliteExactServerStateStore,
@@ -1025,7 +1025,7 @@ async function createLiveMerchant(
     payTo: initialized.config.wallets.merchantAddress,
     amountAtomic: LIVE_PRICE_ATOMIC,
     additionalCostCeilingAtomic: LIVE_ADDITIONAL_COST_CEILING_ATOMIC,
-    checkoutTtlMs: 30 * 60_000,
+    checkoutTtlMs: 5 * 60_000,
     authorityAudience: AUTHORITY_SIGNER.issuer,
     expectedAuthorityIssuer: AUTHORITY_SIGNER.issuer,
     expectedInstrumentId: FIXED_INSTRUMENT_ID,
