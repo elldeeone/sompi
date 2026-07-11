@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomBytes } from "node:crypto";
 import Database from "better-sqlite3";
+import { SecureLocalStateDirectory } from "../secure-local-state.js";
 import { EvidenceStore, type StoredEvidence } from "./evidence-store.js";
 import { authorizationFactsDigest } from "./contracts.js";
 import {
@@ -651,11 +652,11 @@ export class PurchaseJournal {
   constructor(readonly filename: string, options: PurchaseJournalOptions = {}) {
     this.now = options.now ?? Date.now;
     this.faultInjector = options.faultInjector;
-    prepareDatabasePath(filename);
+    const databasePath = prepareDatabasePath(filename);
     this.db = new Database(filename);
     try {
-      if (filename !== ":memory:") fs.chmodSync(filename, 0o600);
       this.configure(options.busyTimeoutMs ?? 5_000);
+      validateDatabaseFiles(databasePath);
       this.migrate();
       const evidenceDirectory =
         options.evidenceDirectory ?? (filename === ":memory:" ? undefined : `${filename}.evidence`);
@@ -7552,20 +7553,48 @@ function safeExpiry(now: number, ttlMs: number): number {
   return expiresAtMs;
 }
 
-function prepareDatabasePath(filename: string): void {
-  if (filename === ":memory:") return;
-  const directory = path.dirname(filename);
-  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const stat = fs.lstatSync(directory);
-  if (!stat.isDirectory() || stat.isSymbolicLink()) throw new JournalInvariantError("Purchase Journal directory is unsafe");
-  if ((stat.mode & 0o077) !== 0) {
-    throw new JournalInvariantError("Purchase Journal directory must not be accessible by group or other users");
+interface PreparedJournalDatabasePath {
+  readonly state: SecureLocalStateDirectory;
+  readonly basename: string;
+}
+
+function prepareDatabasePath(filename: string): PreparedJournalDatabasePath | undefined {
+  if (filename === ":memory:") return undefined;
+  try {
+    const state = new SecureLocalStateDirectory(
+      path.dirname(path.resolve(filename)),
+      "Purchase Journal"
+    );
+    const basename = path.basename(filename);
+    if (!state.fileExists(basename)) {
+      state.createEmptyFileExclusive(basename);
+    }
+    for (const suffix of ["-journal", "-wal", "-shm"]) {
+      state.fileExists(`${basename}${suffix}`);
+    }
+    return Object.freeze({ state, basename });
+  } catch (error) {
+    throw new JournalInvariantError(
+      "Purchase Journal database path is unsafe",
+      { cause: error }
+    );
   }
-  if (typeof process.getuid === "function" && stat.uid !== process.getuid()) {
-    throw new JournalInvariantError("Purchase Journal directory must be owned by the current user");
-  }
-  if (fs.existsSync(filename) && fs.lstatSync(filename).isSymbolicLink()) {
-    throw new JournalInvariantError("Purchase Journal file must not be a symbolic link");
+}
+
+function validateDatabaseFiles(pathInfo: PreparedJournalDatabasePath | undefined): void {
+  if (!pathInfo) return;
+  try {
+    if (!pathInfo.state.fileExists(pathInfo.basename)) {
+      throw new Error("Purchase Journal database disappeared during open");
+    }
+    for (const suffix of ["-journal", "-wal", "-shm"]) {
+      pathInfo.state.fileExists(`${pathInfo.basename}${suffix}`);
+    }
+  } catch (error) {
+    throw new JournalInvariantError(
+      "Purchase Journal database files are unsafe",
+      { cause: error }
+    );
   }
 }
 

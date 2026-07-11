@@ -55,7 +55,7 @@ from a transient RPC/HTTP error.
 | `settled` | Verified spend is final; fulfilment remains | Recover fulfilment/receipts only; never repay |
 | `fulfilled` | Resource digest is durable; receipts remain | Recover receipts only |
 | `receipted` | Complete | No recovery action |
-| `expired` | No new authority, staging, signing, or exact payment may begin | Start a new Purchase only after any staged funds are safely resolved |
+| `expired` | No new authority, Merchant authorization, staging, or exact-payment preparation/signing/submission may begin | Start a new Purchase only after any staged funds are safely resolved |
 | `failed_recoverable` or `recoveryRequired: true` | A durable effect needs observation | Run the matching recovery tool once, then inspect status |
 | `failed_terminal`, `conflict`, or unresolved ambiguity | Automatic progress is unsafe | Stop and inspect evidence; do not submit manually |
 
@@ -84,15 +84,27 @@ editing the policy log or journal.
 
 ## Expired Purchase with staged funds
 
-Expiry prevents new authorization, signing, Treasury staging, and exact
-payment. It does not erase a staging UTXO already broadcast. Recovery must
-first determine whether the immutable exact payment won, the pre-authorized
-recovery sweep won, neither is yet visible, or the observations conflict.
+Expiry prevents new authority decisions, Merchant authorization, Treasury
+staging, exact-payment preparation/signing, and first exact submission. It does
+not erase a staging UTXO already broadcast. Recovery must first determine
+whether the immutable exact payment won, the journaled recovery sweep won,
+neither is yet visible, or the observations conflict.
+
+The dedicated recovery module may still sign one immutable return sweep for an
+already-observed staging output. That sweep targets the configured Sompi wallet,
+does not pay the Merchant or create new Purchase Authorization, and is permitted
+only while the staging plus recovery fees fit the original authorized
+additional-cost ceiling. This is the only signing allowed on the expired path.
 
 Do not import the staging key into a general wallet or construct an ad-hoc
 sweep. Use `purchase_recover`; it uses the journaled recovery plan and races
 only the exact payment transaction against the exact recovery transaction.
 Detailed staging controls are in [`STAGING_RECOVERY.md`](STAGING_RECOVERY.md).
+
+If the pinned recovery fee no longer fits the original ceiling, automatic
+recovery stops before submission. There is no Agent/MCP ceiling override; keep
+the journal and key state intact and escalate for explicit operator authority
+as described in the staging runbook.
 
 ## Escalation evidence
 

@@ -1,6 +1,6 @@
 # Sompi Purchase threat model
 
-Status: Phase 1 implementation threat model
+Status: current implementation threat model
 
 Applies to: human-present AP2 v0.2 + Kaspa-x402 exact on testnet
 
@@ -163,8 +163,7 @@ KAS/sompi is not currently standardized by that field. The first testnet build
 must therefore isolate an explicitly named experimental KAS Payment Instrument
 profile inside the AP2 adapter, preserve exact sompi in canonical Purchase
 state, and avoid claiming strict native-KAS AP2 interoperability. The profile
-must not enter x402/Kaspa-x402 wire objects. A separate ADR records the exact
-mapping before Phase 5 implementation.
+must not enter x402/Kaspa-x402 wire objects. ADR-0010 records the exact mapping.
 
 ## Out of scope for the first release
 
@@ -177,7 +176,7 @@ mapping before Phase 5 implementation.
 
 ## Security acceptance
 
-Phase 6 is not complete until every threat marked with a verification above has
-an automated negative or fault-injection test, or an explicit documented
-manual proof where automation is impossible. A successful happy path alone is
-not security evidence.
+The end-to-end release is not complete until every threat marked with a
+verification above has an automated negative or fault-injection test, or an
+explicit documented manual proof where automation is impossible. A successful
+happy path alone is not security evidence.

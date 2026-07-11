@@ -48,7 +48,9 @@ profiles appear only when they help status, audit, or recovery.
   but must not repay.”
 - `receipted`: “Purchase complete; terms, authorization, Settlement,
   fulfilment, and receipts are linked.”
-- `expired`: “No new authority, staging, signing, or exact payment may begin.”
+- `expired`: “No new authority, Merchant authorization, staging, or
+  exact-payment preparation/signing/submission may begin. Resolve any existing
+  staging output through recovery.”
 - `failed_recoverable`: “Run `purchase_recover` with this Purchase ID; do not
   submit another payment.”
 - `failed_terminal`: “Stop and ask the operator to inspect the preserved

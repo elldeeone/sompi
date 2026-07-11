@@ -9,6 +9,13 @@ exact profile on Kaspa testnet-10.
   corruption response for all MCP-side durable state.
 - [`RECONCILIATION.md`](RECONCILIATION.md): safe recovery of interrupted
   Purchases and direct Treasury Movements.
+- [`STAGING_RECOVERY.md`](STAGING_RECOVERY.md): exact/no-exact candidate race,
+  immutable return sweep, finality, fee accounting, and escalation for an
+  already-observed staging output.
+- [`TESTNET_RESET.md`](TESTNET_RESET.md): create a fresh isolated testnet runtime
+  without deleting or partially reusing the old durable state.
 
-Additional recovery and testnet-reset instructions are added alongside the
-corresponding release gate. None of these procedures enables mainnet.
+Expiry blocks new Merchant authorization, Treasury staging, and exact-payment
+preparation/signing/submission. It does not erase an existing staging UTXO; the
+dedicated recovery runbook describes the narrowly authorized return sweep.
+None of these procedures enables mainnet.

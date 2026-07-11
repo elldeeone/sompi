@@ -1,6 +1,6 @@
 # Kaspa-x402 exact integration profile
 
-Status: Phase 1 integration map
+Status: current exact integration contract
 
 Target: `@kaspa-x402/*@0.1.0-alpha.6`
 
@@ -18,10 +18,9 @@ All alpha.6 packages report npm Git commit
 `28ac222d3a375b9a2a56c11396f388086eeeae76`. Integrity hashes are recorded in
 `src/protocols/profiles.ts` and the npm lockfile.
 
-Kaspa-x402 is ESM-only. Phase 4 migrates Sompi runtime modules to NodeNext ESM
-as part of the clean cutover. CommonJS-only retained scripts or vendored Kaspa
-WASM loading must use one explicit compatibility loader; mixed loading must not
-spread through adapters.
+Kaspa-x402 is ESM-only. Sompi's clean-cutover runtime uses NodeNext ESM.
+CommonJS-only retained scripts or vendored Kaspa WASM loading use one explicit
+compatibility loader; mixed loading does not spread through adapters.
 
 ## Client sequencing
 
@@ -107,8 +106,8 @@ Use a journaled two-stage Treasury Movement:
 5. reconcile and reserve the observed staging outpoint;
 6. use only that outpoint for the exact payment;
 7. persist the exact transaction before the paid HTTP retry;
-8. if abandoned before exact settlement, recover the staging output through a
-   separately journaled vault top-up/recovery action.
+8. if abandoned before exact settlement, resolve the staging output through a
+   separately journaled immutable sweep to the configured Sompi wallet.
 
 The treasury reservation covers:
 
@@ -150,7 +149,41 @@ Before returning from `payExactTransaction()`, validate:
   identifier and payload to obtain the Merchant's idempotent response.
 - Settlement observed/fulfilment missing: retry fulfilment with the same
   evidence; never repay.
-- Abandoned staging: top up/recover through its recorded key reference.
+- Abandoned staging: persist and reconcile one immutable recovery sweep from
+  the exact observed staging outpoint to the configured Sompi wallet.
+
+The abandoned-staging plan always has one immutable recovery candidate. If the
+exact payment was already prepared, its saved transaction is the only exact
+candidate and recovery observes both candidates competing for the same staging
+outpoint. If expiry occurred after staging but before exact preparation, the
+plan records the typed no-exact-candidate mode; it does not invent a sentinel
+transaction ID or prepare an exact payment after expiry.
+
+Before submitting the recovery candidate, the observer must prove that the
+staging outpoint is still unspent and that the recovery candidate—and the exact
+candidate when one exists—are absent. The resulting readiness proof is
+short-lived and single-use. A timeout, rejected response, or uncertain RPC
+result returns to observation. It never permits blind retry or rebuilding the
+sweep.
+
+If the exact candidate wins, normal Settlement reconciliation remains
+authoritative. If the recovery candidate wins, Sompi waits for required
+finality, releases the returned Merchant principal, and charges only the
+observed staging plus recovery fees to the shared rolling software-policy
+window. Partial evidence, both candidates, or an unknown spender fail closed.
+
+Expiry blocks new Merchant authorization, Treasury staging, exact-payment
+preparation/signing, and first exact submission. It does not prohibit the
+dedicated recovery module from signing the immutable return sweep for an
+already-observed staging output. That recovery is a Treasury safety action, not
+new Purchase Authorization or Merchant payment, and it remains bounded by the
+original authorized additional-cost ceiling.
+
+The pinned recovery fee plus the already-incurred staging fee must fit within
+that ceiling. Sompi provides no Agent/MCP override. If the fees do not fit,
+automatic recovery stops before submission and requires explicit operator
+authority; the journal and staging key must be preserved without editing the
+ceiling or constructing an ad-hoc replacement.
 
 Kaspa-x402 has no public persisted-result hydrator. Sompi may reconstruct the
 client's result wrapper only from separately persisted and revalidated upstream
@@ -158,10 +191,10 @@ artifacts; it must not invent alternate wire schemas.
 
 ## Demo and live proof
 
-Phase 6 uses a locally controlled demo Merchant and locally provisioned exact
-borrow inventory. The public hosted gateway is optional evidence, not a build
-dependency. No fallback to batch settlement is permitted when exact inventory
-is unavailable.
+The release proof uses a locally controlled demo Merchant and locally
+provisioned exact borrow inventory. The public hosted gateway is optional
+evidence, not a build dependency. No fallback to batch settlement is permitted
+when exact inventory is unavailable.
 
 The final proof checks the Merchant borrow input, attempt staging input,
 payment/continuation/change outputs, request hash, payment identifier,

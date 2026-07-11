@@ -1,6 +1,6 @@
 # Supported AP2 profile
 
-Status: Phase 1 pinned profile
+Status: current pinned implementation profile
 
 Profile ID: `ap2-v0.2-hp-direct-sd-jwt-es256`
 
@@ -173,8 +173,8 @@ compact mandate bytes so the reference remains reproducible.
 
 ## Schema provenance
 
-Phase 5 vendors the following unmodified Apache-2.0 schemas from the pinned
-commit and records these SHA-256 digests:
+Sompi vendors the following unmodified Apache-2.0 schemas from the pinned commit
+and records these SHA-256 digests:
 
 | Schema | SHA-256 |
 |---|---|

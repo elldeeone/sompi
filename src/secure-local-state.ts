@@ -75,6 +75,59 @@ export class SecureLocalStateDirectory {
     return true;
   }
 
+  /**
+   * Durably publish an empty regular file without replacing an existing path.
+   *
+   * SQLite needs an empty pathname before it writes the first database header;
+   * keeping this operation separate from secret publication preserves the
+   * non-empty invariant of `createFileExclusive`.
+   */
+  createEmptyFileExclusive(name: string): void {
+    const filename = this.filePath(name);
+    this.assertDirectoryUnchanged();
+    this.removeInterruptedTemporaryFiles(name);
+    if (pathExists(filename)) {
+      throw new SecureLocalStateError(`${this.label} file already exists`);
+    }
+
+    let descriptor: number | undefined;
+    try {
+      descriptor = fs.openSync(
+        filename,
+        fs.constants.O_WRONLY |
+          fs.constants.O_CREAT |
+          fs.constants.O_EXCL |
+          noFollowFlag(),
+        FILE_MODE
+      );
+      fs.fchmodSync(descriptor, FILE_MODE);
+      fs.fsyncSync(descriptor);
+      const opened = fs.fstatSync(descriptor, { bigint: true });
+      assertSecureFile(opened, this.expectedUid, this.label);
+      if (opened.size !== 0n) {
+        throw new SecureLocalStateError(`${this.label} empty file is not empty`);
+      }
+      fs.closeSync(descriptor);
+      descriptor = undefined;
+      this.fsyncDirectory();
+      const published = secureFileStat(filename, this.expectedUid, this.label);
+      if (!sameIdentity(opened, published) || published.size !== 0n) {
+        throw new SecureLocalStateError(`${this.label} empty file identity changed`);
+      }
+      this.assertDirectoryUnchanged();
+    } catch (error) {
+      if (error instanceof SecureLocalStateError) throw error;
+      if (isErrno(error, "EEXIST")) {
+        throw new SecureLocalStateError(`${this.label} file already exists`, { cause: error });
+      }
+      throw new SecureLocalStateError(`${this.label} empty file could not be created durably`, {
+        cause: error,
+      });
+    } finally {
+      if (descriptor !== undefined) fs.closeSync(descriptor);
+    }
+  }
+
   readFile(name: string, maxBytes: number): Buffer {
     const filename = this.filePath(name);
     requireMaximumBytes(maxBytes);

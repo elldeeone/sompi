@@ -36,8 +36,9 @@ test("journal creates a secure, verified schema and survives restart", () => {
     const purchase = createPurchase(journal, 1);
     journal.close();
     fs.chmodSync(filename, 0o666);
+    assert.throws(() => reopen(), JournalInvariantError);
+    fs.chmodSync(filename, 0o600);
     const restarted = reopen();
-    assert.equal(fs.statSync(filename).mode & 0o777, 0o600);
     assert.equal(restarted.requirePurchase(purchase.id).requestKey, purchase.requestKey);
     assert.equal(restarted.transitions(purchase.id).length, 1);
     assert.equal(restarted.integrityCheck(), true);
@@ -1132,6 +1133,13 @@ test("newer, unversioned, tampered, corrupted, and symlinked databases fail clos
     const link = path.join(directory, "linked.sqlite");
     fs.symlinkSync(target, link);
     assert.throws(() => new PurchaseJournal(link), JournalInvariantError);
+
+    const hardlinkSource = path.join(directory, "hardlink-source.sqlite");
+    const hardlinkJournal = new PurchaseJournal(hardlinkSource);
+    hardlinkJournal.close();
+    const hardlinkAlias = path.join(directory, "hardlink-alias.sqlite");
+    fs.linkSync(hardlinkSource, hardlinkAlias);
+    assert.throws(() => new PurchaseJournal(hardlinkSource), JournalInvariantError);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
