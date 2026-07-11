@@ -72,6 +72,44 @@ test("Unix authority client times out with a fixed secret-free error", async () 
   }
 });
 
+test("authority handler exceptions never cross the Unix IPC seam", async () => {
+  const fixture = fixtureDirectory();
+  const socketPath = path.join(fixture, "authority.sock");
+  const sentinel =
+    "RAW_PROTOCOL_EXCEPTION PRIVATE_JWK PAYMENT-SIGNATURE PREPARED_TRANSACTION";
+  const server = new AuthorityUnixServer({
+    socketPath,
+    timeoutMs: 500,
+    handle: async () => {
+      const failure = new Error(sentinel);
+      failure.stack = `${sentinel}\n${sentinel}`;
+      throw failure;
+    },
+  });
+  try {
+    await server.start();
+    const client = new AuthorityUnixClient({ socketPath, timeoutMs: 500 });
+    let caught: unknown;
+    try {
+      await client.request("authenticated-request");
+    } catch (error) {
+      caught = error;
+    }
+    assert(caught instanceof AuthorityTransportError);
+    assert.equal(
+      ["malformed_frame", "unavailable"].includes(caught.code),
+      true,
+      "the client may observe a closed empty frame or connection loss, never the handler error",
+    );
+    assert.equal(String(caught).includes(sentinel), false);
+    assert.equal(JSON.stringify(caught).includes(sentinel), false);
+    assert.equal(caught.stack?.includes(sentinel), false);
+  } finally {
+    await server.close();
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
 test("Unix authority transport supports an explicitly pinned shared IPC group", async () => {
   if (
     typeof process.getuid !== "function" ||

@@ -8,7 +8,13 @@ import { SqliteAuthorityDecisionStore } from "../../authority/decision-store.js"
 import { AuthorityDecisionEndpoint, AuthorityUnixDecisionClient, AuthorityUnixDecisionServer } from "../../authority/endpoint.js";
 import type { AuthorityAuthenticationProvider } from "../../authority/key-provider.js";
 import {
+  AUTHORITY_EVIDENCE_VERIFICATION_REQUIREMENT,
   AUTHORITY_MAC_KEY_BYTES,
+  authorityFactsDigest,
+  bindAuthorityApprovalResponse,
+  createAuthorityResponseId,
+  parseAuthorityApprovalRequest,
+  sealAuthorityApprovalResponse,
   type AuthorityAuthenticationInput,
 } from "../../authority/protocol.js";
 import { SqliteAuthorityReplayStore } from "../../authority/replay-store.js";
@@ -54,6 +60,50 @@ test("separate Unix authority completes and independently verifies an AP2 approv
   }
 });
 
+test("the human display is exactly the independently signed Purchase decision", async () => {
+  const fixture = await authoritySystem(true);
+  try {
+    const result = await fixture.module.request(fixture.input);
+    assert.equal(result.status, "decision");
+    if (result.status !== "decision") return;
+    const facts = result.decision.facts;
+    assert.deepEqual(fixture.displayed, {
+      purchaseId: facts.purchaseId,
+      merchant: {
+        id: facts.merchantId,
+        name: facts.merchantName,
+        origin: facts.merchantOrigin,
+      },
+      request: {
+        url: facts.resourceUrl,
+        method: facts.method,
+        mediaType: facts.requestMediaType,
+        bodyDigest: facts.requestBodyDigest,
+        fingerprint: facts.resourceFingerprint,
+      },
+      price: {
+        amountAtomic: facts.amountAtomic,
+        asset: facts.asset,
+        network: facts.network,
+        payTo: facts.payTo,
+      },
+      checkoutDigest: facts.checkoutDigest,
+      termsExpiresAt: facts.termsExpiresAt,
+      additionalCostCeilingAtomic: facts.additionalCostCeilingAtomic,
+      recoveryRetry: false,
+    });
+    assert.equal(
+      result.decision.evidence.factsDigest,
+      authorityFactsDigest(facts),
+      "the verified signature must bind the exact facts rendered to the human",
+    );
+    assert.equal(result.decision.evidence.purchaseId, fixture.displayed?.purchaseId);
+    assert.equal(result.decision.evidence.checkoutDigest, fixture.displayed?.checkoutDigest);
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("human denial is signed, verified, and carries no fabricated AP2 mandate", async () => {
   const fixture = await authoritySystem(false);
   try {
@@ -82,6 +132,82 @@ test("MCP-side module rejects substituted Checkout bytes before IPC", async () =
     );
     assert.equal(fixture.promptCalls(), 0);
   } finally {
+    await fixture.close();
+  }
+});
+
+test("an MCP process with the shared IPC MAC still cannot forge authority approval evidence", async () => {
+  const fixture = await authoritySystem(true);
+  const nowMs = (FIXED_NOW + 5) * 1_000;
+  const attackerReplay = new SqliteAuthorityReplayStore(":memory:", {
+    now: () => nowMs,
+  });
+  const clientReplay = new SqliteAuthorityReplayStore(":memory:", {
+    now: () => nowMs,
+  });
+  const forgedEvidence = Buffer.from(
+    "agent-forged-authority-decision-without-authority-signing-key",
+    "utf8",
+  );
+  const verifier = new Ap2AuthorityDecisionEvidenceVerifier({
+    trust: fixedTrustStore(),
+    expectedAuthorityIssuer: FIXED_AUTHORITY_ISSUER,
+    expectedInstrumentId: FIXED_INSTRUMENT_ID,
+    nowSec: Math.floor(nowMs / 1_000),
+    clockSkewSec: 0,
+  });
+  const forgedModule = new Ap2AuthorityModule({
+    authenticationProvider: new StaticAuthenticationProvider(),
+    replayStore: clientReplay,
+    transport: {
+      async request(requestWire) {
+        const authentication = staticAuthentication();
+        try {
+          const request = parseAuthorityApprovalRequest(requestWire, {
+            ...authentication,
+            replayStore: attackerReplay,
+            now: () => nowMs,
+          });
+          const response = bindAuthorityApprovalResponse(request, {
+            responseId: createAuthorityResponseId(new Uint8Array(16).fill(0x44)),
+            respondedAtMs: nowMs,
+            expiresAtMs: Math.min(nowMs + 20_000, request.message.expiresAtMs),
+            result: {
+              decision: "approved",
+              authorityId: FIXED_AUTHORITY_ISSUER,
+              decisionEvidenceDigest: evidenceDigest(forgedEvidence),
+              evidenceVerification: AUTHORITY_EVIDENCE_VERIFICATION_REQUIREMENT,
+            },
+          });
+          return {
+            responseWire: sealAuthorityApprovalResponse(
+              response,
+              request,
+              authentication,
+            ).wire,
+            decisionEvidence: Uint8Array.from(forgedEvidence),
+          };
+        } finally {
+          authentication.keyBytes.fill(0);
+        }
+      },
+    },
+    verifier,
+    now: () => nowMs,
+  });
+  try {
+    await assert.rejects(
+      forgedModule.request(fixture.input),
+      /authority decision evidence|compact JWS|signature/i,
+    );
+    assert.equal(
+      fixture.promptCalls(),
+      0,
+      "an MCP-side forgery must not reach or imitate the authority prompt",
+    );
+  } finally {
+    attackerReplay.close();
+    clientReplay.close();
     await fixture.close();
   }
 });
@@ -210,11 +336,18 @@ class StaticAuthenticationProvider implements AuthorityAuthenticationProvider {
   async withAuthentication<T>(
     operation: (authentication: AuthorityAuthenticationInput) => T | Promise<T>,
   ): Promise<T> {
-    const copy = Uint8Array.from(KEY);
+    const copy = staticAuthentication().keyBytes;
     try {
       return await operation({ keyId: "authority-ipc:test", keyBytes: copy });
     } finally {
       copy.fill(0);
     }
   }
+}
+
+function staticAuthentication(): AuthorityAuthenticationInput {
+  return {
+    keyId: "authority-ipc:test",
+    keyBytes: Uint8Array.from(KEY),
+  };
 }

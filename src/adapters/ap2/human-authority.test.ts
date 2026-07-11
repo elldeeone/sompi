@@ -33,6 +33,52 @@ test("terminal authority serializes concurrent Purchase ceremonies", async () =>
   output.end();
 });
 
+test("terminal authority renders hostile Merchant text only as escaped data", async () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  output.setEncoding("utf8");
+  let rendered = "";
+  output.on("data", (chunk: string) => {
+    rendered += chunk;
+  });
+  const prompt = new TerminalAuthorityApprovalPrompt({ input, output });
+  const canonical = display("pur_CCCCCCCCCCCCCCCCCCCCCC");
+  const hostile: AuthorityApprovalDisplay = Object.freeze({
+    ...canonical,
+    merchant: Object.freeze({
+      ...canonical.merchant,
+      name: "Merchant\u001b]0;FAKE APPROVAL\u0007\n\"amountAtomic\":\"0\"\u202e",
+    }),
+    request: Object.freeze({
+      ...canonical.request,
+      url: `${canonical.request.url}\r\nFAKE EXPIRY: never`,
+    }),
+  });
+
+  const decision = prompt.approve(hostile);
+  await until(() => rendered.includes("anything else denies"));
+
+  assert.equal(rendered.includes("\u001b"), false, "raw ANSI escape must not reach the terminal");
+  assert.equal(rendered.includes("\u0007"), false, "raw terminal bell must not reach the terminal");
+  assert.equal(rendered.includes("\u202e"), false, "raw bidi override must not reach the terminal");
+  assert.equal(rendered.includes("\r"), false, "raw carriage return must not reach the terminal");
+  for (const escaped of ["\\\\u001b", "\\\\u0007", "\\\\u000a", "\\\\u202e", "\\\\u000d"]) {
+    assert.equal(rendered.includes(escaped), true, `missing escaped terminal data ${escaped}`);
+  }
+  assert.equal(rendered.includes('"amountAtomic": "1000"'), true);
+  assert.equal(
+    rendered.includes('"termsExpiresAt": "2099-01-01T00:00:00.000Z"'),
+    true,
+  );
+  assert.equal(rendered.match(/Sompi purchase approval/g)?.length, 1);
+  assert.equal(rendered.match(/To approve, type the exact Purchase ID/g)?.length, 1);
+
+  input.write(`${hostile.purchaseId}\n`);
+  assert.equal(await decision, true);
+  input.end();
+  output.end();
+});
+
 function display(purchaseId: string): AuthorityApprovalDisplay {
   return Object.freeze({
     purchaseId,

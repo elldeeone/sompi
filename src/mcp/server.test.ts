@@ -136,6 +136,86 @@ test("unexpected lower-layer errors are bounded and secret-free", async () => {
   assert.ok(Buffer.byteLength(result.content[0].text) < 1_000);
 });
 
+test("Purchase protocol failures expose no keys, mandates, payment headers, prepared bytes, or raw exceptions", async () => {
+  const forbidden = [
+    "AUTHORITY_PRIVATE_JWK_D_VALUE",
+    "MANDATE_SD_JWT_ARTIFACT",
+    "PAYMENT-REQUIRED: PRIVATE_REQUIREMENTS",
+    "PAYMENT-SIGNATURE: PRIVATE_PAYMENT_PAYLOAD",
+    "PAYMENT-RESPONSE: PRIVATE_SETTLEMENT",
+    "PREPARED_KASPA_TRANSACTION_SAFE_JSON",
+    "RAW_PROTOCOL_EXCEPTION_STACK",
+  ] as const;
+  const protocolFailure = Object.assign(
+    new Error(forbidden.join(" | ")),
+    {
+      authorityPrivateJwk: { d: forbidden[0] },
+      mandateArtifact: forbidden[1],
+      paymentHeaders: forbidden.slice(2, 5),
+      preparedTransaction: Buffer.from(forbidden[5], "utf8"),
+      rawProtocolException: forbidden[6],
+    },
+  );
+  protocolFailure.stack = `${forbidden[6]}\n${forbidden.join("\n")}`;
+  const failingPurchase: PurchaseModule = {
+    async purchase() {
+      throw protocolFailure;
+    },
+    async status() {
+      throw protocolFailure;
+    },
+    async recover() {
+      throw protocolFailure;
+    },
+  };
+  const registrar = new CapturingRegistrar();
+  registerSompiTools(
+    registrar,
+    fakeRuntime({ purchase: failingPurchase }),
+    fakeTreasuryOperations(),
+  );
+
+  const originalConsoleError = console.error;
+  const originalStderrWrite = process.stderr.write;
+  let logs = "";
+  console.error = (...values: unknown[]) => {
+    logs += `${values.map(String).join(" ")}\n`;
+  };
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    logs += typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8");
+    return true;
+  }) as typeof process.stderr.write;
+
+  let results: readonly McpToolResult[];
+  try {
+    const purchaseId = fakePurchaseView().id;
+    results = await Promise.all([
+      registrar.call("purchase", {
+        requestKey: "mcp:purchase:secret-boundary",
+        url: "https://merchant.example/resource",
+        method: "GET",
+      }),
+      registrar.call("purchase_status", { purchaseId }),
+      registrar.call("purchase_recover", { purchaseId }),
+    ]);
+  } finally {
+    console.error = originalConsoleError;
+    process.stderr.write = originalStderrWrite;
+  }
+
+  assert.deepEqual(
+    results.map((result) => parseResult(result).errorCode),
+    ["PURCHASE_FAILED", "PURCHASE_STATUS_FAILED", "PURCHASE_RECOVERY_FAILED"],
+  );
+  const publicSnapshot = JSON.stringify(results);
+  assert.ok(Buffer.byteLength(publicSnapshot, "utf8") < 3_000);
+  assert.equal(logs, "", "MCP handlers must not log lower-layer protocol exceptions");
+  for (const sentinel of forbidden) {
+    assert.equal(publicSnapshot.includes(sentinel), false, `MCP result leaked ${sentinel}`);
+    assert.equal(logs.includes(sentinel), false, `MCP logs leaked ${sentinel}`);
+  }
+});
+
 test("payment_status reports the Purchase Journal and contains no escrow state", async () => {
   const registrar = new CapturingRegistrar();
   registerSompiTools(registrar, fakeRuntime(), fakeTreasuryOperations());
