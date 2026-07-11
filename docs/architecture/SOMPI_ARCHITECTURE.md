@@ -72,7 +72,7 @@ Sompi evaluates two different decisions:
 1. **Purchase Authorization:** may this Agent buy this resource from this
    Merchant for this exact amount under these terms?
 2. **Treasury Movement:** may the treasury fund or execute this exact movement,
-   including explicitly bounded fees?
+   including explicitly bounded non-price costs?
 
 AP2 answers the first. Sompi policy, wallet/vault, and Kaspa-x402 funding answer
 the second. A channel deposit or treasury allowance cannot stand in for later
@@ -88,7 +88,7 @@ Purchase
   intent: merchant + resource + HTTP request fingerprint
   terms: amountAtomic + asset + network + expiry + merchant identity
   authorization: status + authority identity + approved facts
-  treasury: reservation + funding source + bounded fees
+  treasury: reservation + funding source + bounded additional costs
   paymentAttempts[]: identifier + prepared material + submission observation
   settlement: network evidence + finality + matched amount
   fulfilment: resource digest/status
@@ -211,7 +211,7 @@ evidence or denial. It must:
 
 - be deterministic and non-agentic;
 - display exact Merchant, resource/request, amount, asset, network, expiry,
-  fees when known, and Purchase identifier;
+  additional treasury costs when known, and Purchase identifier;
 - validate all approval inputs independently of MCP prose;
 - keep signing authority inaccessible to `sompi-mcp`;
 - authenticate and bind local IPC requests and responses;
@@ -347,7 +347,7 @@ and does not reproduce its extension lifecycle.
 - testnet-default and explicit mainnet denial;
 - SSRF protection, redirect re-validation, private/link-local/metadata endpoint
   denial, DNS rebinding resistance, size/time limits, and method/body binding;
-- exact integer amount checks and fee bounds;
+- exact integer amount checks and additional-cost bounds;
 - expiry and clock-skew policy;
 - unique identifiers, replay protection, and idempotent recovery;
 - policy reservation before signing/submission;

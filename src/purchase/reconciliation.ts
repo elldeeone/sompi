@@ -1,4 +1,4 @@
-import { evidenceDigest } from "./identity";
+import { evidenceDigest } from "./identity.js";
 import {
   JournalFencingError,
   JournalInvariantError,
@@ -7,14 +7,20 @@ import {
   type EffectRecord,
   type LeaseToken,
   type RecordObservedSpendInput,
-} from "./journal";
-import type { Sha256Digest } from "./types";
+  type RecordObservedTreasuryStagingInput,
+} from "./journal.js";
+import type { Sha256Digest } from "./types.js";
+import type { PurchaseId } from "./types.js";
 
 export type ReconciliationObservation =
   | EffectObservation
   | {
       status: "spend_observed";
       spend: Omit<RecordObservedSpendInput, "effectId">;
+    }
+  | {
+      status: "treasury_staging_observed";
+      staging: Omit<RecordObservedTreasuryStagingInput, "effectId">;
     };
 
 export interface EffectObserver {
@@ -55,9 +61,10 @@ export class PurchaseReconciler {
     private readonly observers: ReadonlyMap<string, EffectObserver>
   ) {}
 
-  async reconcile(holder: string, ttlMs = 30_000): Promise<ReconciliationSummary> {
+  async reconcile(holder: string, ttlMs = 30_000, purchaseId?: PurchaseId): Promise<ReconciliationSummary> {
     if (!holder.trim()) throw new JournalInvariantError("reconciliation holder is required");
-    let lease = this.journal.acquireLease("purchase-reconciliation", holder, ttlMs);
+    const leaseName = purchaseId ? `purchase-reconciliation:${purchaseId}` : "purchase-reconciliation";
+    let lease = this.journal.acquireLease(leaseName, holder, ttlMs);
     if (!lease) return { acquired: false, leaseLost: false, results: [] };
 
     let leaseError: JournalFencingError | undefined;
@@ -73,7 +80,7 @@ export class PurchaseReconciler {
 
     const results: ReconciliationEffectResult[] = [];
     try {
-      for (const effect of this.journal.recoverableEffects()) {
+      for (const effect of this.journal.recoverableEffects(purchaseId)) {
         if (leaseError) break;
         lease = this.renewBeforeWrite(lease, ttlMs);
         this.journal.verifyEffectPreparedMaterial(effect.id);
@@ -109,6 +116,18 @@ export class PurchaseReconciler {
             proof
           );
           results.push({ effectId: effect.id, status: "retryable", detailDigest: proof });
+          continue;
+        }
+        if (effect.state === "failed_terminal") {
+          const proof = lastDetailDigest(this.journal, effect.id) ?? effect.resultDigest;
+          this.journal.recordReconciliation(
+            lease,
+            effect.purchaseId,
+            effect.id,
+            "terminal_payment_accounting_resolved",
+            proof
+          );
+          results.push({ effectId: effect.id, status: "failed_terminal", detailDigest: proof });
           continue;
         }
 
@@ -159,6 +178,25 @@ export class PurchaseReconciler {
           results.push({ effectId: effect.id, status: "observed", detailDigest: spend.evidenceDigest });
           continue;
         }
+        if (observation.status === "treasury_staging_observed") {
+          const staging = this.journal.recordObservedTreasuryStaging(lease, {
+            effectId: effect.id,
+            ...observation.staging,
+          });
+          this.journal.recordReconciliation(
+            lease,
+            effect.purchaseId,
+            effect.id,
+            "treasury_staging_observed",
+            staging.evidenceDigest
+          );
+          results.push({
+            effectId: effect.id,
+            status: "observed",
+            detailDigest: staging.evidenceDigest,
+          });
+          continue;
+        }
 
         const updated = this.journal.recordEffectObservation(effect.id, lease, observation);
         const result = resultForObservation(effect.id, observation);
@@ -206,8 +244,8 @@ function resultForObservation(effectId: string, observation: EffectObservation):
       };
     case "conflict":
       return { effectId, status: "conflict", detailDigest: observation.detailDigest };
-    case "failed_terminal":
-      return { effectId, status: "failed_terminal", detailDigest: observation.detailDigest };
+    case "application_failure":
+      return { effectId, status: "pending", detailDigest: observation.detailDigest };
   }
 }
 

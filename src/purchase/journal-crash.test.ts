@@ -4,24 +4,30 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import test from "node:test";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   JournalNotFoundError,
   PurchaseJournal,
   type JournalFaultPoint,
+  type PolicyReservationInput,
   type PolicySnapshotRecord,
-} from "./journal";
+  type PreparePaymentAttemptInput,
+} from "./journal.js";
 import {
   assertPurchaseRequestKey,
   createPaymentIdentifier,
   createPurchaseId,
   evidenceDigest,
   requestFingerprint,
-} from "./identity";
-import { PurchaseReconciler } from "./reconciliation";
-import type { PurchaseId } from "./types";
+} from "./identity.js";
+import { PurchaseReconciler } from "./reconciliation.js";
+import { authorizationFactsDigest } from "./contracts.js";
+import type { PurchaseId } from "./types.js";
 
-const REPOSITORY_ROOT = path.resolve(__dirname, "../..");
-const JOURNAL_MODULE = path.join(REPOSITORY_ROOT, "dist", "purchase", "journal.js");
+const REPOSITORY_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const JOURNAL_MODULE = pathToFileURL(
+  path.join(REPOSITORY_ROOT, "dist", "purchase", "journal.js")
+).href;
 
 test("SIGKILL during a Purchase transition leaves state and history atomic", () => {
   withCrashJournal(({ filename, evidenceDirectory, journal, clock }) => {
@@ -29,7 +35,7 @@ test("SIGKILL during a Purchase transition leaves state and history atomic", () 
     journal.close();
     const child = runKilled(
       `
-        const { PurchaseJournal } = require(process.env.JOURNAL_MODULE);
+        const { PurchaseJournal } = await import(process.env.JOURNAL_MODULE);
         const journal = new PurchaseJournal(process.env.DB, {
           now: () => Number(process.env.NOW),
           evidenceDirectory: process.env.EVIDENCE,
@@ -37,7 +43,7 @@ test("SIGKILL during a Purchase transition leaves state and history atomic", () 
             if (point === "purchase_transition.after_state_update") process.kill(process.pid, "SIGKILL");
           }
         });
-        journal.transitionPurchase(process.env.PURCHASE_ID, "created", "terms_bound", "terms_verified");
+        journal.transitionPurchase(process.env.PURCHASE_ID, "created", "cancelled", "purchase_cancelled");
       `,
       {
         DB: filename,
@@ -63,7 +69,7 @@ test("SIGKILL before and after preparation commit distinguishes planned from pre
 
     const beforeCommit = runKilled(
       `
-        const { PurchaseJournal } = require(process.env.JOURNAL_MODULE);
+        const { PurchaseJournal } = await import(process.env.JOURNAL_MODULE);
         const journal = new PurchaseJournal(process.env.DB, {
           now: () => Number(process.env.NOW),
           evidenceDirectory: process.env.EVIDENCE,
@@ -90,7 +96,7 @@ test("SIGKILL before and after preparation commit distinguishes planned from pre
 
     const afterCommit = runKilled(
       `
-        const { PurchaseJournal } = require(process.env.JOURNAL_MODULE);
+        const { PurchaseJournal } = await import(process.env.JOURNAL_MODULE);
         const journal = new PurchaseJournal(process.env.DB, {
           now: () => Number(process.env.NOW),
           evidenceDirectory: process.env.EVIDENCE
@@ -124,7 +130,7 @@ test("SIGKILL after effect claim preserves submitted-attempt ambiguity and in-fl
     journal.close();
     const child = runKilled(
       `
-        const { PurchaseJournal } = require(process.env.JOURNAL_MODULE);
+        const { PurchaseJournal } = await import(process.env.JOURNAL_MODULE);
         const journal = new PurchaseJournal(process.env.DB, {
           now: () => Number(process.env.NOW),
           evidenceDirectory: process.env.EVIDENCE
@@ -178,8 +184,8 @@ test("external success followed by SIGKILL is observed without executing the eff
     journal.close();
     const child = runKilled(
       `
-        const fs = require("node:fs");
-        const { PurchaseJournal } = require(process.env.JOURNAL_MODULE);
+        const fs = await import("node:fs");
+        const { PurchaseJournal } = await import(process.env.JOURNAL_MODULE);
         const journal = new PurchaseJournal(process.env.DB, {
           now: () => Number(process.env.NOW),
           evidenceDirectory: process.env.EVIDENCE
@@ -238,11 +244,12 @@ test("SIGKILL during spend finalization rolls back spend, effect, Attempt, and R
       reservationId: flow.reservationId,
       transactionId: flow.transactionId,
       actualAmountAtomic: "60",
-      actualFeeAtomic: "2",
+      actualAdditionalCostAtomic: "2",
+      fundingSource: "vault-treasury",
       asset: "KAS",
       payee: "kaspatest:merchant",
       network: "kaspa:testnet-10",
-      finality: "final",
+      finality: "confirmed",
       evidenceDigest: settlement,
       evidenceVerificationProfile: "test-v1",
       evidenceVerifierId: "test-verifier",
@@ -251,7 +258,7 @@ test("SIGKILL during spend finalization rolls back spend, effect, Attempt, and R
 
     const child = runKilled(
       `
-        const { PurchaseJournal } = require(process.env.JOURNAL_MODULE);
+        const { PurchaseJournal } = await import(process.env.JOURNAL_MODULE);
         const journal = new PurchaseJournal(process.env.DB, {
           now: () => Number(process.env.NOW),
           evidenceDirectory: process.env.EVIDENCE,
@@ -310,8 +317,9 @@ test("fault hooks roll back every insert-only journal edge", () => {
       setup: (journal, clock) => {
         const purchase = authorizedPurchase(journal, 41);
         const policy = journal.installPolicy(policyDefinition());
+        const input = reservationInput(journal, purchase, policy, "fault-reservation", clock.value);
         return (target) => {
-          target.reservePolicy(reservationInput(purchase, policy, "fault-reservation", clock.value));
+          target.reservePolicy(input);
         };
       },
       verify: (journal) => {
@@ -410,10 +418,12 @@ test("two real processes racing at the hourly limit cannot both reserve", async 
       ...policyDefinition(),
       maxPerHourAtomic: "100",
     });
+    const reservationA = reservationInput(journal, purchaseA, policy, "race-a", clock.value, "60");
+    const reservationB = reservationInput(journal, purchaseB, policy, "race-b", clock.value, "60");
     journal.close();
     const startAt = Date.now() + 300;
     const script = `
-      const { PurchaseJournal } = require(process.env.JOURNAL_MODULE);
+      const { PurchaseJournal } = await import(process.env.JOURNAL_MODULE);
       while (Date.now() < Number(process.env.START_AT)) {}
       const journal = new PurchaseJournal(process.env.DB, {
         now: () => Number(process.env.NOW),
@@ -435,11 +445,11 @@ test("two real processes racing at the hourly limit cannot both reserve", async 
     const [statusA, statusB] = await Promise.all([
       runChild(script, {
         ...common,
-        RESERVATION: JSON.stringify(reservationInput(purchaseA, policy, "race-a", clock.value, "60")),
+        RESERVATION: JSON.stringify(reservationA),
       }),
       runChild(script, {
         ...common,
-        RESERVATION: JSON.stringify(reservationInput(purchaseB, policy, "race-b", clock.value, "60")),
+        RESERVATION: JSON.stringify(reservationB),
       }),
     ]);
     assert.deepEqual([statusA, statusB].sort(), [0, 2]);
@@ -471,7 +481,7 @@ test("two real processes racing to claim one effect yield one execution fence", 
     journal.close();
     const startAt = Date.now() + 300;
     const script = `
-      const { PurchaseJournal } = require(process.env.JOURNAL_MODULE);
+      const { PurchaseJournal } = await import(process.env.JOURNAL_MODULE);
       while (Date.now() < Number(process.env.START_AT)) {}
       const journal = new PurchaseJournal(process.env.DB, {
         now: () => Number(process.env.NOW),
@@ -527,7 +537,7 @@ function withCrashJournal(
 }
 
 function runKilled(script: string, environment: Record<string, string>) {
-  return spawnSync(process.execPath, ["-e", script], {
+  return spawnSync(process.execPath, ["--input-type=module", "-e", script], {
     cwd: REPOSITORY_ROOT,
     env: { ...process.env, ...environment, JOURNAL_MODULE },
     encoding: "utf8",
@@ -536,7 +546,7 @@ function runKilled(script: string, environment: Record<string, string>) {
 
 function runChild(script: string, environment: Record<string, string>): Promise<number | null> {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, ["-e", script], {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", script], {
       cwd: REPOSITORY_ROOT,
       env: { ...process.env, ...environment, JOURNAL_MODULE },
       stdio: "ignore",
@@ -581,9 +591,89 @@ function createPurchase(journal: PurchaseJournal, seed: number) {
 
 function authorizedPurchase(journal: PurchaseJournal, seed: number): PurchaseId {
   const purchase = createPurchase(journal, seed);
-  journal.transitionPurchase(purchase.id, "created", "terms_bound", "terms_verified");
-  journal.transitionPurchase(purchase.id, "terms_bound", "awaiting_authority", "authority_requested");
-  journal.transitionPurchase(purchase.id, "awaiting_authority", "authorised", "authority_approved");
+  const checkoutEvidence = verifiedFixtureEvidence(
+    journal,
+    purchase.id,
+    `checkout-${seed}`,
+    "checkout-terms",
+    "merchant:test"
+  );
+  const requirementsEvidence = verifiedFixtureEvidence(
+    journal,
+    purchase.id,
+    `requirements-${seed}`,
+    "payment-requirements",
+    "merchant:test"
+  );
+  const checkoutDigest = checkoutEvidence;
+  journal.bindCheckoutTerms(purchase.id, {
+    terms: {
+      merchant: { id: "merchant:test", name: "Test Merchant", origin: "https://merchant.example" },
+      resourceFingerprint: purchase.resourceFingerprint,
+      amountAtomic: "60",
+      asset: "KAS",
+      network: "kaspa:testnet-10",
+      payTo: "kaspatest:merchant",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      checkoutDigest,
+    },
+    checkoutEvidenceDigest: checkoutEvidence,
+    checkoutVerificationProfile: "test-v1",
+    checkoutVerifierId: "test-verifier",
+    paymentRequirementsDigest: requirementsEvidence,
+    paymentRequirementsVerificationProfile: "test-v1",
+    paymentRequirementsVerifierId: "test-verifier",
+  });
+  const requestDigest = evidenceDigest(`authorization-request-${seed}`);
+  verifiedFixtureEvidence(journal, purchase.id, `authorization-request-${seed}`, "authorization-request");
+  journal.storeEvidence(purchase.id, {
+    bytes: new Uint8Array(),
+    mediaType: "application/octet-stream",
+    profile: "urn:sompi:purchase-request-body:1",
+    kind: "purchase-request-body",
+  });
+  const nonceDigest = evidenceDigest(`authorization-nonce-${seed}`);
+  const expiresAtMs = Date.parse("2099-01-01T00:00:00.000Z");
+  journal.recordAuthorizationRequest(purchase.id, {
+    checkoutDigest,
+    requestDigest,
+    nonceDigest,
+    requestMediaType: "",
+    requestBodyDigest: evidenceDigest(new Uint8Array()),
+    additionalCostCeilingAtomic: "10",
+    expiresAtMs,
+  });
+  const authorizationEvidence = verifiedFixtureEvidence(
+    journal,
+    purchase.id,
+    `authorization-${seed}`,
+    "purchase-authorization"
+  );
+  const terms = journal.requireCheckoutTerms(purchase.id);
+  const approvedFactsDigest = authorizationFactsDigest({
+    purchaseId: purchase.id,
+    resourceUrl: purchase.resourceUrl,
+    method: purchase.method,
+    requestMediaType: "",
+    requestBodyDigest: evidenceDigest(new Uint8Array()),
+    terms,
+    requestDigest,
+    nonceDigest,
+    additionalCostCeilingAtomic: "10",
+    expiresAtMs,
+  });
+  journal.recordAuthorizationDecision(purchase.id, {
+    decision: "approved",
+    authorityId: "authority:test",
+    checkoutDigest,
+    approvedFactsDigest,
+    evidenceDigest: authorizationEvidence,
+    verificationProfile: "test-v1",
+    verifierId: "test-verifier",
+    requestDigest,
+    nonceDigest,
+    expiresAtMs,
+  });
   return purchase.id;
 }
 
@@ -597,20 +687,26 @@ function policyDefinition() {
 }
 
 function reservationInput(
+  journal: PurchaseJournal,
   purchaseId: PurchaseId,
   policy: PolicySnapshotRecord,
   id: string,
   now: number,
   amountAtomic = "60"
-) {
+): PolicyReservationInput {
+  const authorization = journal.requireAuthorization(purchaseId);
   return {
     id,
     purchaseId,
     policyDigest: policy.digest,
     payee: "kaspatest:merchant",
     amountAtomic,
-    feeCeilingAtomic: "0",
+    additionalCostCeilingAtomic: "0",
+    fundingSource: "vault-treasury",
     expiresAtMs: now + 60_000,
+    approvalEvidenceDigest: authorization.evidenceDigest,
+    approvalVerificationProfile: authorization.verificationProfile,
+    approvalVerifierId: authorization.verifierId,
   };
 }
 
@@ -618,8 +714,9 @@ function preparedSetup(journal: PurchaseJournal, seed: number, now: number) {
   const purchaseId = authorizedPurchase(journal, seed);
   const policy = journal.installPolicy(policyDefinition());
   const reservation = journal.reservePolicy({
-    ...reservationInput(purchaseId, policy, `reservation-${seed}`, now),
-    feeCeilingAtomic: "10",
+    ...reservationInput(journal, purchaseId, policy, `reservation-${seed}`, now),
+    additionalCostCeilingAtomic: "10",
+    fundingSource: "vault-treasury",
   });
   journal.createPaymentAttempt({
     purchaseId,
@@ -627,7 +724,7 @@ function preparedSetup(journal: PurchaseJournal, seed: number, now: number) {
     identifier: createPaymentIdentifier(purchaseId, 1),
   });
   const preparedBytes = Buffer.from(`payload-${seed}`);
-  const preparation = {
+  const preparation: PreparePaymentAttemptInput = {
     purchaseId,
     attempt: 1,
     reservationId: reservation.id,
@@ -639,7 +736,8 @@ function preparedSetup(journal: PurchaseJournal, seed: number, now: number) {
     asset: "KAS",
     network: "kaspa:testnet-10",
     payee: "kaspatest:merchant",
-    requiredFinality: "final",
+    requiredFinality: "accepted",
+    fundingSource: "vault-treasury",
   };
   return { purchaseId, reservation, preparation };
 }
@@ -671,6 +769,28 @@ function verifiedEvidence(journal: PurchaseJournal, purchaseId: PurchaseId, valu
     issuer: "test-issuer",
     kind: "kaspa-settlement",
     attempt,
+  });
+  journal.recordEvidenceVerification(artifact.digest, {
+    verifierId: "test-verifier",
+    profile: "test-v1",
+    detailDigest: evidenceDigest(`verified:${value}`),
+  });
+  return artifact.digest;
+}
+
+function verifiedFixtureEvidence(
+  journal: PurchaseJournal,
+  purchaseId: PurchaseId,
+  value: string,
+  kind: string,
+  issuer = "test-issuer"
+) {
+  const artifact = journal.storeEvidence(purchaseId, {
+    bytes: Buffer.from(value),
+    mediaType: "application/octet-stream",
+    profile: "test-v1",
+    issuer,
+    kind,
   });
   journal.recordEvidenceVerification(artifact.digest, {
     verifierId: "test-verifier",

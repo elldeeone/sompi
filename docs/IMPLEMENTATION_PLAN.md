@@ -155,7 +155,7 @@ the Purchase.
   denial/unavailable behaviour.
 - [ ] Keep authority credentials inaccessible to `sompi-mcp`.
 - [ ] Display exact Merchant, resource/request, amount, asset, network, expiry,
-  Purchase identifier, and known fee bounds.
+  Purchase identifier, and known additional-cost bounds.
 - [ ] Implement the pinned human-present AP2 profile behind the AP2 adapter.
 - [ ] Verify Merchant-signed Checkout Terms and construct/verify the required
   closed mandates.

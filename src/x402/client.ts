@@ -1,13 +1,13 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { PolicyEngine } from "../policy";
-import { KaspaWallet } from "../wallet";
+import { PolicyEngine } from "../policy.js";
+import { KaspaWallet } from "../wallet.js";
 import {
   PaymentRequired,
   X_PAYMENT_HEADER,
   encodePaymentHeader,
-} from "./types";
-import { EscrowParams, EscrowUtxoNotFoundError, deriveEscrowAddress, escrowFunding, generateChannelKey, makeVoucher } from "./escrow";
+} from "./types.js";
+import { EscrowParams, EscrowUtxoNotFoundError, deriveEscrowAddress, escrowFunding, generateChannelKey, makeVoucher } from "./escrow.js";
 
 interface EscrowState {
   clientPrivate: string;

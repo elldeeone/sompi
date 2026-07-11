@@ -22,9 +22,9 @@ import * as fs from "node:fs";
 import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
-import { KaspaWallet, formatKas } from "./wallet";
-import { generateChannelKey } from "./x402/escrow";
-import { EscrowServer } from "./x402/escrow-server";
+import { KaspaWallet, formatKas } from "./wallet.js";
+import { generateChannelKey } from "./x402/escrow.js";
+import { EscrowServer } from "./x402/escrow-server.js";
 
 const NETWORK = process.env.SOMPI_NETWORK ?? "testnet-10";
 const PORT = Number(process.env.PORT ?? 8642);

@@ -26,6 +26,7 @@ export type PurchaseId = string & { readonly [purchaseIdBrand]: true };
 export type PurchaseRequestKey = string & { readonly [requestKeyBrand]: true };
 export type Sha256Digest = string & { readonly [digestBrand]: true };
 export type PaymentIdentifier = string & { readonly [paymentIdentifierBrand]: true };
+export type FundingSource = "vault-treasury";
 
 export interface MerchantIdentity {
   id: string;
@@ -70,8 +71,9 @@ export interface PurchaseAuthorizationView {
 export interface TreasuryView {
   status: "unreserved" | "reserved" | "committed" | "released" | "expired";
   amountAtomic?: string;
-  feeCeilingAtomic?: string;
+  additionalCostCeilingAtomic?: string;
   reservationId?: string;
+  fundingSource?: FundingSource;
 }
 
 export interface PaymentAttemptView {
@@ -99,6 +101,8 @@ export interface PurchaseView {
   receiptEvidence: readonly Sha256Digest[];
   /** Bounded content only. Large fulfilments use an implementation-owned handle. */
   fulfilmentBody?: string;
+  /** Opaque reference returned instead of oversized or non-text Fulfilment content. */
+  fulfilmentHandle?: string;
 }
 
 /**

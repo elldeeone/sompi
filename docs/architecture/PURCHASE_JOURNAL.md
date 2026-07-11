@@ -109,8 +109,8 @@ active unexpired reservation ceilings
 The reservation ceases to count only when an immutable spend replaces it or a
 proof-backed not-found result permits abandonment. Spend finalization requires
 exact equality with the immutable preparation for amount, asset, network,
-payee, transaction identity, and required finality. Actual fee may be lower
-than, but never exceed, its ceiling.
+payee, transaction identity, and required finality. Actual additional cost may
+be lower than, but never exceed, its ceiling.
 
 ## Recovery rules
 

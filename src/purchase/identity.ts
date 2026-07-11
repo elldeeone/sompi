@@ -5,7 +5,7 @@ import type {
   PurchaseRequestKey,
   PurchaseResource,
   Sha256Digest,
-} from "./types";
+} from "./types.js";
 
 const PURCHASE_ID_BYTES = 16;
 const REQUEST_KEY_PATTERN = /^[A-Za-z0-9._:-]{1,160}$/;
@@ -31,14 +31,62 @@ export function assertPurchaseRequestKey(value: string): PurchaseRequestKey {
 }
 
 export function requestFingerprint(resource: PurchaseResource): Sha256Digest {
-  const url = canonicalRequestUrl(resource.url);
-  const method = resource.method.trim().toUpperCase();
+  const bodyDigest = evidenceDigest(resource.body ?? new Uint8Array());
+  return requestFingerprintFromBodyDigest({
+    url: resource.url,
+    method: resource.method,
+    mediaType: resource.mediaType,
+    bodyDigest,
+  });
+}
+
+/** Reconstructs the request identity from a durably stored body digest. */
+export function requestFingerprintFromBodyDigest(input: {
+  url: string;
+  method: string;
+  mediaType?: string;
+  bodyDigest: Sha256Digest;
+}): Sha256Digest {
+  const url = canonicalRequestUrl(input.url);
+  const method = input.method.trim().toUpperCase();
   if (!/^[A-Z][A-Z0-9!#$%&'*+.^_`|~-]{0,31}$/.test(method)) {
     throw new Error("invalid HTTP method for Purchase resource");
   }
-  const body = resource.body ?? new Uint8Array();
-  const bodyDigest = sha256(body);
-  return domainDigest("sompi:purchase-request:v1", [method, url, bodyDigest]);
+  if (!/^sha256:[A-Za-z0-9_-]{43}$/.test(input.bodyDigest)) {
+    throw new Error("invalid Purchase request body digest");
+  }
+  const mediaType = canonicalMediaType(input.mediaType) ?? "";
+  return domainDigest("sompi:purchase-request:v2", [
+    method,
+    url,
+    mediaType,
+    input.bodyDigest.slice("sha256:".length),
+  ]);
+}
+
+/** Canonicalizes the exact Content-Type semantics bound into a Purchase. */
+export function canonicalMediaType(raw: string | undefined): string | undefined {
+  if (raw === undefined) return undefined;
+  if (!raw || raw.length > 200 || raw.trim() !== raw || /[\u0000-\u001f\u007f]/.test(raw)) {
+    throw new Error("invalid Purchase resource media type");
+  }
+  const [essenceRaw, ...parameterParts] = raw.split(";");
+  const essence = essenceRaw.toLowerCase();
+  if (!/^[!#$%&'*+.^_`|~0-9a-z-]+\/[!#$%&'*+.^_`|~0-9a-z-]+$/.test(essence)) {
+    throw new Error("invalid Purchase resource media type");
+  }
+  const parameters = parameterParts.map((part) => {
+    const trimmed = part.trim();
+    const equals = trimmed.indexOf("=");
+    if (equals <= 0 || equals === trimmed.length - 1) throw new Error("invalid Purchase resource media type");
+    const name = trimmed.slice(0, equals).trim().toLowerCase();
+    const value = trimmed.slice(equals + 1).trim();
+    if (!/^[!#$%&'*+.^_`|~0-9a-z-]+$/.test(name) || /[;\r\n]/.test(value)) {
+      throw new Error("invalid Purchase resource media type");
+    }
+    return `${name}=${value}`;
+  });
+  return parameters.length === 0 ? essence : `${essence}; ${parameters.join("; ")}`;
 }
 
 export function createPaymentIdentifier(purchaseId: PurchaseId, attempt: number): PaymentIdentifier {

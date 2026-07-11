@@ -10,23 +10,27 @@ import {
   JournalNotFoundError,
   PolicyReservationError,
   PurchaseJournal,
+  TREASURY_STAGING_EVIDENCE_KIND,
   type PreparePaymentAttemptInput,
+  type PolicyReservationInput,
   type PolicySnapshotRecord,
   type PurchaseRecord,
-} from "./journal";
+} from "./journal.js";
 import {
   assertPurchaseRequestKey,
   createPaymentIdentifier,
   createPurchaseId,
   evidenceDigest,
   requestFingerprint,
-} from "./identity";
-import { PurchaseReconciler } from "./reconciliation";
-import type { PurchaseId, Sha256Digest } from "./types";
+} from "./identity.js";
+import { PurchaseReconciler } from "./reconciliation.js";
+import { authorizationFactsDigest } from "./contracts.js";
+import { JOURNAL_SCHEMA_VERSION } from "./journal-schema.js";
+import type { PurchaseId, Sha256Digest } from "./types.js";
 
 test("journal creates a secure, verified schema and survives restart", () => {
   withJournal(({ filename, journal, reopen }) => {
-    assert.equal(journal.schemaVersion(), 1);
+    assert.equal(journal.schemaVersion(), JOURNAL_SCHEMA_VERSION);
     assert.equal(journal.integrityCheck(), true);
     assert.equal(fs.statSync(filename).mode & 0o777, 0o600);
     const purchase = createPurchase(journal, 1);
@@ -72,19 +76,18 @@ test("Purchase identity is idempotent, runtime-validated, and cannot bypass the 
         ),
       JournalInvariantError
     );
-    const terms = journal.transitionPurchase(
+    const cancelled = journal.transitionPurchase(
       first.id,
       "created",
-      "terms_bound",
-      "merchant_terms_verified",
-      evidenceDigest("checkout")
+      "cancelled",
+      "purchase_cancelled"
     );
-    assert.equal(terms.version, 1);
+    assert.equal(cancelled.version, 1);
     assert.deepEqual(
       journal.transitions(first.id).map((entry) => [entry.fromState, entry.toState, entry.reasonCode]),
       [
         [undefined, "created", "purchase_created"],
-        ["created", "terms_bound", "merchant_terms_verified"],
+        ["created", "cancelled", "purchase_cancelled"],
       ]
     );
   });
@@ -102,7 +105,7 @@ test("Purchase state update and transition history roll back together", () => {
       },
     });
     assert.throws(
-      () => faulted.transitionPurchase(purchase.id, "created", "terms_bound", "terms_verified"),
+      () => faulted.transitionPurchase(purchase.id, "created", "cancelled", "purchase_cancelled"),
       /injected/
     );
     faulted.close();
@@ -142,6 +145,36 @@ test("raw evidence is content-addressed outside SQLite and verification is appen
     fs.writeFileSync(path.join(evidenceDirectory, artifact.storageRef), "tampered", { mode: 0o600 });
     assert.throws(() => journal.readEvidence(artifact.digest));
     assert.equal(fs.statSync(directory).mode & 0o077, 0);
+  });
+});
+
+test("content blobs deduplicate while Evidence Attachment metadata remains contextual", () => {
+  withJournal(({ journal }) => {
+    const first = createPurchase(journal, 68);
+    const second = createPurchase(journal, 69);
+    const empty = new Uint8Array();
+    const requestBody = journal.storeEvidence(first.id, {
+      bytes: empty,
+      mediaType: "application/octet-stream",
+      profile: "urn:sompi:purchase-request-body:1",
+      issuer: "purchase-intent",
+      kind: "purchase-request-body",
+    });
+    const fulfilmentLike = journal.storeEvidence(second.id, {
+      bytes: empty,
+      mediaType: "text/plain",
+      profile: "urn:test:empty-resource:1",
+      issuer: "merchant:test",
+      kind: "empty-resource",
+    });
+    assert.equal(requestBody.digest, fulfilmentLike.digest);
+    assert.equal(requestBody.storageRef, fulfilmentLike.storageRef);
+    assert.equal(requestBody.profile, "urn:sompi:purchase-request-body:1");
+    assert.equal(fulfilmentLike.profile, "urn:test:empty-resource:1");
+    assert.equal(
+      journal.requireEvidenceAttachment(second.id, fulfilmentLike.digest, "empty-resource").mediaType,
+      "text/plain"
+    );
   });
 });
 
@@ -214,7 +247,7 @@ test("security decisions rehash evidence and require the exact verifier profile 
 test("policy is one persisted snapshot and approval evidence is bound to the Purchase", () => {
   withJournal(({ journal, clock }) => {
     const purchaseA = authorizedPurchase(journal, 5);
-    const purchaseB = authorizedPurchase(journal, 6);
+    const purchaseB = authorizedPurchase(journal, 6, "30");
     const policyA = journal.installPolicy({
       maxPerPaymentAtomic: "100",
       maxPerHourAtomic: "150",
@@ -228,21 +261,19 @@ test("policy is one persisted snapshot and approval evidence is bound to the Pur
       allowlist: ["kaspatest:merchant"],
     }).digest, policyA.digest);
 
-    assert.throws(
-      () => reserve(journal, purchaseA, policyA, "reservation-a", clock.value, "60", "5"),
-      PolicyReservationError
-    );
+    assert.throws(() => journal.reservePolicy({
+      ...reservationTerms(purchaseA, policyA, "reservation-a", clock.value),
+      additionalCostCeilingAtomic: "5",
+    }), PolicyReservationError);
     const authority = verifiedEvidence(journal, purchaseA, "authority-a", "purchase-authorization");
-    const first = reserve(
-      journal,
-      purchaseA,
-      policyA,
-      "reservation-a",
-      clock.value,
-      "60",
-      "5",
-      authority
-    );
+    assert.throws(() => journal.reservePolicy({
+      ...reservationTerms(purchaseA, policyA, "reservation-a", clock.value),
+      additionalCostCeilingAtomic: "5",
+      approvalEvidenceDigest: authority,
+      approvalVerificationProfile: "test-profile-v1",
+      approvalVerifierId: "test-verifier",
+    }), PolicyReservationError);
+    const first = reserve(journal, purchaseA, policyA, "reservation-a", clock.value, "60", "5");
     assert.equal(first.state, "active");
 
     const policyB = journal.installPolicy({
@@ -272,7 +303,7 @@ test("approval threshold zero retains the existing disabled-threshold semantics"
 test("policy reservations serialize capacity across independent database handles", () => {
   withJournal(({ filename, evidenceDirectory, journal, clock }) => {
     const purchaseA = authorizedPurchase(journal, 7);
-    const purchaseB = authorizedPurchase(journal, 8);
+    const purchaseB = authorizedPurchase(journal, 8, "30");
     const policy = installPolicy(journal, { maxPerHourAtomic: "100" });
     const second = new PurchaseJournal(filename, { now: clock.now, evidenceDirectory });
     const first = reserve(journal, purchaseA, policy, "capacity-a", clock.value, "60", "10");
@@ -365,6 +396,260 @@ test("a preparation fault leaves neither preparation nor state transition", () =
     const recovered = new PurchaseJournal(filename, { now: clock.now, evidenceDirectory });
     assert.equal(recovered.requirePaymentAttempt(purchase, 1).state, "planned");
     assert.throws(() => recovered.requirePaymentPreparation(purchase, 1), JournalNotFoundError);
+    recovered.close();
+  });
+});
+
+test("treasury staging is durable, idempotent, and gates exact payment preparation", () => {
+  withJournal(({ journal, reopen, clock }) => {
+    const flow = plannedTreasuryStagingFlow(journal, 91, clock.value);
+    const retry = journal.planTreasuryStaging(flow.input);
+    assert.equal(retry.effectId, flow.plan.effectId);
+    assert.throws(
+      () => journal.planTreasuryStaging({ ...flow.input, stagingAmountAtomic: "69" }),
+      JournalInvariantError
+    );
+
+    journal.transitionPurchase(
+      flow.purchaseId,
+      "authorised",
+      "execution_prepared",
+      "treasury_staging_prepared"
+    );
+    const claim = journal.beginTreasuryStaging(
+      flow.plan.effectId,
+      flow.reservation.id,
+      "staging-executor",
+      60_000
+    );
+    assert.ok(claim);
+    assert.equal(journal.requirePaymentAttempt(flow.purchaseId, 1).state, "planned");
+    assert.equal(journal.requireReservation(flow.reservation.id).state, "in_flight");
+    assert.throws(
+      () => journal.preparePaymentAttempt(paymentPreparation(flow.purchaseId, flow.reservation.id, 91)),
+      JournalInvariantError
+    );
+
+    journal.close();
+    const restarted = reopen();
+    const recovered = restarted.treasuryStagingRecoveryContext(flow.purchaseId, 1);
+    assert.ok(recovered);
+    assert.equal(recovered.effect.state, "executing");
+    assert.equal(recovered.attempt.state, "planned");
+    assert.equal(recovered.reservation.state, "in_flight");
+    assert.equal(recovered.observation, undefined);
+    assert.deepEqual(restarted.readPreparedTreasuryStaging(flow.purchaseId, 1), flow.input.preparedBytes);
+
+    const evidence = verifiedEvidence(
+      restarted,
+      flow.purchaseId,
+      "staging-output-91",
+      TREASURY_STAGING_EVIDENCE_KIND,
+      1
+    );
+    const observation = restarted.recordObservedTreasuryStaging(claim.lease, {
+      effectId: flow.plan.effectId,
+      reservationId: flow.reservation.id,
+      transactionId: flow.input.plannedTransactionId,
+      outpoint: flow.input.expectedOutpoint,
+      stagingAmountAtomic: flow.input.stagingAmountAtomic,
+      fundingSource: "vault-treasury",
+      evidenceDigest: evidence,
+      evidenceVerificationProfile: "test-profile-v1",
+      evidenceVerifierId: "test-verifier",
+    });
+    assert.equal(observation.outpoint, flow.input.expectedOutpoint);
+    assert.equal(restarted.requireEffect(flow.plan.effectId).state, "observed");
+    assert.equal(restarted.requirePaymentAttempt(flow.purchaseId, 1).state, "planned");
+
+    restarted.installPolicy({
+      maxPerPaymentAtomic: "2000",
+      maxPerHourAtomic: "20000",
+      approvalAboveAtomic: "2000",
+      allowlist: ["kaspatest:merchant"],
+    });
+
+    const exactInput = paymentPreparation(flow.purchaseId, flow.reservation.id, 91);
+    const exact = restarted.preparePaymentAttempt(exactInput);
+    const paymentEffect = restarted.planEffect({
+      purchaseId: flow.purchaseId,
+      attempt: 1,
+      kind: "kaspa-exact-payment",
+      idempotencyKey: `payment:${createPaymentIdentifier(flow.purchaseId, 1)}`,
+      payloadDigest: exact.payloadDigest,
+      preparedBytes: exactInput.preparedBytes,
+    });
+    const inFlightAtMs = restarted.requireReservation(flow.reservation.id).inFlightAtMs;
+    assert.ok(
+      restarted.beginPaymentSubmission(
+        paymentEffect.id,
+        flow.reservation.id,
+        "payment-executor",
+        60_000
+      )
+    );
+    assert.equal(restarted.requirePaymentAttempt(flow.purchaseId, 1).state, "submitted");
+    assert.equal(restarted.requireReservation(flow.reservation.id).state, "in_flight");
+    assert.equal(restarted.requireReservation(flow.reservation.id).inFlightAtMs, inFlightAtMs);
+  });
+});
+
+test("treasury staging rejects output substitutions and records one immutable observation", () => {
+  withJournal(({ journal, clock }) => {
+    const flow = plannedTreasuryStagingFlow(journal, 92, clock.value);
+    const claim = journal.beginTreasuryStaging(
+      flow.plan.effectId,
+      flow.reservation.id,
+      "staging-mismatch-executor",
+      60_000
+    );
+    assert.ok(claim);
+    const evidence = verifiedEvidence(
+      journal,
+      flow.purchaseId,
+      "staging-output-92",
+      TREASURY_STAGING_EVIDENCE_KIND,
+      1
+    );
+    const input = {
+      effectId: flow.plan.effectId,
+      reservationId: flow.reservation.id,
+      transactionId: flow.input.plannedTransactionId,
+      outpoint: flow.input.expectedOutpoint,
+      stagingAmountAtomic: flow.input.stagingAmountAtomic,
+      fundingSource: "vault-treasury" as const,
+      evidenceDigest: evidence,
+      evidenceVerificationProfile: "test-profile-v1",
+      evidenceVerifierId: "test-verifier",
+    };
+    assert.throws(
+      () => journal.recordObservedTreasuryStaging(claim.lease, { ...input, outpoint: `${input.transactionId}:7` }),
+      JournalInvariantError
+    );
+    assert.throws(
+      () => journal.recordObservedTreasuryStaging(claim.lease, { ...input, stagingAmountAtomic: "1" }),
+      JournalInvariantError
+    );
+    assert.throws(
+      () => journal.recordObservedTreasuryStaging(claim.lease, {
+        ...input,
+        evidenceVerificationProfile: "wrong-profile",
+      }),
+      JournalInvariantError
+    );
+    assert.equal(journal.requireEffect(flow.plan.effectId).state, "executing");
+    assert.equal(journal.findTreasuryStagingObservation(flow.purchaseId, 1), undefined);
+
+    const first = journal.recordObservedTreasuryStaging(claim.lease, input);
+    assert.equal(journal.recordObservedTreasuryStaging(claim.lease, input).observedAtMs, first.observedAtMs);
+    assert.throws(
+      () => journal.recordObservedTreasuryStaging(claim.lease, { ...input, outpoint: `${input.transactionId}:9` }),
+      JournalInvariantError
+    );
+  });
+});
+
+test("treasury staging transaction edges roll back cleanly across restart", () => {
+  withJournal(({ filename, evidenceDirectory, journal, clock }) => {
+    const purchaseId = authorizedPurchase(journal, 93);
+    const policy = installPolicy(journal);
+    const reservation = reserve(journal, purchaseId, policy, "staging-crash-reservation", clock.value);
+    journal.createPaymentAttempt({
+      purchaseId,
+      attempt: 1,
+      identifier: createPaymentIdentifier(purchaseId, 1),
+    });
+    const input = treasuryStagingInput(purchaseId, reservation.id, 93);
+    journal.close();
+
+    const planFault = new PurchaseJournal(filename, {
+      now: clock.now,
+      evidenceDirectory,
+      faultInjector(point) {
+        if (point === "treasury_staging_plan.after_insert") throw new Error("staging-plan-crash");
+      },
+    });
+    assert.throws(() => planFault.planTreasuryStaging(input), /staging-plan-crash/);
+    planFault.close();
+
+    const afterPlanFault = new PurchaseJournal(filename, { now: clock.now, evidenceDirectory });
+    assert.equal(afterPlanFault.treasuryStagingRecoveryContext(purchaseId, 1), undefined);
+    assert.deepEqual(afterPlanFault.effectsForPurchase(purchaseId), []);
+    assert.equal(afterPlanFault.requireReservation(reservation.id).state, "active");
+    const plan = afterPlanFault.planTreasuryStaging(input);
+    afterPlanFault.transitionPurchase(
+      purchaseId,
+      "authorised",
+      "execution_prepared",
+      "treasury_staging_prepared"
+    );
+    afterPlanFault.close();
+
+    const claimFault = new PurchaseJournal(filename, {
+      now: clock.now,
+      evidenceDirectory,
+      faultInjector(point) {
+        if (point === "effect_claim.after_effect_update") throw new Error("staging-claim-crash");
+      },
+    });
+    assert.throws(
+      () => claimFault.beginTreasuryStaging(plan.effectId, reservation.id, "claim-fault", 60_000),
+      /staging-claim-crash/
+    );
+    claimFault.close();
+
+    const afterClaimFault = new PurchaseJournal(filename, { now: clock.now, evidenceDirectory });
+    assert.equal(afterClaimFault.requireEffect(plan.effectId).state, "planned");
+    assert.equal(afterClaimFault.requireReservation(reservation.id).state, "active");
+    const claim = afterClaimFault.beginTreasuryStaging(
+      plan.effectId,
+      reservation.id,
+      "staging-crash-executor",
+      60_000
+    );
+    assert.ok(claim);
+    const evidence = verifiedEvidence(
+      afterClaimFault,
+      purchaseId,
+      "staging-output-crash",
+      TREASURY_STAGING_EVIDENCE_KIND,
+      1
+    );
+    afterClaimFault.close();
+
+    const observationFault = new PurchaseJournal(filename, {
+      now: clock.now,
+      evidenceDirectory,
+      faultInjector(point) {
+        if (point === "treasury_staging_observation.after_insert") {
+          throw new Error("staging-observation-crash");
+        }
+      },
+    });
+    assert.throws(
+      () => observationFault.recordObservedTreasuryStaging(claim.lease, {
+        effectId: plan.effectId,
+        reservationId: reservation.id,
+        transactionId: input.plannedTransactionId,
+        outpoint: input.expectedOutpoint,
+        stagingAmountAtomic: input.stagingAmountAtomic,
+        fundingSource: "vault-treasury",
+        evidenceDigest: evidence,
+        evidenceVerificationProfile: "test-profile-v1",
+        evidenceVerifierId: "test-verifier",
+      }),
+      /staging-observation-crash/
+    );
+    observationFault.close();
+
+    const recovered = new PurchaseJournal(filename, { now: clock.now, evidenceDirectory });
+    const context = recovered.treasuryStagingRecoveryContext(purchaseId, 1);
+    assert.ok(context);
+    assert.equal(context.effect.state, "executing");
+    assert.equal(context.attempt.state, "planned");
+    assert.equal(context.reservation.state, "in_flight");
+    assert.equal(context.observation, undefined);
+    assert.deepEqual(recovered.effectObservations(plan.effectId), []);
     recovered.close();
   });
 });
@@ -552,6 +837,46 @@ test("a not-found recovery proof can release in-flight capacity without blind re
   });
 });
 
+test("an expired never-claimed preparation is abandoned without an external effect", () => {
+  withJournal(({ journal, clock }) => {
+    const flow = preparedPaymentFlow(journal, 69, clock.value);
+    journal.transitionPurchase(flow.purchaseId, "authorised", "execution_prepared", "payment_execution_prepared");
+    clock.value = flow.reservation.expiresAtMs + 1;
+
+    const expired = journal.abandonExpiredPreparedPayment(flow.effect.id, flow.reservation.id);
+    assert.equal(expired.state, "expired");
+    assert.equal(journal.requireReservation(flow.reservation.id).state, "expired");
+    assert.equal(journal.requirePaymentAttempt(flow.purchaseId, 1).state, "failed");
+    assert.equal(journal.requireEffect(flow.effect.id).state, "abandoned");
+    assert.deepEqual(journal.recoverableEffects(flow.purchaseId), []);
+    assert.equal(journal.policyCapacityUsed(), 0n);
+  });
+});
+
+test("expired never-claimed Treasury staging is abandoned without broadcasting", () => {
+  withJournal(({ journal, clock }) => {
+    const flow = plannedTreasuryStagingFlow(journal, 97, clock.value);
+    journal.transitionPurchase(
+      flow.purchaseId,
+      "authorised",
+      "execution_prepared",
+      "treasury_staging_prepared"
+    );
+    clock.value = flow.reservation.expiresAtMs + 1;
+
+    const expired = journal.abandonExpiredTreasuryStaging(
+      flow.plan.effectId,
+      flow.reservation.id
+    );
+    assert.equal(expired.state, "expired");
+    assert.equal(journal.requireReservation(flow.reservation.id).state, "expired");
+    assert.equal(journal.requirePaymentAttempt(flow.purchaseId, 1).state, "failed");
+    assert.equal(journal.requireEffect(flow.plan.effectId).state, "abandoned");
+    assert.deepEqual(journal.recoverableEffects(flow.purchaseId), []);
+    assert.equal(journal.policyCapacityUsed(), 0n);
+  });
+});
+
 test("observed spend is separate, immutable, bounded, and replaces reserved capacity with actual capacity", () => {
   withJournal(({ journal, reopen, clock }) => {
     const flow = preparedPaymentFlow(journal, 16, clock.value);
@@ -571,11 +896,12 @@ test("observed spend is separate, immutable, bounded, and replaces reserved capa
       transactionId: flow.preparation.transactionId,
       outpoint: `${flow.preparation.transactionId}:0`,
       actualAmountAtomic: "60",
-      actualFeeAtomic: "2",
+      actualAdditionalCostAtomic: "2",
       asset: "KAS",
       payee: "kaspatest:merchant",
       network: "kaspa:testnet-10",
-      finality: "final",
+      finality: "confirmed",
+      fundingSource: "vault-treasury",
       evidenceDigest: settlement,
       evidenceVerificationProfile: "test-profile-v1",
       evidenceVerifierId: "test-verifier",
@@ -587,14 +913,14 @@ test("observed spend is separate, immutable, bounded, and replaces reserved capa
     assert.throws(() => journal.recordObservedSpend(claim.lease, { ...spendInput, payee: "kaspatest:attacker" }));
     assert.equal(journal.requireReservation(flow.reservation.id).state, "in_flight");
     const spend = journal.recordObservedSpend(claim.lease, spendInput);
-    assert.equal(spend.actualFeeAtomic, "2");
+    assert.equal(spend.actualAdditionalCostAtomic, "2");
     assert.equal(journal.requireReservation(flow.reservation.id).state, "spent");
     assert.equal(journal.requirePaymentAttempt(flow.purchaseId, 1).state, "observed");
     assert.equal(journal.requireEffect(flow.effect.id).state, "observed");
     assert.equal(journal.policyCapacityUsed(), 62n);
     assert.equal(journal.recordObservedSpend(claim.lease, spendInput).id, spend.id);
     assert.throws(
-      () => journal.recordObservedSpend(claim.lease, { ...spendInput, actualFeeAtomic: "3" }),
+      () => journal.recordObservedSpend(claim.lease, { ...spendInput, actualAdditionalCostAtomic: "3" }),
       JournalInvariantError
     );
 
@@ -717,12 +1043,9 @@ test("restart distinguishes not-attempted, prepared, submitted, settled, fulfill
     const submitted = preparedPaymentFlow(journal, 22, clock.value);
     journal.beginPaymentSubmission(submitted.effect.id, submitted.reservation.id, "executor-22", 10_000);
 
-    const settled = authorizedPurchase(journal, 23);
-    advanceLifecycle(journal, settled, "settled");
-    const fulfilled = authorizedPurchase(journal, 24);
-    advanceLifecycle(journal, fulfilled, "fulfilled");
-    const receipted = authorizedPurchase(journal, 25);
-    advanceLifecycle(journal, receipted, "receipted");
+    const settled = advanceLifecycle(journal, 23, clock.value, "settled");
+    const fulfilled = advanceLifecycle(journal, 24, clock.value, "fulfilled");
+    const receipted = advanceLifecycle(journal, 25, clock.value, "receipted");
 
     journal.close();
     const restarted = reopen();
@@ -893,11 +1216,95 @@ function createPurchase(journal: PurchaseJournal, seed: number): PurchaseRecord 
   return journal.createPurchase(purchaseInput(seed));
 }
 
-function authorizedPurchase(journal: PurchaseJournal, seed: number): PurchaseId {
+function authorizedPurchase(journal: PurchaseJournal, seed: number, amountAtomic = "60"): PurchaseId {
   const purchase = createPurchase(journal, seed);
-  journal.transitionPurchase(purchase.id, "created", "terms_bound", "terms_verified");
-  journal.transitionPurchase(purchase.id, "terms_bound", "awaiting_authority", "authority_requested");
-  journal.transitionPurchase(purchase.id, "awaiting_authority", "authorised", "authority_approved");
+  const checkoutEvidence = verifiedEvidence(
+    journal,
+    purchase.id,
+    `checkout-${seed}`,
+    "checkout-terms",
+    undefined,
+    "test-profile-v1",
+    "merchant:test"
+  );
+  const requirementsEvidence = verifiedEvidence(
+    journal,
+    purchase.id,
+    `requirements-${seed}`,
+    "payment-requirements",
+    undefined,
+    "test-profile-v1",
+    "merchant:test"
+  );
+  const checkoutDigest = checkoutEvidence;
+  journal.bindCheckoutTerms(purchase.id, {
+    terms: {
+      merchant: { id: "merchant:test", name: "Test Merchant", origin: "https://merchant.example" },
+      resourceFingerprint: purchase.resourceFingerprint,
+      amountAtomic,
+      asset: "KAS",
+      network: "kaspa:testnet-10",
+      payTo: "kaspatest:merchant",
+      expiresAt: "2099-01-01T00:00:00.000Z",
+      checkoutDigest,
+    },
+    checkoutEvidenceDigest: checkoutEvidence,
+    checkoutVerificationProfile: "test-profile-v1",
+    checkoutVerifierId: "test-verifier",
+    paymentRequirementsDigest: requirementsEvidence,
+    paymentRequirementsVerificationProfile: "test-profile-v1",
+    paymentRequirementsVerifierId: "test-verifier",
+  });
+  const requestDigest = evidenceDigest(`authorization-request-${seed}`);
+  verifiedEvidence(journal, purchase.id, `authorization-request-${seed}`, "authorization-request");
+  journal.storeEvidence(purchase.id, {
+    bytes: new Uint8Array(),
+    mediaType: "application/octet-stream",
+    profile: "urn:sompi:purchase-request-body:1",
+    kind: "purchase-request-body",
+  });
+  const nonceDigest = evidenceDigest(`authorization-nonce-${seed}`);
+  const expiresAtMs = Date.parse("2099-01-01T00:00:00.000Z");
+  journal.recordAuthorizationRequest(purchase.id, {
+    checkoutDigest,
+    requestDigest,
+    nonceDigest,
+    requestMediaType: "",
+    requestBodyDigest: evidenceDigest(new Uint8Array()),
+    additionalCostCeilingAtomic: "10",
+    expiresAtMs,
+  });
+  const authorizationEvidence = verifiedEvidence(
+    journal,
+    purchase.id,
+    `authorization-${seed}`,
+    "purchase-authorization"
+  );
+  const terms = journal.requireCheckoutTerms(purchase.id);
+  const approvedFactsDigest = authorizationFactsDigest({
+    purchaseId: purchase.id,
+    resourceUrl: purchase.resourceUrl,
+    method: purchase.method,
+    requestMediaType: "",
+    requestBodyDigest: evidenceDigest(new Uint8Array()),
+    terms,
+    requestDigest,
+    nonceDigest,
+    additionalCostCeilingAtomic: "10",
+    expiresAtMs,
+  });
+  journal.recordAuthorizationDecision(purchase.id, {
+    decision: "approved",
+    authorityId: "authority:test",
+    checkoutDigest,
+    approvedFactsDigest,
+    evidenceDigest: authorizationEvidence,
+    verificationProfile: "test-profile-v1",
+    verifierId: "test-verifier",
+    requestDigest,
+    nonceDigest,
+    expiresAtMs,
+  });
   return purchase.id;
 }
 
@@ -920,20 +1327,23 @@ function reserve(
   id: string,
   now: number,
   amountAtomic = "60",
-  feeCeilingAtomic = "10",
+  additionalCostCeilingAtomic = "10",
   approvalEvidenceDigest?: Sha256Digest
 ) {
+  const authorization = journal.requireAuthorization(purchaseId);
+  const boundEvidenceDigest = approvalEvidenceDigest ?? authorization.evidenceDigest;
   return journal.reservePolicy({
     id,
     purchaseId,
     policyDigest: policy.digest,
     payee: "kaspatest:merchant",
     amountAtomic,
-    feeCeilingAtomic,
+    additionalCostCeilingAtomic,
+    fundingSource: "vault-treasury",
     expiresAtMs: now + 60_000,
-    approvalEvidenceDigest,
-    approvalVerificationProfile: approvalEvidenceDigest ? "test-profile-v1" : undefined,
-    approvalVerifierId: approvalEvidenceDigest ? "test-verifier" : undefined,
+    approvalEvidenceDigest: boundEvidenceDigest,
+    approvalVerificationProfile: authorization.verificationProfile,
+    approvalVerifierId: authorization.verifierId,
   });
 }
 
@@ -942,14 +1352,15 @@ function reservationTerms(
   policy: PolicySnapshotRecord,
   id: string,
   now: number
-) {
+): PolicyReservationInput {
   return {
     id,
     purchaseId,
     policyDigest: policy.digest,
     payee: "kaspatest:merchant",
     amountAtomic: "60",
-    feeCeilingAtomic: "10",
+    additionalCostCeilingAtomic: "10",
+    fundingSource: "vault-treasury",
     expiresAtMs: now + 60_000,
   };
 }
@@ -972,8 +1383,49 @@ function paymentPreparation(
     asset: "KAS",
     network: "kaspa:testnet-10",
     payee: "kaspatest:merchant",
-    requiredFinality: "final",
+    requiredFinality: "accepted",
+    fundingSource: "vault-treasury",
   };
+}
+
+function treasuryStagingInput(
+  purchaseId: PurchaseId,
+  reservationId: string,
+  seed: number
+) {
+  const preparedBytes = Buffer.from(`treasury-staging-${seed}`, "utf8");
+  const plannedTransactionId = (seed + 32).toString(16).padStart(2, "0").repeat(32);
+  return {
+    purchaseId,
+    attempt: 1,
+    reservationId,
+    idempotencyKey: `treasury-staging:${createPaymentIdentifier(purchaseId, 1)}`,
+    payloadDigest: evidenceDigest(preparedBytes),
+    preparedBytes,
+    plannedTransactionId,
+    expectedOutpoint: `${plannedTransactionId}:0`,
+    stagingAmountAtomic: "70",
+    fundingSource: "vault-treasury" as const,
+  };
+}
+
+function plannedTreasuryStagingFlow(journal: PurchaseJournal, seed: number, now: number) {
+  const purchaseId = authorizedPurchase(journal, seed);
+  let policy: PolicySnapshotRecord;
+  try {
+    policy = journal.requireActivePolicy();
+  } catch {
+    policy = installPolicy(journal);
+  }
+  const reservation = reserve(journal, purchaseId, policy, `staging-reservation-${seed}`, now);
+  journal.createPaymentAttempt({
+    purchaseId,
+    attempt: 1,
+    identifier: createPaymentIdentifier(purchaseId, 1),
+  });
+  const input = treasuryStagingInput(purchaseId, reservation.id, seed);
+  const plan = journal.planTreasuryStaging(input);
+  return { purchaseId, policy, reservation, input, plan };
 }
 
 function preparedPaymentFlow(journal: PurchaseJournal, seed: number, now: number) {
@@ -1008,19 +1460,21 @@ function verifiedEvidence(
   purchaseId: PurchaseId,
   value: string,
   kind: string,
-  attempt?: number
+  attempt?: number,
+  profile = "test-profile-v1",
+  issuer = "test-issuer"
 ): Sha256Digest {
   const artifact = journal.storeEvidence(purchaseId, {
     bytes: Buffer.from(value, "utf8"),
     mediaType: "application/octet-stream",
-    profile: "test-profile-v1",
-    issuer: "test-issuer",
+    profile,
+    issuer,
     kind,
     attempt,
   });
   journal.recordEvidenceVerification(artifact.digest, {
     verifierId: "test-verifier",
-    profile: "test-profile-v1",
+    profile,
     detailDigest: evidenceDigest(`verified:${value}`),
   });
   return artifact.digest;
@@ -1028,14 +1482,83 @@ function verifiedEvidence(
 
 function advanceLifecycle(
   journal: PurchaseJournal,
-  purchaseId: PurchaseId,
+  seed: number,
+  now: number,
   target: "settled" | "fulfilled" | "receipted"
-): void {
+): PurchaseId {
+  const flow = preparedPaymentFlow(journal, seed, now);
+  const purchaseId = flow.purchaseId;
   journal.transitionPurchase(purchaseId, "authorised", "execution_prepared", "execution_prepared");
+  const claim = journal.beginPaymentSubmission(flow.effect.id, flow.reservation.id, `executor-${seed}`, 10_000);
+  assert.ok(claim);
   journal.transitionPurchase(purchaseId, "execution_prepared", "submitted", "payment_submitted");
+  journal.markEffectSubmitted(claim, evidenceDigest(`submission-${seed}`));
+  const settlement = verifiedEvidence(journal, purchaseId, `settlement-${seed}`, "kaspa-settlement", 1);
+  journal.recordObservedSpend(claim.lease, {
+    effectId: flow.effect.id,
+    reservationId: flow.reservation.id,
+    transactionId: flow.preparation.transactionId,
+    outpoint: `${flow.preparation.transactionId}:0`,
+    actualAmountAtomic: "60",
+    actualAdditionalCostAtomic: "2",
+    fundingSource: "vault-treasury",
+    asset: "KAS",
+    payee: "kaspatest:merchant",
+    network: "kaspa:testnet-10",
+    finality: "confirmed",
+    evidenceDigest: settlement,
+    evidenceVerificationProfile: "test-profile-v1",
+    evidenceVerifierId: "test-verifier",
+  });
   journal.transitionPurchase(purchaseId, "submitted", "settled", "payment_settled");
-  if (target === "settled") return;
-  journal.transitionPurchase(purchaseId, "settled", "fulfilled", "resource_fulfilled");
-  if (target === "fulfilled") return;
-  journal.transitionPurchase(purchaseId, "fulfilled", "receipted", "receipt_attached");
+  if (target === "settled") return purchaseId;
+  const body = verifiedEvidence(journal, purchaseId, `body-${seed}`, "fulfilment-body", 1);
+  const merchantEvidence = verifiedEvidence(
+    journal,
+    purchaseId,
+    `merchant-fulfilment-${seed}`,
+    "merchant-fulfilment",
+    1
+  );
+  journal.recordFulfilment(purchaseId, {
+    attempt: 1,
+    httpStatus: 200,
+    resourceFingerprint: journal.requireCheckoutTerms(purchaseId).resourceFingerprint,
+    bodyDigest: body,
+    bodyByteLength: Buffer.byteLength(`body-${seed}`),
+    mediaType: "application/octet-stream",
+    merchantEvidenceDigest: merchantEvidence,
+    merchantVerificationProfile: "test-profile-v1",
+    merchantVerifierId: "test-verifier",
+  });
+  if (target === "fulfilled") return purchaseId;
+  const authorization = journal.requireAuthorization(purchaseId);
+  const joins = {
+    checkoutDigest: journal.requireCheckoutTerms(purchaseId).checkoutDigest,
+    authorizationEvidenceDigest: authorization.evidenceDigest,
+    settlementEvidenceDigest: settlement,
+    fulfilmentDigest: body,
+  };
+  for (const [role, profile] of [
+    ["merchant", "urn:sompi:receipt:merchant:1"],
+    ["payment", "urn:sompi:receipt:payment:1"],
+  ] as const) {
+    const receiptEvidence = verifiedEvidence(
+      journal,
+      purchaseId,
+      `${role}-receipt-${seed}`,
+      "purchase-receipt",
+      undefined,
+      profile
+    );
+    journal.recordReceipt(purchaseId, {
+      role,
+      evidenceDigest: receiptEvidence,
+      profile,
+      issuer: "test-issuer",
+      verifierId: "test-verifier",
+      ...joins,
+    });
+  }
+  return purchaseId;
 }

@@ -79,7 +79,8 @@ Merchant under these exact Checkout Terms. AP2 belongs here.
 ### Treasury Reservation
 
 The durable reservation of spending capacity required before signing or
-submitting a payment. It covers the payment and explicitly accounted network
+submitting a payment. It covers the Merchant price plus explicitly bounded
+additional treasury costs, including KIP-10 inventory top-up and transaction
 fees. It is not Purchase Authorization.
 
 ### Treasury Movement

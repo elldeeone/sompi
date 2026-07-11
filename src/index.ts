@@ -5,18 +5,18 @@ import * as path from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
-import { PolicyEngine, PolicyViolation } from "./policy";
-import { KaspaWallet, formatKas, parseKasToSompi } from "./wallet";
-import { VaultManager } from "./vault";
-import { X402Client } from "./x402/client";
-import { refundEscrow } from "./x402/escrow";
+import { PolicyEngine, PolicyViolation } from "./policy.js";
+import { KaspaWallet, formatKas, parseKasToSompi } from "./wallet.js";
+import { VaultManager } from "./vault.js";
+import { X402Client } from "./x402/client.js";
+import { refundEscrow } from "./x402/escrow.js";
 
 // Operator-side CLI: `npx @elldeeone/sompi gen-wallet-key [network]` — generate
 // the agent's wallet key yourself so you control and can back it up, and know
 // the address to fund before wiring up the agent. Import it via SOMPI_PRIVATE_KEY.
 if (process.argv[2] === "gen-wallet-key") {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { generateWalletKey } = require("./wallet") as typeof import("./wallet");
+  const { generateWalletKey } = require("./wallet") as typeof import("./wallet.js");
   const net = process.argv[3] ?? process.env.SOMPI_NETWORK ?? "testnet-10";
   exitIfNetworkDisabled(net);
   const key = generateWalletKey(net);
@@ -35,7 +35,7 @@ if (process.argv[2] === "gen-wallet-key") {
 // HUMAN's machine, before any MCP plumbing starts.
 if (process.argv[2] === "gen-owner-key") {
   // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { generateOwnerKey } = require("./vault") as typeof import("./vault");
+  const { generateOwnerKey } = require("./vault") as typeof import("./vault.js");
   const key = generateOwnerKey();
   console.log("Vault owner (recovery) keypair — generated locally, never share the private line:");
   console.log(`private: ${key.privateKey}`);

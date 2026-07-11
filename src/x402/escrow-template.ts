@@ -63,7 +63,7 @@
  *   00 7a 75 75 75 75 51  Op0 Rot Drop x4, push true
  */
 import { sha256 } from "@noble/hashes/sha256";
-import { hexToBytes, bytesToHex, pushData, pushNumber } from "../vault/template";
+import { hexToBytes, bytesToHex, pushData, pushNumber } from "../vault/template.js";
 
 const SEG_0 = "6b6c76009c63755279";
 const SEG_1 = "ac69782015436b1356689a0646b884da4d7599ba22dc8b49336224e48983e8e0c90e906a";

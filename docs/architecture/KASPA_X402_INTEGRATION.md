@@ -100,12 +100,14 @@ The treasury reservation covers:
 ```text
 resource amount
 + KIP-10 additive threshold
-+ exact transaction fee ceiling
-+ vault staging transaction fee ceiling
++ exact transaction fee
++ vault staging transaction fee
 ```
 
-The threshold and fees are treasury movement, not Merchant price and not AP2
-Purchase amount.
+The last three terms are one explicitly bounded `additionalCost` amount. The
+threshold is real payer-funded value moved into a Merchant-controlled KIP-10
+continuation output; it is not a network fee. Neither the threshold nor either
+transaction fee is Merchant price or AP2 Purchase amount.
 
 ## Exact transaction invariants
 
@@ -119,7 +121,7 @@ Before returning from `payExactTransaction()`, validate:
 - the exact journal-reserved staging outpoint and amount;
 - Merchant payment output value/script;
 - borrow continuation output value/script;
-- change policy and fee ceiling;
+- change policy and the complete additional-cost ceiling;
 - transaction ID derived from the final signed artifact;
 - funding source exactly `vault-treasury`.
 

@@ -53,8 +53,9 @@ UCP is deferred, the demo Merchant uses the local profile
 - asset `KAS`, network `kaspa:testnet-10`, and exact `payTo`;
 - x402 version, scheme, binding, and Payment Requirements digest;
 - expected fulfilment identity/digest when knowable;
-- explicit treasury fee ceiling or a statement that fees are separately
-  reserved and not Merchant revenue.
+- explicit treasury additional-cost ceiling, covering the KIP-10 inventory
+  top-up plus exact and staging transaction fees, or a statement that those
+  costs are separately reserved and are not Merchant price.
 
 It is a compact ES256 JWS signed by the configured Merchant key. Hash the exact
 compact ASCII/UTF-8 bytes received. Never decode/re-encode before computing

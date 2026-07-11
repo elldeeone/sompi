@@ -9,8 +9,8 @@ import {
   payToAddressScript,
   payToScriptHashScript,
   payToScriptHashSignatureScript,
-} from "../../vendor/kaspa-wasm/kaspa";
-import type { KaspaWallet } from "../wallet";
+} from "../kaspa-wasm.js";
+import type { KaspaWallet } from "../wallet.js";
 import {
   amountToLe8,
   bytesToHex,
@@ -19,8 +19,8 @@ import {
   buildRefundArgs,
   hexToBytes,
   voucherMessage,
-} from "./escrow-template";
-import { estimateVaultSpendFeeSompi } from "../vault";
+} from "./escrow-template.js";
+import { estimateVaultSpendFeeSompi } from "../vault.js";
 
 /**
  * Trust-minimized kaspa-escrow payment channel backed by the SompiEscrow

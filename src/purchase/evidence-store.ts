@@ -1,8 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomBytes } from "node:crypto";
-import { evidenceDigest } from "./identity";
-import type { Sha256Digest } from "./types";
+import { evidenceDigest } from "./identity.js";
+import type { Sha256Digest } from "./types.js";
 
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;

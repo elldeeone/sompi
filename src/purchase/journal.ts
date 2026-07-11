@@ -2,30 +2,39 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomBytes } from "node:crypto";
 import Database from "better-sqlite3";
-import { EvidenceStore, type StoredEvidence } from "./evidence-store";
+import { EvidenceStore, type StoredEvidence } from "./evidence-store.js";
+import { authorizationFactsDigest } from "./contracts.js";
 import {
   assertPurchaseId,
   assertPurchaseRequestKey,
+  canonicalMediaType,
   canonicalRequestUrl,
   createPaymentIdentifier,
   evidenceDigest,
-} from "./identity";
+  requestFingerprintFromBodyDigest,
+} from "./identity.js";
 import {
   expectedSchemaFingerprint,
+  expectedV1SchemaFingerprint,
   JOURNAL_APPLICATION_ID,
   JOURNAL_SCHEMA_CHECKSUM,
   JOURNAL_SCHEMA_SQL,
+  JOURNAL_SCHEMA_V1_CHECKSUM,
+  JOURNAL_SCHEMA_V2_MIGRATION_SQL,
   JOURNAL_SCHEMA_VERSION,
   schemaFingerprint,
-} from "./journal-schema";
-import { assertPurchaseTransition } from "./state-machine";
+} from "./journal-schema.js";
+import { assertPurchaseTransition } from "./state-machine.js";
 import type {
+  CheckoutTerms,
+  FundingSource,
   PaymentIdentifier,
   PurchaseId,
   PurchaseRequestKey,
   PurchaseState,
   Sha256Digest,
-} from "./types";
+} from "./types.js";
+import { paymentFinalityMeets, requirePaymentFinality } from "./finality.js";
 
 const PAYMENT_ATTEMPT_STATES = ["planned", "prepared", "submitted", "observed", "failed"] as const;
 const EFFECT_STATES = [
@@ -36,8 +45,24 @@ const EFFECT_STATES = [
   "retryable",
   "observed",
   "failed_terminal",
+  "abandoned",
 ] as const;
 const RESERVATION_STATES = ["active", "in_flight", "spent", "released", "expired"] as const;
+
+export const TREASURY_STAGING_EFFECT_KIND = "treasury-staging";
+export const TREASURY_STAGING_EVIDENCE_KIND = "treasury-staging-output";
+
+export const PURCHASE_RECEIPT_SET_PROFILE = "urn:sompi:receipt-set:purchase:1";
+export const PURCHASE_RECEIPT_REQUIREMENTS = Object.freeze([
+  Object.freeze({
+    role: "merchant",
+    profile: "urn:sompi:receipt:merchant:1",
+  }),
+  Object.freeze({
+    role: "payment",
+    profile: "urn:sompi:receipt:payment:1",
+  }),
+] as const);
 
 type PaymentAttemptState = (typeof PAYMENT_ATTEMPT_STATES)[number];
 export type EffectState = (typeof EFFECT_STATES)[number];
@@ -51,9 +76,16 @@ export type JournalFaultPoint =
   | "reservation.after_insert"
   | "payment_attempt.after_insert"
   | "payment_preparation.after_insert"
+  | "treasury_staging_plan.after_insert"
+  | "treasury_staging_observation.after_insert"
   | "effect.after_insert"
   | "effect_claim.after_effect_update"
-  | "spend.after_insert";
+  | "spend.after_insert"
+  | "checkout_terms.after_insert"
+  | "authorization_request.after_insert"
+  | "authorization_decision.after_insert"
+  | "fulfilment.after_insert"
+  | "receipt.after_insert";
 
 export interface PurchaseJournalOptions {
   now?: () => number;
@@ -90,6 +122,115 @@ export interface PurchaseTransitionRecord {
   createdAtMs: number;
 }
 
+export interface BindCheckoutTermsInput {
+  terms: CheckoutTerms;
+  checkoutEvidenceDigest: Sha256Digest;
+  checkoutVerificationProfile: string;
+  checkoutVerifierId: string;
+  paymentRequirementsDigest: Sha256Digest;
+  paymentRequirementsVerificationProfile: string;
+  paymentRequirementsVerifierId: string;
+}
+
+export interface CheckoutTermsRecord extends CheckoutTerms {
+  purchaseId: PurchaseId;
+  expiresAtMs: number;
+  checkoutEvidenceDigest: Sha256Digest;
+  checkoutVerificationProfile: string;
+  checkoutVerifierId: string;
+  paymentRequirementsDigest: Sha256Digest;
+  paymentRequirementsVerificationProfile: string;
+  paymentRequirementsVerifierId: string;
+  createdAtMs: number;
+}
+
+export interface RecordAuthorizationRequestInput {
+  checkoutDigest: Sha256Digest;
+  requestDigest: Sha256Digest;
+  nonceDigest: Sha256Digest;
+  requestMediaType: string;
+  requestBodyDigest: Sha256Digest;
+  additionalCostCeilingAtomic: string;
+  expiresAtMs: number;
+}
+
+export interface AuthorizationRequestRecord extends RecordAuthorizationRequestInput {
+  purchaseId: PurchaseId;
+  createdAtMs: number;
+}
+
+export interface RecordAuthorizationDecisionInput {
+  decision: "approved" | "denied" | "expired";
+  authorityId: string;
+  checkoutDigest: Sha256Digest;
+  approvedFactsDigest: Sha256Digest;
+  evidenceDigest: Sha256Digest;
+  verificationProfile: string;
+  verifierId: string;
+  requestDigest: Sha256Digest;
+  nonceDigest: Sha256Digest;
+  expiresAtMs: number;
+}
+
+export interface AuthorizationRecord extends RecordAuthorizationDecisionInput {
+  purchaseId: PurchaseId;
+  decidedAtMs: number;
+}
+
+export interface RecordFulfilmentInput {
+  attempt: number;
+  httpStatus: number;
+  resourceFingerprint: Sha256Digest;
+  bodyDigest: Sha256Digest;
+  bodyByteLength: number;
+  mediaType: string;
+  merchantEvidenceDigest: Sha256Digest;
+  merchantVerificationProfile: string;
+  merchantVerifierId: string;
+}
+
+export interface FulfilmentRecord extends RecordFulfilmentInput {
+  purchaseId: PurchaseId;
+  createdAtMs: number;
+}
+
+export interface RecordReceiptInput {
+  role: string;
+  evidenceDigest: Sha256Digest;
+  profile: string;
+  issuer?: string;
+  verifierId: string;
+  checkoutDigest: Sha256Digest;
+  authorizationEvidenceDigest: Sha256Digest;
+  settlementEvidenceDigest: Sha256Digest;
+  fulfilmentDigest: Sha256Digest;
+}
+
+export interface ReceiptRecord extends RecordReceiptInput {
+  id: number;
+  purchaseId: PurchaseId;
+  canonicalDigest: Sha256Digest;
+  createdAtMs: number;
+}
+
+export interface ReceiptSetRecord {
+  purchaseId: PurchaseId;
+  profile: typeof PURCHASE_RECEIPT_SET_PROFILE;
+  canonicalDigest: Sha256Digest;
+  completedAtMs: number;
+}
+
+export interface EvidenceLinkRecord {
+  purchaseId: PurchaseId;
+  digest: Sha256Digest;
+  kind: string;
+  attempt?: number;
+  mediaType: string;
+  profile: string;
+  issuer?: string;
+  attachedAtMs: number;
+}
+
 export interface StoreEvidenceInput {
   bytes: Uint8Array;
   mediaType: string;
@@ -101,12 +242,19 @@ export interface StoreEvidenceInput {
 
 export interface EvidenceArtifactRecord {
   digest: Sha256Digest;
-  mediaType: string;
-  profile: string;
-  issuer?: string;
   byteLength: number;
   storageRef: string;
   createdAtMs: number;
+}
+
+export interface EvidenceAttachmentRecord extends EvidenceArtifactRecord {
+  purchaseId: PurchaseId;
+  kind: string;
+  attempt?: number;
+  mediaType: string;
+  profile: string;
+  issuer?: string;
+  attachedAtMs: number;
 }
 
 export interface EvidenceVerificationInput {
@@ -134,7 +282,8 @@ export interface PolicyReservationInput {
   policyDigest: Sha256Digest;
   payee: string;
   amountAtomic: string;
-  feeCeilingAtomic: string;
+  additionalCostCeilingAtomic: string;
+  fundingSource: FundingSource;
   expiresAtMs: number;
   approvalEvidenceDigest?: Sha256Digest;
   approvalVerificationProfile?: string;
@@ -150,7 +299,8 @@ export interface PolicyReservationRecord {
   approvalVerifierId?: string;
   payee: string;
   amountAtomic: string;
-  feeCeilingAtomic: string;
+  additionalCostCeilingAtomic: string;
+  fundingSource: FundingSource;
   state: ReservationState;
   expiresAtMs: number;
   createdAtMs: number;
@@ -187,12 +337,60 @@ export interface PreparePaymentAttemptInput {
   network: string;
   payee: string;
   requiredFinality: string;
+  fundingSource: FundingSource;
 }
 
 export interface PaymentPreparationRecord extends Omit<PreparePaymentAttemptInput, "preparedBytes"> {
   preparedRef: string;
   preparedByteLength: number;
   createdAtMs: number;
+}
+
+export interface PlanTreasuryStagingInput {
+  purchaseId: PurchaseId;
+  attempt: number;
+  reservationId: string;
+  idempotencyKey: string;
+  payloadDigest: Sha256Digest;
+  preparedBytes: Uint8Array;
+  plannedTransactionId: string;
+  expectedOutpoint: string;
+  stagingAmountAtomic: string;
+  fundingSource: FundingSource;
+}
+
+export interface TreasuryStagingPlanRecord extends Omit<PlanTreasuryStagingInput, "preparedBytes"> {
+  effectId: string;
+  preparedRef: string;
+  preparedByteLength: number;
+  createdAtMs: number;
+}
+
+export interface RecordObservedTreasuryStagingInput {
+  effectId: string;
+  reservationId: string;
+  transactionId: string;
+  outpoint: string;
+  stagingAmountAtomic: string;
+  fundingSource: FundingSource;
+  evidenceDigest: Sha256Digest;
+  evidenceVerificationProfile: string;
+  evidenceVerifierId: string;
+}
+
+export interface TreasuryStagingObservationRecord
+  extends RecordObservedTreasuryStagingInput {
+  purchaseId: PurchaseId;
+  attempt: number;
+  observedAtMs: number;
+}
+
+export interface TreasuryStagingRecoveryContext {
+  plan: TreasuryStagingPlanRecord;
+  effect: EffectRecord;
+  attempt: PaymentAttemptRecord;
+  reservation: PolicyReservationRecord;
+  observation?: TreasuryStagingObservationRecord;
 }
 
 export interface PlanEffectInput {
@@ -239,7 +437,7 @@ export type EffectObservation =
   | { status: "pending"; detailDigest?: Sha256Digest }
   | { status: "not_found"; safeToRetry: boolean; detailDigest: Sha256Digest }
   | { status: "conflict"; detailDigest: Sha256Digest }
-  | { status: "failed_terminal"; errorCode: string; detailDigest?: Sha256Digest };
+  | { status: "application_failure"; errorCode: string; detailDigest: Sha256Digest };
 
 export interface EffectObservationRecord {
   id: number;
@@ -250,7 +448,7 @@ export interface EffectObservationRecord {
     | "not_found_retryable"
     | "not_found_ambiguous"
     | "conflict"
-    | "failed_terminal";
+    | "application_failure";
   resultDigest?: Sha256Digest;
   detailDigest?: Sha256Digest;
   leaseName: string;
@@ -274,11 +472,12 @@ export interface RecordObservedSpendInput {
   transactionId: string;
   outpoint?: string;
   actualAmountAtomic: string;
-  actualFeeAtomic: string;
+  actualAdditionalCostAtomic: string;
   asset: string;
   payee: string;
   network: string;
   finality: string;
+  fundingSource: FundingSource;
   evidenceDigest: Sha256Digest;
   evidenceVerificationProfile: string;
   evidenceVerifierId: string;
@@ -460,6 +659,7 @@ export class PurchaseJournal {
       } catch (error) {
         throw new JournalInvariantError((error as Error).message);
       }
+      this.assertPurchaseStateFacts(id, toState);
       const now = this.timestamp();
       const result = this.db
         .prepare(
@@ -484,7 +684,305 @@ export class PurchaseJournal {
     return rows.map(purchaseTransitionFromRow);
   }
 
-  storeEvidence(purchaseId: PurchaseId, input: StoreEvidenceInput): EvidenceArtifactRecord {
+  bindCheckoutTerms(purchaseId: PurchaseId, input: BindCheckoutTermsInput): CheckoutTermsRecord {
+    validateCheckoutTermsRecordInput(input);
+    const bind = this.db.transaction(() => {
+      const purchase = this.requirePurchase(purchaseId);
+      const existing = this.findCheckoutTerms(purchaseId);
+      if (existing) {
+        assertSameCheckoutTerms(existing, input);
+        return existing;
+      }
+      if (purchase.state !== "created") {
+        throw new JournalInvariantError(`Checkout Terms cannot be bound from Purchase state ${purchase.state}`);
+      }
+      if (purchase.resourceFingerprint !== input.terms.resourceFingerprint) {
+        throw new JournalInvariantError("Checkout Terms resource does not match the Purchase Intent");
+      }
+      if (input.terms.checkoutDigest !== input.checkoutEvidenceDigest) {
+        throw new JournalInvariantError("Checkout Terms digest must identify the exact verified Merchant artifact");
+      }
+      if (purchase.expectedMerchantId && purchase.expectedMerchantId !== input.terms.merchant.id) {
+        throw new JournalInvariantError("Checkout Terms merchant does not match the expected merchant identity");
+      }
+      if (purchase.expectedMerchantOrigin && purchase.expectedMerchantOrigin !== input.terms.merchant.origin) {
+        throw new JournalInvariantError("Checkout Terms merchant does not match the expected merchant origin");
+      }
+      const checkoutAttachment = this.requireEvidenceAttachment(
+        purchaseId,
+        input.checkoutEvidenceDigest,
+        "checkout-terms"
+      );
+      const requirementsAttachment = this.requireEvidenceAttachment(
+        purchaseId,
+        input.paymentRequirementsDigest,
+        "payment-requirements"
+      );
+      if (
+        checkoutAttachment.issuer !== input.terms.merchant.id ||
+        checkoutAttachment.profile !== input.checkoutVerificationProfile ||
+        requirementsAttachment.issuer !== input.terms.merchant.id ||
+        requirementsAttachment.profile !== input.paymentRequirementsVerificationProfile
+      ) {
+        throw new JournalInvariantError("Checkout evidence metadata is not bound to the canonical Merchant");
+      }
+      if (
+        !this.isVerifiedEvidenceLinked(purchaseId, input.checkoutEvidenceDigest, {
+          attempt: null,
+          kind: "checkout-terms",
+          verificationProfile: input.checkoutVerificationProfile,
+          verifierId: input.checkoutVerifierId,
+        })
+      ) {
+        throw new JournalInvariantError("Checkout Terms evidence is not verified and linked to this Purchase");
+      }
+      if (
+        !this.isVerifiedEvidenceLinked(purchaseId, input.paymentRequirementsDigest, {
+          attempt: null,
+          kind: "payment-requirements",
+          verificationProfile: input.paymentRequirementsVerificationProfile,
+          verifierId: input.paymentRequirementsVerifierId,
+        })
+      ) {
+        throw new JournalInvariantError("payment requirements evidence is not verified and linked to this Purchase");
+      }
+      const expiresAtMs = strictTimestamp(input.terms.expiresAt, "Checkout Terms expiry");
+      if (expiresAtMs <= this.timestamp()) throw new JournalInvariantError("Checkout Terms are already expired");
+      const now = this.timestamp();
+      this.db
+        .prepare(
+          `INSERT INTO checkout_terms (
+             purchase_id, merchant_id, merchant_name, merchant_origin, resource_fingerprint,
+             amount_atomic, asset, network, pay_to, expires_at, expires_at_ms, checkout_digest,
+             checkout_evidence_digest, checkout_verification_profile, checkout_verifier_id,
+             payment_requirements_digest, payment_requirements_verification_profile,
+             payment_requirements_verifier_id, created_at_ms
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          purchaseId,
+          input.terms.merchant.id,
+          input.terms.merchant.name,
+          input.terms.merchant.origin,
+          input.terms.resourceFingerprint,
+          input.terms.amountAtomic,
+          input.terms.asset,
+          input.terms.network,
+          input.terms.payTo,
+          input.terms.expiresAt,
+          expiresAtMs,
+          input.terms.checkoutDigest,
+          input.checkoutEvidenceDigest,
+          input.checkoutVerificationProfile,
+          input.checkoutVerifierId,
+          input.paymentRequirementsDigest,
+          input.paymentRequirementsVerificationProfile,
+          input.paymentRequirementsVerifierId,
+          now
+        );
+      this.inject("checkout_terms.after_insert");
+      this.transitionPurchase(purchaseId, "created", "terms_bound", "checkout_terms_bound", input.terms.checkoutDigest);
+      return this.requireCheckoutTerms(purchaseId);
+    });
+    return bind.immediate();
+  }
+
+  requireCheckoutTerms(purchaseId: PurchaseId): CheckoutTermsRecord {
+    const terms = this.findCheckoutTerms(purchaseId);
+    if (!terms) throw new JournalNotFoundError(`Purchase ${purchaseId} has no Checkout Terms`);
+    return terms;
+  }
+
+  findCheckoutTerms(purchaseId: PurchaseId): CheckoutTermsRecord | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM checkout_terms WHERE purchase_id = ?")
+      .get(purchaseId) as CheckoutTermsRow | undefined;
+    return row ? checkoutTermsFromRow(row) : undefined;
+  }
+
+  recordAuthorizationRequest(
+    purchaseId: PurchaseId,
+    input: RecordAuthorizationRequestInput
+  ): AuthorizationRequestRecord {
+    validateAuthorizationRequestInput(input);
+    const record = this.db.transaction(() => {
+      const purchase = this.requirePurchase(purchaseId);
+      const terms = this.requireCheckoutTerms(purchaseId);
+      const existing = this.findAuthorizationRequest(purchaseId);
+      if (existing) {
+        assertSameAuthorizationRequest(existing, input);
+        return existing;
+      }
+      if (purchase.state !== "terms_bound") {
+        throw new JournalInvariantError(`authorization cannot be requested from Purchase state ${purchase.state}`);
+      }
+      if (input.checkoutDigest !== terms.checkoutDigest) {
+        throw new JournalInvariantError("authorization request is bound to different Checkout Terms");
+      }
+      if (!this.evidenceLinked(purchaseId, input.requestDigest, "authorization-request")) {
+        throw new JournalInvariantError("authorization request bytes are not durably linked to this Purchase");
+      }
+      const body = this.requireEvidenceAttachment(
+        purchaseId,
+        input.requestBodyDigest,
+        "purchase-request-body"
+      );
+      const requestMediaType = input.requestMediaType || undefined;
+      if (
+        requestMediaType !== undefined &&
+        body.mediaType !== requestMediaType
+      ) {
+        throw new JournalInvariantError("authorization request media type does not match its durable request body");
+      }
+      if (
+        purchase.resourceFingerprint !== requestFingerprintFromBodyDigest({
+          url: purchase.resourceUrl,
+          method: purchase.method,
+          mediaType: requestMediaType,
+          bodyDigest: input.requestBodyDigest,
+        })
+      ) {
+        throw new JournalInvariantError("authorization request body does not match the Purchase request fingerprint");
+      }
+      if (input.expiresAtMs > terms.expiresAtMs || input.expiresAtMs <= this.timestamp()) {
+        throw new JournalInvariantError("authorization request expiry is outside the valid Checkout Terms window");
+      }
+      const now = this.timestamp();
+      this.db
+        .prepare(
+          `INSERT INTO authorization_requests
+             (purchase_id, checkout_digest, request_digest, nonce_digest, request_media_type,
+              request_body_digest, additional_cost_ceiling_atomic, expires_at_ms, created_at_ms)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          purchaseId,
+          input.checkoutDigest,
+          input.requestDigest,
+          input.nonceDigest,
+          input.requestMediaType,
+          input.requestBodyDigest,
+          input.additionalCostCeilingAtomic,
+          input.expiresAtMs,
+          now
+        );
+      this.inject("authorization_request.after_insert");
+      this.transitionPurchase(
+        purchaseId,
+        "terms_bound",
+        "awaiting_authority",
+        "authorization_requested",
+        input.requestDigest
+      );
+      return this.requireAuthorizationRequest(purchaseId);
+    });
+    return record.immediate();
+  }
+
+  requireAuthorizationRequest(purchaseId: PurchaseId): AuthorizationRequestRecord {
+    const request = this.findAuthorizationRequest(purchaseId);
+    if (!request) throw new JournalNotFoundError(`Purchase ${purchaseId} has no authorization request`);
+    return request;
+  }
+
+  findAuthorizationRequest(purchaseId: PurchaseId): AuthorizationRequestRecord | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM authorization_requests WHERE purchase_id = ?")
+      .get(purchaseId) as AuthorizationRequestRow | undefined;
+    return row ? authorizationRequestFromRow(row) : undefined;
+  }
+
+  recordAuthorizationDecision(
+    purchaseId: PurchaseId,
+    input: RecordAuthorizationDecisionInput
+  ): AuthorizationRecord {
+    validateAuthorizationDecisionInput(input);
+    const record = this.db.transaction(() => {
+      const purchase = this.requirePurchase(purchaseId);
+      const request = this.requireAuthorizationRequest(purchaseId);
+      const existing = this.findAuthorization(purchaseId);
+      if (existing) {
+        assertSameAuthorization(existing, input);
+        return existing;
+      }
+      if (purchase.state !== "awaiting_authority") {
+        throw new JournalInvariantError(`authorization decision cannot be recorded from Purchase state ${purchase.state}`);
+      }
+      if (
+        request.checkoutDigest !== input.checkoutDigest ||
+        request.requestDigest !== input.requestDigest ||
+        request.nonceDigest !== input.nonceDigest ||
+        request.expiresAtMs !== input.expiresAtMs
+      ) {
+        throw new JournalInvariantError("authorization decision does not match its immutable request");
+      }
+      if (input.approvedFactsDigest !== this.canonicalAuthorizationFactsDigest(purchaseId)) {
+        throw new JournalInvariantError("authorization decision does not bind the canonical Purchase facts");
+      }
+      if (
+        !this.isVerifiedEvidenceLinked(purchaseId, input.evidenceDigest, {
+          attempt: null,
+          kind: "purchase-authorization",
+          verificationProfile: input.verificationProfile,
+          verifierId: input.verifierId,
+        })
+      ) {
+        throw new JournalInvariantError("authorization evidence is not verified and linked to this Purchase");
+      }
+      if (input.decision === "approved" && input.expiresAtMs <= this.timestamp()) {
+        throw new JournalInvariantError("expired authorization cannot approve a Purchase");
+      }
+      const now = this.timestamp();
+      this.db
+        .prepare(
+          `INSERT INTO purchase_authorizations (
+             purchase_id, decision, authority_id, checkout_digest, approved_facts_digest,
+             evidence_digest, verification_profile, verifier_id, request_digest, nonce_digest,
+             expires_at_ms, decided_at_ms
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          purchaseId,
+          input.decision,
+          input.authorityId,
+          input.checkoutDigest,
+          input.approvedFactsDigest,
+          input.evidenceDigest,
+          input.verificationProfile,
+          input.verifierId,
+          input.requestDigest,
+          input.nonceDigest,
+          input.expiresAtMs,
+          now
+        );
+      this.inject("authorization_decision.after_insert");
+      const nextState = input.decision === "approved" ? "authorised" : input.decision;
+      this.transitionPurchase(
+        purchaseId,
+        "awaiting_authority",
+        nextState,
+        `authorization_${input.decision}`,
+        input.evidenceDigest
+      );
+      return this.requireAuthorization(purchaseId);
+    });
+    return record.immediate();
+  }
+
+  requireAuthorization(purchaseId: PurchaseId): AuthorizationRecord {
+    const authorization = this.findAuthorization(purchaseId);
+    if (!authorization) throw new JournalNotFoundError(`Purchase ${purchaseId} has no authorization decision`);
+    return authorization;
+  }
+
+  findAuthorization(purchaseId: PurchaseId): AuthorizationRecord | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM purchase_authorizations WHERE purchase_id = ?")
+      .get(purchaseId) as AuthorizationRow | undefined;
+    return row ? authorizationFromRow(row) : undefined;
+  }
+
+  storeEvidence(purchaseId: PurchaseId, input: StoreEvidenceInput): EvidenceAttachmentRecord {
     validateEvidenceMetadata(input);
     if (!this.evidenceStore) {
       throw new JournalInvariantError("an evidence directory is required for immutable evidence storage");
@@ -495,7 +993,7 @@ export class PurchaseJournal {
       if (input.attempt !== undefined) this.requirePaymentAttempt(purchaseId, input.attempt);
       const existing = this.findEvidence(stored.digest);
       if (existing) {
-        assertSameEvidence(existing, input, stored.byteLength, stored.storageRef);
+        assertSameEvidenceBlob(existing, stored.byteLength, stored.storageRef);
       } else {
         const now = this.timestamp();
         this.db
@@ -506,22 +1004,40 @@ export class PurchaseJournal {
           )
           .run(
             stored.digest,
-            input.mediaType,
-            input.profile,
-            input.issuer ?? null,
+            "application/octet-stream",
+            "urn:sompi:evidence-blob:1",
+            null,
             stored.byteLength,
             stored.storageRef,
             now
           );
         this.inject("evidence.after_metadata_insert");
       }
+      const attachedAtMs = this.timestamp();
       this.db
         .prepare(
-          `INSERT OR IGNORE INTO evidence_links (purchase_id, digest, kind, attempt)
-           VALUES (?, ?, ?, ?)`
+          `INSERT OR IGNORE INTO evidence_links
+             (purchase_id, digest, kind, attempt, media_type, profile, issuer, attached_at_ms)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
         )
-        .run(purchaseId, stored.digest, input.kind, input.attempt ?? null);
-      return this.requireEvidence(stored.digest);
+        .run(
+          purchaseId,
+          stored.digest,
+          input.kind,
+          input.attempt ?? null,
+          input.mediaType,
+          input.profile,
+          input.issuer ?? null,
+          attachedAtMs
+        );
+      const attachment = this.requireEvidenceAttachment(
+        purchaseId,
+        stored.digest,
+        input.kind,
+        input.attempt
+      );
+      assertSameEvidenceAttachment(attachment, input);
+      return attachment;
     });
     return attach.immediate();
   }
@@ -544,6 +1060,30 @@ export class PurchaseJournal {
       .prepare("SELECT * FROM evidence_artifacts WHERE digest = ?")
       .get(digest) as EvidenceArtifactRow | undefined;
     return row ? evidenceFromRow(row) : undefined;
+  }
+
+  requireEvidenceAttachment(
+    purchaseId: PurchaseId,
+    digest: Sha256Digest,
+    kind: string,
+    attempt?: number
+  ): EvidenceAttachmentRecord {
+    const attemptClause = attempt === undefined ? "l.attempt IS NULL" : "l.attempt = ?";
+    const parameters = attempt === undefined
+      ? [purchaseId, digest, kind]
+      : [purchaseId, digest, kind, attempt];
+    const row = this.db
+      .prepare(
+        `SELECT l.purchase_id, l.digest, l.kind, l.attempt, l.media_type, l.profile,
+                l.issuer, l.attached_at_ms, a.byte_length, a.storage_ref,
+                a.created_at_ms AS blob_created_at_ms
+         FROM evidence_links l
+         JOIN evidence_artifacts a ON a.digest = l.digest
+         WHERE l.purchase_id = ? AND l.digest = ? AND l.kind = ? AND ${attemptClause}`
+      )
+      .get(...parameters) as EvidenceAttachmentRow | undefined;
+    if (!row) throw new JournalNotFoundError(`Evidence Attachment ${purchaseId}/${kind}/${digest} does not exist`);
+    return evidenceAttachmentFromRow(row);
   }
 
   recordEvidenceVerification(digest: Sha256Digest, input: EvidenceVerificationInput): void {
@@ -639,6 +1179,28 @@ export class PurchaseJournal {
       if (purchase.state !== "authorised" && purchase.state !== "execution_prepared") {
         throw new PolicyReservationError(`Purchase ${input.purchaseId} is not authorized for treasury reservation`);
       }
+      const terms = this.requireCheckoutTerms(input.purchaseId);
+      const authorization = this.requireAuthorization(input.purchaseId);
+      const authorizationRequest = this.requireAuthorizationRequest(input.purchaseId);
+      if (authorization.decision !== "approved") {
+        throw new PolicyReservationError("Treasury Reservation requires approved Purchase Authorization");
+      }
+      if (input.amountAtomic !== terms.amountAtomic || input.payee !== terms.payTo) {
+        throw new PolicyReservationError("Treasury Reservation does not match canonical Checkout Terms");
+      }
+      if (BigInt(input.additionalCostCeilingAtomic) > BigInt(authorizationRequest.additionalCostCeilingAtomic)) {
+        throw new PolicyReservationError("Treasury Reservation exceeds the authorized additional-cost ceiling");
+      }
+      if (
+        input.approvalEvidenceDigest !== authorization.evidenceDigest ||
+        input.approvalVerificationProfile !== authorization.verificationProfile ||
+        input.approvalVerifierId !== authorization.verifierId
+      ) {
+        throw new PolicyReservationError("Treasury Reservation is not bound to the exact Purchase Authorization");
+      }
+      if (input.expiresAtMs > terms.expiresAtMs) {
+        throw new PolicyReservationError("Treasury Reservation outlives canonical Checkout Terms");
+      }
       const policy = this.requireActivePolicy();
       if (policy.digest !== input.policyDigest) {
         throw new PolicyReservationError("treasury policy changed; caller must re-evaluate against the active snapshot");
@@ -666,8 +1228,12 @@ export class PurchaseJournal {
         throw new PolicyReservationError(`payee ${input.payee} is not on the active policy allowlist`);
       }
       const amount = decimalBigInt(input.amountAtomic, "reservation amount");
-      const fee = decimalBigInt(input.feeCeilingAtomic, "reservation fee ceiling", true);
-      const gross = amount + fee;
+      const additionalCost = decimalBigInt(
+        input.additionalCostCeilingAtomic,
+        "reservation additional-cost ceiling",
+        true
+      );
+      const gross = amount + additionalCost;
       const maxPerPayment = decimalBigInt(policy.maxPerPaymentAtomic, "per-payment limit");
       const maxPerHour = decimalBigInt(policy.maxPerHourAtomic, "hourly limit");
       const approvalThreshold = decimalBigInt(policy.approvalAboveAtomic, "approval threshold", true);
@@ -710,8 +1276,9 @@ export class PurchaseJournal {
           `INSERT INTO treasury_reservations
              (id, purchase_id, policy_digest, approval_evidence_digest,
               approval_verification_profile, approval_verifier_id, payee,
-              amount_atomic, fee_ceiling_atomic, state, expires_at_ms, created_at_ms, updated_at_ms)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`
+              amount_atomic, additional_cost_ceiling_atomic, funding_source,
+              state, expires_at_ms, created_at_ms, updated_at_ms)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`
         )
         .run(
           input.id,
@@ -722,7 +1289,8 @@ export class PurchaseJournal {
           input.approvalVerifierId ?? null,
           input.payee,
           input.amountAtomic,
-          input.feeCeilingAtomic,
+          input.additionalCostCeilingAtomic,
+          input.fundingSource,
           input.expiresAtMs,
           now,
           now
@@ -862,6 +1430,325 @@ export class PurchaseJournal {
     return paymentAttempt;
   }
 
+  planTreasuryStaging(input: PlanTreasuryStagingInput): TreasuryStagingPlanRecord {
+    validateTreasuryStagingPlanInput(input);
+    const stored = this.storePreparedMaterial(input.preparedBytes, input.payloadDigest);
+    const plan = this.db.transaction(() => {
+      const attempt = this.requirePaymentAttempt(input.purchaseId, input.attempt);
+      const effectRow = this.db
+        .prepare("SELECT * FROM effects WHERE idempotency_key = ?")
+        .get(input.idempotencyKey) as EffectRow | undefined;
+      if (effectRow) {
+        const effect = effectFromRow(effectRow);
+        if (effect.kind !== TREASURY_STAGING_EFFECT_KIND) {
+          throw new JournalInvariantError("treasury staging idempotency key belongs to another Effect kind");
+        }
+        const existing = this.findTreasuryStagingPlanByEffect(effect.id);
+        if (!existing) {
+          throw new JournalInvariantError("treasury staging Effect has no immutable plan");
+        }
+        assertSameTreasuryStagingPlan(existing, input, stored);
+        return existing;
+      }
+      if (this.findTreasuryStagingPlan(input.purchaseId, input.attempt)) {
+        throw new JournalInvariantError("Payment Attempt already has a different treasury staging plan");
+      }
+      if (this.findPaymentPreparation(input.purchaseId, input.attempt)) {
+        throw new JournalInvariantError("treasury staging must be planned before exact payment preparation");
+      }
+      if (attempt.state !== "planned") {
+        throw new JournalInvariantError(`treasury staging cannot be planned from Attempt state ${attempt.state}`);
+      }
+      const now = this.timestamp();
+      this.expireReservationsInternal(now);
+      const reservation = this.requireReservation(input.reservationId);
+      if (
+        reservation.purchaseId !== input.purchaseId ||
+        reservation.state !== "active" ||
+        reservation.fundingSource !== input.fundingSource
+      ) {
+        throw new JournalInvariantError(
+          "treasury staging requires this Purchase's active Reservation and funding source"
+        );
+      }
+      if (reservation.policyDigest !== this.requireActivePolicy().digest) {
+        throw new PolicyReservationError("active treasury policy changed before staging preparation");
+      }
+      const reservedGross =
+        BigInt(reservation.amountAtomic) + BigInt(reservation.additionalCostCeilingAtomic);
+      if (BigInt(input.stagingAmountAtomic) > reservedGross) {
+        throw new PolicyReservationError("treasury staging amount exceeds its Reservation");
+      }
+
+      const effectId = opaqueId("eff");
+      this.db
+        .prepare(
+          `INSERT INTO effects
+             (id, purchase_id, attempt, kind, idempotency_key, state, version,
+              payload_digest, prepared_ref, prepared_byte_length, created_at_ms, updated_at_ms)
+           VALUES (?, ?, ?, ?, ?, 'planned', 0, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          effectId,
+          input.purchaseId,
+          input.attempt,
+          TREASURY_STAGING_EFFECT_KIND,
+          input.idempotencyKey,
+          input.payloadDigest,
+          stored.storageRef,
+          stored.byteLength,
+          now,
+          now
+        );
+      this.inject("effect.after_insert");
+      this.insertEffectTransition(
+        effectId,
+        undefined,
+        "planned",
+        "treasury_staging_planned",
+        input.payloadDigest,
+        now
+      );
+      this.db
+        .prepare(
+          `INSERT INTO treasury_staging_plans
+             (effect_id, purchase_id, attempt, reservation_id, payload_digest,
+              prepared_ref, prepared_byte_length, planned_transaction_id,
+              expected_outpoint, staging_amount_atomic, funding_source, created_at_ms)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          effectId,
+          input.purchaseId,
+          input.attempt,
+          input.reservationId,
+          input.payloadDigest,
+          stored.storageRef,
+          stored.byteLength,
+          input.plannedTransactionId,
+          input.expectedOutpoint,
+          input.stagingAmountAtomic,
+          input.fundingSource,
+          now
+        );
+      this.inject("treasury_staging_plan.after_insert");
+      return this.requireTreasuryStagingPlan(input.purchaseId, input.attempt);
+    });
+    return plan.immediate();
+  }
+
+  requireTreasuryStagingPlan(
+    purchaseId: PurchaseId,
+    attempt: number
+  ): TreasuryStagingPlanRecord {
+    const plan = this.findTreasuryStagingPlan(purchaseId, attempt);
+    if (!plan) {
+      throw new JournalNotFoundError(`Treasury staging plan ${purchaseId}/${attempt} does not exist`);
+    }
+    return plan;
+  }
+
+  readPreparedTreasuryStaging(purchaseId: PurchaseId, attempt: number): Buffer {
+    const plan = this.requireTreasuryStagingPlan(purchaseId, attempt);
+    return this.readPreparedMaterial(plan.payloadDigest, plan.preparedRef, plan.preparedByteLength);
+  }
+
+  beginTreasuryStaging(
+    effectId: string,
+    reservationId: string,
+    holder: string,
+    ttlMs: number
+  ): EffectClaim | undefined {
+    const begin = this.db.transaction(() => {
+      const effect = this.requireEffect(effectId);
+      if (effect.kind !== TREASURY_STAGING_EFFECT_KIND || effect.attempt === undefined) {
+        throw new JournalInvariantError("treasury staging claim requires its dedicated attempt-bound Effect");
+      }
+      const plan = this.requireTreasuryStagingPlan(effect.purchaseId, effect.attempt);
+      const attempt = this.requirePaymentAttempt(effect.purchaseId, effect.attempt);
+      this.readPreparedMaterial(plan.payloadDigest, plan.preparedRef, plan.preparedByteLength);
+      this.readPreparedMaterial(effect.payloadDigest, effect.preparedRef, effect.preparedByteLength);
+      if (
+        plan.effectId !== effect.id ||
+        plan.reservationId !== reservationId ||
+        effect.payloadDigest !== plan.payloadDigest ||
+        effect.preparedRef !== plan.preparedRef ||
+        effect.preparedByteLength !== plan.preparedByteLength
+      ) {
+        throw new JournalInvariantError("treasury staging Effect is not bound to its immutable plan");
+      }
+      const now = this.timestamp();
+      this.expireReservationsInternal(now);
+      const reservation = this.requireReservation(reservationId);
+      if (
+        reservation.purchaseId !== effect.purchaseId ||
+        reservation.fundingSource !== plan.fundingSource
+      ) {
+        throw new JournalInvariantError("treasury staging plan is not bound to its Reservation");
+      }
+      if (effect.state === "planned") {
+        if (attempt.state !== "planned" || reservation.state !== "active") {
+          throw new JournalInvariantError(
+            "first treasury staging claim requires planned Attempt and active Reservation"
+          );
+        }
+        if (reservation.expiresAtMs <= now) {
+          throw new PolicyReservationError("Reservation expired before treasury staging");
+        }
+        if (reservation.policyDigest !== this.requireActivePolicy().digest) {
+          throw new PolicyReservationError("active treasury policy changed before treasury staging");
+        }
+      } else if (effect.state === "retryable") {
+        if (attempt.state !== "planned" || reservation.state !== "in_flight") {
+          throw new JournalInvariantError(
+            "treasury staging retry requires planned Attempt and original in-flight Reservation"
+          );
+        }
+      }
+      const claimed = this.claimEffectInternal(effect, holder, ttlMs);
+      if (!claimed) return undefined;
+      if (reservation.state === "active") {
+        const moved = this.db
+          .prepare(
+            `UPDATE treasury_reservations
+             SET state = 'in_flight', in_flight_at_ms = ?, updated_at_ms = ?
+             WHERE id = ? AND state = 'active'`
+          )
+          .run(now, now, reservationId);
+        if (moved.changes !== 1) {
+          throw new JournalInvariantError("concurrent Treasury Reservation staging claim");
+        }
+      }
+      return { effect: this.requireEffect(effectId), lease: claimed.lease };
+    });
+    return begin.immediate();
+  }
+
+  recordObservedTreasuryStaging(
+    lease: LeaseToken,
+    input: RecordObservedTreasuryStagingInput
+  ): TreasuryStagingObservationRecord {
+    validateTreasuryStagingObservationInput(input);
+    const record = this.db.transaction(() => {
+      this.assertEffectWriter(input.effectId, lease);
+      const effect = this.requireEffect(input.effectId);
+      if (effect.kind !== TREASURY_STAGING_EFFECT_KIND || effect.attempt === undefined) {
+        throw new JournalInvariantError("observed treasury staging requires its dedicated Effect");
+      }
+      const existing = this.findTreasuryStagingObservationByEffect(effect.id);
+      if (existing) {
+        assertSameTreasuryStagingObservation(existing, input);
+        if (effect.state !== "observed" || effect.resultDigest !== input.evidenceDigest) {
+          throw new JournalInvariantError("treasury staging observation conflicts with Effect state");
+        }
+        return existing;
+      }
+      if (effect.state !== "executing" && effect.state !== "submitted" && effect.state !== "ambiguous") {
+        throw new JournalInvariantError(
+          `Treasury staging Effect ${effect.id} cannot record output from ${effect.state}`
+        );
+      }
+      const plan = this.requireTreasuryStagingPlan(effect.purchaseId, effect.attempt);
+      if (
+        plan.effectId !== effect.id ||
+        plan.reservationId !== input.reservationId ||
+        plan.plannedTransactionId !== input.transactionId ||
+        plan.expectedOutpoint !== input.outpoint ||
+        plan.stagingAmountAtomic !== input.stagingAmountAtomic ||
+        plan.fundingSource !== input.fundingSource
+      ) {
+        throw new JournalInvariantError("observed treasury staging output does not match its immutable plan");
+      }
+      const attempt = this.requirePaymentAttempt(effect.purchaseId, effect.attempt);
+      if (attempt.state !== "planned") {
+        throw new JournalInvariantError("treasury staging must be observed before exact payment preparation");
+      }
+      const reservation = this.requireReservation(input.reservationId);
+      if (reservation.state !== "in_flight" || reservation.purchaseId !== effect.purchaseId) {
+        throw new JournalInvariantError("observed treasury staging requires its in-flight Reservation");
+      }
+      if (
+        !this.isVerifiedEvidenceLinked(effect.purchaseId, input.evidenceDigest, {
+          attempt: effect.attempt,
+          kind: TREASURY_STAGING_EVIDENCE_KIND,
+          verificationProfile: input.evidenceVerificationProfile,
+          verifierId: input.evidenceVerifierId,
+        })
+      ) {
+        throw new JournalInvariantError(
+          "treasury staging evidence is not verified and linked to the Payment Attempt"
+        );
+      }
+      const now = this.timestamp();
+      this.db
+        .prepare(
+          `INSERT INTO treasury_staging_observations
+             (effect_id, purchase_id, attempt, reservation_id, transaction_id, outpoint,
+              staging_amount_atomic, funding_source, evidence_digest,
+              evidence_verification_profile, evidence_verifier_id, observed_at_ms)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          effect.id,
+          effect.purchaseId,
+          effect.attempt,
+          input.reservationId,
+          input.transactionId,
+          input.outpoint,
+          input.stagingAmountAtomic,
+          input.fundingSource,
+          input.evidenceDigest,
+          input.evidenceVerificationProfile,
+          input.evidenceVerifierId,
+          now
+        );
+      this.inject("treasury_staging_observation.after_insert");
+      this.insertEffectObservation(
+        effect.id,
+        "observed",
+        input.evidenceDigest,
+        input.evidenceDigest,
+        lease,
+        now
+      );
+      this.updateEffectState(
+        effect,
+        "observed",
+        "treasury_staging_output_observed",
+        input.evidenceDigest,
+        now,
+        { resultDigest: input.evidenceDigest }
+      );
+      return this.findTreasuryStagingObservationByEffect(effect.id)!;
+    });
+    return record.immediate();
+  }
+
+  findTreasuryStagingObservation(
+    purchaseId: PurchaseId,
+    attempt: number
+  ): TreasuryStagingObservationRecord | undefined {
+    const row = this.db
+      .prepare(
+        "SELECT * FROM treasury_staging_observations WHERE purchase_id = ? AND attempt = ?"
+      )
+      .get(purchaseId, attempt) as TreasuryStagingObservationRow | undefined;
+    return row ? treasuryStagingObservationFromRow(row) : undefined;
+  }
+
+  treasuryStagingRecoveryContext(
+    purchaseId: PurchaseId,
+    attemptNumber: number
+  ): TreasuryStagingRecoveryContext | undefined {
+    const plan = this.findTreasuryStagingPlan(purchaseId, attemptNumber);
+    if (!plan) return undefined;
+    const effect = this.requireEffect(plan.effectId);
+    const attempt = this.requirePaymentAttempt(purchaseId, attemptNumber);
+    const reservation = this.requireReservation(plan.reservationId);
+    const observation = this.findTreasuryStagingObservation(purchaseId, attemptNumber);
+    return { plan, effect, attempt, reservation, observation };
+  }
+
   preparePaymentAttempt(input: PreparePaymentAttemptInput): PaymentPreparationRecord {
     validatePaymentPreparation(input);
     const stored = this.storePreparedMaterial(input.preparedBytes, input.payloadDigest);
@@ -876,13 +1763,29 @@ export class PurchaseJournal {
         throw new JournalInvariantError(`Payment Attempt cannot prepare from ${attempt.state}`);
       }
       const reservation = this.requireReservation(input.reservationId);
-      if (reservation.purchaseId !== input.purchaseId || reservation.state !== "active") {
-        throw new JournalInvariantError("Payment preparation requires this Purchase's active Treasury Reservation");
+      const stagingPlan = this.findTreasuryStagingPlan(input.purchaseId, input.attempt);
+      const stagingObservation = this.findTreasuryStagingObservation(input.purchaseId, input.attempt);
+      const directReservation = reservation.state === "active" && !stagingPlan && !stagingObservation;
+      const stagedReservation =
+        reservation.state === "in_flight" &&
+        stagingPlan?.reservationId === reservation.id &&
+        stagingObservation?.effectId === stagingPlan.effectId &&
+        this.requireEffect(stagingPlan.effectId).state === "observed" &&
+        this.isVerifiedEvidenceLinked(input.purchaseId, stagingObservation.evidenceDigest, {
+          attempt: input.attempt,
+          kind: TREASURY_STAGING_EVIDENCE_KIND,
+          verificationProfile: stagingObservation.evidenceVerificationProfile,
+          verifierId: stagingObservation.evidenceVerifierId,
+        });
+      if (reservation.purchaseId !== input.purchaseId || (!directReservation && !stagedReservation)) {
+        throw new JournalInvariantError(
+          "Payment preparation requires an active Reservation or its verified staged output"
+        );
       }
       if (reservation.amountAtomic !== input.amountAtomic || reservation.payee !== input.payee) {
         throw new JournalInvariantError("payment preparation does not match its Treasury Reservation");
       }
-      if (reservation.expiresAtMs <= this.timestamp()) {
+      if (directReservation && reservation.expiresAtMs <= this.timestamp()) {
         throw new PolicyReservationError("Treasury Reservation expired before payment preparation");
       }
       const now = this.timestamp();
@@ -891,8 +1794,8 @@ export class PurchaseJournal {
           `INSERT INTO payment_preparations
              (purchase_id, attempt, reservation_id, requirements_digest, payload_digest,
               prepared_ref, prepared_byte_length, transaction_id, amount_atomic, asset,
-              network, payee, required_finality, created_at_ms)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+              network, payee, required_finality, funding_source, created_at_ms)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           input.purchaseId,
@@ -908,6 +1811,7 @@ export class PurchaseJournal {
           input.network,
           input.payee,
           input.requiredFinality,
+          input.fundingSource,
           now
         );
       this.inject("payment_preparation.after_insert");
@@ -962,6 +1866,9 @@ export class PurchaseJournal {
 
   planEffect(input: PlanEffectInput): EffectRecord {
     validateEffectInput(input);
+    if (input.kind === TREASURY_STAGING_EFFECT_KIND) {
+      throw new JournalInvariantError("treasury staging Effects require planTreasuryStaging");
+    }
     const stored = this.storePreparedMaterial(input.preparedBytes, input.payloadDigest);
     const plan = this.db.transaction(() => {
       this.requirePurchase(input.purchaseId);
@@ -1017,6 +1924,9 @@ export class PurchaseJournal {
     const begin = this.db.transaction(() => {
       const effect = this.requireEffect(effectId);
       if (effect.attempt === undefined) throw new JournalInvariantError("payment effect must identify a Payment Attempt");
+      if (effect.kind === TREASURY_STAGING_EFFECT_KIND) {
+        throw new JournalInvariantError("treasury staging Effects must use beginTreasuryStaging");
+      }
       const attempt = this.requirePaymentAttempt(effect.purchaseId, effect.attempt);
       const preparation = this.requirePaymentPreparation(effect.purchaseId, effect.attempt);
       this.readPreparedMaterial(
@@ -1038,16 +1948,37 @@ export class PurchaseJournal {
       ) {
         throw new JournalInvariantError("payment effect does not reference the immutable payment preparation");
       }
-      if (reservation.policyDigest !== this.requireActivePolicy().digest) {
-        throw new PolicyReservationError("active treasury policy changed before payment submission");
-      }
       const now = this.timestamp();
       this.expireReservationsInternal(now);
       if (effect.state === "planned") {
-        if (attempt.state !== "prepared" || reservation.state !== "active") {
-          throw new JournalInvariantError("first payment submission requires prepared Attempt and active Reservation");
+        const stagingPlan = this.findTreasuryStagingPlan(effect.purchaseId, effect.attempt);
+        const stagingObservation = this.findTreasuryStagingObservation(effect.purchaseId, effect.attempt);
+        const directReservation = reservation.state === "active" && !stagingPlan && !stagingObservation;
+        const stagedReservation =
+          reservation.state === "in_flight" &&
+          stagingPlan?.reservationId === reservation.id &&
+          stagingObservation?.effectId === stagingPlan.effectId &&
+          this.requireEffect(stagingPlan.effectId).state === "observed" &&
+          this.isVerifiedEvidenceLinked(effect.purchaseId, stagingObservation.evidenceDigest, {
+            attempt: effect.attempt,
+            kind: TREASURY_STAGING_EVIDENCE_KIND,
+            verificationProfile: stagingObservation.evidenceVerificationProfile,
+            verifierId: stagingObservation.evidenceVerifierId,
+          });
+        if (attempt.state !== "prepared" || (!directReservation && !stagedReservation)) {
+          throw new JournalInvariantError(
+            "first payment submission requires a prepared Attempt and usable Reservation"
+          );
         }
-        if (reservation.expiresAtMs <= now) throw new PolicyReservationError("reservation expired before submission");
+        if (directReservation && reservation.expiresAtMs <= now) {
+          throw new PolicyReservationError("reservation expired before submission");
+        }
+        if (
+          directReservation &&
+          reservation.policyDigest !== this.requireActivePolicy().digest
+        ) {
+          throw new PolicyReservationError("active treasury policy changed before payment submission");
+        }
       } else if (effect.state === "retryable") {
         if (attempt.state !== "submitted" || reservation.state !== "in_flight") {
           throw new JournalInvariantError("retry requires the original submitted Attempt and in-flight Reservation");
@@ -1071,6 +2002,102 @@ export class PurchaseJournal {
       return { effect: this.requireEffect(effectId), lease: claimed.lease };
     });
     return begin.immediate();
+  }
+
+  abandonExpiredPreparedPayment(effectId: string, reservationId: string): PurchaseRecord {
+    const abandon = this.db.transaction(() => {
+      const effect = this.requireEffect(effectId);
+      if (effect.attempt === undefined) {
+        throw new JournalInvariantError("expired prepared payment must identify a Payment Attempt");
+      }
+      const purchase = this.requirePurchase(effect.purchaseId);
+      const preparation = this.requirePaymentPreparation(effect.purchaseId, effect.attempt);
+      const attempt = this.requirePaymentAttempt(effect.purchaseId, effect.attempt);
+      this.expireReservationsInternal(this.timestamp());
+      const reservation = this.requireReservation(reservationId);
+      if (
+        purchase.state !== "execution_prepared" ||
+        effect.state !== "planned" ||
+        attempt.state !== "prepared" ||
+        preparation.reservationId !== reservationId ||
+        reservation.state !== "expired"
+      ) {
+        throw new JournalInvariantError("only a never-claimed payment with an expired Reservation can be abandoned");
+      }
+      const now = this.timestamp();
+      const reason = "reservation_expired_before_submission";
+      this.transitionAttemptInternal(
+        attempt,
+        "failed",
+        reason,
+        reservation.policyDigest,
+        now,
+        reason
+      );
+      this.updateEffectState(effect, "abandoned", reason, reservation.policyDigest, now, {
+        errorCode: reason,
+      });
+      return this.transitionPurchase(
+        purchase.id,
+        "execution_prepared",
+        "expired",
+        reason,
+        reservation.policyDigest
+      );
+    });
+    return abandon.immediate();
+  }
+
+  abandonExpiredTreasuryStaging(effectId: string, reservationId: string): PurchaseRecord {
+    const abandon = this.db.transaction(() => {
+      const effect = this.requireEffect(effectId);
+      if (
+        effect.kind !== TREASURY_STAGING_EFFECT_KIND ||
+        effect.attempt === undefined
+      ) {
+        throw new JournalInvariantError(
+          "expired treasury staging must identify its dedicated Payment Attempt"
+        );
+      }
+      const purchase = this.requirePurchase(effect.purchaseId);
+      const plan = this.requireTreasuryStagingPlan(effect.purchaseId, effect.attempt);
+      const attempt = this.requirePaymentAttempt(effect.purchaseId, effect.attempt);
+      this.expireReservationsInternal(this.timestamp());
+      const reservation = this.requireReservation(reservationId);
+      if (
+        purchase.state !== "execution_prepared" ||
+        plan.effectId !== effect.id ||
+        plan.reservationId !== reservationId ||
+        effect.state !== "planned" ||
+        attempt.state !== "planned" ||
+        reservation.state !== "expired"
+      ) {
+        throw new JournalInvariantError(
+          "only never-claimed treasury staging with an expired Reservation can be abandoned"
+        );
+      }
+      const now = this.timestamp();
+      const reason = "reservation_expired_before_treasury_staging";
+      this.transitionAttemptInternal(
+        attempt,
+        "failed",
+        reason,
+        reservation.policyDigest,
+        now,
+        reason
+      );
+      this.updateEffectState(effect, "abandoned", reason, reservation.policyDigest, now, {
+        errorCode: reason,
+      });
+      return this.transitionPurchase(
+        purchase.id,
+        "execution_prepared",
+        "expired",
+        reason,
+        reservation.policyDigest
+      );
+    });
+    return abandon.immediate();
   }
 
   markEffectSubmitted(claim: EffectClaim, submissionDigest: Sha256Digest): EffectRecord {
@@ -1117,10 +2144,7 @@ export class PurchaseJournal {
         return effect;
       }
       if (effect.state === "failed_terminal") {
-        if (observation.status !== "failed_terminal" || effect.errorCode !== observation.errorCode) {
-          throw new JournalInvariantError(`conflicting terminal observation for Effect ${effectId}`);
-        }
-        return effect;
+        throw new JournalInvariantError(`terminal Effect ${effectId} cannot accept another observation`);
       }
       if (effect.state === "planned" || effect.state === "retryable") {
         throw new JournalInvariantError(`Effect ${effectId} has no ambiguous execution to observe from ${effect.state}`);
@@ -1181,7 +2205,8 @@ export class PurchaseJournal {
         preparation.asset !== input.asset ||
         preparation.payee !== input.payee ||
         preparation.network !== input.network ||
-        preparation.requiredFinality !== input.finality
+        !paymentFinalityMeets(input.finality, preparation.requiredFinality) ||
+        preparation.fundingSource !== input.fundingSource
       ) {
         throw new JournalInvariantError("observed spend does not match immutable payment preparation");
       }
@@ -1190,8 +2215,15 @@ export class PurchaseJournal {
         throw new JournalInvariantError(`observed spend requires in-flight Reservation, found ${reservation.state}`);
       }
       const amount = decimalBigInt(input.actualAmountAtomic, "actual spend amount");
-      const fee = decimalBigInt(input.actualFeeAtomic, "actual spend fee", true);
-      if (amount !== BigInt(reservation.amountAtomic) || fee > BigInt(reservation.feeCeilingAtomic)) {
+      const additionalCost = decimalBigInt(
+        input.actualAdditionalCostAtomic,
+        "actual additional treasury cost",
+        true
+      );
+      if (
+        amount !== BigInt(reservation.amountAtomic) ||
+        additionalCost > BigInt(reservation.additionalCostCeilingAtomic)
+      ) {
         throw new PolicyReservationError("observed spend exceeds its Treasury Reservation");
       }
       if (
@@ -1209,9 +2241,10 @@ export class PurchaseJournal {
         .prepare(
           `INSERT INTO treasury_spends
              (effect_id, reservation_id, purchase_id, attempt, transaction_id, outpoint,
-              actual_amount_atomic, actual_fee_atomic, asset, payee, network, finality,
-              evidence_digest, evidence_verification_profile, evidence_verifier_id, observed_at_ms)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+              actual_amount_atomic, actual_additional_cost_atomic, asset, payee, network, finality,
+              funding_source, evidence_digest, evidence_verification_profile,
+              evidence_verifier_id, observed_at_ms)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           input.effectId,
@@ -1221,11 +2254,12 @@ export class PurchaseJournal {
           input.transactionId,
           input.outpoint ?? null,
           input.actualAmountAtomic,
-          input.actualFeeAtomic,
+          input.actualAdditionalCostAtomic,
           input.asset,
           input.payee,
           input.network,
           input.finality,
+          input.fundingSource,
           input.evidenceDigest,
           input.evidenceVerificationProfile,
           input.evidenceVerifierId,
@@ -1268,6 +2302,292 @@ export class PurchaseJournal {
     return record.immediate();
   }
 
+  recordFulfilment(
+    purchaseId: PurchaseId,
+    input: RecordFulfilmentInput,
+    receipts: readonly RecordReceiptInput[] = []
+  ): FulfilmentRecord {
+    validateFulfilmentInput(input);
+    for (const receipt of receipts) validateReceiptInput(receipt);
+    const record = this.db.transaction(() => {
+      const purchase = this.requirePurchase(purchaseId);
+      const existing = this.findFulfilment(purchaseId);
+      if (existing) {
+        assertSameFulfilment(existing, input);
+        for (const receipt of receipts) this.recordReceipt(purchaseId, receipt);
+        return existing;
+      }
+      if (purchase.state !== "settled") {
+        throw new JournalInvariantError(`Fulfilment cannot be recorded from Purchase state ${purchase.state}`);
+      }
+      const terms = this.requireCheckoutTerms(purchaseId);
+      if (input.resourceFingerprint !== terms.resourceFingerprint) {
+        throw new JournalInvariantError("Fulfilment resource does not match Checkout Terms");
+      }
+      const attempt = this.requirePaymentAttempt(purchaseId, input.attempt);
+      if (attempt.state !== "observed") {
+        throw new JournalInvariantError("Fulfilment requires an observed Payment Attempt");
+      }
+      const body = this.requireEvidenceAttachment(
+        purchaseId,
+        input.bodyDigest,
+        "fulfilment-body",
+        input.attempt
+      );
+      if (body.byteLength !== input.bodyByteLength || body.mediaType !== input.mediaType) {
+        throw new JournalInvariantError("Fulfilment body metadata does not match immutable evidence");
+      }
+      if (!this.evidenceLinked(purchaseId, input.bodyDigest, "fulfilment-body", input.attempt)) {
+        throw new JournalInvariantError("Fulfilment body is not linked to this Payment Attempt");
+      }
+      if (
+        !this.isVerifiedEvidenceLinked(purchaseId, input.merchantEvidenceDigest, {
+          attempt: input.attempt,
+          kind: "merchant-fulfilment",
+          verificationProfile: input.merchantVerificationProfile,
+          verifierId: input.merchantVerifierId,
+        })
+      ) {
+        throw new JournalInvariantError("Merchant Fulfilment evidence is not verified and linked");
+      }
+      const now = this.timestamp();
+      this.db
+        .prepare(
+          `INSERT INTO fulfilments (
+             purchase_id, attempt, http_status, resource_fingerprint, body_digest,
+             body_byte_length, media_type, merchant_evidence_digest,
+             merchant_verification_profile, merchant_verifier_id, created_at_ms
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          purchaseId,
+          input.attempt,
+          input.httpStatus,
+          input.resourceFingerprint,
+          input.bodyDigest,
+          input.bodyByteLength,
+          input.mediaType,
+          input.merchantEvidenceDigest,
+          input.merchantVerificationProfile,
+          input.merchantVerifierId,
+          now
+        );
+      this.inject("fulfilment.after_insert");
+      this.transitionPurchase(purchaseId, "settled", "fulfilled", "merchant_fulfilment_verified", input.bodyDigest);
+      const fulfilment = this.requireFulfilment(purchaseId);
+      for (const receipt of receipts) this.recordReceipt(purchaseId, receipt);
+      return fulfilment;
+    });
+    return record.immediate();
+  }
+
+  requireFulfilment(purchaseId: PurchaseId): FulfilmentRecord {
+    const fulfilment = this.findFulfilment(purchaseId);
+    if (!fulfilment) throw new JournalNotFoundError(`Purchase ${purchaseId} has no Fulfilment`);
+    return fulfilment;
+  }
+
+  findFulfilment(purchaseId: PurchaseId): FulfilmentRecord | undefined {
+    const row = this.db.prepare("SELECT * FROM fulfilments WHERE purchase_id = ?").get(purchaseId) as
+      | FulfilmentRow
+      | undefined;
+    return row ? fulfilmentFromRow(row) : undefined;
+  }
+
+  recordReceipt(purchaseId: PurchaseId, input: RecordReceiptInput): ReceiptRecord {
+    validateReceiptInput(input);
+    const record = this.db.transaction(() => {
+      const purchase = this.requirePurchase(purchaseId);
+      if (purchase.state !== "fulfilled" && purchase.state !== "receipted") {
+        throw new JournalInvariantError(`Receipt cannot be recorded from Purchase state ${purchase.state}`);
+      }
+      const terms = this.requireCheckoutTerms(purchaseId);
+      const authorization = this.requireAuthorization(purchaseId);
+      const fulfilment = this.requireFulfilment(purchaseId);
+      const spend = this.findSpendForPurchase(purchaseId);
+      if (!spend) throw new JournalInvariantError("Receipt requires verified Settlement");
+      if (
+        input.checkoutDigest !== terms.checkoutDigest ||
+        input.authorizationEvidenceDigest !== authorization.evidenceDigest ||
+        input.settlementEvidenceDigest !== spend.evidenceDigest ||
+        input.fulfilmentDigest !== fulfilment.bodyDigest
+      ) {
+        throw new JournalInvariantError("Receipt does not join the canonical Purchase facts");
+      }
+      if (
+        !this.isVerifiedEvidenceLinked(purchaseId, input.evidenceDigest, {
+          attempt: null,
+          kind: "purchase-receipt",
+          verificationProfile: input.profile,
+          verifierId: input.verifierId,
+        })
+      ) {
+        throw new JournalInvariantError("Receipt evidence is not verified and linked to this Purchase");
+      }
+      const canonicalDigest = canonicalReceiptDigest(
+        purchaseId,
+        fulfilment.attempt,
+        this.requirePaymentAttempt(purchaseId, fulfilment.attempt).identifier,
+        input
+      );
+      const existing = this.db
+        .prepare("SELECT * FROM purchase_receipts WHERE purchase_id = ? AND role = ?")
+        .get(purchaseId, input.role) as ReceiptRow | undefined;
+      let receipt: ReceiptRecord;
+      if (existing) {
+        receipt = receiptFromRow(existing);
+        assertSameReceipt(receipt, input, canonicalDigest);
+      } else {
+        const now = this.timestamp();
+        const inserted = this.db
+          .prepare(
+            `INSERT INTO purchase_receipts (
+               purchase_id, role, canonical_digest, evidence_digest, profile, issuer, verifier_id,
+               checkout_digest, authorization_evidence_digest, settlement_evidence_digest,
+               fulfilment_digest, created_at_ms
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          )
+          .run(
+            purchaseId,
+            input.role,
+            canonicalDigest,
+            input.evidenceDigest,
+            input.profile,
+            input.issuer ?? null,
+            input.verifierId,
+            input.checkoutDigest,
+            input.authorizationEvidenceDigest,
+            input.settlementEvidenceDigest,
+            input.fulfilmentDigest,
+            now
+          );
+        this.inject("receipt.after_insert");
+        receipt = {
+          id: Number(inserted.lastInsertRowid),
+          purchaseId,
+          ...input,
+          canonicalDigest,
+          createdAtMs: now,
+        };
+      }
+      this.completeReceiptSetIfSatisfied(purchaseId);
+      return receipt;
+    });
+    return record.immediate();
+  }
+
+  receipts(purchaseId: PurchaseId): ReceiptRecord[] {
+    this.requirePurchase(purchaseId);
+    const rows = this.db
+      .prepare("SELECT * FROM purchase_receipts WHERE purchase_id = ? ORDER BY role, id")
+      .all(purchaseId) as ReceiptRow[];
+    return rows.map(receiptFromRow);
+  }
+
+  findReceiptSet(purchaseId: PurchaseId): ReceiptSetRecord | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM purchase_receipt_sets WHERE purchase_id = ?")
+      .get(purchaseId) as ReceiptSetRow | undefined;
+    return row ? receiptSetFromRow(row) : undefined;
+  }
+
+  private completeReceiptSetIfSatisfied(purchaseId: PurchaseId): ReceiptSetRecord | undefined {
+    const receipts = this.receipts(purchaseId);
+    if (receipts.length < PURCHASE_RECEIPT_REQUIREMENTS.length) return undefined;
+    if (receipts.length !== PURCHASE_RECEIPT_REQUIREMENTS.length) {
+      throw new JournalInvariantError("Receipt set contains an unsupported canonical role");
+    }
+    for (const requirement of PURCHASE_RECEIPT_REQUIREMENTS) {
+      const receipt = receipts.find((candidate) => candidate.role === requirement.role);
+      if (!receipt || receipt.profile !== requirement.profile) {
+        throw new JournalInvariantError(`Receipt set is missing required ${requirement.role} evidence`);
+      }
+    }
+    const fulfilment = this.requireFulfilment(purchaseId);
+    const attempt = this.requirePaymentAttempt(purchaseId, fulfilment.attempt);
+    const canonicalDigest = canonicalReceiptSetDigest(
+      purchaseId,
+      fulfilment.attempt,
+      attempt.identifier,
+      receipts
+    );
+    const existing = this.findReceiptSet(purchaseId);
+    if (existing) {
+      if (
+        existing.profile !== PURCHASE_RECEIPT_SET_PROFILE ||
+        existing.canonicalDigest !== canonicalDigest
+      ) {
+        throw new JournalInvariantError("immutable Receipt set conflict");
+      }
+      return existing;
+    }
+    const now = this.timestamp();
+    this.db.prepare(
+      `INSERT INTO purchase_receipt_sets
+         (purchase_id, profile, canonical_digest, completed_at_ms)
+       VALUES (?, ?, ?, ?)`
+    ).run(purchaseId, PURCHASE_RECEIPT_SET_PROFILE, canonicalDigest, now);
+    const purchase = this.requirePurchase(purchaseId);
+    if (purchase.state === "fulfilled") {
+      this.transitionPurchase(
+        purchaseId,
+        "fulfilled",
+        "receipted",
+        "canonical_receipt_set_complete",
+        canonicalDigest
+      );
+    }
+    return this.findReceiptSet(purchaseId)!;
+  }
+
+  paymentAttempts(purchaseId: PurchaseId): PaymentAttemptRecord[] {
+    this.requirePurchase(purchaseId);
+    return (
+      this.db
+        .prepare("SELECT * FROM payment_attempts WHERE purchase_id = ? ORDER BY attempt")
+        .all(purchaseId) as PaymentAttemptRow[]
+    ).map(paymentAttemptFromRow);
+  }
+
+  findReservationForPurchase(purchaseId: PurchaseId): PolicyReservationRecord | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM treasury_reservations
+         WHERE purchase_id = ?
+         ORDER BY CASE state
+           WHEN 'spent' THEN 0 WHEN 'in_flight' THEN 1 WHEN 'active' THEN 2
+           WHEN 'released' THEN 3 ELSE 4 END, created_at_ms DESC
+         LIMIT 1`
+      )
+      .get(purchaseId) as ReservationRow | undefined;
+    return row ? reservationFromRow(row) : undefined;
+  }
+
+  effectsForPurchase(purchaseId: PurchaseId): EffectRecord[] {
+    this.requirePurchase(purchaseId);
+    return (
+      this.db.prepare("SELECT * FROM effects WHERE purchase_id = ? ORDER BY created_at_ms, id").all(purchaseId) as EffectRow[]
+    ).map(effectFromRow);
+  }
+
+  evidenceLinks(purchaseId: PurchaseId): EvidenceLinkRecord[] {
+    this.requirePurchase(purchaseId);
+    const rows = this.db
+      .prepare(
+        `SELECT purchase_id, digest, kind, attempt, media_type, profile, issuer, attached_at_ms
+         FROM evidence_links WHERE purchase_id = ? ORDER BY kind, attempt, digest`
+      )
+      .all(purchaseId) as EvidenceLinkRow[];
+    return rows.map(evidenceLinkFromRow);
+  }
+
+  findSpendForPurchase(purchaseId: PurchaseId): TreasurySpendRecord | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM treasury_spends WHERE purchase_id = ? ORDER BY id DESC LIMIT 1")
+      .get(purchaseId) as TreasurySpendRow | undefined;
+    return row ? treasurySpendFromRow(row) : undefined;
+  }
+
   requireSpend(reservationId: string): TreasurySpendRecord {
     const spend = this.findSpend(reservationId);
     if (!spend) throw new JournalNotFoundError(`Treasury spend for Reservation ${reservationId} does not exist`);
@@ -1285,14 +2605,14 @@ export class PurchaseJournal {
       ? (this.db
           .prepare(
             `SELECT * FROM effects
-             WHERE purchase_id = ? AND state NOT IN ('observed', 'failed_terminal')
+             WHERE purchase_id = ? AND state NOT IN ('observed', 'abandoned')
              ORDER BY created_at_ms, id`
           )
           .all(purchaseId) as EffectRow[])
       : (this.db
           .prepare(
             `SELECT * FROM effects
-             WHERE state NOT IN ('observed', 'failed_terminal')
+             WHERE state NOT IN ('observed', 'abandoned')
              ORDER BY created_at_ms, id`
           )
           .all() as EffectRow[]);
@@ -1370,7 +2690,7 @@ export class PurchaseJournal {
     assertCode(outcome, "reconciliation outcome");
     if (detailDigest) assertDigest(detailDigest, "reconciliation detail digest");
     const record = this.db.transaction(() => {
-      this.assertRecoveryLease(lease);
+      this.assertRecoveryLease(lease, purchaseId);
       this.requirePurchase(purchaseId);
       if (effectId) {
         const effect = this.requireEffect(effectId);
@@ -1442,6 +2762,45 @@ export class PurchaseJournal {
       }
       return;
     }
+    if (version === 1) {
+      if (applicationId !== JOURNAL_APPLICATION_ID) {
+        throw new JournalInvariantError("Purchase Journal application identity is invalid");
+      }
+      const migration = this.db
+        .prepare("SELECT checksum FROM schema_migrations WHERE version = 1")
+        .get() as { checksum: string } | undefined;
+      if (migration?.checksum !== JOURNAL_SCHEMA_V1_CHECKSUM) {
+        throw new JournalInvariantError("Purchase Journal v1 migration checksum is invalid");
+      }
+      if (schemaFingerprint(this.db) !== expectedV1SchemaFingerprint()) {
+        throw new JournalInvariantError("Purchase Journal v1 schema fingerprint is invalid");
+      }
+      const v1Facts = this.db
+        .prepare(
+          `SELECT
+             (SELECT COUNT(*) FROM purchases) +
+             (SELECT COUNT(*) FROM evidence_artifacts) +
+             (SELECT COUNT(*) FROM policy_snapshots) +
+             (SELECT COUNT(*) FROM treasury_reservations) +
+             (SELECT COUNT(*) FROM payment_attempts) +
+             (SELECT COUNT(*) FROM effects) AS count`
+        )
+        .get() as { count: number };
+      if (v1Facts.count !== 0) {
+        throw new JournalInvariantError(
+          "clean cutover refuses non-empty v1 development state; reset the journal before using v2"
+        );
+      }
+      const migrateV2 = this.db.transaction(() => {
+        this.db.exec(JOURNAL_SCHEMA_V2_MIGRATION_SQL);
+        this.db
+          .prepare("INSERT INTO schema_migrations (version, checksum, applied_at_ms) VALUES (?, ?, ?)")
+          .run(JOURNAL_SCHEMA_VERSION, JOURNAL_SCHEMA_CHECKSUM, this.timestamp());
+        this.db.pragma(`user_version = ${JOURNAL_SCHEMA_VERSION}`);
+      });
+      migrateV2.immediate();
+      return;
+    }
     if (version !== 0 || applicationId !== 0) {
       throw new JournalInvariantError(`unsupported Purchase Journal schema ${version}`);
     }
@@ -1505,6 +2864,129 @@ export class PurchaseJournal {
       if (state !== purchase.state || purchase.version !== transitions.length - 1) {
         throw new JournalInvariantError(`Purchase ${purchase.id} state does not match immutable history`);
       }
+
+      const purchaseId = purchase.id as PurchaseId;
+      const terms = this.findCheckoutTerms(purchaseId);
+      const authorizationRequest = this.findAuthorizationRequest(purchaseId);
+      const authorization = this.findAuthorization(purchaseId);
+      const fulfilment = this.findFulfilment(purchaseId);
+      const receipts = this.receipts(purchaseId);
+      const receiptSet = this.findReceiptSet(purchaseId);
+      this.assertPurchaseStateFacts(purchaseId, purchase.state);
+      const requiresTerms = !["created", "cancelled"].includes(purchase.state);
+      if (requiresTerms && !terms) {
+        throw new JournalInvariantError(`Purchase ${purchase.id} state requires immutable Checkout Terms`);
+      }
+      if (terms) {
+        if (
+          terms.resourceFingerprint !== purchase.resource_fingerprint ||
+          terms.checkoutDigest !== terms.checkoutEvidenceDigest ||
+          (purchase.expected_merchant_id !== null && terms.merchant.id !== purchase.expected_merchant_id) ||
+          (purchase.expected_merchant_origin !== null && terms.merchant.origin !== purchase.expected_merchant_origin) ||
+          !this.isVerifiedEvidenceLinked(purchaseId, terms.checkoutEvidenceDigest, {
+            attempt: null,
+            kind: "checkout-terms",
+            verificationProfile: terms.checkoutVerificationProfile,
+            verifierId: terms.checkoutVerifierId,
+          }) ||
+          !this.isVerifiedEvidenceLinked(purchaseId, terms.paymentRequirementsDigest, {
+            attempt: null,
+            kind: "payment-requirements",
+            verificationProfile: terms.paymentRequirementsVerificationProfile,
+            verifierId: terms.paymentRequirementsVerifierId,
+          }) ||
+          this.requireEvidenceAttachment(
+            purchaseId,
+            terms.checkoutEvidenceDigest,
+            "checkout-terms"
+          ).issuer !== terms.merchant.id ||
+          this.requireEvidenceAttachment(
+            purchaseId,
+            terms.checkoutEvidenceDigest,
+            "checkout-terms"
+          ).profile !== terms.checkoutVerificationProfile ||
+          this.requireEvidenceAttachment(
+            purchaseId,
+            terms.paymentRequirementsDigest,
+            "payment-requirements"
+          ).issuer !== terms.merchant.id ||
+          this.requireEvidenceAttachment(
+            purchaseId,
+            terms.paymentRequirementsDigest,
+            "payment-requirements"
+          ).profile !== terms.paymentRequirementsVerificationProfile
+        ) {
+          throw new JournalInvariantError(`Purchase ${purchase.id} Checkout Terms are inconsistent`);
+        }
+      }
+      if (authorizationRequest) {
+        const requestBody = this.requireEvidenceAttachment(
+          purchaseId,
+          authorizationRequest.requestBodyDigest,
+          "purchase-request-body"
+        );
+        const requestMediaType = authorizationRequest.requestMediaType || undefined;
+        if (
+          !terms ||
+          authorizationRequest.checkoutDigest !== terms.checkoutDigest ||
+          !this.evidenceLinked(purchaseId, authorizationRequest.requestDigest, "authorization-request") ||
+          (requestMediaType !== undefined && requestBody.mediaType !== requestMediaType) ||
+          purchase.resource_fingerprint !== requestFingerprintFromBodyDigest({
+            url: purchase.resource_url,
+            method: purchase.method,
+            mediaType: requestMediaType,
+            bodyDigest: authorizationRequest.requestBodyDigest,
+          })
+        ) {
+          throw new JournalInvariantError(`Purchase ${purchase.id} authorization request is misbound`);
+        }
+      }
+      if (["awaiting_authority", "authorised", "execution_prepared", "submitted", "settled", "fulfilled", "receipted", "denied", "failed_recoverable", "failed_terminal"].includes(purchase.state) && !authorizationRequest) {
+        throw new JournalInvariantError(`Purchase ${purchase.id} state requires an authorization request`);
+      }
+      if (authorization) {
+        if (
+          !authorizationRequest ||
+          authorization.checkoutDigest !== authorizationRequest.checkoutDigest ||
+          authorization.requestDigest !== authorizationRequest.requestDigest ||
+          authorization.nonceDigest !== authorizationRequest.nonceDigest ||
+          authorization.expiresAtMs !== authorizationRequest.expiresAtMs ||
+          authorization.approvedFactsDigest !== this.canonicalAuthorizationFactsDigest(purchaseId) ||
+          !this.isVerifiedEvidenceLinked(purchaseId, authorization.evidenceDigest, {
+            attempt: null,
+            kind: "purchase-authorization",
+            verificationProfile: authorization.verificationProfile,
+            verifierId: authorization.verifierId,
+          })
+        ) {
+          throw new JournalInvariantError(`Purchase ${purchase.id} authorization decision is inconsistent`);
+        }
+      }
+      const requiresApprovedAuthorization = [
+        "authorised",
+        "execution_prepared",
+        "submitted",
+        "settled",
+        "fulfilled",
+        "receipted",
+        "failed_recoverable",
+        "failed_terminal",
+      ].includes(purchase.state);
+      if (requiresApprovedAuthorization && authorization?.decision !== "approved") {
+        throw new JournalInvariantError(`Purchase ${purchase.id} state requires approved authorization`);
+      }
+      if (purchase.state === "denied" && authorization?.decision !== "denied") {
+        throw new JournalInvariantError(`Purchase ${purchase.id} denial has no matching authorization fact`);
+      }
+      if ((purchase.state === "fulfilled" || purchase.state === "receipted") && !fulfilment) {
+        throw new JournalInvariantError(`Purchase ${purchase.id} state requires verified Fulfilment`);
+      }
+      if (purchase.state === "receipted" && !receiptSet) {
+        throw new JournalInvariantError(`Purchase ${purchase.id} state requires a complete canonical Receipt set`);
+      }
+      if (purchase.state !== "receipted" && receiptSet) {
+        throw new JournalInvariantError(`Purchase ${purchase.id} has a completed Receipt set in state ${purchase.state}`);
+      }
     }
 
     const attempts = this.db
@@ -1556,10 +3038,26 @@ export class PurchaseJournal {
     for (const row of preparations) {
       const preparation = paymentPreparationFromRow(row);
       const reservation = this.requireReservation(preparation.reservationId);
+      const terms = this.requireCheckoutTerms(preparation.purchaseId);
+      const stagingPlan = this.findTreasuryStagingPlan(preparation.purchaseId, preparation.attempt);
+      const stagingObservation = this.findTreasuryStagingObservation(
+        preparation.purchaseId,
+        preparation.attempt
+      );
       if (
         reservation.purchaseId !== preparation.purchaseId ||
         reservation.amountAtomic !== preparation.amountAtomic ||
-        reservation.payee !== preparation.payee
+        reservation.payee !== preparation.payee ||
+        preparation.requirementsDigest !== terms.paymentRequirementsDigest ||
+        preparation.amountAtomic !== terms.amountAtomic ||
+        preparation.asset !== terms.asset ||
+        preparation.network !== terms.network ||
+        preparation.payee !== terms.payTo ||
+        preparation.fundingSource !== reservation.fundingSource ||
+        (stagingPlan !== undefined &&
+          (stagingPlan.reservationId !== preparation.reservationId ||
+            stagingObservation?.effectId !== stagingPlan.effectId ||
+            this.requireEffect(stagingPlan.effectId).state !== "observed"))
       ) {
         throw new JournalInvariantError(`payment preparation ${preparation.purchaseId}/${preparation.attempt} is misbound`);
       }
@@ -1608,7 +3106,30 @@ export class PurchaseJournal {
         throw new JournalInvariantError(`Effect ${effect.id} state does not match immutable history`);
       }
       this.readPreparedMaterial(effect.payloadDigest, effect.preparedRef, effect.preparedByteLength);
-      if (effect.attempt !== undefined && effect.state !== "planned") {
+      if (effect.kind === TREASURY_STAGING_EFFECT_KIND) {
+        if (effect.attempt === undefined) {
+          throw new JournalInvariantError(`Treasury staging Effect ${effect.id} has no Payment Attempt`);
+        }
+        const plan = this.findTreasuryStagingPlanByEffect(effect.id);
+        if (
+          !plan ||
+          plan.purchaseId !== effect.purchaseId ||
+          plan.attempt !== effect.attempt ||
+          plan.payloadDigest !== effect.payloadDigest ||
+          plan.preparedRef !== effect.preparedRef ||
+          plan.preparedByteLength !== effect.preparedByteLength ||
+          plan.idempotencyKey !== effect.idempotencyKey
+        ) {
+          throw new JournalInvariantError(`Treasury staging Effect ${effect.id} is not bound to its plan`);
+        }
+        const observation = this.findTreasuryStagingObservationByEffect(effect.id);
+        if ((effect.state === "observed") !== Boolean(observation)) {
+          throw new JournalInvariantError(`Treasury staging Effect ${effect.id} observation state is inconsistent`);
+        }
+        if (observation && effect.resultDigest !== observation.evidenceDigest) {
+          throw new JournalInvariantError(`Treasury staging Effect ${effect.id} result evidence is inconsistent`);
+        }
+      } else if (effect.attempt !== undefined && effect.state !== "planned") {
         const preparation = this.requirePaymentPreparation(effect.purchaseId, effect.attempt);
         if (
           effect.payloadDigest !== preparation.payloadDigest ||
@@ -1620,9 +3141,91 @@ export class PurchaseJournal {
       }
     }
 
+    const stagingPlans = this.db
+      .prepare(
+        `SELECT p.*, e.idempotency_key
+           FROM treasury_staging_plans p
+           JOIN effects e ON e.id = p.effect_id`
+      )
+      .all() as TreasuryStagingPlanRow[];
+    for (const row of stagingPlans) {
+      const plan = treasuryStagingPlanFromRow(row);
+      const effect = this.requireEffect(plan.effectId);
+      const attempt = this.requirePaymentAttempt(plan.purchaseId, plan.attempt);
+      const reservation = this.requireReservation(plan.reservationId);
+      const reservedGross =
+        BigInt(reservation.amountAtomic) + BigInt(reservation.additionalCostCeilingAtomic);
+      if (
+        effect.kind !== TREASURY_STAGING_EFFECT_KIND ||
+        effect.purchaseId !== plan.purchaseId ||
+        effect.attempt !== plan.attempt ||
+        effect.payloadDigest !== plan.payloadDigest ||
+        effect.preparedRef !== plan.preparedRef ||
+        effect.preparedByteLength !== plan.preparedByteLength ||
+        effect.idempotencyKey !== plan.idempotencyKey ||
+        reservation.purchaseId !== plan.purchaseId ||
+        reservation.fundingSource !== plan.fundingSource ||
+        BigInt(plan.stagingAmountAtomic) > reservedGross ||
+        (attempt.state === "planned" && this.findPaymentPreparation(plan.purchaseId, plan.attempt) !== undefined)
+      ) {
+        throw new JournalInvariantError(
+          `Treasury staging plan ${plan.purchaseId}/${plan.attempt} is misbound`
+        );
+      }
+      this.readPreparedMaterial(plan.payloadDigest, plan.preparedRef, plan.preparedByteLength);
+    }
+
+    const stagingObservationRows = this.db
+      .prepare("SELECT * FROM treasury_staging_observations")
+      .all() as TreasuryStagingObservationRow[];
+    for (const row of stagingObservationRows) {
+      const observation = treasuryStagingObservationFromRow(row);
+      const plan = this.findTreasuryStagingPlanByEffect(observation.effectId);
+      const effect = this.requireEffect(observation.effectId);
+      if (
+        !plan ||
+        plan.purchaseId !== observation.purchaseId ||
+        plan.attempt !== observation.attempt ||
+        plan.reservationId !== observation.reservationId ||
+        plan.plannedTransactionId !== observation.transactionId ||
+        plan.expectedOutpoint !== observation.outpoint ||
+        plan.stagingAmountAtomic !== observation.stagingAmountAtomic ||
+        plan.fundingSource !== observation.fundingSource ||
+        effect.state !== "observed" ||
+        effect.resultDigest !== observation.evidenceDigest ||
+        !this.isVerifiedEvidenceLinked(observation.purchaseId, observation.evidenceDigest, {
+          attempt: observation.attempt,
+          kind: TREASURY_STAGING_EVIDENCE_KIND,
+          verificationProfile: observation.evidenceVerificationProfile,
+          verifierId: observation.evidenceVerifierId,
+        })
+      ) {
+        throw new JournalInvariantError(
+          `Treasury staging observation ${observation.effectId} is inconsistent`
+        );
+      }
+    }
+
     const reservations = this.db.prepare("SELECT * FROM treasury_reservations").all() as ReservationRow[];
     for (const row of reservations) {
       const reservation = reservationFromRow(row);
+      const terms = this.requireCheckoutTerms(reservation.purchaseId);
+      const authorization = this.requireAuthorization(reservation.purchaseId);
+      const authorizationRequest = this.requireAuthorizationRequest(reservation.purchaseId);
+      if (
+        authorization.decision !== "approved" ||
+        reservation.amountAtomic !== terms.amountAtomic ||
+        reservation.payee !== terms.payTo ||
+        reservation.expiresAtMs > terms.expiresAtMs ||
+        BigInt(reservation.additionalCostCeilingAtomic) >
+          BigInt(authorizationRequest.additionalCostCeilingAtomic) ||
+        reservation.approvalEvidenceDigest !== authorization.evidenceDigest ||
+        reservation.approvalVerificationProfile !== authorization.verificationProfile ||
+        reservation.approvalVerifierId !== authorization.verifierId ||
+        reservation.fundingSource !== "vault-treasury"
+      ) {
+        throw new JournalInvariantError(`Treasury Reservation ${reservation.id} is misbound to its Purchase`);
+      }
       const spend = this.findSpend(reservation.id);
       if ((reservation.state === "spent") !== Boolean(spend)) {
         throw new JournalInvariantError(`Treasury Reservation ${reservation.id} spend state is inconsistent`);
@@ -1631,26 +3234,97 @@ export class PurchaseJournal {
         const preparationRow = this.db
           .prepare("SELECT * FROM payment_preparations WHERE reservation_id = ?")
           .get(reservation.id) as PaymentPreparationRow | undefined;
-        if (!preparationRow) throw new JournalInvariantError(`Treasury Reservation ${reservation.id} has no preparation`);
-        const attempt = this.requirePaymentAttempt(
-          preparationRow.purchase_id as PurchaseId,
-          preparationRow.attempt
-        );
-        const paymentEffects = (
-          this.db
-            .prepare("SELECT * FROM effects WHERE purchase_id = ? AND attempt = ?")
-            .all(preparationRow.purchase_id, preparationRow.attempt) as EffectRow[]
-        ).map(effectFromRow);
-        if (reservation.state === "in_flight" && attempt.state !== "submitted") {
-          throw new JournalInvariantError(`in-flight Treasury Reservation ${reservation.id} has invalid Attempt state`);
+        const stagingPlan = this.findTreasuryStagingPlanByReservation(reservation.id);
+        if (!preparationRow && !stagingPlan) {
+          throw new JournalInvariantError(
+            `Treasury Reservation ${reservation.id} has neither staging nor payment preparation`
+          );
         }
         if (
-          reservation.state === "in_flight" &&
-          !paymentEffects.some((effect) =>
-            ["executing", "submitted", "ambiguous", "retryable", "failed_terminal"].includes(effect.state)
-          )
+          preparationRow &&
+          stagingPlan &&
+          (preparationRow.purchase_id !== stagingPlan.purchaseId ||
+            preparationRow.attempt !== stagingPlan.attempt)
         ) {
-          throw new JournalInvariantError(`in-flight Treasury Reservation ${reservation.id} has no recoverable Effect`);
+          throw new JournalInvariantError(
+            `Treasury Reservation ${reservation.id} has conflicting staging and payment attempts`
+          );
+        }
+        const attemptPurchaseId = (preparationRow?.purchase_id ?? stagingPlan!.purchaseId) as PurchaseId;
+        const attemptNumber = preparationRow?.attempt ?? stagingPlan!.attempt;
+        const attempt = this.requirePaymentAttempt(attemptPurchaseId, attemptNumber);
+        const attemptEffects = (
+          this.db
+            .prepare("SELECT * FROM effects WHERE purchase_id = ? AND attempt = ?")
+            .all(attemptPurchaseId, attemptNumber) as EffectRow[]
+        ).map(effectFromRow);
+        const paymentEffects = attemptEffects.filter(
+          (effect) => effect.kind !== TREASURY_STAGING_EFFECT_KIND
+        );
+        const stagingEffect = stagingPlan
+          ? attemptEffects.find((effect) => effect.id === stagingPlan.effectId)
+          : undefined;
+        const stagingObservation = stagingPlan
+          ? this.findTreasuryStagingObservation(attemptPurchaseId, attemptNumber)
+          : undefined;
+        if (reservation.state === "in_flight") {
+          if (stagingPlan) {
+            if (
+              !stagingEffect ||
+              !["executing", "submitted", "ambiguous", "retryable", "observed", "failed_terminal"].includes(
+                stagingEffect.state
+              )
+            ) {
+              throw new JournalInvariantError(
+                `in-flight Treasury Reservation ${reservation.id} has no recoverable staging Effect`
+              );
+            }
+            if (stagingEffect.state === "observed") {
+              if (!stagingObservation || stagingObservation.effectId !== stagingEffect.id) {
+                throw new JournalInvariantError(
+                  `in-flight Treasury Reservation ${reservation.id} lost its staging observation`
+                );
+              }
+              if (attempt.state === "planned" && preparationRow) {
+                throw new JournalInvariantError(
+                  `staged Treasury Reservation ${reservation.id} has preparation before Attempt transition`
+                );
+              }
+              if (attempt.state === "prepared" && !preparationRow) {
+                throw new JournalInvariantError(
+                  `staged Treasury Reservation ${reservation.id} lost exact payment preparation`
+                );
+              }
+              if (
+                attempt.state === "submitted" &&
+                !paymentEffects.some((effect) =>
+                  ["executing", "submitted", "ambiguous", "retryable", "failed_terminal"].includes(effect.state)
+                )
+              ) {
+                throw new JournalInvariantError(
+                  `staged Treasury Reservation ${reservation.id} has no recoverable payment Effect`
+                );
+              }
+              if (!["planned", "prepared", "submitted", "failed"].includes(attempt.state)) {
+                throw new JournalInvariantError(
+                  `staged in-flight Treasury Reservation ${reservation.id} has invalid Attempt state`
+                );
+              }
+            } else if (attempt.state !== "planned" || preparationRow) {
+              throw new JournalInvariantError(
+                `unobserved Treasury staging ${reservation.id} advanced exact payment state`
+              );
+            }
+          } else if (
+            attempt.state !== "submitted" ||
+            !paymentEffects.some((effect) =>
+              ["executing", "submitted", "ambiguous", "retryable", "failed_terminal"].includes(effect.state)
+            )
+          ) {
+            throw new JournalInvariantError(
+              `direct in-flight Treasury Reservation ${reservation.id} has invalid payment state`
+            );
+          }
         }
         if (reservation.state === "spent" && attempt.state !== "observed") {
           throw new JournalInvariantError(`spent Treasury Reservation ${reservation.id} has invalid Attempt state`);
@@ -1682,11 +3356,95 @@ export class PurchaseJournal {
         spend.asset !== preparation.asset ||
         spend.payee !== preparation.payee ||
         spend.network !== preparation.network ||
-        spend.finality !== preparation.requiredFinality ||
+        !paymentFinalityMeets(spend.finality, preparation.requiredFinality) ||
+        spend.fundingSource !== preparation.fundingSource ||
         effect.state !== "observed" ||
         effect.resultDigest !== spend.evidenceDigest
       ) {
         throw new JournalInvariantError(`Treasury spend ${spend.id} is inconsistent with immutable preparation`);
+      }
+    }
+
+    const fulfilments = this.db.prepare("SELECT * FROM fulfilments").all() as FulfilmentRow[];
+    for (const row of fulfilments) {
+      const fulfilment = fulfilmentFromRow(row);
+      const terms = this.requireCheckoutTerms(fulfilment.purchaseId);
+      const attempt = this.requirePaymentAttempt(fulfilment.purchaseId, fulfilment.attempt);
+      const body = this.requireEvidenceAttachment(
+        fulfilment.purchaseId,
+        fulfilment.bodyDigest,
+        "fulfilment-body",
+        fulfilment.attempt
+      );
+      if (
+        terms.resourceFingerprint !== fulfilment.resourceFingerprint ||
+        attempt.state !== "observed" ||
+        body.byteLength !== fulfilment.bodyByteLength ||
+        body.mediaType !== fulfilment.mediaType ||
+        !this.evidenceLinked(fulfilment.purchaseId, fulfilment.bodyDigest, "fulfilment-body", fulfilment.attempt) ||
+        !this.isVerifiedEvidenceLinked(fulfilment.purchaseId, fulfilment.merchantEvidenceDigest, {
+          attempt: fulfilment.attempt,
+          kind: "merchant-fulfilment",
+          verificationProfile: fulfilment.merchantVerificationProfile,
+          verifierId: fulfilment.merchantVerifierId,
+        })
+      ) {
+        throw new JournalInvariantError(`Purchase ${fulfilment.purchaseId} Fulfilment is inconsistent`);
+      }
+    }
+
+    const receiptRows = this.db.prepare("SELECT * FROM purchase_receipts").all() as ReceiptRow[];
+    for (const row of receiptRows) {
+      const receipt = receiptFromRow(row);
+      const terms = this.requireCheckoutTerms(receipt.purchaseId);
+      const authorization = this.requireAuthorization(receipt.purchaseId);
+      const fulfilment = this.requireFulfilment(receipt.purchaseId);
+      const spend = this.findSpendForPurchase(receipt.purchaseId);
+      if (
+        !spend ||
+        receipt.canonicalDigest !== canonicalReceiptDigest(
+          receipt.purchaseId,
+          fulfilment.attempt,
+          this.requirePaymentAttempt(receipt.purchaseId, fulfilment.attempt).identifier,
+          receipt
+        ) ||
+        receipt.checkoutDigest !== terms.checkoutDigest ||
+        receipt.authorizationEvidenceDigest !== authorization.evidenceDigest ||
+        receipt.settlementEvidenceDigest !== spend.evidenceDigest ||
+        receipt.fulfilmentDigest !== fulfilment.bodyDigest ||
+        !this.isVerifiedEvidenceLinked(receipt.purchaseId, receipt.evidenceDigest, {
+          attempt: null,
+          kind: "purchase-receipt",
+          verificationProfile: receipt.profile,
+          verifierId: receipt.verifierId,
+        })
+      ) {
+        throw new JournalInvariantError(`Purchase ${receipt.purchaseId} Receipt is inconsistent`);
+      }
+    }
+
+    const receiptSetRows = this.db.prepare("SELECT * FROM purchase_receipt_sets").all() as ReceiptSetRow[];
+    for (const row of receiptSetRows) {
+      const set = receiptSetFromRow(row);
+      const purchase = this.requirePurchase(set.purchaseId);
+      const receipts = this.receipts(set.purchaseId);
+      if (
+        purchase.state !== "receipted" ||
+        receipts.length !== PURCHASE_RECEIPT_REQUIREMENTS.length ||
+        PURCHASE_RECEIPT_REQUIREMENTS.some((requirement) =>
+          !receipts.some((receipt) => receipt.role === requirement.role && receipt.profile === requirement.profile)
+        ) ||
+        set.canonicalDigest !== canonicalReceiptSetDigest(
+          set.purchaseId,
+          this.requireFulfilment(set.purchaseId).attempt,
+          this.requirePaymentAttempt(
+            set.purchaseId,
+            this.requireFulfilment(set.purchaseId).attempt
+          ).identifier,
+          receipts
+        )
+      ) {
+        throw new JournalInvariantError(`Purchase ${set.purchaseId} canonical Receipt set is inconsistent`);
       }
     }
 
@@ -1697,11 +3455,151 @@ export class PurchaseJournal {
     }
   }
 
+  private assertPurchaseStateFacts(purchaseId: PurchaseId, state: PurchaseState): void {
+    const terms = this.findCheckoutTerms(purchaseId);
+    const authorizationRequest = this.findAuthorizationRequest(purchaseId);
+    const authorization = this.findAuthorization(purchaseId);
+    const reservation = this.findReservationForPurchase(purchaseId);
+    const attempts = this.paymentAttempts(purchaseId);
+    const latestAttempt = attempts.at(-1);
+    const preparation = latestAttempt
+      ? this.findPaymentPreparation(purchaseId, latestAttempt.attempt)
+      : undefined;
+    const attemptEffects = this.effectsForPurchase(purchaseId).filter(
+      (effect) => effect.attempt === latestAttempt?.attempt
+    );
+    const stagingPlan = latestAttempt
+      ? this.findTreasuryStagingPlan(purchaseId, latestAttempt.attempt)
+      : undefined;
+    const stagingObservation = latestAttempt
+      ? this.findTreasuryStagingObservation(purchaseId, latestAttempt.attempt)
+      : undefined;
+    const stagingEffect = stagingPlan
+      ? attemptEffects.find((effect) => effect.id === stagingPlan.effectId)
+      : undefined;
+    const paymentEffects = attemptEffects.filter(
+      (effect) => effect.kind !== TREASURY_STAGING_EFFECT_KIND
+    );
+    const spend = this.findSpendForPurchase(purchaseId);
+    const fulfilment = this.findFulfilment(purchaseId);
+    const receipts = this.receipts(purchaseId);
+    const receiptSet = this.findReceiptSet(purchaseId);
+
+    if (state === "terms_bound" && !terms) {
+      throw new JournalInvariantError(`Purchase ${purchaseId} cannot enter terms_bound without Checkout Terms`);
+    }
+    if (state === "awaiting_authority" && (!terms || !authorizationRequest)) {
+      throw new JournalInvariantError(`Purchase ${purchaseId} cannot await authority without a durable request`);
+    }
+    if (state === "authorised" && authorization?.decision !== "approved") {
+      throw new JournalInvariantError(`Purchase ${purchaseId} cannot be authorised without an approved decision`);
+    }
+    if (state === "denied" && authorization?.decision !== "denied") {
+      throw new JournalInvariantError(`Purchase ${purchaseId} cannot be denied without a denied decision`);
+    }
+    if (state === "execution_prepared") {
+      const stagingInProgress =
+        latestAttempt?.state === "planned" &&
+        stagingPlan &&
+        stagingEffect &&
+        reservation?.id === stagingPlan.reservationId &&
+        (
+          (reservation.state === "active" && stagingEffect.state === "planned") ||
+          (
+            reservation.state === "in_flight" &&
+            ["executing", "submitted", "ambiguous", "retryable", "observed", "failed_terminal"].includes(
+              stagingEffect.state
+            )
+          )
+        ) &&
+        (stagingEffect.state !== "observed" || stagingObservation?.effectId === stagingEffect.id);
+      const firstSubmissionInProgress =
+        latestAttempt &&
+        ["submitted", "observed", "failed"].includes(latestAttempt.state) &&
+        reservation &&
+        ["in_flight", "spent", "released"].includes(reservation.state) &&
+        paymentEffects.some((effect) =>
+          ["executing", "submitted", "ambiguous", "retryable", "observed", "failed_terminal"].includes(effect.state)
+        );
+      const readyToSubmit =
+        latestAttempt?.state === "prepared" &&
+        (
+          reservation?.state === "active" ||
+          (
+            reservation?.state === "in_flight" &&
+            stagingEffect?.state === "observed" &&
+            stagingObservation?.effectId === stagingEffect.id
+          )
+        ) &&
+        paymentEffects.some((effect) => effect.state === "planned" || effect.state === "retryable");
+      const stagedPreparationAwaitingEffect =
+        preparation &&
+        latestAttempt?.state === "prepared" &&
+        reservation?.state === "in_flight" &&
+        stagingEffect?.state === "observed" &&
+        stagingObservation?.effectId === stagingEffect.id &&
+        paymentEffects.length === 0;
+      if (!stagingInProgress && (!preparation || (!readyToSubmit && !firstSubmissionInProgress && !stagedPreparationAwaitingEffect))) {
+        throw new JournalInvariantError(
+          `Purchase ${purchaseId} cannot enter execution_prepared without durable staging or exact payment facts`
+        );
+      }
+    }
+    if (state === "submitted") {
+      const submitted =
+        preparation &&
+        latestAttempt &&
+        ["submitted", "observed", "failed"].includes(latestAttempt.state) &&
+        reservation &&
+        ["in_flight", "spent", "released"].includes(reservation.state) &&
+        paymentEffects.some((effect) =>
+          ["executing", "submitted", "ambiguous", "retryable", "observed", "failed_terminal"].includes(effect.state)
+        );
+      if (!submitted) {
+        throw new JournalInvariantError(`Purchase ${purchaseId} cannot enter submitted without a fenced Payment Attempt`);
+      }
+    }
+    if (["settled", "fulfilled", "receipted"].includes(state)) {
+      if (
+        !spend ||
+        latestAttempt?.state !== "observed" ||
+        reservation?.state !== "spent" ||
+        !paymentEffects.some((effect) => effect.state === "observed")
+      ) {
+        throw new JournalInvariantError(`Purchase ${purchaseId} cannot enter ${state} without verified Settlement`);
+      }
+    }
+    if ((state === "fulfilled" || state === "receipted") && !fulfilment) {
+      throw new JournalInvariantError(`Purchase ${purchaseId} cannot enter ${state} without Fulfilment`);
+    }
+    if (state === "receipted" && (!receiptSet || receipts.length !== PURCHASE_RECEIPT_REQUIREMENTS.length)) {
+      throw new JournalInvariantError(`Purchase ${purchaseId} cannot enter receipted without a complete Receipt set`);
+    }
+  }
+
   private findPolicy(digest: Sha256Digest): PolicySnapshotRecord | undefined {
     const row = this.db.prepare("SELECT * FROM policy_snapshots WHERE digest = ?").get(digest) as
       | PolicySnapshotRow
       | undefined;
     return row ? policyFromRow(row, this.policyAllowlist(row.digest)) : undefined;
+  }
+
+  private canonicalAuthorizationFactsDigest(purchaseId: PurchaseId): Sha256Digest {
+    const purchase = this.requirePurchase(purchaseId);
+    const terms = this.requireCheckoutTerms(purchaseId);
+    const request = this.requireAuthorizationRequest(purchaseId);
+    return authorizationFactsDigest({
+      purchaseId,
+      resourceUrl: purchase.resourceUrl,
+      method: purchase.method,
+      requestMediaType: request.requestMediaType,
+      requestBodyDigest: request.requestBodyDigest,
+      terms,
+      requestDigest: request.requestDigest,
+      nonceDigest: request.nonceDigest,
+      additionalCostCeilingAtomic: request.additionalCostCeilingAtomic,
+      expiresAtMs: request.expiresAtMs,
+    });
   }
 
   private policyAllowlist(digest: string): string[] {
@@ -1731,6 +3629,56 @@ export class PurchaseJournal {
       .prepare("SELECT * FROM payment_preparations WHERE purchase_id = ? AND attempt = ?")
       .get(purchaseId, attempt) as PaymentPreparationRow | undefined;
     return row ? paymentPreparationFromRow(row) : undefined;
+  }
+
+  private findTreasuryStagingPlan(
+    purchaseId: PurchaseId,
+    attempt: number
+  ): TreasuryStagingPlanRecord | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT p.*, e.idempotency_key
+           FROM treasury_staging_plans p
+           JOIN effects e ON e.id = p.effect_id
+          WHERE p.purchase_id = ? AND p.attempt = ?`
+      )
+      .get(purchaseId, attempt) as TreasuryStagingPlanRow | undefined;
+    return row ? treasuryStagingPlanFromRow(row) : undefined;
+  }
+
+  private findTreasuryStagingPlanByEffect(effectId: string): TreasuryStagingPlanRecord | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT p.*, e.idempotency_key
+           FROM treasury_staging_plans p
+           JOIN effects e ON e.id = p.effect_id
+          WHERE p.effect_id = ?`
+      )
+      .get(effectId) as TreasuryStagingPlanRow | undefined;
+    return row ? treasuryStagingPlanFromRow(row) : undefined;
+  }
+
+  private findTreasuryStagingPlanByReservation(
+    reservationId: string
+  ): TreasuryStagingPlanRecord | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT p.*, e.idempotency_key
+           FROM treasury_staging_plans p
+           JOIN effects e ON e.id = p.effect_id
+          WHERE p.reservation_id = ?`
+      )
+      .get(reservationId) as TreasuryStagingPlanRow | undefined;
+    return row ? treasuryStagingPlanFromRow(row) : undefined;
+  }
+
+  private findTreasuryStagingObservationByEffect(
+    effectId: string
+  ): TreasuryStagingObservationRecord | undefined {
+    const row = this.db
+      .prepare("SELECT * FROM treasury_staging_observations WHERE effect_id = ?")
+      .get(effectId) as TreasuryStagingObservationRow | undefined;
+    return row ? treasuryStagingObservationFromRow(row) : undefined;
   }
 
   private findSpend(reservationId: string): TreasurySpendRecord | undefined {
@@ -1764,6 +3712,30 @@ export class PurchaseJournal {
       throw new JournalInvariantError("prepared-material reference does not match its content address");
     }
     return this.preparedMaterialStore.read(digest, byteLength);
+  }
+
+  private evidenceLinked(
+    purchaseId: PurchaseId,
+    digest: Sha256Digest,
+    kind: string,
+    attempt?: number
+  ): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 AS ok FROM evidence_links
+         WHERE purchase_id = ? AND digest = ? AND kind = ?
+           AND ((? IS NULL AND attempt IS NULL) OR attempt = ?)
+         LIMIT 1`
+      )
+      .get(purchaseId, digest, kind, attempt ?? null, attempt ?? null) as { ok: number } | undefined;
+    if (row?.ok !== 1 || !this.evidenceStore) return false;
+    try {
+      const artifact = this.requireEvidence(digest);
+      this.evidenceStore.verify(digest, artifact.byteLength);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private isVerifiedEvidenceLinked(
@@ -2055,8 +4027,9 @@ export class PurchaseJournal {
     }
   }
 
-  private assertRecoveryLease(token: LeaseToken): void {
-    if (token.name !== "purchase-reconciliation") {
+  private assertRecoveryLease(token: LeaseToken, purchaseId?: PurchaseId): void {
+    const scoped = purchaseId ? `purchase-reconciliation:${purchaseId}` : undefined;
+    if (token.name !== "purchase-reconciliation" && token.name !== scoped) {
       throw new JournalFencingError("reconciliation writes require the recovery lease");
     }
     this.assertLeaseInternal(token);
@@ -2065,7 +4038,10 @@ export class PurchaseJournal {
   private assertEffectWriter(effectId: string, token: LeaseToken): void {
     this.assertLeaseInternal(token);
     const effect = this.requireEffect(effectId);
-    if (token.name === "purchase-reconciliation") {
+    if (
+      token.name === "purchase-reconciliation" ||
+      token.name === `purchase-reconciliation:${effect.purchaseId}`
+    ) {
       if (this.effectClaimActiveInternal(effect, this.timestamp())) {
         throw new JournalEffectBusyError(`Effect ${effectId} still has a live executor fence`);
       }
@@ -2105,24 +4081,24 @@ export class PurchaseJournal {
   private policyCapacityUsedInternal(now: number): bigint {
     const reservationRows = this.db
       .prepare(
-        `SELECT amount_atomic, fee_ceiling_atomic FROM treasury_reservations
+        `SELECT amount_atomic, additional_cost_ceiling_atomic FROM treasury_reservations
          WHERE (state = 'active' AND expires_at_ms > ?) OR state = 'in_flight'`
       )
-      .all(now) as Array<{ amount_atomic: string; fee_ceiling_atomic: string }>;
+      .all(now) as Array<{ amount_atomic: string; additional_cost_ceiling_atomic: string }>;
     const cutoff = now - 60 * 60 * 1000;
     const spendRows = this.db
       .prepare(
-        `SELECT actual_amount_atomic, actual_fee_atomic FROM treasury_spends
+        `SELECT actual_amount_atomic, actual_additional_cost_atomic FROM treasury_spends
          WHERE observed_at_ms >= ?`
       )
-      .all(cutoff) as Array<{ actual_amount_atomic: string; actual_fee_atomic: string }>;
+      .all(cutoff) as Array<{ actual_amount_atomic: string; actual_additional_cost_atomic: string }>;
     return (
       reservationRows.reduce(
-        (total, row) => total + BigInt(row.amount_atomic) + BigInt(row.fee_ceiling_atomic),
+        (total, row) => total + BigInt(row.amount_atomic) + BigInt(row.additional_cost_ceiling_atomic),
         0n
       ) +
       spendRows.reduce(
-        (total, row) => total + BigInt(row.actual_amount_atomic) + BigInt(row.actual_fee_atomic),
+        (total, row) => total + BigInt(row.actual_amount_atomic) + BigInt(row.actual_additional_cost_atomic),
         0n
       )
     );
@@ -2163,6 +4139,109 @@ interface PurchaseTransitionRow {
   created_at_ms: number;
 }
 
+interface CheckoutTermsRow {
+  purchase_id: string;
+  merchant_id: string;
+  merchant_name: string;
+  merchant_origin: string;
+  resource_fingerprint: string;
+  amount_atomic: string;
+  asset: string;
+  network: string;
+  pay_to: string;
+  expires_at: string;
+  expires_at_ms: number;
+  checkout_digest: string;
+  checkout_evidence_digest: string;
+  checkout_verification_profile: string;
+  checkout_verifier_id: string;
+  payment_requirements_digest: string;
+  payment_requirements_verification_profile: string;
+  payment_requirements_verifier_id: string;
+  created_at_ms: number;
+}
+
+interface AuthorizationRequestRow {
+  purchase_id: string;
+  checkout_digest: string;
+  request_digest: string;
+  nonce_digest: string;
+  request_media_type: string;
+  request_body_digest: string;
+  additional_cost_ceiling_atomic: string;
+  expires_at_ms: number;
+  created_at_ms: number;
+}
+
+interface AuthorizationRow {
+  purchase_id: string;
+  decision: AuthorizationRecord["decision"];
+  authority_id: string;
+  checkout_digest: string;
+  approved_facts_digest: string;
+  evidence_digest: string;
+  verification_profile: string;
+  verifier_id: string;
+  request_digest: string;
+  nonce_digest: string;
+  expires_at_ms: number;
+  decided_at_ms: number;
+}
+
+interface FulfilmentRow {
+  purchase_id: string;
+  attempt: number;
+  http_status: number;
+  resource_fingerprint: string;
+  body_digest: string;
+  body_byte_length: number;
+  media_type: string;
+  merchant_evidence_digest: string;
+  merchant_verification_profile: string;
+  merchant_verifier_id: string;
+  created_at_ms: number;
+}
+
+interface ReceiptRow {
+  id: number;
+  purchase_id: string;
+  role: string;
+  canonical_digest: string;
+  evidence_digest: string;
+  profile: string;
+  issuer: string | null;
+  verifier_id: string;
+  checkout_digest: string;
+  authorization_evidence_digest: string;
+  settlement_evidence_digest: string;
+  fulfilment_digest: string;
+  created_at_ms: number;
+}
+
+interface ReceiptSetRow {
+  purchase_id: string;
+  profile: string;
+  canonical_digest: string;
+  completed_at_ms: number;
+}
+
+interface EvidenceLinkRow {
+  purchase_id: string;
+  digest: string;
+  kind: string;
+  attempt: number | null;
+  media_type: string;
+  profile: string;
+  issuer: string | null;
+  attached_at_ms: number;
+}
+
+interface EvidenceAttachmentRow extends EvidenceLinkRow {
+  byte_length: number;
+  storage_ref: string;
+  blob_created_at_ms: number;
+}
+
 interface EvidenceArtifactRow {
   digest: string;
   media_type: string;
@@ -2191,7 +4270,8 @@ interface ReservationRow {
   approval_verifier_id: string | null;
   payee: string;
   amount_atomic: string;
-  fee_ceiling_atomic: string;
+  additional_cost_ceiling_atomic: string;
+  funding_source: FundingSource;
   state: ReservationState;
   expires_at_ms: number;
   created_at_ms: number;
@@ -2237,7 +4317,39 @@ interface PaymentPreparationRow {
   network: string;
   payee: string;
   required_finality: string;
+  funding_source: FundingSource;
   created_at_ms: number;
+}
+
+interface TreasuryStagingPlanRow {
+  effect_id: string;
+  purchase_id: string;
+  attempt: number;
+  reservation_id: string;
+  idempotency_key: string;
+  payload_digest: string;
+  prepared_ref: string;
+  prepared_byte_length: number;
+  planned_transaction_id: string;
+  expected_outpoint: string;
+  staging_amount_atomic: string;
+  funding_source: FundingSource;
+  created_at_ms: number;
+}
+
+interface TreasuryStagingObservationRow {
+  effect_id: string;
+  purchase_id: string;
+  attempt: number;
+  reservation_id: string;
+  transaction_id: string;
+  outpoint: string;
+  staging_amount_atomic: string;
+  funding_source: FundingSource;
+  evidence_digest: string;
+  evidence_verification_profile: string;
+  evidence_verifier_id: string;
+  observed_at_ms: number;
 }
 
 interface EffectRow {
@@ -2293,11 +4405,12 @@ interface TreasurySpendRow {
   transaction_id: string;
   outpoint: string | null;
   actual_amount_atomic: string;
-  actual_fee_atomic: string;
+  actual_additional_cost_atomic: string;
   asset: string;
   payee: string;
   network: string;
   finality: string;
+  funding_source: FundingSource;
   evidence_digest: string;
   evidence_verification_profile: string;
   evidence_verifier_id: string;
@@ -2351,12 +4464,134 @@ function purchaseTransitionFromRow(row: PurchaseTransitionRow): PurchaseTransiti
   };
 }
 
-function evidenceFromRow(row: EvidenceArtifactRow): EvidenceArtifactRecord {
+function checkoutTermsFromRow(row: CheckoutTermsRow): CheckoutTermsRecord {
   return {
+    purchaseId: row.purchase_id as PurchaseId,
+    merchant: {
+      id: row.merchant_id,
+      name: row.merchant_name,
+      origin: row.merchant_origin,
+    },
+    resourceFingerprint: row.resource_fingerprint as Sha256Digest,
+    amountAtomic: row.amount_atomic,
+    asset: row.asset,
+    network: row.network,
+    payTo: row.pay_to,
+    expiresAt: row.expires_at,
+    expiresAtMs: row.expires_at_ms,
+    checkoutDigest: row.checkout_digest as Sha256Digest,
+    checkoutEvidenceDigest: row.checkout_evidence_digest as Sha256Digest,
+    checkoutVerificationProfile: row.checkout_verification_profile,
+    checkoutVerifierId: row.checkout_verifier_id,
+    paymentRequirementsDigest: row.payment_requirements_digest as Sha256Digest,
+    paymentRequirementsVerificationProfile: row.payment_requirements_verification_profile,
+    paymentRequirementsVerifierId: row.payment_requirements_verifier_id,
+    createdAtMs: row.created_at_ms,
+  };
+}
+
+function authorizationRequestFromRow(row: AuthorizationRequestRow): AuthorizationRequestRecord {
+  return {
+    purchaseId: row.purchase_id as PurchaseId,
+    checkoutDigest: row.checkout_digest as Sha256Digest,
+    requestDigest: row.request_digest as Sha256Digest,
+    nonceDigest: row.nonce_digest as Sha256Digest,
+    requestMediaType: row.request_media_type,
+    requestBodyDigest: row.request_body_digest as Sha256Digest,
+    additionalCostCeilingAtomic: row.additional_cost_ceiling_atomic,
+    expiresAtMs: row.expires_at_ms,
+    createdAtMs: row.created_at_ms,
+  };
+}
+
+function authorizationFromRow(row: AuthorizationRow): AuthorizationRecord {
+  return {
+    purchaseId: row.purchase_id as PurchaseId,
+    decision: row.decision,
+    authorityId: row.authority_id,
+    checkoutDigest: row.checkout_digest as Sha256Digest,
+    approvedFactsDigest: row.approved_facts_digest as Sha256Digest,
+    evidenceDigest: row.evidence_digest as Sha256Digest,
+    verificationProfile: row.verification_profile,
+    verifierId: row.verifier_id,
+    requestDigest: row.request_digest as Sha256Digest,
+    nonceDigest: row.nonce_digest as Sha256Digest,
+    expiresAtMs: row.expires_at_ms,
+    decidedAtMs: row.decided_at_ms,
+  };
+}
+
+function fulfilmentFromRow(row: FulfilmentRow): FulfilmentRecord {
+  return {
+    purchaseId: row.purchase_id as PurchaseId,
+    attempt: row.attempt,
+    httpStatus: row.http_status,
+    resourceFingerprint: row.resource_fingerprint as Sha256Digest,
+    bodyDigest: row.body_digest as Sha256Digest,
+    bodyByteLength: row.body_byte_length,
+    mediaType: row.media_type,
+    merchantEvidenceDigest: row.merchant_evidence_digest as Sha256Digest,
+    merchantVerificationProfile: row.merchant_verification_profile,
+    merchantVerifierId: row.merchant_verifier_id,
+    createdAtMs: row.created_at_ms,
+  };
+}
+
+function receiptFromRow(row: ReceiptRow): ReceiptRecord {
+  return {
+    id: row.id,
+    purchaseId: row.purchase_id as PurchaseId,
+    role: row.role,
+    canonicalDigest: row.canonical_digest as Sha256Digest,
+    evidenceDigest: row.evidence_digest as Sha256Digest,
+    profile: row.profile,
+    issuer: row.issuer ?? undefined,
+    verifierId: row.verifier_id,
+    checkoutDigest: row.checkout_digest as Sha256Digest,
+    authorizationEvidenceDigest: row.authorization_evidence_digest as Sha256Digest,
+    settlementEvidenceDigest: row.settlement_evidence_digest as Sha256Digest,
+    fulfilmentDigest: row.fulfilment_digest as Sha256Digest,
+    createdAtMs: row.created_at_ms,
+  };
+}
+
+function receiptSetFromRow(row: ReceiptSetRow): ReceiptSetRecord {
+  if (row.profile !== PURCHASE_RECEIPT_SET_PROFILE) {
+    throw new JournalInvariantError("unsupported canonical Receipt set profile");
+  }
+  return {
+    purchaseId: row.purchase_id as PurchaseId,
+    profile: PURCHASE_RECEIPT_SET_PROFILE,
+    canonicalDigest: row.canonical_digest as Sha256Digest,
+    completedAtMs: row.completed_at_ms,
+  };
+}
+
+function evidenceLinkFromRow(row: EvidenceLinkRow): EvidenceLinkRecord {
+  return {
+    purchaseId: row.purchase_id as PurchaseId,
     digest: row.digest as Sha256Digest,
+    kind: row.kind,
+    attempt: row.attempt ?? undefined,
     mediaType: row.media_type,
     profile: row.profile,
     issuer: row.issuer ?? undefined,
+    attachedAtMs: row.attached_at_ms,
+  };
+}
+
+function evidenceAttachmentFromRow(row: EvidenceAttachmentRow): EvidenceAttachmentRecord {
+  return {
+    ...evidenceLinkFromRow(row),
+    byteLength: row.byte_length,
+    storageRef: row.storage_ref,
+    createdAtMs: row.blob_created_at_ms,
+  };
+}
+
+function evidenceFromRow(row: EvidenceArtifactRow): EvidenceArtifactRecord {
+  return {
+    digest: row.digest as Sha256Digest,
     byteLength: row.byte_length,
     storageRef: row.storage_ref,
     createdAtMs: row.created_at_ms,
@@ -2385,7 +4620,8 @@ function reservationFromRow(row: ReservationRow): PolicyReservationRecord {
     approvalVerifierId: row.approval_verifier_id ?? undefined,
     payee: row.payee,
     amountAtomic: row.amount_atomic,
-    feeCeilingAtomic: row.fee_ceiling_atomic,
+    additionalCostCeilingAtomic: row.additional_cost_ceiling_atomic,
+    fundingSource: row.funding_source,
     state: row.state,
     expiresAtMs: row.expires_at_ms,
     createdAtMs: row.created_at_ms,
@@ -2424,7 +4660,45 @@ function paymentPreparationFromRow(row: PaymentPreparationRow): PaymentPreparati
     network: row.network,
     payee: row.payee,
     requiredFinality: row.required_finality,
+    fundingSource: row.funding_source,
     createdAtMs: row.created_at_ms,
+  };
+}
+
+function treasuryStagingPlanFromRow(row: TreasuryStagingPlanRow): TreasuryStagingPlanRecord {
+  return {
+    effectId: row.effect_id,
+    purchaseId: row.purchase_id as PurchaseId,
+    attempt: row.attempt,
+    reservationId: row.reservation_id,
+    idempotencyKey: row.idempotency_key,
+    payloadDigest: row.payload_digest as Sha256Digest,
+    preparedRef: row.prepared_ref,
+    preparedByteLength: row.prepared_byte_length,
+    plannedTransactionId: row.planned_transaction_id,
+    expectedOutpoint: row.expected_outpoint,
+    stagingAmountAtomic: row.staging_amount_atomic,
+    fundingSource: row.funding_source,
+    createdAtMs: row.created_at_ms,
+  };
+}
+
+function treasuryStagingObservationFromRow(
+  row: TreasuryStagingObservationRow
+): TreasuryStagingObservationRecord {
+  return {
+    effectId: row.effect_id,
+    purchaseId: row.purchase_id as PurchaseId,
+    attempt: row.attempt,
+    reservationId: row.reservation_id,
+    transactionId: row.transaction_id,
+    outpoint: row.outpoint,
+    stagingAmountAtomic: row.staging_amount_atomic,
+    fundingSource: row.funding_source,
+    evidenceDigest: row.evidence_digest as Sha256Digest,
+    evidenceVerificationProfile: row.evidence_verification_profile,
+    evidenceVerifierId: row.evidence_verifier_id,
+    observedAtMs: row.observed_at_ms,
   };
 }
 
@@ -2488,11 +4762,12 @@ function treasurySpendFromRow(row: TreasurySpendRow): TreasurySpendRecord {
     transactionId: row.transaction_id,
     outpoint: row.outpoint ?? undefined,
     actualAmountAtomic: row.actual_amount_atomic,
-    actualFeeAtomic: row.actual_fee_atomic,
+    actualAdditionalCostAtomic: row.actual_additional_cost_atomic,
     asset: row.asset,
     payee: row.payee,
     network: row.network,
     finality: row.finality,
+    fundingSource: row.funding_source,
     evidenceDigest: row.evidence_digest as Sha256Digest,
     evidenceVerificationProfile: row.evidence_verification_profile,
     evidenceVerifierId: row.evidence_verifier_id,
@@ -2547,6 +4822,147 @@ function validateCreatePurchase(input: CreatePurchaseInput): void {
   }
 }
 
+function validateCheckoutTermsRecordInput(input: BindCheckoutTermsInput): void {
+  assertBoundedText(input.terms.merchant.id, "Checkout Terms Merchant identity", 200);
+  assertBoundedText(input.terms.merchant.name, "Checkout Terms Merchant name", 200);
+  let origin: string;
+  try {
+    origin = new URL(input.terms.merchant.origin).origin;
+  } catch {
+    throw new JournalInvariantError("invalid Checkout Terms Merchant origin");
+  }
+  if (origin !== input.terms.merchant.origin) {
+    throw new JournalInvariantError("Checkout Terms Merchant origin must be canonical");
+  }
+  assertDigest(input.terms.resourceFingerprint, "Checkout Terms resource fingerprint");
+  decimalBigInt(input.terms.amountAtomic, "Checkout Terms amount");
+  assertSafeIdentity(input.terms.asset, "Checkout Terms asset", 40);
+  assertSafeIdentity(input.terms.network, "Checkout Terms network", 100);
+  assertBoundedText(input.terms.payTo, "Checkout Terms payee", 300);
+  strictTimestamp(input.terms.expiresAt, "Checkout Terms expiry");
+  assertDigest(input.terms.checkoutDigest, "Checkout Terms digest");
+  assertDigest(input.checkoutEvidenceDigest, "Checkout Terms evidence digest");
+  assertSafeIdentity(input.checkoutVerificationProfile, "Checkout Terms verification profile", 200);
+  assertSafeIdentity(input.checkoutVerifierId, "Checkout Terms verifier identity", 200);
+  assertDigest(input.paymentRequirementsDigest, "payment requirements digest");
+  assertSafeIdentity(
+    input.paymentRequirementsVerificationProfile,
+    "payment requirements verification profile",
+    200
+  );
+  assertSafeIdentity(input.paymentRequirementsVerifierId, "payment requirements verifier identity", 200);
+}
+
+function validateAuthorizationRequestInput(input: RecordAuthorizationRequestInput): void {
+  assertDigest(input.checkoutDigest, "authorization request Checkout Terms digest");
+  assertDigest(input.requestDigest, "authorization request digest");
+  assertDigest(input.nonceDigest, "authorization request nonce digest");
+  try {
+    if ((canonicalMediaType(input.requestMediaType || undefined) ?? "") !== input.requestMediaType) {
+      throw new Error("not canonical");
+    }
+  } catch {
+    throw new JournalInvariantError("authorization request media type is invalid");
+  }
+  assertDigest(input.requestBodyDigest, "authorization request body digest");
+  decimalBigInt(input.additionalCostCeilingAtomic, "authorization additional-cost ceiling", true);
+  if (!Number.isSafeInteger(input.expiresAtMs) || input.expiresAtMs < 0) {
+    throw new JournalInvariantError("authorization request expiry is invalid");
+  }
+}
+
+function validateAuthorizationDecisionInput(input: RecordAuthorizationDecisionInput): void {
+  if (!(["approved", "denied", "expired"] as const).includes(input.decision)) {
+    throw new JournalInvariantError("authorization decision is invalid");
+  }
+  assertSafeIdentity(input.authorityId, "authority identity", 200);
+  assertDigest(input.checkoutDigest, "authorization Checkout Terms digest");
+  assertDigest(input.approvedFactsDigest, "authorization approved-facts digest");
+  assertDigest(input.evidenceDigest, "authorization evidence digest");
+  assertSafeIdentity(input.verificationProfile, "authorization verification profile", 200);
+  assertSafeIdentity(input.verifierId, "authorization verifier identity", 200);
+  assertDigest(input.requestDigest, "authorization request digest");
+  assertDigest(input.nonceDigest, "authorization nonce digest");
+  if (!Number.isSafeInteger(input.expiresAtMs) || input.expiresAtMs < 0) {
+    throw new JournalInvariantError("authorization expiry is invalid");
+  }
+}
+
+function validateFulfilmentInput(input: RecordFulfilmentInput): void {
+  if (!Number.isSafeInteger(input.attempt) || input.attempt < 1) {
+    throw new JournalInvariantError("Fulfilment attempt must be a positive safe integer");
+  }
+  if (!Number.isSafeInteger(input.httpStatus) || input.httpStatus < 100 || input.httpStatus > 599) {
+    throw new JournalInvariantError("Fulfilment HTTP status is invalid");
+  }
+  assertDigest(input.resourceFingerprint, "Fulfilment resource fingerprint");
+  assertDigest(input.bodyDigest, "Fulfilment body digest");
+  if (!Number.isSafeInteger(input.bodyByteLength) || input.bodyByteLength < 0) {
+    throw new JournalInvariantError("Fulfilment body length is invalid");
+  }
+  assertBoundedText(input.mediaType, "Fulfilment media type", 200);
+  assertDigest(input.merchantEvidenceDigest, "Merchant Fulfilment evidence digest");
+  assertSafeIdentity(input.merchantVerificationProfile, "Merchant Fulfilment verification profile", 200);
+  assertSafeIdentity(input.merchantVerifierId, "Merchant Fulfilment verifier identity", 200);
+}
+
+export function canonicalReceiptDigest(
+  purchaseId: PurchaseId,
+  attempt: number,
+  paymentIdentifier: PaymentIdentifier,
+  input: RecordReceiptInput
+): Sha256Digest {
+  return evidenceDigest(JSON.stringify({
+    profile: "urn:sompi:canonical-receipt:1",
+    purchaseId,
+    attempt,
+    paymentIdentifier,
+    role: input.role,
+    evidenceDigest: input.evidenceDigest,
+    evidenceProfile: input.profile,
+    issuer: input.issuer ?? null,
+    verifierId: input.verifierId,
+    checkoutDigest: input.checkoutDigest,
+    authorizationEvidenceDigest: input.authorizationEvidenceDigest,
+    settlementEvidenceDigest: input.settlementEvidenceDigest,
+    fulfilmentDigest: input.fulfilmentDigest,
+  }));
+}
+
+export function canonicalReceiptSetDigest(
+  purchaseId: PurchaseId,
+  attempt: number,
+  paymentIdentifier: PaymentIdentifier,
+  receipts: readonly Pick<ReceiptRecord, "role" | "canonicalDigest">[]
+): Sha256Digest {
+  const entries = [...receipts]
+    .map((receipt) => ({ role: receipt.role, canonicalDigest: receipt.canonicalDigest }))
+    .sort((left, right) => left.role < right.role ? -1 : left.role > right.role ? 1 : 0);
+  return evidenceDigest(JSON.stringify({
+    profile: PURCHASE_RECEIPT_SET_PROFILE,
+    purchaseId,
+    attempt,
+    paymentIdentifier,
+    receipts: entries,
+  }));
+}
+
+function validateReceiptInput(input: RecordReceiptInput): void {
+  assertCode(input.role, "Receipt role");
+  assertDigest(input.evidenceDigest, "Receipt evidence digest");
+  assertSafeIdentity(input.profile, "Receipt profile", 200);
+  if (input.issuer !== undefined) assertBoundedText(input.issuer, "Receipt issuer", 200);
+  assertSafeIdentity(input.verifierId, "Receipt verifier identity", 200);
+  assertDigest(input.checkoutDigest, "Receipt Checkout Terms digest");
+  assertDigest(input.authorizationEvidenceDigest, "Receipt authorization evidence digest");
+  assertDigest(input.settlementEvidenceDigest, "Receipt Settlement evidence digest");
+  assertDigest(input.fulfilmentDigest, "Receipt Fulfilment digest");
+  const requirement = PURCHASE_RECEIPT_REQUIREMENTS.find((candidate) => candidate.role === input.role);
+  if (!requirement || requirement.profile !== input.profile) {
+    throw new JournalInvariantError("Receipt role or canonical verification profile is unsupported");
+  }
+}
+
 function validateEvidenceMetadata(input: StoreEvidenceInput): void {
   assertBoundedText(input.mediaType, "evidence media type", 200);
   assertBoundedText(input.profile, "evidence profile", 200);
@@ -2580,7 +4996,8 @@ function validatePolicyReservationInput(input: PolicyReservationInput): void {
   assertDigest(input.policyDigest, "policy digest");
   assertBoundedText(input.payee, "reservation payee", 300);
   decimalBigInt(input.amountAtomic, "reservation amount");
-  decimalBigInt(input.feeCeilingAtomic, "reservation fee ceiling", true);
+  decimalBigInt(input.additionalCostCeilingAtomic, "reservation additional-cost ceiling", true);
+  assertVaultFundingSource(input.fundingSource);
   if (!Number.isSafeInteger(input.expiresAtMs) || input.expiresAtMs < 0) {
     throw new PolicyReservationError("invalid reservation expiry");
   }
@@ -2613,10 +5030,55 @@ function validatePaymentPreparation(input: PreparePaymentAttemptInput): void {
   assertSafeIdentity(input.asset, "prepared payment asset", 40);
   assertSafeIdentity(input.network, "prepared payment network", 100);
   assertBoundedText(input.payee, "prepared payment payee", 300);
-  assertSafeIdentity(input.requiredFinality, "prepared payment finality", 100);
+  requirePaymentFinality(input.requiredFinality, "prepared payment finality");
+  assertVaultFundingSource(input.fundingSource);
   if (!Number.isSafeInteger(input.preparedBytes.byteLength) || input.preparedBytes.byteLength < 1) {
     throw new JournalInvariantError("prepared payment bytes must not be empty");
   }
+}
+
+function validateTreasuryStagingPlanInput(input: PlanTreasuryStagingInput): void {
+  if (!Number.isSafeInteger(input.attempt) || input.attempt < 1) {
+    throw new JournalInvariantError("treasury staging attempt must be a positive safe integer");
+  }
+  assertCode(input.reservationId, "treasury staging reservation id");
+  assertSafeIdentity(input.idempotencyKey, "treasury staging idempotency key", 300);
+  assertDigest(input.payloadDigest, "treasury staging payload digest");
+  assertTransactionId(input.plannedTransactionId);
+  assertSafeIdentity(input.expectedOutpoint, "treasury staging expected outpoint", 200);
+  if (!new RegExp(`^${input.plannedTransactionId}:[0-9]+$`).test(input.expectedOutpoint)) {
+    throw new JournalInvariantError(
+      "treasury staging expected outpoint must be bound to the planned transaction identity"
+    );
+  }
+  decimalBigInt(input.stagingAmountAtomic, "treasury staging amount");
+  assertVaultFundingSource(input.fundingSource);
+  if (!Number.isSafeInteger(input.preparedBytes.byteLength) || input.preparedBytes.byteLength < 1) {
+    throw new JournalInvariantError("prepared treasury staging bytes must not be empty");
+  }
+}
+
+function validateTreasuryStagingObservationInput(
+  input: RecordObservedTreasuryStagingInput
+): void {
+  assertCode(input.effectId, "treasury staging Effect id");
+  assertCode(input.reservationId, "treasury staging reservation id");
+  assertTransactionId(input.transactionId);
+  assertSafeIdentity(input.outpoint, "treasury staging observed outpoint", 200);
+  if (!new RegExp(`^${input.transactionId}:[0-9]+$`).test(input.outpoint)) {
+    throw new JournalInvariantError(
+      "treasury staging observed outpoint must be bound to the transaction identity"
+    );
+  }
+  decimalBigInt(input.stagingAmountAtomic, "observed treasury staging amount");
+  assertVaultFundingSource(input.fundingSource);
+  assertDigest(input.evidenceDigest, "treasury staging evidence digest");
+  assertSafeIdentity(
+    input.evidenceVerificationProfile,
+    "treasury staging evidence verification profile",
+    200
+  );
+  assertSafeIdentity(input.evidenceVerifierId, "treasury staging evidence verifier identity", 200);
 }
 
 function validateEffectInput(input: PlanEffectInput): void {
@@ -2634,7 +5096,10 @@ function validateEffectInput(input: PlanEffectInput): void {
 function validateObservation(observation: EffectObservation): void {
   if (observation.status === "observed") assertDigest(observation.resultDigest, "effect result digest");
   if (observation.detailDigest) assertDigest(observation.detailDigest, "effect observation detail digest");
-  if (observation.status === "failed_terminal") assertCode(observation.errorCode, "effect error code");
+  if (observation.status === "application_failure") {
+    assertCode(observation.errorCode, "effect error code");
+    assertDigest(observation.detailDigest, "application failure detail digest");
+  }
 }
 
 function validateSpendInput(input: RecordObservedSpendInput): void {
@@ -2647,11 +5112,12 @@ function validateSpendInput(input: RecordObservedSpendInput): void {
     }
   }
   decimalBigInt(input.actualAmountAtomic, "actual spend amount");
-  decimalBigInt(input.actualFeeAtomic, "actual spend fee", true);
+  decimalBigInt(input.actualAdditionalCostAtomic, "actual additional treasury cost", true);
   assertSafeIdentity(input.asset, "spend asset", 40);
   assertBoundedText(input.payee, "spend payee", 300);
   assertSafeIdentity(input.network, "spend network", 100);
-  assertSafeIdentity(input.finality, "spend finality", 100);
+  requirePaymentFinality(input.finality, "spend finality");
+  assertVaultFundingSource(input.fundingSource);
   assertDigest(input.evidenceDigest, "spend evidence digest");
   assertSafeIdentity(input.evidenceVerificationProfile, "spend evidence verification profile", 200);
   assertSafeIdentity(input.evidenceVerifierId, "spend evidence verifier identity", 200);
@@ -2677,20 +5143,125 @@ function assertSamePurchaseIntent(existing: PurchaseRecord, input: CreatePurchas
   }
 }
 
-function assertSameEvidence(
+function assertSameCheckoutTerms(existing: CheckoutTermsRecord, input: BindCheckoutTermsInput): void {
+  if (
+    existing.merchant.id !== input.terms.merchant.id ||
+    existing.merchant.name !== input.terms.merchant.name ||
+    existing.merchant.origin !== input.terms.merchant.origin ||
+    existing.resourceFingerprint !== input.terms.resourceFingerprint ||
+    existing.amountAtomic !== input.terms.amountAtomic ||
+    existing.asset !== input.terms.asset ||
+    existing.network !== input.terms.network ||
+    existing.payTo !== input.terms.payTo ||
+    existing.expiresAt !== input.terms.expiresAt ||
+    existing.checkoutDigest !== input.terms.checkoutDigest ||
+    existing.checkoutEvidenceDigest !== input.checkoutEvidenceDigest ||
+    existing.checkoutVerificationProfile !== input.checkoutVerificationProfile ||
+    existing.checkoutVerifierId !== input.checkoutVerifierId ||
+    existing.paymentRequirementsDigest !== input.paymentRequirementsDigest ||
+    existing.paymentRequirementsVerificationProfile !== input.paymentRequirementsVerificationProfile ||
+    existing.paymentRequirementsVerifierId !== input.paymentRequirementsVerifierId
+  ) {
+    throw new JournalInvariantError("immutable Checkout Terms conflict");
+  }
+}
+
+function assertSameAuthorizationRequest(
+  existing: AuthorizationRequestRecord,
+  input: RecordAuthorizationRequestInput
+): void {
+  if (
+    existing.checkoutDigest !== input.checkoutDigest ||
+    existing.requestDigest !== input.requestDigest ||
+    existing.nonceDigest !== input.nonceDigest ||
+    existing.requestMediaType !== input.requestMediaType ||
+    existing.requestBodyDigest !== input.requestBodyDigest ||
+    existing.additionalCostCeilingAtomic !== input.additionalCostCeilingAtomic ||
+    existing.expiresAtMs !== input.expiresAtMs
+  ) {
+    throw new JournalInvariantError("immutable authorization request conflict");
+  }
+}
+
+function assertSameAuthorization(existing: AuthorizationRecord, input: RecordAuthorizationDecisionInput): void {
+  if (
+    existing.decision !== input.decision ||
+    existing.authorityId !== input.authorityId ||
+    existing.checkoutDigest !== input.checkoutDigest ||
+    existing.approvedFactsDigest !== input.approvedFactsDigest ||
+    existing.evidenceDigest !== input.evidenceDigest ||
+    existing.verificationProfile !== input.verificationProfile ||
+    existing.verifierId !== input.verifierId ||
+    existing.requestDigest !== input.requestDigest ||
+    existing.nonceDigest !== input.nonceDigest ||
+    existing.expiresAtMs !== input.expiresAtMs
+  ) {
+    throw new JournalInvariantError("immutable authorization decision conflict");
+  }
+}
+
+function assertSameFulfilment(existing: FulfilmentRecord, input: RecordFulfilmentInput): void {
+  if (
+    existing.attempt !== input.attempt ||
+    existing.httpStatus !== input.httpStatus ||
+    existing.resourceFingerprint !== input.resourceFingerprint ||
+    existing.bodyDigest !== input.bodyDigest ||
+    existing.bodyByteLength !== input.bodyByteLength ||
+    existing.mediaType !== input.mediaType ||
+    existing.merchantEvidenceDigest !== input.merchantEvidenceDigest ||
+    existing.merchantVerificationProfile !== input.merchantVerificationProfile ||
+    existing.merchantVerifierId !== input.merchantVerifierId
+  ) {
+    throw new JournalInvariantError("immutable Fulfilment conflict");
+  }
+}
+
+function assertSameReceipt(
+  existing: ReceiptRecord,
+  input: RecordReceiptInput,
+  canonicalDigest: Sha256Digest
+): void {
+  if (
+    existing.role !== input.role ||
+    existing.canonicalDigest !== canonicalDigest ||
+    existing.evidenceDigest !== input.evidenceDigest ||
+    existing.profile !== input.profile ||
+    existing.issuer !== input.issuer ||
+    existing.verifierId !== input.verifierId ||
+    existing.checkoutDigest !== input.checkoutDigest ||
+    existing.authorizationEvidenceDigest !== input.authorizationEvidenceDigest ||
+    existing.settlementEvidenceDigest !== input.settlementEvidenceDigest ||
+    existing.fulfilmentDigest !== input.fulfilmentDigest
+  ) {
+    throw new JournalInvariantError("immutable Receipt conflict");
+  }
+}
+
+function assertSameEvidenceBlob(
   existing: EvidenceArtifactRecord,
-  input: StoreEvidenceInput,
   byteLength: number,
   storageRef: string
+): void {
+  if (
+    existing.byteLength !== byteLength ||
+    existing.storageRef !== storageRef
+  ) {
+    throw new JournalInvariantError(`evidence blob conflict for ${existing.digest}`);
+  }
+}
+
+function assertSameEvidenceAttachment(
+  existing: EvidenceAttachmentRecord,
+  input: StoreEvidenceInput
 ): void {
   if (
     existing.mediaType !== input.mediaType ||
     existing.profile !== input.profile ||
     existing.issuer !== input.issuer ||
-    existing.byteLength !== byteLength ||
-    existing.storageRef !== storageRef
+    existing.kind !== input.kind ||
+    existing.attempt !== input.attempt
   ) {
-    throw new JournalInvariantError(`evidence metadata conflict for ${existing.digest}`);
+    throw new JournalInvariantError(`Evidence Attachment metadata conflict for ${existing.digest}`);
   }
 }
 
@@ -2703,7 +5274,7 @@ function assertSameReservation(existing: PolicyReservationRecord, input: PolicyR
     existing.approvalVerifierId !== input.approvalVerifierId ||
     existing.payee !== input.payee ||
     existing.amountAtomic !== input.amountAtomic ||
-    existing.feeCeilingAtomic !== input.feeCeilingAtomic ||
+    existing.additionalCostCeilingAtomic !== input.additionalCostCeilingAtomic ||
     existing.expiresAtMs !== input.expiresAtMs
   ) {
     throw new JournalInvariantError(`reservation id ${input.id} was reused with different terms`);
@@ -2727,8 +5298,54 @@ function assertSamePreparation(
     existing.network !== input.network ||
     existing.payee !== input.payee ||
     existing.requiredFinality !== input.requiredFinality
+    || existing.fundingSource !== input.fundingSource
   ) {
     throw new JournalInvariantError("immutable payment preparation conflict");
+  }
+}
+
+function assertSameTreasuryStagingPlan(
+  existing: TreasuryStagingPlanRecord,
+  input: PlanTreasuryStagingInput,
+  stored: StoredEvidence
+): void {
+  if (
+    existing.purchaseId !== input.purchaseId ||
+    existing.attempt !== input.attempt ||
+    existing.reservationId !== input.reservationId ||
+    existing.idempotencyKey !== input.idempotencyKey ||
+    existing.payloadDigest !== input.payloadDigest ||
+    existing.preparedRef !== stored.storageRef ||
+    existing.preparedByteLength !== stored.byteLength ||
+    existing.plannedTransactionId !== input.plannedTransactionId ||
+    existing.expectedOutpoint !== input.expectedOutpoint ||
+    existing.stagingAmountAtomic !== input.stagingAmountAtomic ||
+    existing.fundingSource !== input.fundingSource
+  ) {
+    throw new JournalInvariantError(
+      `treasury staging idempotency conflict for ${input.idempotencyKey}`
+    );
+  }
+}
+
+function assertSameTreasuryStagingObservation(
+  existing: TreasuryStagingObservationRecord,
+  input: RecordObservedTreasuryStagingInput
+): void {
+  if (
+    existing.effectId !== input.effectId ||
+    existing.reservationId !== input.reservationId ||
+    existing.transactionId !== input.transactionId ||
+    existing.outpoint !== input.outpoint ||
+    existing.stagingAmountAtomic !== input.stagingAmountAtomic ||
+    existing.fundingSource !== input.fundingSource ||
+    existing.evidenceDigest !== input.evidenceDigest ||
+    existing.evidenceVerificationProfile !== input.evidenceVerificationProfile ||
+    existing.evidenceVerifierId !== input.evidenceVerifierId
+  ) {
+    throw new JournalInvariantError(
+      `conflicting treasury staging observation for Effect ${input.effectId}`
+    );
   }
 }
 
@@ -2752,11 +5369,12 @@ function assertSameSpend(existing: TreasurySpendRecord, input: RecordObservedSpe
     existing.transactionId !== input.transactionId ||
     existing.outpoint !== input.outpoint ||
     existing.actualAmountAtomic !== input.actualAmountAtomic ||
-    existing.actualFeeAtomic !== input.actualFeeAtomic ||
+    existing.actualAdditionalCostAtomic !== input.actualAdditionalCostAtomic ||
     existing.asset !== input.asset ||
     existing.payee !== input.payee ||
     existing.network !== input.network ||
     existing.finality !== input.finality ||
+    existing.fundingSource !== input.fundingSource ||
     existing.evidenceDigest !== input.evidenceDigest ||
     existing.evidenceVerificationProfile !== input.evidenceVerificationProfile ||
     existing.evidenceVerifierId !== input.evidenceVerifierId
@@ -2790,10 +5408,10 @@ function mapObservation(observation: EffectObservation): {
       };
     case "conflict":
       return { status: "conflict", nextState: "ambiguous", detailDigest: observation.detailDigest };
-    case "failed_terminal":
+    case "application_failure":
       return {
-        status: "failed_terminal",
-        nextState: "failed_terminal",
+        status: "application_failure",
+        nextState: "ambiguous",
         detailDigest: observation.detailDigest,
         errorCode: observation.errorCode,
       };
@@ -2820,13 +5438,14 @@ function assertAttemptTransition(
 
 function assertEffectTransition(from: EffectState, to: EffectState): void {
   const allowed: Record<EffectState, readonly EffectState[]> = {
-    planned: ["executing"],
+    planned: ["executing", "abandoned"],
     executing: ["submitted", "ambiguous", "retryable", "observed", "failed_terminal"],
     submitted: ["ambiguous", "retryable", "observed", "failed_terminal"],
     ambiguous: ["retryable", "observed", "failed_terminal"],
     retryable: ["executing", "failed_terminal"],
     observed: [],
     failed_terminal: [],
+    abandoned: [],
   };
   if (from !== to && !allowed[from].includes(to)) {
     throw new JournalInvariantError(`invalid Effect transition ${from} -> ${to}`);
@@ -2868,8 +5487,25 @@ function assertBoundedText(value: string, label: string, maxLength: number): voi
   }
 }
 
+function strictTimestamp(value: string, label: string): number {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) {
+    throw new JournalInvariantError(`${label} must be strict RFC3339`);
+  }
+  const timestamp = Date.parse(value);
+  if (!Number.isSafeInteger(timestamp) || timestamp < 0) {
+    throw new JournalInvariantError(`${label} is outside the supported timestamp range`);
+  }
+  return timestamp;
+}
+
 function assertTransactionId(value: string): void {
   if (!/^[a-f0-9]{64}$/.test(value)) throw new JournalInvariantError("invalid canonical Kaspa transaction identity");
+}
+
+function assertVaultFundingSource(value: FundingSource): void {
+  if (value !== "vault-treasury") {
+    throw new JournalInvariantError("initial Purchase profile requires vault-treasury funding");
+  }
 }
 
 function safeExpiry(now: number, ttlMs: number): number {

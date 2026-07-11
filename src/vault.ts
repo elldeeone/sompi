@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { createHash } from "node:crypto";
 import {
   CovenantBinding,
   Hash,
@@ -13,9 +14,9 @@ import {
   payToAddressScript,
   payToScriptHashScript,
   payToScriptHashSignatureScript,
-} from "../vendor/kaspa-wasm/kaspa";
-import { VAULT_TEMPLATE_VERSION, VaultState, buildRedeemScript, buildSigArgs, bytesToHex, hexToBytes } from "./vault/template";
-import type { KaspaWallet } from "./wallet";
+} from "./kaspa-wasm.js";
+import { VAULT_TEMPLATE_VERSION, VaultState, buildRedeemScript, buildSigArgs, bytesToHex, hexToBytes } from "./vault/template.js";
+import type { KaspaWallet } from "./wallet.js";
 
 /**
  * Covenant vault, pure JS.
@@ -36,6 +37,44 @@ export interface VaultConfig {
   address: string;
   covenantId?: string;
   currentOutpoint?: { txid: string; index: number };
+}
+
+export interface PreparedVaultSpend {
+  transaction: string;
+  transactionEncoding: "kaspa-sdk-safe-json-v2.0.0";
+  transactionId: string;
+  destination: string;
+  destinationOutpoint: { txid: string; index: 0 };
+  amountSompi: bigint;
+  feeSompi: bigint;
+  continuationOutpoint: { txid: string; index: 1 };
+  continuationAddress: string;
+  continuationAmountSompi: bigint;
+  covenantId: string;
+  baseConfigDigest: string;
+  configUpdate: {
+    windowStartDaa: string;
+    spentInWindowSompi: string;
+    address: string;
+    currentOutpoint: { txid: string; index: 1 };
+  };
+}
+
+export interface ObservedVaultSpend {
+  transactionId: string;
+  destinationOutpoint: { txid: string; index: 0 };
+  continuationOutpoint: { txid: string; index: 1 };
+  amountSompi: bigint;
+  continuationAmountSompi: bigint;
+  observedAtDaa?: bigint;
+}
+
+export interface VaultSpendResult {
+  txid: string;
+  amountSompi: bigint;
+  feeSompi: bigint;
+  configUpdate?: Partial<VaultConfig>;
+  preparedTransaction?: string;
 }
 
 type VaultSpendConfig = Pick<
@@ -242,6 +281,170 @@ export class VaultManager {
     return { txid: result.txid, amountSompi: result.amountSompi, feeSompi: result.feeSompi };
   }
 
+  /**
+   * Signs an immutable vault withdrawal without broadcasting it or advancing
+   * local vault state. The caller must durably journal this result before
+   * `submitPreparedSend` and must not call `commitObservedSend` until both
+   * outputs have been independently observed.
+   */
+  async prepareSend(
+    wallet: KaspaWallet,
+    destination: string,
+    amount: bigint,
+    authorize?: (amountSompi: bigint) => void
+  ): Promise<PreparedVaultSpend> {
+    if (amount <= 0n) throw new Error("Prepared vault send amount must be positive.");
+    const config = this.config();
+    if (!config.covenantId) throw new Error("vault has not been covenant-funded yet");
+    const agentKey = fs.readFileSync(path.join(this.vaultDir, "agent-key"), "utf8").trim();
+    const result = await spendVault({
+      wallet,
+      config,
+      fn: "withdraw",
+      privateKey: agentKey,
+      destination,
+      amount,
+      authorize,
+      broadcast: false,
+    });
+    if (!result.preparedTransaction || !result.configUpdate) {
+      throw new Error("vault preparation did not return an immutable transaction and state update");
+    }
+    const transaction = requirePreparedTransaction(
+      result.preparedTransaction,
+      result.txid
+    );
+    const outputs = transaction.outputs;
+    if (outputs.length !== 2) {
+      transaction.free();
+      throw new Error("prepared vault staging transaction must have exactly two outputs");
+    }
+    const destinationAmount = BigInt((outputs[0] as any).value);
+    const continuationAmount = BigInt((outputs[1] as any).value);
+    transaction.free();
+    if (destinationAmount !== result.amountSompi) {
+      throw new Error("prepared vault staging output does not match the requested amount");
+    }
+    const update = requirePreparedConfigUpdate(result.configUpdate, result.txid);
+    const prepared: PreparedVaultSpend = {
+      transaction: result.preparedTransaction,
+      transactionEncoding: "kaspa-sdk-safe-json-v2.0.0" as const,
+      transactionId: result.txid,
+      destination,
+      destinationOutpoint: Object.freeze({ txid: result.txid, index: 0 as const }),
+      amountSompi: result.amountSompi,
+      feeSompi: result.feeSompi,
+      continuationOutpoint: Object.freeze({ txid: result.txid, index: 1 as const }),
+      continuationAddress: update.address,
+      continuationAmountSompi: continuationAmount,
+      covenantId: config.covenantId,
+      baseConfigDigest: vaultConfigDigest(config),
+      configUpdate: Object.freeze(update),
+    };
+    const validated = requireBoundPreparedTransaction(prepared, this.networkId);
+    validated.free();
+    return Object.freeze(prepared);
+  }
+
+  async submitPreparedSend(
+    wallet: KaspaWallet,
+    prepared: PreparedVaultSpend
+  ): Promise<{ transactionId: string }> {
+    assertPreparedVaultSpend(prepared);
+    const transaction = requireBoundPreparedTransaction(prepared, this.networkId);
+    try {
+      const rpc = await wallet.client();
+      const submitted = await (rpc as any).submitTransaction({
+        transaction,
+        allowOrphan: false,
+      });
+      const transactionId = String(submitted?.transactionId ?? "");
+      if (transactionId !== prepared.transactionId) {
+        throw new Error("Kaspa node returned a different transaction identity for the prepared vault send");
+      }
+      return { transactionId };
+    } finally {
+      transaction.free();
+    }
+  }
+
+  async observePreparedSend(
+    wallet: KaspaWallet,
+    prepared: PreparedVaultSpend
+  ): Promise<ObservedVaultSpend | undefined> {
+    assertPreparedVaultSpend(prepared);
+    const transaction = requireBoundPreparedTransaction(prepared, this.networkId);
+    transaction.free();
+    const rpc = await wallet.client();
+    const { entries } = await rpc.getUtxosByAddresses([
+      prepared.destination,
+      prepared.continuationAddress,
+    ]);
+    const normalized = normalizeEntries(entries);
+    const destination = normalized.filter(
+      (entry) =>
+        entry.txid === prepared.destinationOutpoint.txid &&
+        entry.index === prepared.destinationOutpoint.index &&
+        entry.amount === prepared.amountSompi &&
+        !entry.covenantId &&
+        scriptPublicKeyMatchesAddress(entry.scriptPublicKey, prepared.destination, this.networkId)
+    );
+    const continuation = normalized.filter(
+      (entry) =>
+        entry.txid === prepared.continuationOutpoint.txid &&
+        entry.index === prepared.continuationOutpoint.index &&
+        entry.amount === prepared.continuationAmountSompi &&
+        entry.covenantId === prepared.covenantId &&
+        scriptPublicKeyMatchesAddress(
+          entry.scriptPublicKey,
+          prepared.continuationAddress,
+          this.networkId
+        )
+    );
+    if (destination.length === 0 && continuation.length === 0) return undefined;
+    if (destination.length !== 1 || continuation.length !== 1) {
+      throw new Error("prepared vault send has a partial, duplicate, or conflicting on-chain observation");
+    }
+    const observedAtDaa = maxBigInt(
+      destination[0].blockDaaScore,
+      continuation[0].blockDaaScore
+    );
+    return Object.freeze({
+      transactionId: prepared.transactionId,
+      destinationOutpoint: prepared.destinationOutpoint,
+      continuationOutpoint: prepared.continuationOutpoint,
+      amountSompi: prepared.amountSompi,
+      continuationAmountSompi: prepared.continuationAmountSompi,
+      observedAtDaa,
+    });
+  }
+
+  commitObservedSend(
+    prepared: PreparedVaultSpend,
+    observed: ObservedVaultSpend
+  ): VaultConfig {
+    assertPreparedVaultSpend(prepared);
+    if (
+      observed.transactionId !== prepared.transactionId ||
+      observed.destinationOutpoint.txid !== prepared.destinationOutpoint.txid ||
+      observed.destinationOutpoint.index !== 0 ||
+      observed.continuationOutpoint.txid !== prepared.continuationOutpoint.txid ||
+      observed.continuationOutpoint.index !== 1 ||
+      observed.amountSompi !== prepared.amountSompi ||
+      observed.continuationAmountSompi !== prepared.continuationAmountSompi
+    ) {
+      throw new Error("vault observation does not match the exact prepared staging transaction");
+    }
+    const current = this.config();
+    const updated: VaultConfig = { ...current, ...prepared.configUpdate };
+    if (vaultConfigMatchesUpdate(current, prepared.configUpdate)) return current;
+    if (vaultConfigDigest(current) !== prepared.baseConfigDigest) {
+      throw new Error("vault state advanced after this staging transaction was prepared");
+    }
+    this.saveConfig(updated);
+    return updated;
+  }
+
   async recover(): Promise<never> {
     throw new Error(
       "the owner key is not stored on this host (by design). Recover from the operator's machine: " +
@@ -260,6 +463,8 @@ export interface VaultSpendParams {
   amount?: bigint | "max";
   feeSompi?: bigint;
   authorize?: (amountSompi: bigint) => void;
+  /** Defaults to true. False returns signed safe JSON without an RPC effect. */
+  broadcast?: boolean;
 }
 
 const MIN_VAULT_CHANGE_SOMPI = 100_000_000n;
@@ -269,7 +474,7 @@ const MAX_FEE_CONVERGENCE_PASSES = 12;
 
 export async function spendVault(
   params: VaultSpendParams
-): Promise<{ txid: string; amountSompi: bigint; feeSompi: bigint; configUpdate?: Partial<VaultConfig> }> {
+): Promise<VaultSpendResult> {
   const { wallet, config, fn, destination } = params;
   assertCurrentConfig(config);
   const max = BigInt(config.maxOutflowSompi);
@@ -317,6 +522,15 @@ export async function spendVault(
     const pushedSig = createInputSignature(tx, 0, new PrivateKey(params.privateKey), SighashType.All);
     setInputScripts(tx, [payToScriptHashSignatureScript(redeem, buildSigArgs(hexToBytes(pushedSig).slice(1), "recover"))]);
     assertFeeCoversSignedTx(wallet.networkId, tx, feerate, feeSompi, "vault recovery");
+    if (params.broadcast === false) {
+      const txid = String(tx.finalize());
+      return {
+        txid,
+        amountSompi,
+        feeSompi,
+        preparedTransaction: tx.serializeToSafeJSON(),
+      };
+    }
     const { transactionId } = await (rpc as any).submitTransaction({ transaction: tx, allowOrphan: false });
     return { txid: String(transactionId), amountSompi, feeSompi };
   }
@@ -410,6 +624,21 @@ export async function spendVault(
   const pushedSig = createInputSignature(tx, 0, new PrivateKey(params.privateKey), SighashType.All);
   setInputScripts(tx, [payToScriptHashSignatureScript(redeem, buildSigArgs(hexToBytes(pushedSig).slice(1), "withdraw"))]);
   assertFeeCoversSignedTx(wallet.networkId, tx, feerate, feeSompi, "vault withdrawal");
+  if (params.broadcast === false) {
+    const txid = String(tx.finalize());
+    return {
+      txid,
+      amountSompi,
+      feeSompi,
+      preparedTransaction: tx.serializeToSafeJSON(),
+      configUpdate: {
+        windowStartDaa: next.nextState.windowStartDaa.toString(),
+        spentInWindowSompi: next.nextState.spentInWindowSompi.toString(),
+        address: next.nextAddress,
+        currentOutpoint: { txid, index: 1 },
+      },
+    };
+  }
   const { transactionId } = await (rpc as any).submitTransaction({ transaction: tx, allowOrphan: false });
   const txid = String(transactionId);
 
@@ -821,6 +1050,171 @@ function minBigInt(a: bigint, b: bigint): bigint {
 
 function maxBigInt(a: bigint, b: bigint): bigint {
   return a > b ? a : b;
+}
+
+function requirePreparedTransaction(transactionJson: string, expectedTxid: string): Transaction {
+  if (typeof transactionJson !== "string" || transactionJson.length === 0 || transactionJson.length > 2_000_000) {
+    throw new Error("prepared vault transaction artifact is empty or oversized");
+  }
+  let transaction: Transaction;
+  try {
+    transaction = Transaction.deserializeFromSafeJSON(transactionJson);
+  } catch {
+    throw new Error("prepared vault transaction artifact is not valid Kaspa safe JSON");
+  }
+  try {
+    const transactionId = String(transaction.finalize());
+    if (transactionId !== expectedTxid || !/^[a-f0-9]{64}$/.test(transactionId)) {
+      throw new Error("prepared vault transaction identity does not match its signed artifact");
+    }
+    if (transaction.serializeToSafeJSON() !== transactionJson) {
+      throw new Error("prepared vault transaction artifact is not canonical Kaspa safe JSON");
+    }
+    return transaction;
+  } catch (error) {
+    transaction.free();
+    throw error;
+  }
+}
+
+function requireBoundPreparedTransaction(
+  prepared: PreparedVaultSpend,
+  networkId: string
+): Transaction {
+  assertPreparedVaultSpend(prepared);
+  const transaction = requirePreparedTransaction(prepared.transaction, prepared.transactionId);
+  try {
+    const outputs = transaction.outputs;
+    if (outputs.length !== 2) {
+      throw new Error("prepared vault staging transaction must have exactly two outputs");
+    }
+    if (
+      BigInt(outputs[0].value) !== prepared.amountSompi ||
+      BigInt(outputs[1].value) !== prepared.continuationAmountSompi
+    ) {
+      throw new Error("prepared vault staging transaction output amounts changed");
+    }
+    const destinationAddress = addressFromScriptPublicKey(outputs[0].scriptPublicKey, networkId);
+    const continuationAddress = addressFromScriptPublicKey(outputs[1].scriptPublicKey, networkId);
+    try {
+      if (
+        destinationAddress?.toString() !== prepared.destination ||
+        continuationAddress?.toString() !== prepared.continuationAddress
+      ) {
+        throw new Error("prepared vault staging transaction output addresses changed");
+      }
+    } finally {
+      destinationAddress?.free();
+      continuationAddress?.free();
+    }
+    if (outputs[0].covenant !== undefined) {
+      throw new Error("prepared vault staging destination output must not carry a covenant");
+    }
+    const binding = outputs[1].covenant;
+    if (
+      !binding ||
+      String(binding.covenantId) !== prepared.covenantId ||
+      binding.authorizingInput !== 0
+    ) {
+      throw new Error("prepared vault continuation covenant binding changed");
+    }
+    return transaction;
+  } catch (error) {
+    transaction.free();
+    throw error;
+  }
+}
+
+function requirePreparedConfigUpdate(
+  candidate: Partial<VaultConfig>,
+  transactionId: string
+): PreparedVaultSpend["configUpdate"] {
+  if (
+    typeof candidate.windowStartDaa !== "string" ||
+    !/^(?:0|[1-9][0-9]*)$/.test(candidate.windowStartDaa) ||
+    typeof candidate.spentInWindowSompi !== "string" ||
+    !/^(?:0|[1-9][0-9]*)$/.test(candidate.spentInWindowSompi) ||
+    typeof candidate.address !== "string" ||
+    candidate.address.length === 0 ||
+    candidate.currentOutpoint?.txid !== transactionId ||
+    candidate.currentOutpoint.index !== 1
+  ) {
+    throw new Error("prepared vault send returned an invalid continuation state update");
+  }
+  return {
+    windowStartDaa: candidate.windowStartDaa,
+    spentInWindowSompi: candidate.spentInWindowSompi,
+    address: candidate.address,
+    currentOutpoint: { txid: transactionId, index: 1 },
+  };
+}
+
+function assertPreparedVaultSpend(prepared: PreparedVaultSpend): void {
+  if (
+    !prepared ||
+    prepared.transactionEncoding !== "kaspa-sdk-safe-json-v2.0.0" ||
+    !/^[a-f0-9]{64}$/.test(prepared.transactionId) ||
+    prepared.destinationOutpoint.txid !== prepared.transactionId ||
+    prepared.destinationOutpoint.index !== 0 ||
+    prepared.continuationOutpoint.txid !== prepared.transactionId ||
+    prepared.continuationOutpoint.index !== 1 ||
+    prepared.amountSompi <= 0n ||
+    prepared.feeSompi < 0n ||
+    prepared.continuationAmountSompi <= 0n ||
+    !/^[a-f0-9]{64}$/.test(prepared.covenantId) ||
+    !/^sha256:[A-Za-z0-9_-]{43}$/.test(prepared.baseConfigDigest)
+  ) {
+    throw new Error("prepared vault spend metadata is invalid");
+  }
+  requirePreparedConfigUpdate(prepared.configUpdate, prepared.transactionId);
+}
+
+function vaultConfigDigest(config: VaultConfig): string {
+  const canonical = JSON.stringify({
+    template: config.template,
+    agentPublic: config.agentPublic,
+    ownerPublic: config.ownerPublic,
+    maxOutflowSompi: config.maxOutflowSompi,
+    windowSizeDaa: config.windowSizeDaa,
+    windowStartDaa: config.windowStartDaa,
+    spentInWindowSompi: config.spentInWindowSompi,
+    address: config.address,
+    covenantId: config.covenantId ?? null,
+    currentOutpoint: config.currentOutpoint
+      ? { txid: config.currentOutpoint.txid, index: config.currentOutpoint.index }
+      : null,
+  });
+  return `sha256:${createHash("sha256").update("sompi:vault-config:v1\0").update(canonical).digest("base64url")}`;
+}
+
+function vaultConfigMatchesUpdate(
+  config: VaultConfig,
+  update: PreparedVaultSpend["configUpdate"]
+): boolean {
+  return (
+    config.windowStartDaa === update.windowStartDaa &&
+    config.spentInWindowSompi === update.spentInWindowSompi &&
+    config.address === update.address &&
+    config.currentOutpoint?.txid === update.currentOutpoint.txid &&
+    config.currentOutpoint.index === update.currentOutpoint.index
+  );
+}
+
+function scriptPublicKeyMatchesAddress(
+  scriptPublicKey: unknown,
+  expectedAddress: string,
+  networkId: string
+): boolean {
+  try {
+    const address = addressFromScriptPublicKey(scriptPublicKey as any, networkId);
+    try {
+      return address?.toString() === expectedAddress;
+    } finally {
+      address?.free();
+    }
+  } catch {
+    return false;
+  }
 }
 
 export function generateOwnerKey(): { privateKey: string; publicKey: string } {

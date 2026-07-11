@@ -10,11 +10,11 @@
 import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
-import { PolicyEngine } from "./policy";
-import { KaspaWallet, formatKas } from "./wallet";
-import { X402Client } from "./x402/client";
-import { generateChannelKey } from "./x402/escrow";
-import { EscrowServer } from "./x402/escrow-server";
+import { PolicyEngine } from "./policy.js";
+import { KaspaWallet, formatKas } from "./wallet.js";
+import { X402Client } from "./x402/client.js";
+import { generateChannelKey } from "./x402/escrow.js";
+import { EscrowServer } from "./x402/escrow-server.js";
 
 const NETWORK = process.env.SOMPI_NETWORK ?? "testnet-10";
 const NODE = process.env.SOMPI_NODE_URL;

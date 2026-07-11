@@ -1,11 +1,11 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
+import websocket from "websocket";
 
 // The kaspa-wasm wRPC client requires a browser-style WebSocket global.
 // Node's built-in WebSocket (21+) is untested with wRPC borsh framing,
 // so we follow the official SDK examples and use the `websocket` package.
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-(globalThis as any).WebSocket = require("websocket").w3cwebsocket;
+(globalThis as any).WebSocket = websocket.w3cwebsocket;
 
 import {
   Address,
@@ -20,7 +20,7 @@ import {
   initConsolePanicHook,
   kaspaToSompi,
   sompiToKaspaString,
-} from "../vendor/kaspa-wasm/kaspa";
+} from "./kaspa-wasm.js";
 
 initConsolePanicHook();
 

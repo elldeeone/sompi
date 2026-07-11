@@ -1,9 +1,9 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { KaspaWallet } from "../wallet";
-import { KaspaEscrowPaymentHeader, X_PAYMENT_HEADER, decodePaymentHeader } from "./types";
-import { EscrowOutpoint, EscrowParams, EscrowUtxoNotFoundError, claimEscrow, escrowFunding, verifyVoucher } from "./escrow";
+import type { KaspaWallet } from "../wallet.js";
+import { KaspaEscrowPaymentHeader, X_PAYMENT_HEADER, decodePaymentHeader } from "./types.js";
+import { EscrowOutpoint, EscrowParams, EscrowUtxoNotFoundError, claimEscrow, escrowFunding, verifyVoucher } from "./escrow.js";
 
 /**
  * Trust-minimized server middleware for the kaspa-escrow x402-style scheme.

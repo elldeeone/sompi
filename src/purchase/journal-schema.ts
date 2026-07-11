@@ -2,9 +2,9 @@ import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 
 export const JOURNAL_APPLICATION_ID = 0x534f4d50; // SOMP
-export const JOURNAL_SCHEMA_VERSION = 1;
+export const JOURNAL_SCHEMA_VERSION = 2;
 
-export const JOURNAL_SCHEMA_SQL = `
+export const JOURNAL_SCHEMA_V1_SQL = `
   CREATE TABLE schema_migrations (
     version INTEGER PRIMARY KEY,
     checksum TEXT NOT NULL,
@@ -182,7 +182,7 @@ export const JOURNAL_SCHEMA_SQL = `
     kind TEXT NOT NULL,
     idempotency_key TEXT NOT NULL UNIQUE,
     state TEXT NOT NULL CHECK (state IN (
-      'planned', 'executing', 'submitted', 'ambiguous', 'retryable', 'observed', 'failed_terminal'
+      'planned', 'executing', 'submitted', 'ambiguous', 'retryable', 'observed', 'failed_terminal', 'abandoned'
     )),
     version INTEGER NOT NULL DEFAULT 0 CHECK (version >= 0),
     payload_digest TEXT NOT NULL,
@@ -202,10 +202,11 @@ export const JOURNAL_SCHEMA_SQL = `
       REFERENCES payment_attempts(purchase_id, attempt) ON DELETE RESTRICT,
     CHECK (attempt IS NULL OR attempt >= 1),
     CHECK ((claim_lease_name IS NULL) = (claim_generation IS NULL)),
-    CHECK (state = 'planned' OR claim_lease_name IS NOT NULL),
+    CHECK (state IN ('planned', 'abandoned') OR claim_lease_name IS NOT NULL),
     CHECK (state <> 'submitted' OR submission_digest IS NOT NULL),
     CHECK (state <> 'observed' OR result_digest IS NOT NULL),
-    CHECK (state <> 'failed_terminal' OR error_code IS NOT NULL)
+    CHECK (state <> 'failed_terminal' OR error_code IS NOT NULL),
+    CHECK (state <> 'abandoned' OR error_code IS NOT NULL)
   ) STRICT;
 
   CREATE INDEX recoverable_effects ON effects(state, created_at_ms);
@@ -225,7 +226,7 @@ export const JOURNAL_SCHEMA_SQL = `
     effect_id TEXT NOT NULL REFERENCES effects(id) ON DELETE RESTRICT,
     status TEXT NOT NULL CHECK (status IN (
       'observed', 'pending', 'not_found_retryable', 'not_found_ambiguous',
-      'conflict', 'failed_terminal'
+      'conflict', 'application_failure'
     )),
     result_digest TEXT,
     detail_digest TEXT,
@@ -323,6 +324,197 @@ export const JOURNAL_SCHEMA_SQL = `
     BEGIN SELECT RAISE(ABORT, 'treasury_spends is immutable'); END;
 `;
 
+/**
+ * Version 2 adds the protocol-neutral facts needed to reconstruct a Purchase.
+ * Raw AP2/x402/Merchant artifacts remain in the evidence store; these tables
+ * contain only verified canonical fields and immutable joins.
+ */
+export const JOURNAL_SCHEMA_V2_MIGRATION_SQL = `
+  ALTER TABLE treasury_reservations
+    RENAME COLUMN fee_ceiling_atomic TO additional_cost_ceiling_atomic;
+  ALTER TABLE treasury_spends
+    RENAME COLUMN actual_fee_atomic TO actual_additional_cost_atomic;
+  ALTER TABLE evidence_links ADD COLUMN media_type TEXT NOT NULL DEFAULT 'application/octet-stream';
+  ALTER TABLE evidence_links ADD COLUMN profile TEXT NOT NULL DEFAULT 'urn:sompi:evidence:legacy-v1';
+  ALTER TABLE evidence_links ADD COLUMN issuer TEXT;
+  ALTER TABLE evidence_links ADD COLUMN attached_at_ms INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE treasury_reservations
+    ADD COLUMN funding_source TEXT NOT NULL DEFAULT 'vault-treasury'
+      CHECK (funding_source = 'vault-treasury');
+  ALTER TABLE payment_preparations
+    ADD COLUMN funding_source TEXT NOT NULL DEFAULT 'vault-treasury'
+      CHECK (funding_source = 'vault-treasury');
+  ALTER TABLE treasury_spends
+    ADD COLUMN funding_source TEXT NOT NULL DEFAULT 'vault-treasury'
+      CHECK (funding_source = 'vault-treasury');
+
+  CREATE TABLE checkout_terms (
+    purchase_id TEXT PRIMARY KEY REFERENCES purchases(id) ON DELETE RESTRICT,
+    merchant_id TEXT NOT NULL,
+    merchant_name TEXT NOT NULL,
+    merchant_origin TEXT NOT NULL,
+    resource_fingerprint TEXT NOT NULL,
+    amount_atomic TEXT NOT NULL,
+    asset TEXT NOT NULL,
+    network TEXT NOT NULL,
+    pay_to TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    expires_at_ms INTEGER NOT NULL,
+    checkout_digest TEXT NOT NULL,
+    checkout_evidence_digest TEXT NOT NULL REFERENCES evidence_artifacts(digest) ON DELETE RESTRICT,
+    checkout_verification_profile TEXT NOT NULL,
+    checkout_verifier_id TEXT NOT NULL,
+    payment_requirements_digest TEXT NOT NULL REFERENCES evidence_artifacts(digest) ON DELETE RESTRICT,
+    payment_requirements_verification_profile TEXT NOT NULL,
+    payment_requirements_verifier_id TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL
+  ) STRICT;
+
+  CREATE TABLE authorization_requests (
+    purchase_id TEXT PRIMARY KEY REFERENCES purchases(id) ON DELETE RESTRICT,
+    checkout_digest TEXT NOT NULL,
+    request_digest TEXT NOT NULL UNIQUE,
+    nonce_digest TEXT NOT NULL UNIQUE,
+    request_media_type TEXT NOT NULL,
+    request_body_digest TEXT NOT NULL,
+    additional_cost_ceiling_atomic TEXT NOT NULL,
+    expires_at_ms INTEGER NOT NULL,
+    created_at_ms INTEGER NOT NULL
+  ) STRICT;
+
+  CREATE TABLE purchase_authorizations (
+    purchase_id TEXT PRIMARY KEY REFERENCES purchases(id) ON DELETE RESTRICT,
+    decision TEXT NOT NULL CHECK (decision IN ('approved', 'denied', 'expired')),
+    authority_id TEXT NOT NULL,
+    checkout_digest TEXT NOT NULL,
+    approved_facts_digest TEXT NOT NULL,
+    evidence_digest TEXT NOT NULL REFERENCES evidence_artifacts(digest) ON DELETE RESTRICT,
+    verification_profile TEXT NOT NULL,
+    verifier_id TEXT NOT NULL,
+    request_digest TEXT NOT NULL,
+    nonce_digest TEXT NOT NULL,
+    expires_at_ms INTEGER NOT NULL,
+    decided_at_ms INTEGER NOT NULL,
+    FOREIGN KEY (purchase_id) REFERENCES authorization_requests(purchase_id) ON DELETE RESTRICT
+  ) STRICT;
+
+  CREATE TABLE fulfilments (
+    purchase_id TEXT PRIMARY KEY REFERENCES purchases(id) ON DELETE RESTRICT,
+    attempt INTEGER NOT NULL,
+    http_status INTEGER NOT NULL CHECK (http_status BETWEEN 100 AND 599),
+    resource_fingerprint TEXT NOT NULL,
+    body_digest TEXT NOT NULL REFERENCES evidence_artifacts(digest) ON DELETE RESTRICT,
+    body_byte_length INTEGER NOT NULL CHECK (body_byte_length >= 0),
+    media_type TEXT NOT NULL,
+    merchant_evidence_digest TEXT NOT NULL REFERENCES evidence_artifacts(digest) ON DELETE RESTRICT,
+    merchant_verification_profile TEXT NOT NULL,
+    merchant_verifier_id TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    FOREIGN KEY (purchase_id, attempt)
+      REFERENCES payment_attempts(purchase_id, attempt) ON DELETE RESTRICT
+  ) STRICT;
+
+  CREATE TABLE purchase_receipts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    purchase_id TEXT NOT NULL REFERENCES purchases(id) ON DELETE RESTRICT,
+    role TEXT NOT NULL,
+    canonical_digest TEXT NOT NULL,
+    evidence_digest TEXT NOT NULL REFERENCES evidence_artifacts(digest) ON DELETE RESTRICT,
+    profile TEXT NOT NULL,
+    issuer TEXT,
+    verifier_id TEXT NOT NULL,
+    checkout_digest TEXT NOT NULL,
+    authorization_evidence_digest TEXT NOT NULL REFERENCES evidence_artifacts(digest) ON DELETE RESTRICT,
+    settlement_evidence_digest TEXT NOT NULL REFERENCES evidence_artifacts(digest) ON DELETE RESTRICT,
+    fulfilment_digest TEXT NOT NULL REFERENCES evidence_artifacts(digest) ON DELETE RESTRICT,
+    created_at_ms INTEGER NOT NULL,
+    UNIQUE (purchase_id, role)
+  ) STRICT;
+
+  CREATE TABLE purchase_receipt_sets (
+    purchase_id TEXT PRIMARY KEY REFERENCES purchases(id) ON DELETE RESTRICT,
+    profile TEXT NOT NULL,
+    canonical_digest TEXT NOT NULL UNIQUE,
+    completed_at_ms INTEGER NOT NULL
+  ) STRICT;
+
+  CREATE TABLE treasury_staging_plans (
+    effect_id TEXT PRIMARY KEY REFERENCES effects(id) ON DELETE RESTRICT,
+    purchase_id TEXT NOT NULL,
+    attempt INTEGER NOT NULL CHECK (attempt >= 1),
+    reservation_id TEXT NOT NULL UNIQUE,
+    payload_digest TEXT NOT NULL,
+    prepared_ref TEXT NOT NULL,
+    prepared_byte_length INTEGER NOT NULL CHECK (prepared_byte_length > 0),
+    planned_transaction_id TEXT NOT NULL UNIQUE,
+    expected_outpoint TEXT NOT NULL UNIQUE,
+    staging_amount_atomic TEXT NOT NULL,
+    funding_source TEXT NOT NULL CHECK (funding_source = 'vault-treasury'),
+    created_at_ms INTEGER NOT NULL,
+    UNIQUE (purchase_id, attempt),
+    FOREIGN KEY (purchase_id, attempt)
+      REFERENCES payment_attempts(purchase_id, attempt) ON DELETE RESTRICT,
+    FOREIGN KEY (reservation_id, purchase_id)
+      REFERENCES treasury_reservations(id, purchase_id) ON DELETE RESTRICT
+  ) STRICT;
+
+  CREATE TABLE treasury_staging_observations (
+    effect_id TEXT PRIMARY KEY REFERENCES treasury_staging_plans(effect_id) ON DELETE RESTRICT,
+    purchase_id TEXT NOT NULL,
+    attempt INTEGER NOT NULL CHECK (attempt >= 1),
+    reservation_id TEXT NOT NULL UNIQUE,
+    transaction_id TEXT NOT NULL UNIQUE,
+    outpoint TEXT NOT NULL UNIQUE,
+    staging_amount_atomic TEXT NOT NULL,
+    funding_source TEXT NOT NULL CHECK (funding_source = 'vault-treasury'),
+    evidence_digest TEXT NOT NULL REFERENCES evidence_artifacts(digest) ON DELETE RESTRICT,
+    evidence_verification_profile TEXT NOT NULL,
+    evidence_verifier_id TEXT NOT NULL,
+    observed_at_ms INTEGER NOT NULL,
+    UNIQUE (purchase_id, attempt),
+    FOREIGN KEY (purchase_id, attempt)
+      REFERENCES payment_attempts(purchase_id, attempt) ON DELETE RESTRICT,
+    FOREIGN KEY (reservation_id, purchase_id)
+      REFERENCES treasury_reservations(id, purchase_id) ON DELETE RESTRICT
+  ) STRICT;
+
+  CREATE TRIGGER immutable_checkout_terms_update BEFORE UPDATE ON checkout_terms
+    BEGIN SELECT RAISE(ABORT, 'checkout_terms is immutable'); END;
+  CREATE TRIGGER immutable_checkout_terms_delete BEFORE DELETE ON checkout_terms
+    BEGIN SELECT RAISE(ABORT, 'checkout_terms is immutable'); END;
+  CREATE TRIGGER immutable_authorization_requests_update BEFORE UPDATE ON authorization_requests
+    BEGIN SELECT RAISE(ABORT, 'authorization_requests is immutable'); END;
+  CREATE TRIGGER immutable_authorization_requests_delete BEFORE DELETE ON authorization_requests
+    BEGIN SELECT RAISE(ABORT, 'authorization_requests is immutable'); END;
+  CREATE TRIGGER immutable_purchase_authorizations_update BEFORE UPDATE ON purchase_authorizations
+    BEGIN SELECT RAISE(ABORT, 'purchase_authorizations is immutable'); END;
+  CREATE TRIGGER immutable_purchase_authorizations_delete BEFORE DELETE ON purchase_authorizations
+    BEGIN SELECT RAISE(ABORT, 'purchase_authorizations is immutable'); END;
+  CREATE TRIGGER immutable_fulfilments_update BEFORE UPDATE ON fulfilments
+    BEGIN SELECT RAISE(ABORT, 'fulfilments is immutable'); END;
+  CREATE TRIGGER immutable_fulfilments_delete BEFORE DELETE ON fulfilments
+    BEGIN SELECT RAISE(ABORT, 'fulfilments is immutable'); END;
+  CREATE TRIGGER immutable_purchase_receipts_update BEFORE UPDATE ON purchase_receipts
+    BEGIN SELECT RAISE(ABORT, 'purchase_receipts is immutable'); END;
+  CREATE TRIGGER immutable_purchase_receipts_delete BEFORE DELETE ON purchase_receipts
+    BEGIN SELECT RAISE(ABORT, 'purchase_receipts is immutable'); END;
+  CREATE TRIGGER immutable_purchase_receipt_sets_update BEFORE UPDATE ON purchase_receipt_sets
+    BEGIN SELECT RAISE(ABORT, 'purchase_receipt_sets is immutable'); END;
+  CREATE TRIGGER immutable_purchase_receipt_sets_delete BEFORE DELETE ON purchase_receipt_sets
+    BEGIN SELECT RAISE(ABORT, 'purchase_receipt_sets is immutable'); END;
+  CREATE TRIGGER immutable_treasury_staging_plans_update BEFORE UPDATE ON treasury_staging_plans
+    BEGIN SELECT RAISE(ABORT, 'treasury_staging_plans is immutable'); END;
+  CREATE TRIGGER immutable_treasury_staging_plans_delete BEFORE DELETE ON treasury_staging_plans
+    BEGIN SELECT RAISE(ABORT, 'treasury_staging_plans is immutable'); END;
+  CREATE TRIGGER immutable_treasury_staging_observations_update BEFORE UPDATE ON treasury_staging_observations
+    BEGIN SELECT RAISE(ABORT, 'treasury_staging_observations is immutable'); END;
+  CREATE TRIGGER immutable_treasury_staging_observations_delete BEFORE DELETE ON treasury_staging_observations
+    BEGIN SELECT RAISE(ABORT, 'treasury_staging_observations is immutable'); END;
+`;
+
+export const JOURNAL_SCHEMA_SQL = `${JOURNAL_SCHEMA_V1_SQL}\n${JOURNAL_SCHEMA_V2_MIGRATION_SQL}`;
+
+export const JOURNAL_SCHEMA_V1_CHECKSUM = sha256Text(JOURNAL_SCHEMA_V1_SQL);
 export const JOURNAL_SCHEMA_CHECKSUM = sha256Text(JOURNAL_SCHEMA_SQL);
 
 export function schemaFingerprint(db: Database.Database): string {
@@ -338,6 +530,7 @@ export function schemaFingerprint(db: Database.Database): string {
 }
 
 let expectedFingerprint: string | undefined;
+let expectedV1Fingerprint: string | undefined;
 
 export function expectedSchemaFingerprint(): string {
   if (expectedFingerprint) return expectedFingerprint;
@@ -346,6 +539,18 @@ export function expectedSchemaFingerprint(): string {
     expected.exec(JOURNAL_SCHEMA_SQL);
     expectedFingerprint = schemaFingerprint(expected);
     return expectedFingerprint;
+  } finally {
+    expected.close();
+  }
+}
+
+export function expectedV1SchemaFingerprint(): string {
+  if (expectedV1Fingerprint) return expectedV1Fingerprint;
+  const expected = new Database(":memory:");
+  try {
+    expected.exec(JOURNAL_SCHEMA_V1_SQL);
+    expectedV1Fingerprint = schemaFingerprint(expected);
+    return expectedV1Fingerprint;
   } finally {
     expected.close();
   }

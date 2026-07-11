@@ -8,17 +8,18 @@
 import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import { sha256 } from "@noble/hashes/sha256";
-import { calculateTransactionMass, payToAddressScript, payToScriptHashScript, Transaction } from "../vendor/kaspa-wasm/kaspa";
-import { PolicyEngine, PolicyViolation } from "./policy";
-import { VaultManager, generateOwnerKey as generateVaultOwnerKey } from "./vault";
-import { buildRedeemScript, buildSigArgs, bytesToHex, hexToBytes } from "./vault/template";
-import { buildEscrowRedeemScript, buildClaimArgs, buildRefundArgs, voucherMessage } from "./x402/escrow-template";
-import { EscrowUtxoNotFoundError, escrowFunding, escrowScriptPubKeyHash, generateChannelKey, makeVoucher, verifyVoucher } from "./x402/escrow";
-import { X402Client } from "./x402/client";
-import { EscrowServer } from "./x402/escrow-server";
-import { X_PAYMENT_HEADER, encodePaymentHeader } from "./x402/types";
-import { KaspaWallet, formatKas } from "./wallet";
+import { calculateTransactionMass, payToAddressScript, payToScriptHashScript, Transaction } from "./kaspa-wasm.js";
+import { PolicyEngine, PolicyViolation } from "./policy.js";
+import { VaultManager, generateOwnerKey as generateVaultOwnerKey } from "./vault.js";
+import { buildRedeemScript, buildSigArgs, bytesToHex, hexToBytes } from "./vault/template.js";
+import { buildEscrowRedeemScript, buildClaimArgs, buildRefundArgs, voucherMessage } from "./x402/escrow-template.js";
+import { EscrowUtxoNotFoundError, escrowFunding, escrowScriptPubKeyHash, generateChannelKey, makeVoucher, verifyVoucher } from "./x402/escrow.js";
+import { X402Client } from "./x402/client.js";
+import { EscrowServer } from "./x402/escrow-server.js";
+import { X_PAYMENT_HEADER, encodePaymentHeader } from "./x402/types.js";
+import { KaspaWallet, formatKas } from "./wallet.js";
 import {
   assertPurchaseId,
   assertPurchaseRequestKey,
@@ -27,9 +28,11 @@ import {
   createPurchaseId,
   evidenceDigest,
   requestFingerprint,
-} from "./purchase/identity";
-import { PURCHASE_STATES } from "./purchase/types";
-import { SUPPORTED_PROTOCOL_PROFILES } from "./protocols/profiles";
+} from "./purchase/identity.js";
+import { PURCHASE_STATES } from "./purchase/types.js";
+import { SUPPORTED_PROTOCOL_PROFILES } from "./protocols/profiles.js";
+
+const MODULE_DIRECTORY = path.dirname(fileURLToPath(import.meta.url));
 
 const NETWORK = process.env.SOMPI_NETWORK ?? "testnet-10";
 const DATA_DIR = process.env.SOMPI_DATA_DIR ?? path.join(os.homedir(), ".sompi", NETWORK);
@@ -217,7 +220,7 @@ async function main() {
   fs.rmSync(hotDir, { recursive: true, force: true });
 
   // --- offline checks: vault template byte-equality vs compiler fixtures ---
-  const fixtures = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "scripts", "vault-fixtures.json"), "utf8"));
+  const fixtures = JSON.parse(fs.readFileSync(path.join(MODULE_DIRECTORY, "..", "scripts", "vault-fixtures.json"), "utf8"));
   let templateMatches = 0;
   for (const f of fixtures) {
     const redeem = bytesToHex(
@@ -399,7 +402,7 @@ async function main() {
   // --- offline checks: escrow template byte-equality vs SilverScript compiler fixtures ---
   // Regression guard only; scripts/escrow-live.js is the live consensus proof
   // for the current compiler-derived bytes.
-  const escrowFixtures = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "scripts", "escrow-fixtures.json"), "utf8"));
+  const escrowFixtures = JSON.parse(fs.readFileSync(path.join(MODULE_DIRECTORY, "..", "scripts", "escrow-fixtures.json"), "utf8"));
   let escrowMatches = 0;
   for (const f of escrowFixtures) {
     const redeem = bytesToHex(buildEscrowRedeemScript(f.client, f.server, BigInt(f.timeout), f.network ?? "testnet-10"));

@@ -15,7 +15,7 @@
     "micropayments",
     "model-context-protocol"
   ],
-  "type": "commonjs",
+  "type": "module",
   "main": "dist/index.js",
   "bin": {
     "sompi-mcp": "dist/index.js"
@@ -55,10 +55,18 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
+    "@kaspa-x402/client": "0.1.0-alpha.6",
+    "@kaspa-x402/core": "0.1.0-alpha.6",
+    "@kaspa-x402/covenant": "0.1.0-alpha.6",
+    "@kaspa-x402/server": "0.1.0-alpha.6",
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@noble/curves": "^1.9.7",
     "@noble/hashes": "^1.8.0",
+    "@sd-jwt/core": "0.20.0",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
     "better-sqlite3": "12.11.1",
+    "jose": "5.10.0",
     "websocket": "^1.0.35",
     "zod": "^3.23.0"
   },
