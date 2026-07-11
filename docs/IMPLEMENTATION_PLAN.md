@@ -21,13 +21,13 @@ but all replaced code is deleted at the Phase 4 cutover gate.
 
 Purpose: establish one unambiguous base before architectural work.
 
-- [ ] Reconfirm the worktree is clean and `ux-agent-native-payments` is the
+- [x] Reconfirm the worktree is clean and `ux-agent-native-payments` is the
   intended latest branch.
-- [ ] Fast-forward local `main` to `ux-agent-native-payments` without squashing
+- [x] Fast-forward local `main` to `ux-agent-native-payments` without squashing
   or rewriting its proven history.
-- [ ] Verify the resulting `main` build and offline smoke tests.
-- [ ] Create a neutral implementation branch from the normalized `main`.
-- [ ] Record exact base commit and implementation branch in `CURRENT_STATE.md`.
+- [x] Verify the resulting `main` build and offline smoke tests.
+- [x] Create a neutral implementation branch from the normalized `main`.
+- [x] Record exact base commit and implementation branch in `CURRENT_STATE.md`.
 
 Gate:
 

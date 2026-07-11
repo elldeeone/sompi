@@ -4,22 +4,23 @@ Last updated: **2026-07-11**
 
 ## Plain-English status
 
-**Architecture codified; ready to begin Phase 0 of the end-to-end build.**
+**Phase 0 complete; Phase 1 characterization and threat modelling is next.**
 
-The target design and decisions are complete. The implementation has not begun:
-the current source still contains Sompi's existing x402 v1 escrow path and
-pre-cutover JSON state. Architecture documents describe the accepted target,
-while README/proof documents continue to describe current behaviour until the
-clean cutover updates them.
+The target design and decisions are complete, local `main` has been normalized
+to the latest verified history, and the implementation branch has been created.
+The current source still contains Sompi's existing x402 v1 escrow path and
+pre-cutover JSON state; those remain only until the Phase 4 clean cutover.
 
 ## Git orientation at codification
 
 - Repository: `https://github.com/elldeeone/sompi`
-- Active branch: `ux-agent-native-payments`
-- Active commit: `4811942` (`Add public demo service installer`)
-- Relationship to local `main`: `0 behind / 18 ahead`
-- Worktree before documentation edits: clean
-- Documentation changes from this codification: uncommitted
+- Normalized local `main`: `1bbfa0c` (`Document AP2 and Kaspa-x402 architecture`)
+- Active implementation branch: `ap2-kaspa-purchase-core`
+- Active commit: `1bbfa0c`
+- Relationship to local `main`: `0 behind / 0 ahead`
+- Baseline verification: `npm run build` passed
+- Baseline verification: `SOMPI_SMOKE_OFFLINE=1 npm run smoke` passed
+- Remote state: unchanged; local `main` is ahead of `origin/main`
 
 Do not assume these facts remain current. Re-run Git orientation before Phase
 0, preserve unrelated changes, and update this section with the verified base.
@@ -48,19 +49,23 @@ Do not assume these facts remain current. Re-run Git orientation before Phase
 - AP2 v0.2 human-present + Kaspa-x402 exact + testnet first.
 - Complete deletion of Sompi x402 v1 at cutover; no compatibility layer.
 
+## Completed milestone
+
+Phase 0 is complete:
+
+1. the accepted specification was committed as `1bbfa0c`;
+2. local `main` was fast-forwarded without rewriting history;
+3. the build and complete offline smoke suite passed on normalized `main`;
+4. `ap2-kaspa-purchase-core` was created from that exact commit.
+
+No remote push, package publish, deployment, or sibling-repository change was
+performed.
+
 ## Next action
 
-Execute **Phase 0: Normalize the Git base** from
-[`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md):
-
-1. recheck branch/worktree/remote state;
-2. fast-forward local `main` to the verified latest branch;
-3. build and run offline smoke on normalized `main`;
-4. create the implementation branch;
-5. begin Phase 1 characterization and threat modelling.
-
-No branch switch, merge, commit, push, package publish, sibling-repository
-change, or implementation was performed during architecture codification.
+Execute **Phase 1: Characterize, model threats, and freeze interfaces** from
+[`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md), then commit the
+verified characterization/threat-model milestone before building the journal.
 
 ## Known external uncertainties
 
