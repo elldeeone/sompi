@@ -290,6 +290,60 @@ test("demo Merchant durably replays the exact response and AP2 Receipt bytes aft
   }
 });
 
+test("demo Merchant restores exact offer bytes and continues one durably-started paid request after expiry", async () => {
+  const clock = { now: NOW_MS };
+  const store = new SqliteExactServerStateStore(":memory:");
+  const authorizationStore = new SqliteDemoCommerceAuthorizationStore(":memory:", {
+    now: () => clock.now,
+  });
+  let durableRequest: DemoMerchantPaidRequest | undefined;
+  const presentedAtSec = FIXED_NOW + 10;
+  const merchant = await DemoMerchantFixture.create({
+    ...config(store, () => clock.now, authorizationStore),
+    paidRequestContinuation: {
+      authorizationPresentedAtSec(input) {
+        if (
+          !durableRequest ||
+          input.purchaseId !== durableRequest.purchaseId ||
+          input.paymentIdentifier !== durableRequest.paymentIdentifier ||
+          input.merchantCheckout !== durableRequest.merchantCheckout ||
+          input.paymentRequiredHeader !== durableRequest.paymentRequiredHeader ||
+          input.paymentSignature !== durableRequest.headers["PAYMENT-SIGNATURE"]
+        ) {
+          throw new Error("continuation mismatch");
+        }
+        return presentedAtSec;
+      },
+    },
+  });
+  try {
+    const offer = await merchant.offer(PURCHASE_ID);
+    const restored = await merchant.restoreOffer({
+      purchaseId: offer.purchaseId,
+      merchantCheckout: offer.checkout.artifact,
+      paymentRequiredHeader: offer.paymentRequired.headers["PAYMENT-REQUIRED"],
+      issuedAtSec: offer.checkout.issuedAtSec,
+    });
+    assert.equal(restored.checkout.artifact, offer.checkout.artifact);
+    assert.equal(
+      restored.paymentRequired.headers["PAYMENT-REQUIRED"],
+      offer.paymentRequired.headers["PAYMENT-REQUIRED"]
+    );
+    assert.equal(restored.paymentRequirementsDigest, offer.paymentRequirementsDigest);
+
+    const evidence = await authorise(offer.checkout, offer.checkout.expiresAtSec);
+    await presentAuthorization(merchant, offer, evidence, PAYMENT_IDENTIFIER);
+    durableRequest = paidRequest(offer, evidence, PAYMENT_IDENTIFIER);
+    clock.now = (offer.checkout.expiresAtSec + 30) * 1000;
+    const paid = await merchant.handlePaid(durableRequest);
+    assert.equal(paid.response.status, 200);
+    assert.equal(paid.ap2Receipts?.payment.issuedAtSec, offer.checkout.expiresAtSec + 30);
+  } finally {
+    store.close();
+    authorizationStore.close();
+  }
+});
+
 async function authorise(
   checkout: VerifiedMerchantCheckout,
   expiresAtSec = checkout.expiresAtSec

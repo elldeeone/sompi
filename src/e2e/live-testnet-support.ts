@@ -25,7 +25,9 @@ import {
   addressFromScriptPublicKey,
 } from "../kaspa-wasm.js";
 import { PolicyEngine } from "../policy.js";
+import { assertPurchaseRequestKey } from "../purchase/identity.js";
 import { PurchaseJournal } from "../purchase/journal.js";
+import { SecureLocalStateDirectory } from "../secure-local-state.js";
 import {
   TreasuryOperationModule,
   type TreasuryOperationRequest,
@@ -55,11 +57,15 @@ const ADDRESS = /^kaspatest:[a-z0-9]+$/;
 const RUN_ID = /^[a-f0-9]{24}$/;
 const OPERATION_TIMEOUT_MS = 8 * 60_000;
 const OBSERVATION_TIMEOUT_MS = 6 * 60_000;
+const MAX_JSON_STATE_BYTES = 2 * 1024 * 1024;
+const MAX_SECRET_FILE_BYTES = 4096;
+const MAX_DURABLE_FILE_BYTES = 16 * 1024 * 1024;
 
 export interface LiveProofConfig {
   readonly version: 1;
   readonly runId: string;
   readonly createdAt: string;
+  readonly nodeUrl: string;
   readonly sourceWalletDirectory: string;
   readonly purchaseEntropyHex: string;
   readonly reservationExpiresAt: string;
@@ -94,7 +100,7 @@ export interface LiveProofConfig {
   };
 }
 
-export interface LiveChainMilestone {
+export interface LiveObservedOutpoint {
   readonly transactionId: string;
   readonly outpoint: string;
   readonly address: string;
@@ -102,6 +108,13 @@ export interface LiveChainMilestone {
   readonly blockDaaScore: string;
   readonly virtualDaaScore: string;
   readonly finality: "accepted" | "confirmed";
+}
+
+export interface LiveChainMilestone extends LiveObservedOutpoint {
+  readonly observationStartHash: string;
+  readonly acceptingBlockHash: string;
+  /** DAA of the virtual-chain block that accepted the transaction; distinct from UTXO creation DAA. */
+  readonly acceptingBlockDaaScore: string;
 }
 
 export interface LiveProofProgress {
@@ -121,11 +134,13 @@ export interface LiveRecoveryRecord {
   readonly preparedBeforeFirstSpendAt: string;
   readonly updatedAt: string;
   readonly network: typeof LIVE_NETWORK;
+  readonly nodeUrl: string;
   readonly sourceWalletDirectory: string;
   readonly proofRoot: string;
   readonly sensitivePaths: readonly string[];
   readonly journalPaths: readonly string[];
   readonly operationKeys: LiveProofConfig["operationKeys"];
+  readonly startedOperations: readonly LiveFundingOperation[];
   readonly intendedAmountsAtomic: {
     readonly bootstrap: typeof LIVE_BOOTSTRAP_AMOUNT_ATOMIC;
     readonly borrowInventory: typeof LIVE_BORROW_AMOUNT_ATOMIC;
@@ -140,6 +155,14 @@ export interface LiveRecoveryRecord {
   }>>;
 }
 
+export type LiveFundingOperation = "bootstrap" | "borrowInventory" | "vaultDeposit";
+
+const LIVE_FUNDING_OPERATION_ORDER = Object.freeze([
+  "bootstrap",
+  "borrowInventory",
+  "vaultDeposit",
+] as const satisfies readonly LiveFundingOperation[]);
+
 export interface LiveProofLayout {
   readonly root: string;
   readonly configPath: string;
@@ -149,6 +172,8 @@ export interface LiveProofLayout {
   readonly bootstrapJournalPath: string;
   readonly purchasePolicyPath: string;
   readonly purchaseJournalPath: string;
+  readonly merchantOfferPath: string;
+  readonly merchantPaidIngressPath: string;
   readonly merchantVerifierStatePath: string;
   readonly paidReplayCapsulePath: string;
   readonly authorityRoot: string;
@@ -175,6 +200,8 @@ export function liveProofLayout(root: string): LiveProofLayout {
     bootstrapJournalPath: path.join(resolved, "bootstrap", "journal.sqlite"),
     purchasePolicyPath: path.join(resolved, "purchase", "policy.json"),
     purchaseJournalPath: path.join(resolved, "purchase", "journal.sqlite"),
+    merchantOfferPath: path.join(resolved, "merchant", "offer.json"),
+    merchantPaidIngressPath: path.join(resolved, "merchant", "paid-ingress.json"),
     merchantVerifierStatePath: path.join(resolved, "merchant", "exact-verifier-state.json"),
     paidReplayCapsulePath: path.join(resolved, "merchant", "paid-replay-capsule.json"),
     authorityRoot: path.join(resolved, "authority"),
@@ -184,7 +211,8 @@ export function liveProofLayout(root: string): LiveProofLayout {
 
 export function initializeLiveProof(
   root: string,
-  sourceWalletDirectory: string
+  sourceWalletDirectory: string,
+  nodeUrlInput: string | undefined = process.env.SOMPI_NODE_URL
 ): InitializedLiveProof {
   if (process.env.SOMPI_PRIVATE_KEY) {
     throw new Error(
@@ -192,7 +220,21 @@ export function initializeLiveProof(
     );
   }
   const layout = liveProofLayout(root);
+  const nodeUrl = requireLiveNodeUrl(nodeUrlInput);
   secureDirectory(layout.root);
+  const initialRootEntries = fs.readdirSync(layout.root);
+  const hasConfig = secureFileExists(layout.configPath);
+  const hasRecovery = secureFileExists(layout.recoveryPath);
+  if (!hasConfig && initialRootEntries.length > 0) {
+    throw new Error(
+      "live proof run identity is missing from a non-empty proof root; use a fresh root after manual reconciliation"
+    );
+  }
+  if (hasConfig && !hasRecovery) {
+    throw new Error(
+      "live proof recovery continuity is missing; refusing to reconstruct a surviving run identity"
+    );
+  }
   for (const directory of [
     path.dirname(layout.bootstrapJournalPath),
     path.dirname(layout.purchaseJournalPath),
@@ -213,17 +255,17 @@ export function initializeLiveProof(
   const treasuryWallet = new KaspaWallet({
     networkId: LIVE_SDK_NETWORK,
     dataDir: treasuryDirectory,
-    ...(process.env.SOMPI_NODE_URL ? { nodeUrl: process.env.SOMPI_NODE_URL } : {}),
+    nodeUrl,
   });
   const merchantWallet = new KaspaWallet({
     networkId: LIVE_SDK_NETWORK,
     dataDir: merchantDirectory,
-    ...(process.env.SOMPI_NODE_URL ? { nodeUrl: process.env.SOMPI_NODE_URL } : {}),
+    nodeUrl,
   });
   const observerWallet = new KaspaWallet({
     networkId: LIVE_SDK_NETWORK,
     dataDir: observerDirectory,
-    ...(process.env.SOMPI_NODE_URL ? { nodeUrl: process.env.SOMPI_NODE_URL } : {}),
+    nodeUrl,
   });
 
   const vaultOwnerKeyPath = path.join(layout.root, "secrets", "vault-owner.key");
@@ -262,6 +304,7 @@ export function initializeLiveProof(
     version: 1 as const,
     runId,
     createdAt: new Date().toISOString(),
+    nodeUrl,
     sourceWalletDirectory: path.resolve(sourceWalletDirectory),
     purchaseEntropyHex,
     reservationExpiresAt: new Date(Date.now() + 2 * 60 * 60_000).toISOString(),
@@ -296,15 +339,30 @@ export function initializeLiveProof(
     }),
   }) satisfies LiveProofConfig;
 
-  const config = fs.existsSync(layout.configPath)
+  const config = hasConfig
     ? readLiveProofConfig(layout.configPath)
     : created;
   assertSameConfig(config, created);
-  if (!fs.existsSync(layout.configPath)) writeAtomicJson(layout.configPath, config);
+  if (!hasConfig) writeAtomicJson(layout.configPath, config);
 
   const progress = readProgress(layout.progressPath, runId);
   writeRecoveryRecord(layout, config, progress);
   assertPrivateFile(layout.recoveryPath);
+  if (hasConfig) {
+    if (
+      !secureFileExists(layout.bootstrapJournalPath) ||
+      !secureFileExists(layout.purchaseJournalPath)
+    ) {
+      throw new Error(
+        "live proof journal continuity is missing from a surviving run identity"
+      );
+    }
+  } else {
+    for (const filename of [layout.bootstrapJournalPath, layout.purchaseJournalPath]) {
+      const journal = new PurchaseJournal(filename);
+      journal.close();
+    }
+  }
   return Object.freeze({ layout, config, treasuryWallet, merchantWallet, observerWallet, vault });
 }
 
@@ -330,26 +388,74 @@ export async function bootstrapLiveProof(input: {
     requireApprovalAboveSompi: "0",
   });
 
+  let progress = readProgress(layout.progressPath, config.runId);
+  if (
+    (progress.vaultDeposit && !progress.borrowInventory) ||
+    (progress.borrowInventory && !progress.bootstrap)
+  ) {
+    throw new Error("live proof milestones are not a complete ordered prefix");
+  }
+  const bootstrapJournalExists = secureFileExists(layout.bootstrapJournalPath);
+  const purchaseJournalExists = secureFileExists(layout.purchaseJournalPath);
+  const recovery = readRecoveryRecord(layout.recoveryPath, config.runId);
+  if (
+    recovery.nodeUrl !== config.nodeUrl ||
+    recovery.sourceWalletDirectory !== config.sourceWalletDirectory ||
+    recovery.proofRoot !== layout.root ||
+    JSON.stringify(recovery.operationKeys) !== JSON.stringify(config.operationKeys) ||
+    JSON.stringify(recovery.intendedAmountsAtomic) !== JSON.stringify({
+      bootstrap: LIVE_BOOTSTRAP_AMOUNT_ATOMIC,
+      borrowInventory: LIVE_BORROW_AMOUNT_ATOMIC,
+      vaultDeposit: LIVE_VAULT_DEPOSIT_AMOUNT_ATOMIC,
+      purchasePrice: LIVE_PRICE_ATOMIC,
+      additiveThreshold: LIVE_ADDITIVE_THRESHOLD_ATOMIC,
+    })
+  ) {
+    throw new Error("live proof recovery record differs from its immutable run configuration");
+  }
+  const startedOperations = new Set(recovery.startedOperations);
+  const merchantDownstreamExists = [
+    layout.merchantOfferPath,
+    layout.merchantPaidIngressPath,
+    layout.merchantVerifierStatePath,
+    layout.paidReplayCapsulePath,
+    path.join(layout.root, "merchant", "exact.sqlite"),
+    path.join(layout.root, "merchant", "authorization.sqlite"),
+  ].some(secureFileExists);
+  if (
+    !bootstrapJournalExists ||
+    !purchaseJournalExists ||
+    (progress.bootstrap && !bootstrapJournalExists) ||
+    (startedOperations.has("bootstrap") && !bootstrapJournalExists) ||
+    ((startedOperations.has("borrowInventory") || startedOperations.has("vaultDeposit")) &&
+      !purchaseJournalExists) ||
+    (startedOperations.has("borrowInventory") && !progress.bootstrap) ||
+    (startedOperations.has("vaultDeposit") && !progress.borrowInventory) ||
+    ((progress.borrowInventory || progress.vaultDeposit || purchaseJournalExists || merchantDownstreamExists) &&
+      !bootstrapJournalExists) ||
+    ((progress.borrowInventory || progress.vaultDeposit || merchantDownstreamExists) &&
+      !purchaseJournalExists)
+  ) {
+    throw new Error("live proof journal continuity is missing; refusing to create a replacement operation");
+  }
+
   const bootstrapJournal = new PurchaseJournal(layout.bootstrapJournalPath);
-  let purchaseJournal: PurchaseJournal | undefined;
+  const purchaseJournal = new PurchaseJournal(layout.purchaseJournalPath);
+  const purchaseHasDownstreamState = Boolean(
+    purchaseJournal.findTreasuryOperation(config.operationKeys.borrowInventory) ||
+    purchaseJournal.findTreasuryOperation(config.operationKeys.vaultDeposit) ||
+    purchaseJournal.findPurchaseByRequestKey(assertLivePurchaseRequestKey(config.runId))
+  );
   const sourceWallet = new KaspaWallet({
     networkId: LIVE_SDK_NETWORK,
     dataDir: config.sourceWalletDirectory,
-    ...(process.env.SOMPI_NODE_URL ? { nodeUrl: process.env.SOMPI_NODE_URL } : {}),
+    nodeUrl: config.nodeUrl,
   });
   try {
+    await assertLiveNodeReady(sourceWallet);
     if (sourceWallet.address === treasuryWallet.address) {
       throw new Error("bootstrap source and disposable Treasury wallet unexpectedly share an address");
     }
-    const sourceInfo = await sourceWallet.serverInfo();
-    if (!sourceInfo.isSynced || !sourceInfo.hasUtxoIndex) {
-      throw new Error("bootstrap source RPC is unsynced or lacks the UTXO index");
-    }
-    const sourceBalance = await sourceWallet.balanceSompi();
-    if (sourceBalance < BigInt(LIVE_BOOTSTRAP_AMOUNT_ATOMIC) + BigInt(LIVE_TREASURY_FEE_CEILING_ATOMIC)) {
-      throw new Error("bootstrap source does not hold enough Testnet-10 funds");
-    }
-
     const sourceAdapterVault = new VaultManager(
       path.join(layout.root, "bootstrap", "unused-vault-adapter"),
       LIVE_SDK_NETWORK
@@ -360,19 +466,45 @@ export async function bootstrapLiveProof(input: {
       wallet: sourceWallet,
       vault: sourceAdapterVault,
     });
+    writeRecoveryRecord(layout, config, progress);
+    assertPreSpendDurability(initialized, config.sourceWalletDirectory);
+    const bootstrapRequest = {
+      operationKey: config.operationKeys.bootstrap,
+      kind: "wallet_send" as const,
+      destination: config.wallets.treasuryAddress,
+      amountAtomic: LIVE_BOOTSTRAP_AMOUNT_ATOMIC,
+    };
     input.onProgress?.("recovering durable bootstrap operation");
-    const bootstrapView = await driveTreasuryOperation(
-      bootstrapModule,
-      {
-        operationKey: config.operationKeys.bootstrap,
-        kind: "wallet_send",
-        destination: config.wallets.treasuryAddress,
-        amountAtomic: LIVE_BOOTSTRAP_AMOUNT_ATOMIC,
-      },
-      input.onProgress
-    );
-    let progress = readProgress(layout.progressPath, config.runId);
-    if (!progress.bootstrap) {
+    if (progress.bootstrap) {
+      await revalidateOperationMilestone({
+        journal: bootstrapJournal,
+        request: bootstrapRequest,
+        milestone: progress.bootstrap,
+        wallet: treasuryWallet,
+      });
+    } else {
+      const existing = assertOperationRequestMatches(bootstrapJournal, bootstrapRequest);
+      if (purchaseHasDownstreamState) {
+        throw new Error("bootstrap milestone is missing after downstream state; manual reconciliation is required");
+      }
+      if (liveBootstrapNeedsCapacity(progress.bootstrap, existing)) {
+        const sourceBalance = await sourceWallet.balanceSompi();
+        if (
+          sourceBalance <
+          BigInt(LIVE_BOOTSTRAP_AMOUNT_ATOMIC) +
+            BigInt(LIVE_TREASURY_FEE_CEILING_ATOMIC)
+        ) {
+          throw new Error("bootstrap source does not hold enough Testnet-10 funds");
+        }
+      }
+      writeRecoveryRecord(layout, config, progress, "bootstrap");
+      assertPreSpendDurability(initialized, config.sourceWalletDirectory);
+      const bootstrapView = await driveLiveTreasuryOperation(
+        bootstrapModule,
+        bootstrapRequest,
+        input.onProgress,
+        existing
+      );
       const detail = bootstrapJournal.readObservedTreasuryOperationDetail(
         config.operationKeys.bootstrap
       );
@@ -382,6 +514,10 @@ export async function bootstrapLiveProof(input: {
         address: config.wallets.treasuryAddress,
         outpoint,
         amountAtomic: LIVE_BOOTSTRAP_AMOUNT_ATOMIC,
+        observationStartHash: preparedObservationStartHash(
+          bootstrapJournal,
+          config.operationKeys.bootstrap
+        ),
       });
       if (bootstrapView.transactionId !== milestone.transactionId) {
         throw new Error("bootstrap operation and observed funding transaction differ");
@@ -390,26 +526,49 @@ export async function bootstrapLiveProof(input: {
       writeRecoveryRecord(layout, config, progress);
     }
 
-    purchaseJournal = new PurchaseJournal(layout.purchaseJournalPath);
     const mainModule = treasuryModule({
       journal: purchaseJournal,
       policyPath: layout.purchasePolicyPath,
       wallet: treasuryWallet,
       vault,
     });
+    const borrowRequest = {
+      operationKey: config.operationKeys.borrowInventory,
+      kind: "wallet_send" as const,
+      destination: config.borrow.address,
+      amountAtomic: LIVE_BORROW_AMOUNT_ATOMIC,
+    };
+    writeRecoveryRecord(layout, config, progress);
+    assertPreSpendDurability(initialized, config.sourceWalletDirectory);
     input.onProgress?.("recovering durable KIP-10 inventory operation");
-    const borrowView = await driveTreasuryOperation(
-      mainModule,
-      {
-        operationKey: config.operationKeys.borrowInventory,
-        kind: "wallet_send",
-        destination: config.borrow.address,
-        amountAtomic: LIVE_BORROW_AMOUNT_ATOMIC,
-      },
-      input.onProgress
-    );
-    progress = readProgress(layout.progressPath, config.runId);
-    if (!progress.borrowInventory) {
+    if (progress.borrowInventory) {
+      await revalidateOperationMilestone({
+        journal: purchaseJournal,
+        request: borrowRequest,
+        milestone: progress.borrowInventory,
+        wallet: treasuryWallet,
+      });
+    } else {
+      const existing = assertOperationRequestMatches(purchaseJournal, borrowRequest);
+      const depositExists = Boolean(
+        purchaseJournal.findTreasuryOperation(config.operationKeys.vaultDeposit)
+      );
+      const purchaseExists = Boolean(
+        purchaseJournal.findPurchaseByRequestKey(
+          assertLivePurchaseRequestKey(config.runId)
+        )
+      );
+      if (depositExists || purchaseExists || merchantDownstreamExists) {
+        throw new Error("borrow milestone is missing after downstream state; manual reconciliation is required");
+      }
+      writeRecoveryRecord(layout, config, progress, "borrowInventory");
+      assertPreSpendDurability(initialized, config.sourceWalletDirectory);
+      const borrowView = await driveLiveTreasuryOperation(
+        mainModule,
+        borrowRequest,
+        input.onProgress,
+        existing
+      );
       const detail = purchaseJournal.readObservedTreasuryOperationDetail(
         config.operationKeys.borrowInventory
       );
@@ -419,6 +578,10 @@ export async function bootstrapLiveProof(input: {
         address: config.borrow.address,
         outpoint,
         amountAtomic: LIVE_BORROW_AMOUNT_ATOMIC,
+        observationStartHash: preparedObservationStartHash(
+          purchaseJournal,
+          config.operationKeys.borrowInventory
+        ),
       });
       if (borrowView.transactionId !== milestone.transactionId) {
         throw new Error("borrow inventory operation and observed transaction differ");
@@ -427,19 +590,39 @@ export async function bootstrapLiveProof(input: {
       writeRecoveryRecord(layout, config, progress);
     }
 
+    const depositRequest = {
+      operationKey: config.operationKeys.vaultDeposit,
+      kind: "vault_deposit" as const,
+      destination: config.vault.address,
+      amountAtomic: LIVE_VAULT_DEPOSIT_AMOUNT_ATOMIC,
+    };
+    writeRecoveryRecord(layout, config, progress);
+    assertPreSpendDurability(initialized, config.sourceWalletDirectory);
     input.onProgress?.("recovering durable fresh-vault deposit operation");
-    const depositView = await driveTreasuryOperation(
-      mainModule,
-      {
-        operationKey: config.operationKeys.vaultDeposit,
-        kind: "vault_deposit",
-        destination: config.vault.address,
-        amountAtomic: LIVE_VAULT_DEPOSIT_AMOUNT_ATOMIC,
-      },
-      input.onProgress
-    );
-    progress = readProgress(layout.progressPath, config.runId);
-    if (!progress.vaultDeposit) {
+    if (progress.vaultDeposit) {
+      await revalidateOperationMilestone({
+        journal: purchaseJournal,
+        request: depositRequest,
+        milestone: progress.vaultDeposit,
+        wallet: treasuryWallet,
+        deposit: true,
+      });
+    } else {
+      const existing = assertOperationRequestMatches(purchaseJournal, depositRequest);
+      const purchaseExists = Boolean(
+        purchaseJournal.findPurchaseByRequestKey(assertLivePurchaseRequestKey(config.runId))
+      );
+      if (purchaseExists || merchantDownstreamExists) {
+        throw new Error("vault milestone is missing after Purchase state; manual reconciliation is required");
+      }
+      writeRecoveryRecord(layout, config, progress, "vaultDeposit");
+      assertPreSpendDurability(initialized, config.sourceWalletDirectory);
+      const depositView = await driveLiveTreasuryOperation(
+        mainModule,
+        depositRequest,
+        input.onProgress,
+        existing
+      );
       const detail = purchaseJournal.readObservedTreasuryOperationDetail(
         config.operationKeys.vaultDeposit
       );
@@ -449,6 +632,10 @@ export async function bootstrapLiveProof(input: {
         address: config.vault.address,
         outpoint,
         amountAtomic: requireAtomic(detail.vaultAmountAtomic, "vault amount"),
+        observationStartHash: preparedObservationStartHash(
+          purchaseJournal,
+          config.operationKeys.vaultDeposit
+        ),
       });
       if (depositView.transactionId !== milestone.transactionId) {
         throw new Error("vault deposit operation and observed transaction differ");
@@ -465,7 +652,7 @@ export async function bootstrapLiveProof(input: {
     bootstrapJournal.integrityCheck();
     return Object.freeze({ journal: purchaseJournal, progress });
   } catch (error) {
-    purchaseJournal?.close();
+    purchaseJournal.close();
     throw error;
   } finally {
     bootstrapJournal.close();
@@ -475,15 +662,24 @@ export async function bootstrapLiveProof(input: {
 
 export class LiveMerchantExactVerifier implements ExactTransactionVerifier {
   private readonly codec = new KaspaTestnet10AddressCodec();
+  private readonly wallet: KaspaWallet;
+  private readonly statePath: string;
+  private readonly expected: LiveMerchantExactExpectation;
+  private readonly now: () => number;
 
-  constructor(
-    private readonly wallet: KaspaWallet,
-    private readonly statePath: string,
-    private readonly now: () => number = Date.now
-  ) {
-    if (wallet.networkId !== LIVE_SDK_NETWORK) {
+  constructor(options: {
+    readonly wallet: KaspaWallet;
+    readonly statePath: string;
+    readonly expected: LiveMerchantExactExpectation;
+    readonly now?: () => number;
+  }) {
+    if (options.wallet.networkId !== LIVE_SDK_NETWORK) {
       throw new Error("live Merchant verifier requires Testnet-10");
     }
+    this.wallet = options.wallet;
+    this.statePath = options.statePath;
+    this.expected = Object.freeze({ ...options.expected });
+    this.now = options.now ?? Date.now;
   }
 
   async verifyExactPayment(
@@ -561,6 +757,21 @@ export class LiveMerchantExactVerifier implements ExactTransactionVerifier {
       ) {
         throw new Error("Merchant live RPC observation changed the exact payment output");
       }
+      const continuation = await waitForRpcOutpoint(
+        this.wallet,
+        parsed.borrowAddress,
+        parsed.transactionId,
+        0,
+        OBSERVATION_TIMEOUT_MS
+      );
+      if (
+        continuation.amountAtomic !==
+          (BigInt(request.reservation!.borrowAmount) +
+            BigInt(request.reservation!.additiveThresholdSompi)).toString() ||
+        continuation.scriptPublicKey !== request.reservation!.borrowScriptPublicKey.toLowerCase()
+      ) {
+        throw new Error("Merchant live RPC observation changed the additive continuation output");
+      }
       const info = await this.wallet.serverInfo();
       const state = Object.freeze({
         version: 1 as const,
@@ -602,6 +813,10 @@ export class LiveMerchantExactVerifier implements ExactTransactionVerifier {
     return state;
   }
 
+  hasDurablePaymentPlan(): boolean {
+    return readMerchantVerifierState(this.statePath) !== undefined;
+  }
+
   private validate(request: ExactTransactionVerificationRequest): ParsedExactTransaction {
     if (
       request.network !== LIVE_NETWORK ||
@@ -628,6 +843,19 @@ export class LiveMerchantExactVerifier implements ExactTransactionVerifier {
       reservation.additiveThresholdSompi !== LIVE_ADDITIVE_THRESHOLD_ATOMIC
     ) {
       throw new Error("Merchant exact verifier received an invalid KIP-10 reservation");
+    }
+    if (
+      request.payTo !== this.expected.payTo ||
+      request.payToScriptPublicKey.toLowerCase() !== this.expected.payToScriptPublicKey ||
+      reservation.reservationId.toLowerCase() !== this.expected.reservationId ||
+      reservation.borrowOutpoint.txid.toLowerCase() !== this.expected.borrowTransactionId ||
+      reservation.borrowOutpoint.index !== this.expected.borrowIndex ||
+      reservation.borrowAmount !== this.expected.borrowAmountAtomic ||
+      reservation.borrowScriptPublicKey.toLowerCase() !== this.expected.borrowScriptPublicKey ||
+      reservation.borrowRedeemScript.toLowerCase() !== this.expected.borrowRedeemScript ||
+      reservation.additiveThresholdSompi !== this.expected.additiveThresholdAtomic
+    ) {
+      throw new Error("Merchant exact verifier request differs from configured live inventory");
     }
     const recomputedRedeem = buildKip10AdditiveRedeemScript({
       ownerPublicKey: ownerPublicKeyFromRedeemScript(reservation.borrowRedeemScript),
@@ -776,6 +1004,18 @@ export interface MerchantVerifierState {
   readonly finality?: "accepted";
 }
 
+export interface LiveMerchantExactExpectation {
+  readonly payTo: string;
+  readonly payToScriptPublicKey: string;
+  readonly reservationId: string;
+  readonly borrowTransactionId: string;
+  readonly borrowIndex: number;
+  readonly borrowAmountAtomic: string;
+  readonly borrowScriptPublicKey: string;
+  readonly borrowRedeemScript: string;
+  readonly additiveThresholdAtomic: string;
+}
+
 interface ParsedExactTransaction {
   readonly transaction: Transaction;
   readonly transactionId: string;
@@ -787,14 +1027,10 @@ interface ParsedExactTransaction {
 }
 
 export function readProgress(filename: string, runId: string): LiveProofProgress {
-  if (!fs.existsSync(filename)) {
+  if (!secureFileExists(filename)) {
     const recoveryPath = path.join(path.dirname(filename), "recovery.json");
-    if (fs.existsSync(recoveryPath)) {
-      assertPrivateFile(recoveryPath);
-      const recovery = JSON.parse(fs.readFileSync(recoveryPath, "utf8")) as LiveRecoveryRecord;
-      if (recovery.version !== 1 || recovery.runId !== runId) {
-        throw new Error("live proof recovery record belongs to a different run");
-      }
+    if (secureFileExists(recoveryPath)) {
+      const recovery = readRecoveryRecord(recoveryPath, runId);
       return Object.freeze({
         version: 1,
         runId,
@@ -816,50 +1052,59 @@ export function readProgress(filename: string, runId: string): LiveProofProgress
       updatedAt: new Date(0).toISOString(),
     });
   }
-  assertPrivateFile(filename);
-  const value = JSON.parse(fs.readFileSync(filename, "utf8")) as LiveProofProgress;
+  const value = readPrivateJson<LiveProofProgress>(filename);
   if (value.version !== 1 || value.runId !== runId) {
     throw new Error("live proof progress belongs to a different run");
+  }
+  const recoveryPath = path.join(path.dirname(filename), "recovery.json");
+  if (secureFileExists(recoveryPath)) {
+    const recovery = readRecoveryRecord(recoveryPath, runId);
+    const progressMilestones = {
+      ...(value.bootstrap ? { bootstrap: value.bootstrap } : {}),
+      ...(value.borrowInventory ? { borrowInventory: value.borrowInventory } : {}),
+      ...(value.vaultDeposit ? { vaultDeposit: value.vaultDeposit } : {}),
+    };
+    if (
+      JSON.stringify(recovery.milestones) !== JSON.stringify(progressMilestones)
+    ) {
+      throw new Error("live proof progress and recovery milestones differ");
+    }
   }
   return value;
 }
 
 export function writeAtomicJson(filename: string, value: unknown): void {
-  secureDirectory(path.dirname(path.resolve(filename)));
   const target = path.resolve(filename);
-  const temporary = `${target}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`;
-  const descriptor = fs.openSync(
-    temporary,
-    fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL,
-    0o600
-  );
+  const state = new SecureLocalStateDirectory(path.dirname(target), "live proof state");
+  const leaf = path.basename(target);
+  const bytes = Buffer.from(`${JSON.stringify(value, null, 2)}\n`, "utf8");
   try {
-    fs.fchmodSync(descriptor, 0o600);
-    fs.writeFileSync(descriptor, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-    fs.fsyncSync(descriptor);
+    if (state.fileExists(leaf)) {
+      state.replaceFileAtomic(leaf, bytes, MAX_JSON_STATE_BYTES);
+    } else {
+      state.createFileExclusive(leaf, bytes, MAX_JSON_STATE_BYTES);
+    }
   } finally {
-    fs.closeSync(descriptor);
+    bytes.fill(0);
   }
-  fs.renameSync(temporary, target);
-  const directory = fs.openSync(path.dirname(target), fs.constants.O_RDONLY);
-  try {
-    fs.fsyncSync(directory);
-  } finally {
-    fs.closeSync(directory);
-  }
-  fs.chmodSync(target, 0o600);
 }
 
 export function secureDirectory(directory: string): void {
-  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-  fs.chmodSync(directory, 0o700);
+  void new SecureLocalStateDirectory(directory, "live proof state");
 }
 
 export function assertPrivateFile(filename: string): void {
-  const mode = fs.statSync(filename).mode & 0o777;
-  if (mode !== 0o600) {
-    throw new Error(`${filename} must be mode 0600, found ${mode.toString(8)}`);
-  }
+  const target = path.resolve(filename);
+  const state = new SecureLocalStateDirectory(path.dirname(target), "live proof state");
+  if (!state.fileExists(path.basename(target))) throw new Error("live proof state file is missing");
+}
+
+export function privateStateFileExists(filename: string): boolean {
+  return secureFileExists(filename);
+}
+
+export function readPrivateJsonState<T>(filename: string): T {
+  return readPrivateJson<T>(filename);
 }
 
 export function sha256Hex(value: string | Uint8Array): string {
@@ -870,12 +1115,94 @@ export function reservationId(config: LiveProofConfig, borrowOutpoint: string): 
   return sha256Hex(`sompi-live-borrow-reservation:${config.runId}:${borrowOutpoint}`);
 }
 
+export function assertPublicReportExcludesPrivateState(
+  report: unknown,
+  initialized: InitializedLiveProof
+): void {
+  const encoded = JSON.stringify(report);
+  const files = [
+    path.join(initialized.config.wallets.treasuryDirectory, "wallet-key"),
+    path.join(initialized.config.wallets.merchantDirectory, "wallet-key"),
+    path.join(initialized.config.wallets.observerDirectory, "wallet-key"),
+    initialized.config.vault.ownerKeyPath,
+    initialized.config.borrow.ownerKeyPath,
+    path.join(initialized.config.vault.dataDirectory, "vault", "agent-key"),
+    path.join(initialized.layout.authorityRoot, "server-private", "ipc-mac.key"),
+    path.join(initialized.layout.authorityRoot, "client-runtime", "ipc-mac.key"),
+    initialized.layout.paidReplayCapsulePath,
+    initialized.layout.merchantOfferPath,
+    initialized.layout.merchantPaidIngressPath,
+  ];
+  const stagingState = new SecureLocalStateDirectory(
+    initialized.layout.stagingKeyDirectory,
+    "live staging keys"
+  );
+  for (const entry of fs.readdirSync(stagingState.directory)) {
+    if (/^[A-Za-z0-9._-]{1,128}$/.test(entry) && stagingState.fileExists(entry)) {
+      files.push(path.join(stagingState.directory, entry));
+    }
+  }
+  for (const filename of files) {
+    if (!secureFileExists(filename)) continue;
+    const bytes = readPrivateBytes(filename, MAX_JSON_STATE_BYTES);
+    try {
+      const candidates = [
+        bytes.toString("utf8").trim(),
+        bytes.toString("hex"),
+        bytes.toString("base64"),
+        bytes.toString("base64url"),
+      ];
+      for (const candidate of candidates) {
+        if (candidate.length >= 16 && encoded.includes(candidate)) {
+          throw new Error("live proof report contains private state or a signed protocol artifact");
+        }
+      }
+      if (
+        filename === initialized.layout.paidReplayCapsulePath ||
+        filename === initialized.layout.merchantOfferPath ||
+        filename === initialized.layout.merchantPaidIngressPath
+      ) {
+        const capsule = JSON.parse(bytes.toString("utf8")) as Record<string, unknown>;
+        for (const key of ["merchantCheckout", "paymentRequiredHeader", "paymentSignature"]) {
+          const value = capsule[key];
+          if (typeof value === "string" && value.length >= 16 && encoded.includes(value)) {
+            throw new Error("live proof report contains a paid-request artifact");
+          }
+        }
+      }
+    } finally {
+      bytes.fill(0);
+    }
+  }
+}
+
 export async function observeAddressOutpoint(input: {
   readonly wallet: KaspaWallet;
   readonly address: string;
   readonly outpoint: string;
   readonly amountAtomic: string;
+  readonly observationStartHash: string;
 }): Promise<LiveChainMilestone> {
+  const current = await observeCurrentAddressOutpoint(input);
+  const acceptance = await acceptingBlockForTransaction(
+    input.wallet,
+    requireHash(input.observationStartHash, "operation observation start hash"),
+    current.transactionId
+  );
+  return Object.freeze({
+    ...current,
+    observationStartHash: input.observationStartHash,
+    acceptingBlockHash: acceptance.hash,
+    acceptingBlockDaaScore: acceptance.daaScore,
+  });
+}
+
+export async function observeCurrentAddressOutpoint(input: {
+  readonly wallet: KaspaWallet;
+  readonly address: string;
+  readonly outpoint: string;
+  readonly amountAtomic: string;
+}): Promise<LiveObservedOutpoint> {
   const parsed = parseOutpoint(input.outpoint);
   const observed = await waitForRpcOutpoint(
     input.wallet,
@@ -919,13 +1246,77 @@ function treasuryModule(input: {
   });
 }
 
-async function driveTreasuryOperation(
+function assertLivePurchaseRequestKey(runId: string) {
+  return assertPurchaseRequestKey(`e2e:live-testnet10:${runId}`);
+}
+
+function preparedObservationStartHash(
+  journal: PurchaseJournal,
+  operationKey: string
+): string {
+  const bytes = journal.readPreparedTreasuryOperation(operationKey);
+  let value: unknown;
+  try {
+    value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch (error) {
+    throw new Error("durable Treasury operation envelope is malformed", { cause: error });
+  }
+  const record = value as Record<string, unknown>;
+  return requireHash(record.observationStartHash, "Treasury observation start hash");
+}
+
+async function acceptingBlockForTransaction(
+  wallet: KaspaWallet,
+  startHash: string,
+  transactionId: string
+): Promise<{ readonly hash: string; readonly daaScore: string }> {
+  const rpc = await wallet.client();
+  const chain = await rpc.getVirtualChainFromBlock({
+    startHash,
+    includeAcceptedTransactionIds: true,
+    minConfirmationCount: 0,
+  });
+  const matches = chain.acceptedTransactionIds.filter((entry) =>
+    entry.acceptedTransactionIds.some(
+      (candidate) => String(candidate).toLowerCase() === transactionId
+    )
+  );
+  if (matches.length !== 1) {
+    throw new Error("Treasury transaction lacks one current virtual-chain inclusion proof");
+  }
+  const hash = requireHash(matches[0].acceptingBlockHash, "Treasury accepting block hash");
+  const block = await rpc.getBlock({ hash, includeTransactions: true });
+  const headerHash = requireHash(block.block.header.hash, "Treasury accepting block header hash");
+  const verboseHash = block.block.verboseData?.hash === undefined
+    ? headerHash
+    : requireHash(block.block.verboseData.hash, "Treasury accepting block verbose hash");
+  const daaScore = BigInt(block.block.header.daaScore);
+  if (headerHash !== hash || verboseHash !== hash || daaScore <= 0n) {
+    throw new Error("Treasury accepting block cannot be independently bound to its header");
+  }
+  // The accepting block can accept a merge-set transaction that is not one of
+  // its own transactionIds. The virtual-chain accepted-ID relation proves
+  // acceptance; getBlock separately binds that accepting block's hash and DAA.
+  return Object.freeze({ hash, daaScore: daaScore.toString() });
+}
+
+export function liveBootstrapNeedsCapacity(
+  milestone: LiveChainMilestone | undefined,
+  operationExists: boolean
+): boolean {
+  return milestone === undefined && !operationExists;
+}
+
+export async function driveLiveTreasuryOperation(
   module: TreasuryOperationModule,
   request: TreasuryOperationRequest,
-  onProgress?: (message: string) => void
+  onProgress?: (message: string) => void,
+  existing = false
 ): Promise<TreasuryOperationView> {
   const started = Date.now();
-  let view = await module.execute(request);
+  let view = existing
+    ? await module.recover(request.operationKey)
+    : await module.execute(request);
   let lastState = "";
   while (view.state !== "completed") {
     if (view.state === "failed_terminal") {
@@ -946,6 +1337,101 @@ async function driveTreasuryOperation(
   return view;
 }
 
+function assertOperationRequestMatches(
+  journal: PurchaseJournal,
+  request: TreasuryOperationRequest
+): boolean {
+  const record = journal.findTreasuryOperation(request.operationKey);
+  if (!record) return false;
+  if (
+    record.kind !== request.kind ||
+    record.destination !== request.destination ||
+    record.requestedAmountAtomic !== request.amountAtomic ||
+    record.keepFloatAtomic !== request.keepFloatAtomic
+  ) {
+    throw new Error("durable Treasury operation differs from the live proof request");
+  }
+  return true;
+}
+
+async function revalidateOperationMilestone(input: {
+  readonly journal: PurchaseJournal;
+  readonly request: TreasuryOperationRequest;
+  readonly milestone: LiveChainMilestone;
+  readonly wallet: KaspaWallet;
+  readonly deposit?: boolean;
+}): Promise<void> {
+  const record = input.journal.findTreasuryOperation(input.request.operationKey);
+  if (!record || record.state !== "completed" || !record.transactionId) {
+    throw new Error("live milestone has no exact completed Treasury operation");
+  }
+  assertOperationRequestMatches(input.journal, input.request);
+  const bytes = input.journal.readPreparedTreasuryOperation(input.request.operationKey);
+  let envelope: Record<string, any>;
+  try {
+    envelope = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch (error) {
+    throw new Error("durable Treasury operation envelope is malformed", { cause: error });
+  }
+  const prepared = envelope.prepared as Record<string, unknown> | undefined;
+  const binding = envelope.binding as Record<string, unknown> | undefined;
+  const detail = input.journal.readObservedTreasuryOperationDetail(input.request.operationKey);
+  const expectedOutpoint = requireOutpoint(
+    input.deposit ? detail.vaultOutpoint : detail.destinationOutpoint,
+    "Treasury milestone outpoint"
+  );
+  const expectedAmount = input.deposit
+    ? requireAtomic(detail.vaultAmountAtomic, "Treasury vault amount")
+    : requireAtomic(detail.amountAtomic, "Treasury destination amount");
+  const preparedOutpoint = input.deposit
+    ? (prepared?.vaultOutpoint as Record<string, unknown> | undefined)
+    : (prepared?.destinationOutpoint as Record<string, unknown> | undefined);
+  if (
+    envelope.kind !== input.request.kind ||
+    binding?.operationKey !== input.request.operationKey ||
+    binding?.destination !== input.request.destination ||
+    binding?.requestedAmountAtomic !== input.request.amountAtomic ||
+    binding?.network !== LIVE_NETWORK ||
+    prepared?.transactionId !== record.transactionId ||
+    record.resolvedAmountAtomic !== input.request.amountAtomic ||
+    detail.transactionId !== record.transactionId ||
+    preparedOutpoint?.txid !== record.transactionId ||
+    `${record.transactionId}:${preparedOutpoint?.index}` !== expectedOutpoint ||
+    String(input.deposit ? prepared?.vaultAmountAtomic : prepared?.amountAtomic) !== expectedAmount ||
+    input.milestone.transactionId !== record.transactionId ||
+    input.milestone.outpoint !== expectedOutpoint ||
+    input.milestone.address !== input.request.destination ||
+    input.milestone.amountAtomic !== expectedAmount
+  ) {
+    throw new Error("live milestone differs from its exact prepared and observed Treasury facts");
+  }
+  const observationStartHash = requireHash(
+    envelope.observationStartHash,
+    "Treasury observation start hash"
+  );
+  if (input.milestone.observationStartHash !== observationStartHash) {
+    throw new Error("live milestone changed its durable pre-broadcast chain anchor");
+  }
+  await verifyLiveChainMilestoneInclusion(input.milestone, input.wallet);
+}
+
+export async function verifyLiveChainMilestoneInclusion(
+  milestone: LiveChainMilestone,
+  wallet: KaspaWallet
+): Promise<void> {
+  const acceptance = await acceptingBlockForTransaction(
+    wallet,
+    requireHash(milestone.observationStartHash, "Treasury observation start hash"),
+    requireHash(milestone.transactionId, "Treasury transaction ID")
+  );
+  if (
+    milestone.acceptingBlockHash !== acceptance.hash ||
+    milestone.acceptingBlockDaaScore !== acceptance.daaScore
+  ) {
+    throw new Error("live milestone accepting-block proof changed");
+  }
+}
+
 function updateProgress(
   layout: LiveProofLayout,
   current: LiveProofProgress,
@@ -963,17 +1449,27 @@ function updateProgress(
 function writeRecoveryRecord(
   layout: LiveProofLayout,
   config: LiveProofConfig,
-  progress: LiveProofProgress
+  progress: LiveProofProgress,
+  operationStarted?: LiveFundingOperation
 ): void {
-  const existing = fs.existsSync(layout.recoveryPath)
-    ? (JSON.parse(fs.readFileSync(layout.recoveryPath, "utf8")) as LiveRecoveryRecord)
+  const existing = secureFileExists(layout.recoveryPath)
+    ? readRecoveryRecord(layout.recoveryPath, config.runId)
     : undefined;
+  const startedOperations = [...(existing?.startedOperations ?? [])];
+  if (operationStarted && !startedOperations.includes(operationStarted)) {
+    const expected = LIVE_FUNDING_OPERATION_ORDER[startedOperations.length];
+    if (operationStarted !== expected) {
+      throw new Error("live proof funding operation fences are not an ordered prefix");
+    }
+    startedOperations.push(operationStarted);
+  }
   const record = Object.freeze({
     version: 1 as const,
     runId: config.runId,
     preparedBeforeFirstSpendAt: existing?.preparedBeforeFirstSpendAt ?? new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     network: LIVE_NETWORK,
+    nodeUrl: config.nodeUrl,
     sourceWalletDirectory: config.sourceWalletDirectory,
     proofRoot: layout.root,
     sensitivePaths: Object.freeze([
@@ -985,6 +1481,8 @@ function writeRecoveryRecord(
       path.join(config.vault.dataDirectory, "vault", "agent-key"),
       layout.authorityRoot,
       layout.stagingKeyDirectory,
+      layout.merchantOfferPath,
+      layout.merchantPaidIngressPath,
       layout.paidReplayCapsulePath,
     ]),
     journalPaths: Object.freeze([
@@ -994,6 +1492,7 @@ function writeRecoveryRecord(
       path.join(layout.root, "merchant", "authorization.sqlite"),
     ]),
     operationKeys: config.operationKeys,
+    startedOperations: Object.freeze(startedOperations),
     intendedAmountsAtomic: Object.freeze({
       bootstrap: LIVE_BOOTSTRAP_AMOUNT_ATOMIC,
       borrowInventory: LIVE_BORROW_AMOUNT_ATOMIC,
@@ -1010,10 +1509,72 @@ function writeRecoveryRecord(
   writeAtomicJson(layout.recoveryPath, record);
 }
 
+function readRecoveryRecord(filename: string, runId: string): LiveRecoveryRecord {
+  const value = readPrivateJson<LiveRecoveryRecord>(filename);
+  const hasStartedOperations = Array.isArray(value.startedOperations);
+  const started = hasStartedOperations ? value.startedOperations : [];
+  const expectedPrefix = LIVE_FUNDING_OPERATION_ORDER.slice(0, started.length);
+  if (
+    value.version !== 1 ||
+    value.runId !== runId ||
+    value.network !== LIVE_NETWORK ||
+    !hasStartedOperations ||
+    requireLiveNodeUrl(value.nodeUrl) !== value.nodeUrl ||
+    started.length > LIVE_FUNDING_OPERATION_ORDER.length ||
+    JSON.stringify(started) !== JSON.stringify(expectedPrefix)
+  ) {
+    throw new Error("live proof recovery record is invalid or belongs to a different run");
+  }
+  return value;
+}
+
+function assertPreSpendDurability(
+  initialized: InitializedLiveProof,
+  sourceWalletDirectory: string
+): void {
+  const source = new SecureLocalStateDirectory(sourceWalletDirectory, "bootstrap source wallet");
+  const sourceKey = source.readFile("wallet-key", MAX_SECRET_FILE_BYTES);
+  sourceKey.fill(0);
+  const files = [
+    initialized.layout.configPath,
+    initialized.layout.recoveryPath,
+    path.join(initialized.config.wallets.treasuryDirectory, "wallet-key"),
+    path.join(initialized.config.wallets.merchantDirectory, "wallet-key"),
+    path.join(initialized.config.wallets.observerDirectory, "wallet-key"),
+    initialized.config.vault.ownerKeyPath,
+    initialized.config.borrow.ownerKeyPath,
+    path.join(initialized.config.vault.dataDirectory, "vault", "agent-key"),
+    path.join(initialized.config.vault.dataDirectory, "vault", "config.json"),
+    initialized.layout.bootstrapPolicyPath,
+    initialized.layout.bootstrapJournalPath,
+    initialized.layout.purchasePolicyPath,
+    ...(secureFileExists(initialized.layout.purchaseJournalPath)
+      ? [initialized.layout.purchaseJournalPath]
+      : []),
+  ];
+  for (const filename of files) {
+    const bytes = readPrivateBytes(filename, MAX_DURABLE_FILE_BYTES);
+    bytes.fill(0);
+  }
+}
+
+async function assertLiveNodeReady(wallet: KaspaWallet): Promise<void> {
+  const info = await wallet.serverInfo();
+  const rpc = await wallet.client();
+  const dag = await rpc.getBlockDagInfo();
+  if (
+    !info.isSynced ||
+    !info.hasUtxoIndex ||
+    String(dag.network) !== LIVE_SDK_NETWORK ||
+    !HASH32.test(String(dag.sink).toLowerCase())
+  ) {
+    throw new Error("live proof RPC is not a synced UTXO-indexed Testnet-10 node");
+  }
+}
+
 function writePolicyOnce(filename: string, policy: Record<string, unknown>): void {
-  if (fs.existsSync(filename)) {
-    assertPrivateFile(filename);
-    const current = JSON.parse(fs.readFileSync(filename, "utf8"));
+  if (secureFileExists(filename)) {
+    const current = readPrivateJson<unknown>(filename);
     if (JSON.stringify(current) !== JSON.stringify(policy)) {
       throw new Error(`live proof policy ${filename} changed; refusing to widen it`);
     }
@@ -1023,11 +1584,19 @@ function writePolicyOnce(filename: string, policy: Record<string, unknown>): voi
 }
 
 function readLiveProofConfig(filename: string): LiveProofConfig {
-  assertPrivateFile(filename);
-  const value = JSON.parse(fs.readFileSync(filename, "utf8")) as LiveProofConfig;
+  const value = readPrivateJson<LiveProofConfig>(filename);
+  const createdAtMs = canonicalIsoMilliseconds(value.createdAt);
+  const reservationExpiresAtMs = canonicalIsoMilliseconds(value.reservationExpiresAt);
   if (
     value.version !== 1 ||
     !RUN_ID.test(value.runId) ||
+    requireLiveNodeUrl(value.nodeUrl) !== value.nodeUrl ||
+    path.resolve(value.sourceWalletDirectory) !== value.sourceWalletDirectory ||
+    !Number.isFinite(createdAtMs) ||
+    !Number.isFinite(reservationExpiresAtMs) ||
+    createdAtMs > Date.now() + 5 * 60_000 ||
+    reservationExpiresAtMs - createdAtMs < 2 * 60 * 60_000 ||
+    reservationExpiresAtMs - createdAtMs > 2 * 60 * 60_000 + 60_000 ||
     !/^[a-f0-9]{32}$/.test(value.purchaseEntropyHex) ||
     !ADDRESS.test(value.wallets.treasuryAddress) ||
     !ADDRESS.test(value.wallets.merchantAddress) ||
@@ -1038,6 +1607,36 @@ function readLiveProofConfig(filename: string): LiveProofConfig {
     throw new Error("live proof configuration is invalid");
   }
   return value;
+}
+
+function canonicalIsoMilliseconds(value: unknown): number {
+  if (typeof value !== "string" || value.length > 64) return Number.NaN;
+  const milliseconds = Date.parse(value);
+  if (!Number.isFinite(milliseconds) || new Date(milliseconds).toISOString() !== value) {
+    return Number.NaN;
+  }
+  return milliseconds;
+}
+
+function requireLiveNodeUrl(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 2048) {
+    throw new Error("SOMPI_NODE_URL is required for the live proof");
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch (error) {
+    throw new Error("SOMPI_NODE_URL is invalid", { cause: error });
+  }
+  if (
+    !["ws:", "wss:"].includes(parsed.protocol) ||
+    parsed.username !== "" ||
+    parsed.password !== "" ||
+    parsed.hash !== ""
+  ) {
+    throw new Error("SOMPI_NODE_URL must be an uncredentialed ws/wss endpoint");
+  }
+  return parsed.toString();
 }
 
 function assertSameConfig(actual: LiveProofConfig, expected: LiveProofConfig): void {
@@ -1052,11 +1651,10 @@ function assertSameConfig(actual: LiveProofConfig, expected: LiveProofConfig): v
 }
 
 function loadOrCreateHex(filename: string, byteLength: number): string {
-  if (!fs.existsSync(filename)) {
+  if (!secureFileExists(filename)) {
     writePrivateText(filename, randomBytes(byteLength).toString("hex"));
   }
-  assertPrivateFile(filename);
-  const value = fs.readFileSync(filename, "utf8").trim().toLowerCase();
+  const value = readPrivateText(filename, MAX_SECRET_FILE_BYTES).trim().toLowerCase();
   if (!new RegExp(`^[a-f0-9]{${byteLength * 2}}$`).test(value)) {
     throw new Error(`${filename} contains invalid proof identity material`);
   }
@@ -1064,12 +1662,11 @@ function loadOrCreateHex(filename: string, byteLength: number): string {
 }
 
 function loadOrCreateOwnerKey(filename: string): { readonly publicKey: string } {
-  if (!fs.existsSync(filename)) {
+  if (!secureFileExists(filename)) {
     const generated = generateOwnerKey();
     writePrivateText(filename, generated.privateKey);
   }
-  assertPrivateFile(filename);
-  const privateKeyHex = fs.readFileSync(filename, "utf8").trim().toLowerCase();
+  const privateKeyHex = readPrivateText(filename, MAX_SECRET_FILE_BYTES).trim().toLowerCase();
   const privateKey = new PrivateKey(privateKeyHex);
   const keypair = Keypair.fromPrivateKey(privateKey);
   try {
@@ -1083,15 +1680,12 @@ function loadOrCreateOwnerKey(filename: string): { readonly publicKey: string } 
 }
 
 function writePrivateText(filename: string, value: string): void {
-  secureDirectory(path.dirname(filename));
-  fs.writeFileSync(filename, `${value}\n`, { encoding: "utf8", mode: 0o600, flag: "wx" });
-  const descriptor = fs.openSync(filename, fs.constants.O_RDONLY);
+  const bytes = Buffer.from(`${value}\n`, "utf8");
   try {
-    fs.fsyncSync(descriptor);
+    writePrivateBytes(filename, bytes);
   } finally {
-    fs.closeSync(descriptor);
+    bytes.fill(0);
   }
-  fs.chmodSync(filename, 0o600);
 }
 
 interface RpcOutpointObservation {
@@ -1187,9 +1781,8 @@ function ownerPublicKeyFromRedeemScript(redeemScript: string): string {
 }
 
 function readMerchantVerifierState(filename: string): MerchantVerifierState | undefined {
-  if (!fs.existsSync(filename)) return undefined;
-  assertPrivateFile(filename);
-  const value = JSON.parse(fs.readFileSync(filename, "utf8")) as MerchantVerifierState;
+  if (!secureFileExists(filename)) return undefined;
+  const value = readPrivateJson<MerchantVerifierState>(filename);
   if (
     value.version !== 1 ||
     !HASH32.test(value.transactionId) ||
@@ -1245,8 +1838,12 @@ export function installAuthorityMacKeyPair(
 ): void {
   secureDirectory(path.dirname(serverFilename));
   secureDirectory(path.dirname(clientFilename));
-  const server = fs.existsSync(serverFilename) ? fs.readFileSync(serverFilename) : undefined;
-  const client = fs.existsSync(clientFilename) ? fs.readFileSync(clientFilename) : undefined;
+  const server = secureFileExists(serverFilename)
+    ? readPrivateBytes(serverFilename, byteLength)
+    : undefined;
+  const client = secureFileExists(clientFilename)
+    ? readPrivateBytes(clientFilename, byteLength)
+    : undefined;
   const key = server ?? client ?? randomBytes(byteLength);
   try {
     if (key.byteLength !== byteLength) throw new Error("authority MAC key has an invalid length");
@@ -1268,13 +1865,37 @@ export function installAuthorityMacKeyPair(
 }
 
 function writePrivateBytes(filename: string, bytes: Uint8Array): void {
-  secureDirectory(path.dirname(filename));
-  fs.writeFileSync(filename, bytes, { mode: 0o600, flag: "wx" });
-  const descriptor = fs.openSync(filename, fs.constants.O_RDONLY);
+  const target = path.resolve(filename);
+  const state = new SecureLocalStateDirectory(path.dirname(target), "live proof secret");
+  state.createFileExclusive(path.basename(target), bytes, MAX_SECRET_FILE_BYTES);
+}
+
+function secureFileExists(filename: string): boolean {
+  const target = path.resolve(filename);
+  const state = new SecureLocalStateDirectory(path.dirname(target), "live proof state");
+  return state.fileExists(path.basename(target));
+}
+
+function readPrivateBytes(filename: string, maxBytes: number): Buffer {
+  const target = path.resolve(filename);
+  const state = new SecureLocalStateDirectory(path.dirname(target), "live proof state");
+  return state.readFile(path.basename(target), maxBytes);
+}
+
+function readPrivateText(filename: string, maxBytes: number): string {
+  const bytes = readPrivateBytes(filename, maxBytes);
   try {
-    fs.fsyncSync(descriptor);
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
   } finally {
-    fs.closeSync(descriptor);
+    bytes.fill(0);
   }
-  fs.chmodSync(filename, 0o600);
+}
+
+function readPrivateJson<T>(filename: string): T {
+  const text = readPrivateText(filename, MAX_JSON_STATE_BYTES);
+  try {
+    return JSON.parse(text) as T;
+  } catch (error) {
+    throw new Error("live proof JSON state is malformed", { cause: error });
+  }
 }

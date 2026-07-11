@@ -24,8 +24,16 @@ test("exact reservations are immutable, consumable once, and durable across rest
   const reservation = makeReservation();
   await store.saveExactReservation(reservation);
   await store.saveExactReservation(reservation);
+  await store.saveExactReservation({
+    ...reservation,
+    reservedAt: "2032-01-01T00:00:01.000Z",
+  });
   assert.deepEqual(await store.loadExactReservation(reservation.reservationId), reservation);
   await store.consumeExactReservation(reservation.reservationId, HASH_B);
+  await store.saveExactReservation({
+    ...reservation,
+    reservedAt: "2032-01-01T00:00:02.000Z",
+  });
   await store.consumeExactReservation(reservation.reservationId, HASH_B);
   await assert.rejects(
     store.consumeExactReservation(reservation.reservationId, HASH_C),
@@ -53,6 +61,7 @@ test("exact payment and payment identifier commit atomically and reject replay c
     const first = makeCommit(HASH_B, "purchase-payment-1");
     await store.commitExactPayment(first);
     await store.commitExactPayment(first);
+    assert.equal(store.exactPaymentCount(), 1);
     assert.deepEqual(await store.loadExactPayment(HASH_B), first.payment);
     assert.deepEqual(
       await store.loadPaymentIdentifier("purchase-payment-1"),
@@ -78,6 +87,20 @@ test("exact payment and payment identifier commit atomically and reject replay c
   } finally {
     store.close();
   }
+});
+
+test("exact store rejects hard-linked and permissive database files instead of repairing them", () => {
+  const fixture = fixtureDirectory();
+  const filename = path.join(fixture, "exact.sqlite");
+  const store = new SqliteExactServerStateStore(filename);
+  store.close();
+  const alias = path.join(fixture, "exact-alias.sqlite");
+  fs.linkSync(filename, alias);
+  assert.throws(() => new SqliteExactServerStateStore(filename), DemoExactStoreError);
+  fs.unlinkSync(alias);
+  fs.chmodSync(filename, 0o644);
+  assert.throws(() => new SqliteExactServerStateStore(filename), DemoExactStoreError);
+  fs.rmSync(fixture, { recursive: true, force: true });
 });
 
 test("batch, channel, and claim surfaces fail closed in exact-only storage", async () => {

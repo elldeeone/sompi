@@ -101,6 +101,13 @@ export interface DemoMerchantOffer {
   readonly paymentRequirementsDigest: Sha256Digest;
 }
 
+export interface DemoMerchantOfferArtifacts {
+  readonly purchaseId: PurchaseId;
+  readonly merchantCheckout: string;
+  readonly paymentRequiredHeader: string;
+  readonly issuedAtSec: number;
+}
+
 export interface DemoMerchantPaidRequest {
   readonly purchaseId: PurchaseId;
   readonly merchantCheckout: string;
@@ -170,6 +177,16 @@ export interface DemoMerchantFixtureConfig {
   readonly merchantReceiptSigner: Ap2SigningIdentity;
   readonly paymentReceiptSigner: Ap2SigningIdentity;
   readonly ap2Trust: Ap2PublicKeyResolver;
+  /** Merchant-owned durable proof that this exact paid request began before expiry. */
+  readonly paidRequestContinuation?: Readonly<{
+    authorizationPresentedAtSec(input: Readonly<{
+      purchaseId: PurchaseId;
+      paymentIdentifier: string;
+      merchantCheckout: string;
+      paymentRequiredHeader: string;
+      paymentSignature: string;
+    }>): number | undefined;
+  }>;
   readonly now?: () => number;
 }
 
@@ -346,6 +363,60 @@ export class DemoMerchantFixture {
     });
   }
 
+  /** Rehydrate exact previously-issued offer bytes without minting replacement terms. */
+  async restoreOffer(input: DemoMerchantOfferArtifacts): Promise<DemoMerchantOffer> {
+    const purchaseId = exactPurchaseId(input?.purchaseId, "invalid_checkout");
+    if (!Number.isSafeInteger(input?.issuedAtSec) || input.issuedAtSec <= 0) {
+      throw new DemoMerchantError("invalid_checkout");
+    }
+    const paymentRequiredHeader = requireHeader(
+      { [PAYMENT_REQUIRED_HEADER]: input?.paymentRequiredHeader },
+      PAYMENT_REQUIRED_HEADER,
+      "invalid_checkout"
+    );
+    const paymentRequiredValue = canonicalPaymentRequired(
+      paymentRequiredHeader,
+      "invalid_checkout"
+    );
+    assertExactPaymentRequired(paymentRequiredValue, this.config, this.resourceFingerprint);
+    const paymentRequirementsDigest = evidenceDigest(
+      Buffer.from(paymentRequiredHeader, "utf8")
+    );
+    let checkout: VerifiedMerchantCheckout;
+    try {
+      checkout = await verifyMerchantCheckout(input.merchantCheckout, {
+        trust: this.config.ap2Trust,
+        expectedIssuer: this.config.merchantCheckoutSigner.issuer,
+        expectedAudience: this.config.authorityAudience,
+        expectedPurchaseId: purchaseId,
+        expectedResourceFingerprint: this.resourceFingerprint,
+        expectedPaymentRequirementsDigest: paymentRequirementsDigest,
+        nowSec: input.issuedAtSec,
+        clockSkewSec: 0,
+      });
+    } catch {
+      throw new DemoMerchantError("invalid_checkout");
+    }
+    if (checkout.issuedAtSec !== input.issuedAtSec) {
+      throw new DemoMerchantError("invalid_checkout");
+    }
+    assertCheckoutMatchesConfiguration(
+      checkout,
+      this.config,
+      this.resourceFingerprint,
+      this.resourceDigest
+    );
+    return Object.freeze({
+      purchaseId,
+      checkout,
+      paymentRequired: Object.freeze({
+        status: 402,
+        headers: Object.freeze({ [PAYMENT_REQUIRED_HEADER]: paymentRequiredHeader }),
+      }),
+      paymentRequirementsDigest,
+    });
+  }
+
   /** Shopping-Agent stage: verifies and durably accepts the Checkout Mandate. */
   async presentCheckoutMandate(
     input: Ap2CommerceAuthorizationPresentation
@@ -506,6 +577,29 @@ export class DemoMerchantFixture {
     assertExactPaymentRequired(paymentRequired, this.config, this.resourceFingerprint);
 
     const nowSec = clockSeconds(this.now);
+    const paymentSignature = requireHeader(
+      request?.headers,
+      PAYMENT_SIGNATURE_HEADER,
+      "payment_mismatch"
+    );
+    let authorizationNowSec = nowSec;
+    try {
+      const continuation = this.config.paidRequestContinuation?.authorizationPresentedAtSec({
+        purchaseId,
+        paymentIdentifier,
+        merchantCheckout: request.merchantCheckout,
+        paymentRequiredHeader: request.paymentRequiredHeader,
+        paymentSignature,
+      });
+      if (continuation !== undefined) {
+        if (!Number.isSafeInteger(continuation) || continuation <= 0 || continuation > nowSec) {
+          throw new Error("invalid continuation time");
+        }
+        authorizationNowSec = continuation;
+      }
+    } catch {
+      throw new DemoMerchantError("invalid_authorization");
+    }
     let checkout: VerifiedMerchantCheckout;
     try {
       checkout = await verifyMerchantCheckout(request?.merchantCheckout, {
@@ -515,7 +609,7 @@ export class DemoMerchantFixture {
         expectedPurchaseId: purchaseId,
         expectedResourceFingerprint: this.resourceFingerprint,
         expectedPaymentRequirementsDigest: paymentRequirementsDigest,
-        nowSec,
+        nowSec: authorizationNowSec,
         clockSkewSec: 0,
       });
     } catch {
@@ -532,7 +626,7 @@ export class DemoMerchantFixture {
       purchaseId,
       paymentIdentifier,
       checkout,
-      nowSec
+      authorizationNowSec
     );
     const requestHash = requestHashHex(this.resourceFingerprint);
     const paymentPayload = assertPaymentSignatureJoins(

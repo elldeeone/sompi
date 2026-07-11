@@ -1,10 +1,9 @@
 import { createHash } from "node:crypto";
-import * as fs from "node:fs";
-import * as path from "node:path";
 
 import Database from "better-sqlite3";
 
 import type { PurchaseId, Sha256Digest } from "../purchase/types.js";
+import { prepareSecureSqlitePath, validateSecureSqlitePath } from "./secure-sqlite-path.js";
 
 const APPLICATION_ID = 0x53444341;
 const SCHEMA_VERSION = 1;
@@ -105,10 +104,16 @@ implements DemoCommerceAuthorizationStore {
     options: { readonly now?: () => number; readonly busyTimeoutMs?: number } = {}
   ) {
     this.now = options.now ?? Date.now;
-    prepareSecureDatabasePath(filename);
+    let pathInfo;
+    try {
+      pathInfo = prepareSecureSqlitePath(filename, "demo commerce authorization store");
+    } catch {
+      throw new DemoCommerceAuthorizationStoreError(
+        "demo commerce authorization store is unavailable"
+      );
+    }
     this.db = new Database(filename);
     try {
-      if (filename !== ":memory:") fs.chmodSync(filename, 0o600);
       const busyTimeoutMs = options.busyTimeoutMs ?? 5_000;
       if (!Number.isSafeInteger(busyTimeoutMs) || busyTimeoutMs < 0) {
         throw new DemoCommerceAuthorizationStoreError("invalid busy timeout");
@@ -118,6 +123,7 @@ implements DemoCommerceAuthorizationStore {
       this.db.pragma(`busy_timeout = ${busyTimeoutMs}`);
       if (filename !== ":memory:") this.db.pragma("journal_mode = WAL");
       this.db.pragma("synchronous = FULL");
+      validateSecureSqlitePath(pathInfo);
       this.initialize();
       this.verify();
     } catch (error) {
@@ -390,19 +396,4 @@ function timestamp(now: () => number): number {
 
 function digestText(value: string): string {
   return `sha256:${createHash("sha256").update(value, "utf8").digest("base64url")}`;
-}
-
-function prepareSecureDatabasePath(filename: string): void {
-  if (filename === ":memory:") return;
-  const directory = path.dirname(path.resolve(filename));
-  if (!fs.existsSync(directory)) fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const stat = fs.lstatSync(directory);
-  if (
-    !stat.isDirectory() ||
-    stat.isSymbolicLink() ||
-    (typeof process.getuid === "function" && stat.uid !== process.getuid()) ||
-    (stat.mode & 0o077) !== 0
-  ) {
-    throw new DemoCommerceAuthorizationStoreError("store directory is unsafe");
-  }
 }

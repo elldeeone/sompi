@@ -1,6 +1,4 @@
 import { createHash } from "node:crypto";
-import * as fs from "node:fs";
-import * as path from "node:path";
 
 import Database from "better-sqlite3";
 import type {
@@ -14,6 +12,7 @@ import type {
   ServerStateStore,
   SettlementCommit,
 } from "@kaspa-x402/server";
+import { prepareSecureSqlitePath, validateSecureSqlitePath } from "./secure-sqlite-path.js";
 
 const APPLICATION_ID = 0x53445845;
 const SCHEMA_VERSION = 1;
@@ -116,11 +115,16 @@ export class SqliteExactServerStateStore implements ServerStateStore {
   private readonly db: Database.Database;
 
   constructor(readonly filename: string, options: SqliteExactServerStateStoreOptions = {}) {
-    prepareSecureDatabasePath(filename);
+    let pathInfo;
+    try {
+      pathInfo = prepareSecureSqlitePath(filename, "demo exact store");
+    } catch {
+      throw new DemoExactStoreError("store_unavailable");
+    }
     this.db = new Database(filename);
     try {
-      if (filename !== ":memory:") fs.chmodSync(filename, 0o600);
       this.configure(options.busyTimeoutMs ?? 5_000);
+      validateSecureSqlitePath(pathInfo);
       this.initialize();
       this.verifyStartup();
     } catch (error) {
@@ -134,6 +138,16 @@ export class SqliteExactServerStateStore implements ServerStateStore {
     if (!this.db.open) return;
     if (this.filename !== ":memory:") this.db.pragma("wal_checkpoint(TRUNCATE)");
     this.db.close();
+  }
+
+  exactPaymentCount(): number {
+    const row = this.db.prepare("SELECT COUNT(*) AS count FROM exact_payments").get() as {
+      count: number;
+    };
+    if (!Number.isSafeInteger(row.count) || row.count < 0) {
+      throw new DemoExactStoreError("store_unavailable");
+    }
+    return row.count;
   }
 
   async loadExactPayment(transactionId: string): Promise<ExactPaymentRecord | undefined> {
@@ -229,9 +243,13 @@ export class SqliteExactServerStateStore implements ServerStateStore {
         )
         .get(record.reservationId) as ReservationRow | undefined;
       if (existing) {
-        if (existing.status === "consumed" || existing.record_json !== json) {
+        const current = parseJson<ExactReservationRecord>(existing.record_json);
+        if (!sameReservationTerms(current, record)) {
           throw new DemoExactStoreError("conflict");
         }
+        // The pinned server may recreate the same reservation response after a
+        // crash with a later reservedAt. Preserve the first durable timestamp
+        // and any consumed transaction instead of treating that as new terms.
         return;
       }
       this.db
@@ -464,6 +482,25 @@ export class SqliteExactServerStateStore implements ServerStateStore {
   }
 }
 
+function sameReservationTerms(
+  left: ExactReservationRecord,
+  right: ExactReservationRecord
+): boolean {
+  const stableTerms = (value: ExactReservationRecord) => ({
+    reservationId: value.reservationId,
+    templateId: value.templateId,
+    transactionEncoding: value.transactionEncoding,
+    borrowOutpoint: value.borrowOutpoint,
+    borrowAmount: value.borrowAmount,
+    borrowScriptPublicKey: value.borrowScriptPublicKey,
+    borrowRedeemScript: value.borrowRedeemScript,
+    additiveThresholdSompi: value.additiveThresholdSompi,
+    paymentOutputIndex: value.paymentOutputIndex,
+    expiresAt: value.expiresAt,
+  });
+  return stableJson(stableTerms(left)) === stableJson(stableTerms(right));
+}
+
 function validateExactCommit(record: ExactSettlementCommit): void {
   if (!record || !record.payment) throw new DemoExactStoreError("invalid_record");
   validateExactPaymentRecord(record.payment);
@@ -633,30 +670,5 @@ function expectedSchemaFingerprint(): string {
     return schemaFingerprint(expected);
   } finally {
     expected.close();
-  }
-}
-
-function prepareSecureDatabasePath(filename: string): void {
-  if (filename === ":memory:") return;
-  const directory = path.resolve(path.dirname(filename));
-  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const directoryStat = fs.lstatSync(directory);
-  if (
-    !directoryStat.isDirectory() ||
-    directoryStat.isSymbolicLink() ||
-    (directoryStat.mode & 0o077) !== 0 ||
-    (typeof process.getuid === "function" && directoryStat.uid !== process.getuid())
-  ) {
-    throw new DemoExactStoreError("store_unavailable");
-  }
-  if (fs.existsSync(filename)) {
-    const fileStat = fs.lstatSync(filename);
-    if (
-      !fileStat.isFile() ||
-      fileStat.isSymbolicLink() ||
-      (typeof process.getuid === "function" && fileStat.uid !== process.getuid())
-    ) {
-      throw new DemoExactStoreError("store_unavailable");
-    }
   }
 }
