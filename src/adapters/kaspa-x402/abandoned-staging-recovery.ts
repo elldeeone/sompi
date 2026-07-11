@@ -24,7 +24,7 @@ export const ABANDONED_STAGING_RECOVERY_ENCODING =
 export const ABANDONED_STAGING_RECOVERY_FEE_POLICY = Object.freeze({
   id: "sompi-abandoned-staging-recovery-testnet10-fixed-v1",
   feeAtomic: "1000000",
-  feeRateSompiPerGram: 1,
+  feeRateSompiPerGram: 100,
   computeBudgetMassPerUnit: 100,
   inputComputeBudget: 10,
   minimumStandardOutputAtomic: "10000000",

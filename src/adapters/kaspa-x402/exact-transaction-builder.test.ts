@@ -12,7 +12,11 @@ import {
   serializedScriptPublicKey,
 } from "@kaspa-x402/covenant";
 
-import { payToScriptHashSignatureScript } from "../../kaspa-wasm.js";
+import {
+  Transaction,
+  calculateTransactionMass,
+  payToScriptHashSignatureScript,
+} from "../../kaspa-wasm.js";
 import { assertPurchaseId, createPaymentIdentifier } from "../../purchase/identity.js";
 import {
   ExactTransactionBuilderError,
@@ -29,7 +33,7 @@ const PAYMENT_IDENTIFIER = createPaymentIdentifier(PURCHASE_ID, 1);
 const MERCHANT_ADDRESS = "kaspatest:qzlws9lm7uyt0tftzffshnyeu2zcqk4kf7hw5ghk6v0zh093vnkljcy2fl0fh";
 const BORROW_TXID = "22".repeat(32);
 const STAGING_TXID = "33".repeat(32);
-const FIXED_TXID = "82baa97c93b9443a28222c8d9b8bc5922092ce66f8d8792f3617e77c542e067a";
+const FIXED_TXID = "21ba817bbbd3c8f27778e6847a0a282c3618877ae8614eb7099631bbd6e55b44";
 test("fixed vector builds the characterized two-input KIP-10 additive exact transaction", async () => {
   await withFixture(async ({ builder, input }) => {
     const first = await builder.build(input);
@@ -80,7 +84,23 @@ test("fixed vector builds the characterized two-input KIP-10 additive exact tran
       transaction.outputs[1].scriptPublicKey,
       "000020bee817fbf708b7ad2b12530bcc99e285805ab64faeea22f6d31e2bbcb164edf9ac"
     );
-    assert.equal(SOMPI_EXACT_FEE_POLICY.feeSompi, "1000000");
+    assert.equal(SOMPI_EXACT_FEE_POLICY.feeSompi, "2000000");
+    assert.equal(SOMPI_EXACT_FEE_POLICY.feeRateSompiPerGram, 100);
+    const signed = Transaction.deserializeFromSafeJSON(first.transaction);
+    try {
+      const requiredFee = (
+        calculateTransactionMass("testnet-10", signed) +
+        BigInt(
+          SOMPI_EXACT_FEE_POLICY.inputComputeBudget *
+          2 *
+          SOMPI_EXACT_FEE_POLICY.computeBudgetMassPerUnit
+        )
+      ) * BigInt(SOMPI_EXACT_FEE_POLICY.feeRateSompiPerGram);
+      assert.ok(1_000_000n < requiredFee, "the retired fixture fee must remain below the live floor");
+      assert.ok(BigInt(SOMPI_EXACT_FEE_POLICY.feeSompi) >= requiredFee);
+    } finally {
+      signed.free();
+    }
 
     assert.equal(
       (await builder.build({ ...input, expectedTransactionId: FIXED_TXID })).transactionId,
@@ -93,31 +113,23 @@ test("fixed vector builds the characterized two-input KIP-10 additive exact tran
   });
 });
 
-test("exact builder emits change only at or above the pinned output floor", async () => {
+test("fixed-v2 exact builder rejects overfunded staging instead of creating change", async () => {
   await withFixture(async ({ builder, input }) => {
-    const withChange: BuildKip10ExactTransactionInput = {
-      ...input,
-      staging: { ...input.staging, amountAtomic: "41000000" },
-      additionalCostCeilingAtomic: "21050000",
-    };
-    const built = await builder.build(withChange);
-    const transaction = JSON.parse(built.transaction) as {
-      outputs: Array<{ value: string; scriptPublicKey: string }>;
-    };
-    assert.equal(transaction.outputs.length, 3);
-    assert.deepEqual(transaction.outputs[2], {
-      value: "10000000",
-      scriptPublicKey: input.staging.scriptPublicKey,
-      covenant: null,
-    });
-
     await assert.rejects(
       builder.build({
         ...input,
-        staging: { ...input.staging, amountAtomic: "31000001" },
-        additionalCostCeilingAtomic: "11050001",
+        staging: { ...input.staging, amountAtomic: "32000001" },
+        additionalCostCeilingAtomic: "12050001",
       }),
-      /change would be below/
+      /fixed-v2 exact staging/
+    );
+    await assert.rejects(
+      builder.build({
+        ...input,
+        staging: { ...input.staging, amountAtomic: "42000000" },
+        additionalCostCeilingAtomic: "22050000",
+      }),
+      /fixed-v2 exact staging/
     );
   });
 });
@@ -125,20 +137,13 @@ test("exact builder emits change only at or above the pinned output floor", asyn
 test("exact builder validates the complete additional-cost and gross treasury bounds", async () => {
   await withFixture(async ({ builder, input }) => {
     await assert.rejects(
-      builder.build({ ...input, additionalCostCeilingAtomic: "11049999" }),
+      builder.build({ ...input, additionalCostCeilingAtomic: "12049999" }),
       /complete additional cost exceeds/
     );
     await assert.rejects(
       builder.build({
         ...input,
-        staging: { ...input.staging, amountAtomic: "41000000" },
-      }),
-      /staging treasury outflow exceeds/
-    );
-    await assert.rejects(
-      builder.build({
-        ...input,
-        staging: { ...input.staging, amountAtomic: "30999999" },
+        staging: { ...input.staging, amountAtomic: "31999999" },
       }),
       /cannot fund price, threshold, and exact fee/
     );
@@ -195,6 +200,16 @@ test("exact builder rejects request, reservation, and KIP-10 template substituti
           },
         },
         pattern: /threshold is below/,
+      },
+      {
+        input: {
+          ...input,
+          request: {
+            ...request,
+            reservation: { ...reservation, additiveThresholdSompi: "20000000" },
+          },
+        },
+        pattern: /do not match reservation facts/,
       },
       {
         input: {
@@ -282,12 +297,12 @@ async function withFixture(action: (fixture: Fixture) => Promise<void>): Promise
     const key = store.create({ purchaseId: PURCHASE_ID, paymentIdentifier: PAYMENT_IDENTIFIER });
     const borrowRedeemScript = buildKip10AdditiveRedeemScript({
       ownerPublicKey: OWNER_PUBLIC_KEY,
-      amount: "100000000",
+      amount: "10000000",
     }).toLowerCase();
     const borrowScriptPublicKey = serializedScriptPublicKey(
       kip10AdditiveScriptPublicKey({
         ownerPublicKey: OWNER_PUBLIC_KEY,
-        amount: "100000000",
+        amount: "10000000",
       })
     ).toLowerCase();
     const request: ExactTransactionPaymentRequest = {
@@ -316,13 +331,13 @@ async function withFixture(action: (fixture: Fixture) => Promise<void>): Promise
       request,
       staging: {
         outpoint: { txid: STAGING_TXID, index: 1 },
-        amountAtomic: "31000000",
+        amountAtomic: "32000000",
         scriptPublicKey: key.scriptPublicKey,
         address: key.address,
         blockDaaScore: "123",
         keyReference: key.keyReference,
       },
-      additionalCostCeilingAtomic: "11050000",
+      additionalCostCeilingAtomic: "12050000",
       stagingTransactionFeeAtomic: "50000",
     };
     await action({

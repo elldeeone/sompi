@@ -16,6 +16,7 @@ import type {
 import {
   KaspaTestnet10AddressCodec,
   SOMPI_EXACT_FEE_POLICY,
+  minimumRequiredExactFeeSompi,
 } from "../adapters/kaspa-x402/index.js";
 import {
   Keypair,
@@ -288,7 +289,7 @@ export function initializeLiveProof(
 
   const borrowTemplate = {
     ownerPublicKey: borrowOwner.publicKey,
-    amount: LIVE_BORROW_AMOUNT_ATOMIC,
+    amount: LIVE_ADDITIVE_THRESHOLD_ATOMIC,
   } as const;
   const borrowRedeemScript = buildKip10AdditiveRedeemScript(borrowTemplate).toLowerCase();
   const borrowSpk = kip10AdditiveScriptPublicKey(borrowTemplate);
@@ -871,12 +872,12 @@ export class LiveMerchantExactVerifier implements ExactTransactionVerifier {
     }
     const recomputedRedeem = buildKip10AdditiveRedeemScript({
       ownerPublicKey: ownerPublicKeyFromRedeemScript(reservation.borrowRedeemScript),
-      amount: reservation.borrowAmount,
+      amount: reservation.additiveThresholdSompi,
     }).toLowerCase();
     const recomputedSpk = serializedScriptPublicKey(
       kip10AdditiveScriptPublicKey({
         ownerPublicKey: ownerPublicKeyFromRedeemScript(reservation.borrowRedeemScript),
-        amount: reservation.borrowAmount,
+        amount: reservation.additiveThresholdSompi,
       })
     ).toLowerCase();
     if (
@@ -909,7 +910,7 @@ export class LiveMerchantExactVerifier implements ExactTransactionVerifier {
       }
       const inputs = transaction.inputs;
       const outputs = transaction.outputs;
-      if (inputs.length !== 2 || (outputs.length !== 2 && outputs.length !== 3)) {
+      if (inputs.length !== 2 || outputs.length !== 2) {
         throw new Error("Merchant exact transaction input/output shape changed");
       }
       const borrowInput = inputs[0];
@@ -943,15 +944,13 @@ export class LiveMerchantExactVerifier implements ExactTransactionVerifier {
       ) {
         throw new Error("Merchant exact transaction changed its continuation or payment output");
       }
-      let outputTotal = BigInt(outputs[0].value) + BigInt(outputs[1].value);
-      if (outputs.length === 3) {
-        if (sdkSerializedScript(outputs[2].scriptPublicKey) !== stagingScriptPublicKey) {
-          throw new Error("Merchant exact transaction changed its staging change script");
-        }
-        outputTotal += BigInt(outputs[2].value);
-      }
+      const outputTotal = BigInt(outputs[0].value) + BigInt(outputs[1].value);
       const inputTotal = BigInt(reservation.borrowAmount) + stagingAmount;
-      if (inputTotal - outputTotal !== BigInt(SOMPI_EXACT_FEE_POLICY.feeSompi)) {
+      const exactFee = inputTotal - outputTotal;
+      if (
+        exactFee !== BigInt(SOMPI_EXACT_FEE_POLICY.feeSompi) ||
+        exactFee < minimumRequiredExactFeeSompi(transaction)
+      ) {
         throw new Error("Merchant exact transaction changed the pinned exact fee");
       }
       const expectedChange =
@@ -961,10 +960,9 @@ export class LiveMerchantExactVerifier implements ExactTransactionVerifier {
         BigInt(SOMPI_EXACT_FEE_POLICY.feeSompi);
       if (
         expectedChange < 0n ||
-        (expectedChange === 0n) !== (outputs.length === 2) ||
-        (expectedChange > 0n && BigInt(outputs[2].value) !== expectedChange)
+        expectedChange !== 0n
       ) {
-        throw new Error("Merchant exact transaction does not conserve staging value");
+        throw new Error("Merchant fixed-v2 transaction requires exact staging without change");
       }
       return Object.freeze({
         transaction,

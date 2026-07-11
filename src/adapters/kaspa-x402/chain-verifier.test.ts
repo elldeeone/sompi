@@ -50,7 +50,7 @@ const AMOUNT = "20000000";
 const BORROW_AMOUNT = "100000000";
 const THRESHOLD = "10000000";
 const STAGING_FEE = "50000";
-const ADDITIONAL_COST = "11050000";
+const ADDITIONAL_COST = "12050000";
 const REQUEST_BODY = Buffer.from("request-body", "utf8");
 
 test("Settlement verifier independently binds alpha.6 safe JSON, chain output, and full Treasury cost", async () => {
@@ -62,7 +62,7 @@ test("Settlement verifier independently binds alpha.6 safe JSON, chain output, a
       assert.equal(request.purchaseId, PURCHASE_ID);
       assert.equal(request.paymentIdentifier, PAYMENT_IDENTIFIER);
       assert.equal(request.outpoint, `${STAGING_TXID}:1`);
-      assert.equal(request.amountAtomic, "31000000");
+      assert.equal(request.amountAtomic, "32000000");
       return STAGING_FEE;
     },
     chain: async (request) => {
@@ -97,19 +97,14 @@ test("Settlement verifier independently binds alpha.6 safe JSON, chain output, a
   assert.deepEqual(calls, ["staging", "chain"]);
 });
 
-test("verifier accepts canonical optional change only back to the staging script", async () => {
-  const fixture = await makeFixture({ stagingAmountAtomic: "41000000", additionalCostCeilingAtomic: "21050000" });
-  const document = JSON.parse(fixture.paymentPayload.payload.type === "exact-transaction"
-    ? fixture.paymentPayload.payload.transaction
-    : "null") as { outputs: Array<{ value: string; scriptPublicKey: string }> };
-  assert.equal(document.outputs.length, 3);
-  assert.deepEqual(document.outputs[2], {
-    value: "10000000",
-    scriptPublicKey: fixture.stagingScript,
-    covenant: null,
-  });
-  const result = await fixture.verifier().verify(fixture.verificationInput());
-  assert.equal(result.additionalCostAtomic, ADDITIONAL_COST);
+test("fixed-v2 construction rejects optional staging change", async () => {
+  await assert.rejects(
+    makeFixture({
+      stagingAmountAtomic: "42000000",
+      additionalCostCeilingAtomic: "22050000",
+    }),
+    /fixed-v2 exact staging/
+  );
 });
 
 test("verifier fails closed on transaction, request, reservation, chain, cost, and finality substitutions", async () => {
@@ -124,7 +119,7 @@ test("verifier fails closed on transaction, request, reservation, chain, cost, a
   const changedStaging = fixture.verificationInput();
   changedStaging.context = {
     ...changedStaging.context,
-    staging: { ...changedStaging.context.staging, amountAtomic: "31000001" },
+    staging: { ...changedStaging.context.staging, amountAtomic: "32000001" },
   };
   cases.push({ name: "staging amount", input: changedStaging, pattern: /input facts changed/ });
 
@@ -478,7 +473,7 @@ async function makeFixture(options: FixtureOptions = {}): Promise<Fixture> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-chain-verifier-"));
   try {
     const stagingTransactionId = options.stagingTransactionId ?? STAGING_TXID;
-    const stagingAmountAtomic = options.stagingAmountAtomic ?? "31000000";
+    const stagingAmountAtomic = options.stagingAmountAtomic ?? "32000000";
     const additionalCostCeilingAtomic = options.additionalCostCeilingAtomic ?? ADDITIONAL_COST;
     const keyStore = new StagingKeyStore({
       directory: path.join(root, "keys"),
@@ -488,10 +483,10 @@ async function makeFixture(options: FixtureOptions = {}): Promise<Fixture> {
     const key = keyStore.create({ purchaseId: PURCHASE_ID, paymentIdentifier: PAYMENT_IDENTIFIER });
     const borrowRedeemScript = buildKip10AdditiveRedeemScript({
       ownerPublicKey: OWNER_PUBLIC_KEY,
-      amount: BORROW_AMOUNT,
+      amount: THRESHOLD,
     }).toLowerCase();
     const borrowScriptPublicKey = serializedScriptPublicKey(
-      kip10AdditiveScriptPublicKey({ ownerPublicKey: OWNER_PUBLIC_KEY, amount: BORROW_AMOUNT })
+      kip10AdditiveScriptPublicKey({ ownerPublicKey: OWNER_PUBLIC_KEY, amount: THRESHOLD })
     ).toLowerCase();
     const body = Uint8Array.from(REQUEST_BODY);
     const fingerprint = requestFingerprint({

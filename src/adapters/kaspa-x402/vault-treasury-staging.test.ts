@@ -42,8 +42,8 @@ test("vault staging converges inside the complete cost cap and exposes canonical
     });
     const total = BigInt(envelope.spend.amountAtomic) + BigInt(envelope.spend.feeAtomic);
     assert.ok(total <= BigInt(PRICE) + 30_000_000n);
-    assert.ok(BigInt(envelope.spend.amountAtomic) >= 31_000_000n);
-    const exactChange = BigInt(envelope.spend.amountAtomic) - 31_000_000n;
+    assert.ok(BigInt(envelope.spend.amountAtomic) >= 32_000_000n);
+    const exactChange = BigInt(envelope.spend.amountAtomic) - 32_000_000n;
     assert.ok(exactChange === 0n || exactChange >= 10_000_000n);
     assert.equal(envelope.spend.destination, envelope.stagingKey.address);
     assert.equal(envelope.spend.destinationOutpoint.index, 0);
@@ -77,7 +77,7 @@ test("vault staging converges inside the complete cost cap and exposes canonical
 test("actual staging fee and signed transaction cap are fail-closed", async () => {
   await withFixture(async (fixture) => {
     await assert.rejects(
-      fixture.staging.prepare(fixture.prepareInput("11000000")),
+      fixture.staging.prepare(fixture.prepareInput("12000000")),
       /actual vault staging fee exceeds|authorized additional-cost ceiling/
     );
 
@@ -194,7 +194,7 @@ test("submission rejects canonical envelope and immutable-context substitutions 
       fixture.staging.submit({
         context: {
           ...original,
-          staging: { ...original.staging, amountAtomic: "31000001" },
+          staging: { ...original.staging, amountAtomic: "32000001" },
         },
         effect: fixture.effect(prepared.preparedDigest),
         signal: new AbortController().signal,

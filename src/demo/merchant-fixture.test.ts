@@ -481,7 +481,7 @@ function config(
     merchantWebsite: "https://merchant.example/store",
     payTo: PAY_TO,
     amountAtomic: "20000000",
-    additionalCostCeilingAtomic: "11050000",
+    additionalCostCeilingAtomic: "12050000",
     checkoutTtlMs: 2 * 60_000,
     authorityAudience: FIXED_AUDIENCE,
     expectedAuthorityIssuer: FIXED_AUTHORITY_ISSUER,

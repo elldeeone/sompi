@@ -22,6 +22,7 @@ export {
 export {
   Kip10ExactTransactionBuilder,
   SOMPI_EXACT_FEE_POLICY,
+  minimumRequiredExactFeeSompi,
   type BuildKip10ExactTransactionInput,
   type Kip10ExactTransactionBuilderOptions,
   type ObservedStagingOutput,

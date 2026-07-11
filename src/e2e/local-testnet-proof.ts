@@ -761,12 +761,12 @@ function createDeterministicVault(directory: string): {
 function exactReservationProvider(): ExactBorrowReservationProvider {
   const borrowRedeemScript = buildKip10AdditiveRedeemScript({
     ownerPublicKey: OWNER_PUBLIC_KEY,
-    amount: BORROW_AMOUNT_ATOMIC,
+    amount: ADDITIVE_THRESHOLD_ATOMIC,
   }).toLowerCase();
   const borrowScriptPublicKey = serializedScriptPublicKey(
     kip10AdditiveScriptPublicKey({
       ownerPublicKey: OWNER_PUBLIC_KEY,
-      amount: BORROW_AMOUNT_ATOMIC,
+      amount: ADDITIVE_THRESHOLD_ATOMIC,
     })
   ).toLowerCase();
   return {

@@ -42,9 +42,9 @@ const STAGING_TXID = "33".repeat(32);
 const BORROW_TXID = "22".repeat(32);
 const PRICE = "20000000";
 const THRESHOLD = "10000000";
-const STAGING_AMOUNT = "31000000";
+const STAGING_AMOUNT = "32000000";
 const STAGING_FEE = "50000";
-const COST_CEILING = "11050000";
+const COST_CEILING = "12050000";
 const REQUEST_HASH = "44".repeat(32);
 const EVIDENCE_DIGEST = digest("observed-staging");
 const NOW = Date.parse("2030-01-01T00:00:00.000Z");
@@ -77,7 +77,7 @@ test("fresh attempt providers expose only the joined journal-observed staging ou
         action: "exact",
         amount: PRICE,
       }),
-      { feeSompi: "1000000" }
+      { feeSompi: "2000000" }
     );
 
     const built = await first.payExactTransaction!(fixture.request);
@@ -372,12 +372,12 @@ async function withBridgeFixture(
     });
     const borrowRedeemScript = buildKip10AdditiveRedeemScript({
       ownerPublicKey: OWNER_PUBLIC_KEY,
-      amount: "100000000",
+      amount: THRESHOLD,
     }).toLowerCase();
     const borrowScriptPublicKey = serializedScriptPublicKey(
       kip10AdditiveScriptPublicKey({
         ownerPublicKey: OWNER_PUBLIC_KEY,
-        amount: "100000000",
+        amount: THRESHOLD,
       })
     ).toLowerCase();
     const request: ExactTransactionPaymentRequest = {
@@ -408,7 +408,7 @@ async function withBridgeFixture(
       priceAtomic: PRICE,
       additionalCostCeilingAtomic: COST_CEILING,
       additiveThresholdAtomic: THRESHOLD,
-      exactFeeAtomic: "1000000",
+      exactFeeAtomic: "2000000",
       transactionId: STAGING_TXID,
       outpoint: `${STAGING_TXID}:0`,
       stagingAmountAtomic: STAGING_AMOUNT,

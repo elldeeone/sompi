@@ -48,8 +48,8 @@ const MERCHANT_ADDRESS =
   "kaspatest:qzlws9lm7uyt0tftzffshnyeu2zcqk4kf7hw5ghk6v0zh093vnkljcy2fl0fh";
 const BORROW_TXID = "22".repeat(32);
 const STAGING_TXID = "33".repeat(32);
-const STAGING_AMOUNT = "31000000";
-const RECOVERY_AMOUNT = "30000000";
+const STAGING_AMOUNT = "32000000";
+const RECOVERY_AMOUNT = "31000000";
 
 test("preparation has a stable identity, canonical secret-free bytes, and exact value conservation", async () => {
   await withFixture(async (fixture) => {
@@ -166,7 +166,7 @@ test("preparation rejects network, exact artifact, staging, key, and recovery-ad
     );
     await assert.rejects(
       fixture.prepare({
-        staging: { ...fixture.staging, amountAtomic: "031000000" },
+        staging: { ...fixture.staging, amountAtomic: "032000000" },
       }),
       /canonical unsigned decimal/
     );
@@ -692,12 +692,12 @@ async function withFixture(action: (fixture: Fixture) => Promise<void>): Promise
     };
     const borrowRedeemScript = buildKip10AdditiveRedeemScript({
       ownerPublicKey: OWNER_PUBLIC_KEY,
-      amount: "100000000",
+      amount: "10000000",
     }).toLowerCase();
     const borrowScriptPublicKey = serializedScriptPublicKey(
       kip10AdditiveScriptPublicKey({
         ownerPublicKey: OWNER_PUBLIC_KEY,
-        amount: "100000000",
+        amount: "10000000",
       })
     ).toLowerCase();
     const request: ExactTransactionPaymentRequest = {
@@ -733,7 +733,7 @@ async function withFixture(action: (fixture: Fixture) => Promise<void>): Promise
         blockDaaScore: staging.blockDaaScore,
         keyReference: staging.keyReference,
       },
-      additionalCostCeilingAtomic: "11050000",
+      additionalCostCeilingAtomic: "12050000",
       stagingTransactionFeeAtomic: "50000",
     });
     const exact = {

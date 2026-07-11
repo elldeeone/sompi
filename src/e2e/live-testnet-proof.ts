@@ -316,6 +316,17 @@ export async function runLiveTestnetProof(
     const expectedPurchaseId = createPurchaseId(
       Buffer.from(initialized.config.purchaseEntropyHex, "hex")
     );
+    if (
+      existingPurchase &&
+      !["receipted", "denied", "cancelled", "expired", "failed_terminal"].includes(
+        existingPurchase.state
+      )
+    ) {
+      const resumed = await merchantPaidEndpoint.resumeDurableIngress(expectedPurchaseId);
+      if (resumed) {
+        options.onProgress?.("resumed the Merchant's durable paid ingress before client reconciliation");
+      }
+    }
     const transport = new LiveDemoPinnedTransport(
       merchant,
       merchantPaidEndpoint,
@@ -621,6 +632,20 @@ export class LiveMerchantPaidEndpoint {
     this.persistIngress(request);
     await this.recoverObservedReservation(request);
     return this.options.merchant.handlePaid(request);
+  }
+
+  async resumeDurableIngress(
+    expectedPurchaseId: PurchaseId
+  ): Promise<DemoMerchantPaidResult | undefined> {
+    if (!privateStateFileExists(this.options.ingressPath)) return undefined;
+    const ingress = readMerchantPaidIngress(this.options.ingressPath, expectedPurchaseId);
+    return this.handlePaid({
+      purchaseId: ingress.purchaseId,
+      merchantCheckout: ingress.merchantCheckout,
+      paymentRequiredHeader: ingress.paymentRequiredHeader,
+      paymentIdentifier: ingress.paymentIdentifier,
+      headers: { "PAYMENT-SIGNATURE": ingress.paymentSignature },
+    });
   }
 
   private persistIngress(request: DemoMerchantPaidRequest): void {

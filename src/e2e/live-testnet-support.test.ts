@@ -618,7 +618,8 @@ test("Merchant ingress consumes an observed exact reservation before expired alp
       },
     });
     await assert.rejects(endpoint.handlePaid(request), /post-consume crash/);
-    const recovered = await endpoint.handlePaid(request);
+    const recovered = await endpoint.resumeDurableIngress(purchaseId);
+    assert.ok(recovered);
     assert.equal(recovered.response.status, 200);
     assert.deepEqual(calls, [
       "verify", "consume", "merchant",

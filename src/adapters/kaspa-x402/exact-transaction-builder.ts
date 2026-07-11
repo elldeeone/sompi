@@ -30,9 +30,12 @@ import {
 } from "./staging-key-store.js";
 
 export const SOMPI_EXACT_FEE_POLICY = Object.freeze({
-  id: "sompi-kaspa-x402-exact-testnet10-fixed-v1",
-  feeSompi: "1000000",
-  feeRateSompiPerGram: 1,
+  id: "sompi-kaspa-x402-exact-testnet10-fixed-v2",
+  // Matches the alpha.6 reference adapter's live Testnet-10 fee. The network
+  // floor is 100 sompi/gram; the former 1,000,000-sompi fixture fee was below
+  // the final two-input transaction mass and was rejected before admission.
+  feeSompi: "2000000",
+  feeRateSompiPerGram: 100,
   computeBudgetMassPerUnit: 100,
   minimumStandardOutputSompi: "10000000",
   inputComputeBudget: 10,
@@ -93,7 +96,6 @@ interface ValidatedBuild {
   readonly borrowAmount: bigint;
   readonly threshold: bigint;
   readonly stagingAmount: bigint;
-  readonly change: bigint;
   readonly exactFee: bigint;
   readonly merchantScript: string;
   readonly borrowScript: string;
@@ -234,7 +236,7 @@ export class Kip10ExactTransactionBuilder {
       reservation.borrowScriptPublicKey,
       "borrow script public key"
     );
-    validateKip10Reservation(borrowRedeemScript, borrowScript, borrowAmount);
+    validateKip10Reservation(borrowRedeemScript, borrowScript, threshold);
     const expiresAt = requireCanonicalFutureTime(
       reservation.reservationExpiresAt,
       readClock(this.now),
@@ -303,9 +305,15 @@ export class Kip10ExactTransactionBuilder {
     if (stagingAmount < requiredStaging) {
       throw new ExactTransactionBuilderError("staging output cannot fund price, threshold, and exact fee");
     }
-    const change = stagingAmount - requiredStaging;
-    if (change > 0n && change < minimumOutput) {
-      throw new ExactTransactionBuilderError("exact change would be below the pinned standard-output floor");
+    if (stagingAmount < requiredStaging) {
+      throw new ExactTransactionBuilderError(
+        "staging output cannot fund price, threshold, and exact fee"
+      );
+    }
+    if (stagingAmount > requiredStaging) {
+      throw new ExactTransactionBuilderError(
+        "fixed-v2 exact staging must equal price, additive threshold, and pinned fee"
+      );
     }
 
     const stagingFee = uint64(
@@ -353,7 +361,6 @@ export class Kip10ExactTransactionBuilder {
       borrowAmount,
       threshold,
       stagingAmount,
-      change,
       exactFee,
       merchantScript,
       borrowScript,
@@ -395,9 +402,6 @@ export class Kip10ExactTransactionBuilder {
         { value: continuationAmount, scriptPublicKey: borrowScript },
         { value: input.price, scriptPublicKey: merchantScript },
       ];
-      if (input.change > 0n) {
-        outputs.push({ value: input.change, scriptPublicKey: stagingScript });
-      }
       transaction = new Transaction({
         version: 1,
         inputs: [
@@ -451,7 +455,7 @@ export class Kip10ExactTransactionBuilder {
       ) {
         throw new ExactTransactionBuilderError("final exact transaction ID changed during recovery");
       }
-      const requiredFee = minimumRequiredFee(transaction);
+      const requiredFee = minimumRequiredExactFeeSompi(transaction);
       if (input.exactFee < requiredFee) {
         throw new ExactTransactionBuilderError("pinned exact fee is below final signed transaction mass");
       }
@@ -506,7 +510,7 @@ function transactionInput(input: {
 function validateKip10Reservation(
   redeemScript: string,
   scriptPublicKey: string,
-  borrowAmount: bigint
+  additiveThreshold: bigint
 ): void {
   const ownerStart = KIP10_PREFIX.length;
   const ownerEnd = ownerStart + 64;
@@ -526,10 +530,10 @@ function validateKip10Reservation(
   try {
     expectedRedeem = buildKip10AdditiveRedeemScript({
       ownerPublicKey,
-      amount: borrowAmount,
+      amount: additiveThreshold,
     }).toLowerCase();
     expectedScript = serializedScriptPublicKey(
-      kip10AdditiveScriptPublicKey({ ownerPublicKey, amount: borrowAmount })
+      kip10AdditiveScriptPublicKey({ ownerPublicKey, amount: additiveThreshold })
     ).toLowerCase();
   } catch (error) {
     throw new ExactTransactionBuilderError("borrow KIP-10 template parameters are invalid", {
@@ -580,12 +584,11 @@ function validateFinalArtifact(
   if (!isRecord(value) || !Array.isArray(value.inputs) || !Array.isArray(value.outputs)) {
     throw new ExactTransactionBuilderError("final exact transaction artifact shape is invalid");
   }
-  const expectedOutputCount = input.change > 0n ? 3 : 2;
   if (
     value.id !== transactionId ||
     value.version !== 1 ||
     value.inputs.length !== 2 ||
-    value.outputs.length !== expectedOutputCount ||
+    value.outputs.length !== 2 ||
     value.subnetworkId !== NATIVE_SUBNETWORK ||
     value.lockTime !== "0" ||
     value.gas !== "0" ||
@@ -619,16 +622,10 @@ function validateFinalArtifact(
     amount: input.price.toString(),
     scriptPublicKey: input.merchantScript,
   });
-  if (input.change > 0n) {
-    validateFinalOutput(value.outputs[2], {
-      amount: input.change.toString(),
-      scriptPublicKey: input.stagingScript,
-    });
-  }
   const inputTotal = checkedAdd(input.borrowAmount, input.stagingAmount, "final input total");
   const outputTotal = checkedAdd(
     checkedAdd(input.borrowAmount, input.threshold, "final continuation total"),
-    checkedAdd(input.price, input.change, "final payer outputs"),
+    input.price,
     "final output total"
   );
   if (inputTotal - outputTotal !== input.exactFee) {
@@ -680,7 +677,7 @@ function validateFinalOutput(
   }
 }
 
-function minimumRequiredFee(transaction: Transaction): bigint {
+export function minimumRequiredExactFeeSompi(transaction: Transaction): bigint {
   const baseMass = calculateTransactionMass(SDK_NETWORK, transaction);
   const computeMass =
     BigInt(SOMPI_EXACT_FEE_POLICY.inputComputeBudget * 2) *

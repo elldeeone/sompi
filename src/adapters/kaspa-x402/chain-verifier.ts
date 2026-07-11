@@ -29,6 +29,7 @@ import { requestFingerprint } from "../../purchase/identity.js";
 import type { Sha256Digest } from "../../purchase/types.js";
 import { KaspaTestnet10AddressCodec, serializeScriptPublicKey } from "./address-codec.js";
 import {
+  minimumRequiredExactFeeSompi,
   SOMPI_EXACT_FEE_POLICY,
 } from "./exact-transaction-builder.js";
 import type {
@@ -816,7 +817,7 @@ function parseExactPayment(
   });
   const borrowScript = canonicalScript(extra.borrowScriptPublicKey, "KIP-10 borrow script public key");
   const borrowRedeemScript = canonicalHex(extra.borrowRedeemScript, "KIP-10 borrow redeem script");
-  validateKip10Reservation(borrowRedeemScript, borrowScript, borrowAmount);
+  validateKip10Reservation(borrowRedeemScript, borrowScript, threshold);
   const requiredFinality = requireFinality(extra.finality, "exact required finality");
   if (context.preparation.requiredFinality !== requiredFinality) {
     throw error("artifact_mismatch", "durable exact finality changed from the Merchant requirement");
@@ -838,12 +839,14 @@ function parseExactPayment(
   }
 
   let transaction: Transaction | undefined;
+  let minimumExactFee = 0n;
   try {
     transaction = Transaction.deserializeFromSafeJSON(payload.transaction);
     const finalized = String(transaction.finalize()).toLowerCase();
     if (finalized !== transactionId || transaction.serializeToSafeJSON() !== payload.transaction) {
       throw error("artifact_mismatch", "safe-JSON exact transaction is non-canonical or ID-mismatched");
     }
+    minimumExactFee = minimumRequiredExactFeeSompi(transaction);
   } catch (cause) {
     if (cause instanceof KaspaExactChainVerifierError) throw cause;
     throw error("artifact_mismatch", "safe-JSON exact transaction cannot be rehydrated", { cause });
@@ -862,7 +865,7 @@ function parseExactPayment(
     document.gas !== "0" ||
     document.payload !== "" ||
     inputs.length !== 2 ||
-    (outputs.length !== 2 && outputs.length !== 3)
+    outputs.length !== 2
   ) {
     throw error("artifact_mismatch", "safe-JSON exact transaction envelope changed");
   }
@@ -908,12 +911,6 @@ function parseExactPayment(
   }
   validateOutput(outputs[0], checkedAdd(borrowAmount, threshold, "KIP-10 continuation").toString(), borrowScript);
   validateOutput(outputs[1], context.execution.terms.amountAtomic, merchantScript);
-  if (outputs.length === 3) {
-    const change = validateOutput(outputs[2], undefined, stagingScript);
-    if (change < BigInt(SOMPI_EXACT_FEE_POLICY.minimumStandardOutputSompi)) {
-      throw error("artifact_mismatch", "exact change output is below the pinned standard-output floor");
-    }
-  }
 
   let outputTotal = 0n;
   for (const [index, output] of outputs.entries()) {
@@ -928,18 +925,18 @@ function parseExactPayment(
     throw error("cost_mismatch", "exact transaction has no positive conserved fee");
   }
   const exactFee = inputTotal - outputTotal;
-  if (exactFee.toString() !== SOMPI_EXACT_FEE_POLICY.feeSompi) {
+  if (
+    exactFee.toString() !== SOMPI_EXACT_FEE_POLICY.feeSompi ||
+    exactFee < minimumExactFee
+  ) {
     throw error("cost_mismatch", "exact transaction fee changed from the pinned signed fee policy");
   }
   const expectedChange = stagingAmount - uint64(context.execution.terms.amountAtomic, "Merchant price", { positive: true }) - threshold - exactFee;
   if (expectedChange < 0n) {
     throw error("cost_mismatch", "observed staging output cannot fund the exact transaction");
   }
-  if ((expectedChange === 0n) !== (outputs.length === 2)) {
-    throw error("cost_mismatch", "exact transaction omitted or invented staging change");
-  }
-  if (expectedChange > 0n && outputAmount(outputs[2], "staging change") !== expectedChange) {
-    throw error("cost_mismatch", "exact transaction staging change does not conserve value");
+  if (expectedChange !== 0n) {
+    throw error("cost_mismatch", "fixed-v2 exact transaction requires exact staging without change");
   }
 
   const bindingDigest = digestCanonical({
@@ -1221,7 +1218,7 @@ function outputAmount(value: unknown, label: string): bigint {
 function validateKip10Reservation(
   redeemScript: string,
   scriptPublicKey: string,
-  borrowAmount: bigint
+  additiveThreshold: bigint
 ): void {
   const ownerStart = KIP10_PREFIX.length;
   const ownerEnd = ownerStart + 64;
@@ -1241,10 +1238,10 @@ function validateKip10Reservation(
   try {
     expectedRedeem = buildKip10AdditiveRedeemScript({
       ownerPublicKey,
-      amount: borrowAmount,
+      amount: additiveThreshold,
     }).toLowerCase();
     expectedScript = serializedScriptPublicKey(
-      kip10AdditiveScriptPublicKey({ ownerPublicKey, amount: borrowAmount })
+      kip10AdditiveScriptPublicKey({ ownerPublicKey, amount: additiveThreshold })
     ).toLowerCase();
   } catch (cause) {
     throw error("artifact_mismatch", "KIP-10 reservation parameters are invalid", { cause });
