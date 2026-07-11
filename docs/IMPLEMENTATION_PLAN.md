@@ -1,6 +1,6 @@
 # Sompi AP2 + Kaspa-x402 implementation plan
 
-Status: **Ready to begin after branch normalization**
+Status: **In progress — Phases 0 through 2 complete**
 
 Architecture: [`docs/architecture/SOMPI_ARCHITECTURE.md`](architecture/SOMPI_ARCHITECTURE.md)
 
@@ -69,18 +69,18 @@ Gate:
 Purpose: make workflow durability part of correctness before introducing the
 new payment path.
 
-- [ ] Add SQLite with explicit transaction and crash-safety configuration.
-- [ ] Implement schema/version management for the new architecture only.
-- [ ] Implement Purchase, state transition, transition history, and evidence
+- [x] Add SQLite with explicit transaction and crash-safety configuration.
+- [x] Implement schema/version management for the new architecture only.
+- [x] Implement Purchase, state transition, transition history, and evidence
   metadata tables.
-- [ ] Implement unique Purchase and payment identifiers.
-- [ ] Implement atomic policy reservations, finalization, release, and expiry.
-- [ ] Implement planned-effect/outbox records and submission observations.
-- [ ] Persist prepared payment material or secure references before submission.
-- [ ] Implement startup reconciliation and single-writer/recovery coordination.
-- [ ] Ensure authority/wallet private keys and sensitive secrets are not stored
+- [x] Implement unique Purchase and payment identifiers.
+- [x] Implement atomic policy reservations, finalization, release, and expiry.
+- [x] Implement planned-effect/outbox records and submission observations.
+- [x] Persist prepared payment material or secure references before submission.
+- [x] Implement startup reconciliation and single-writer/recovery coordination.
+- [x] Ensure authority/wallet private keys and sensitive secrets are not stored
   in journal plaintext or logs.
-- [ ] Add fault injection around every transaction/effect edge.
+- [x] Add fault injection around every transaction/effect edge.
 
 Gate:
 

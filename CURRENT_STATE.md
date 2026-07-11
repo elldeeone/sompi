@@ -4,10 +4,10 @@ Last updated: **2026-07-11**
 
 ## Plain-English status
 
-**Phases 0 and 1 complete; Phase 2 Purchase Journal implementation is next.**
+**Phases 0 through 2 complete; Phase 3 Purchase module deepening is next.**
 
-The target design and decisions are complete, local `main` has been normalized
-to the latest verified history, and the implementation branch has been created.
+The target design and decisions are complete, the implementation branch has a
+crash-safe Purchase Journal and recovery foundation, and all Phase 2 gates pass.
 The current source still contains Sompi's existing x402 v1 escrow path and
 pre-cutover JSON state; those remain only until the Phase 4 clean cutover.
 
@@ -16,9 +16,10 @@ pre-cutover JSON state; those remain only until the Phase 4 clean cutover.
 - Repository: `https://github.com/elldeeone/sompi`
 - Normalized local `main`: `1bbfa0c` (`Document AP2 and Kaspa-x402 architecture`)
 - Active implementation branch: `ap2-kaspa-purchase-core`
-- Latest verified implementation milestone: `7ffa290` (`Freeze purchase interfaces and protocol profiles`)
-- Baseline verification: `npm run build` passed
-- Baseline verification: `SOMPI_SMOKE_OFFLINE=1 npm run smoke` passed
+- Latest verified implementation milestone: `2b68a54` (`Add transactional Purchase Journal`)
+- Phase 2 verification: `npm test` passed (36 focused tests plus complete offline smoke)
+- Phase 2 adversarial review: two independent reviews found no remaining blocker
+  or high-severity issue
 - Remote state: unchanged; local `main` is ahead of `origin/main`
 
 Do not assume these facts remain current. Re-run Git orientation before Phase
@@ -71,20 +72,37 @@ Phase 1 is complete:
 6. fixed wallet/address/signing and Purchase identity vectors pass alongside
    all existing offline smoke checks.
 
+Phase 2 is complete:
+
+1. SQLite is configured with WAL, full synchronous durability, foreign keys,
+   application/schema identity, secure file modes, and fail-closed startup
+   validation;
+2. Purchase, Payment Attempt, and Effect states replay from immutable histories,
+   with semantic corruption rejected at startup;
+3. policy snapshots, atomic Treasury Reservations, in-flight capacity, and
+   separate immutable spend facts prevent capacity loss or double consumption;
+4. evidence and prepared effect bytes are content-addressed, mode-restricted,
+   rehashed at use, and excluded from SQLite plaintext;
+5. effect-specific and recovery leases use monotonic fencing generations, and
+   recovery cannot pre-empt a live executor or blindly retry ambiguity;
+6. abrupt process kills, external-success/local-record gaps, stale workers,
+   tampering, corruption, lifecycle restarts, and real multi-process races are
+   covered by the Phase 2 suite.
+
 No remote push, package publish, deployment, or sibling-repository change was
 performed.
 
 ## Next action
 
-Execute **Phase 2: Build the Purchase Journal and recovery foundation** from
-[`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md). Install the exact
-pinned SQLite packages, implement schema and transactional transitions, then
-prove crash, idempotency, reservation, outbox, and restart behaviour before any
-replacement payment path is enabled.
+Execute **Phase 3: Deepen the Purchase module behind existing MCP UX** from
+[`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md). Implement canonical
+Checkout Terms and authorization/treasury seams, route orchestration through the
+stable Purchase interface, add deterministic status projection, and enforce the
+outbound egress policy before protocol cutover.
 
 ## Known external uncertainties
 
-These are contained by the design and do not block Phase 2:
+These are contained by the design and do not block Phase 3:
 
 - AP2 and x402 remain evolving standards.
 - The official AP2-compatible x402 integration may change or arrive later.
@@ -98,6 +116,6 @@ These are contained by the design and do not block Phase 2:
 
 ## Current blockers
 
-None for Phase 2. Kaspa-x402 alpha.6 expects its `FundingProvider` to assemble
+None for Phase 3. Kaspa-x402 alpha.6 expects its `FundingProvider` to assemble
 the exact transaction from public reservation terms; Sompi will implement and
 vector-test that wallet adapter in Phase 4 without changing the sibling repo.
