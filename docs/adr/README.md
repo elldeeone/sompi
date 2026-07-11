@@ -15,3 +15,4 @@ or documentation is not allowed.
 | [0007](0007-initial-delivery-scope.md) | Human-present, exact, testnet-first delivery | Accepted |
 | [0008](0008-repository-and-runtime-topology.md) | One repository/package, two executables initially | Accepted |
 | [0009](0009-kaspa-x402-integration.md) | Use Kaspa-x402 unchanged for initial AP2 integration | Accepted |
+| [0010](0010-native-kas-ap2-profile.md) | Experimental native-KAS AP2 payment instrument profile | Accepted |

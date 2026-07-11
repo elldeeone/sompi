@@ -9,7 +9,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import { sha256 } from "@noble/hashes/sha256";
-import { calculateTransactionMass, payToAddressScript, payToScriptHashScript } from "../vendor/kaspa-wasm/kaspa";
+import { calculateTransactionMass, payToAddressScript, payToScriptHashScript, Transaction } from "../vendor/kaspa-wasm/kaspa";
 import { PolicyEngine, PolicyViolation } from "./policy";
 import { VaultManager, generateOwnerKey as generateVaultOwnerKey } from "./vault";
 import { buildRedeemScript, buildSigArgs, bytesToHex, hexToBytes } from "./vault/template";
@@ -19,6 +19,17 @@ import { X402Client } from "./x402/client";
 import { EscrowServer } from "./x402/escrow-server";
 import { X_PAYMENT_HEADER, encodePaymentHeader } from "./x402/types";
 import { KaspaWallet, formatKas } from "./wallet";
+import {
+  assertPurchaseId,
+  assertPurchaseRequestKey,
+  canonicalRequestUrl,
+  createPaymentIdentifier,
+  createPurchaseId,
+  evidenceDigest,
+  requestFingerprint,
+} from "./purchase/identity";
+import { PURCHASE_STATES } from "./purchase/types";
+import { SUPPORTED_PROTOCOL_PROFILES } from "./protocols/profiles";
 
 const NETWORK = process.env.SOMPI_NETWORK ?? "testnet-10";
 const DATA_DIR = process.env.SOMPI_DATA_DIR ?? path.join(os.homedir(), ".sompi", NETWORK);
@@ -29,6 +40,119 @@ async function main() {
     console.log(`${cond ? "PASS" : "FAIL"}  ${name}${detail ? ` — ${detail}` : ""}`);
     if (!cond) failures++;
   };
+
+  // --- offline checks: stable Purchase identity and protocol profile ---
+  const fixedPurchaseId = createPurchaseId(new Uint8Array(16).fill(0x42));
+  check(
+    "purchase identity: fixed entropy produces stable opaque id",
+    fixedPurchaseId === "pur_QkJCQkJCQkJCQkJCQkJCQg" && assertPurchaseId(fixedPurchaseId) === fixedPurchaseId
+  );
+  const requestKey = assertPurchaseRequestKey("agent-task:weather:0001");
+  check("purchase identity: request key remains caller idempotency identity", requestKey === "agent-task:weather:0001");
+  const baseRequest = {
+    url: "https://merchant.example:443/data?city=Perth#not-sent",
+    method: "post",
+    body: new TextEncoder().encode('{"units":"metric"}'),
+  };
+  const fingerprint = requestFingerprint(baseRequest);
+  check(
+    "purchase identity: URL and method canonicalize without fragment",
+    fingerprint === requestFingerprint({ ...baseRequest, url: "https://merchant.example/data?city=Perth", method: "POST" })
+  );
+  check(
+    "purchase identity: method, URL, and body substitutions change fingerprint",
+    fingerprint !== requestFingerprint({ ...baseRequest, method: "PUT" }) &&
+      fingerprint !== requestFingerprint({ ...baseRequest, url: "https://merchant.example/data?city=Sydney" }) &&
+      fingerprint !== requestFingerprint({ ...baseRequest, body: new TextEncoder().encode('{"units":"imperial"}') })
+  );
+  let credentialUrlDenied = false;
+  try {
+    canonicalRequestUrl("https://user:secret@merchant.example/data");
+  } catch {
+    credentialUrlDenied = true;
+  }
+  check("purchase identity: URL credentials rejected", credentialUrlDenied);
+  const paymentOne = createPaymentIdentifier(fixedPurchaseId, 1);
+  check(
+    "purchase identity: payment identifiers are deterministic per attempt",
+    paymentOne === createPaymentIdentifier(fixedPurchaseId, 1) && paymentOne !== createPaymentIdentifier(fixedPurchaseId, 2)
+  );
+  check(
+    "purchase evidence: exact bytes determine digest",
+    evidenceDigest("abc") === "sha256:ungWv48Bz-pBQUDeXa4iI7ADYaOWF3qctBD_YfIAFa0" &&
+      evidenceDigest("abc") !== evidenceDigest("abc\n")
+  );
+  check(
+    "protocol profiles: AP2 and Kaspa-x402 pins fail closed to accepted release",
+    SUPPORTED_PROTOCOL_PROFILES.ap2.gitCommit === "b4587ac1d055888a73b4b21750973cffba961793" &&
+      SUPPORTED_PROTOCOL_PROFILES.ap2.checkoutMandateVct === "mandate.checkout.1" &&
+      SUPPORTED_PROTOCOL_PROFILES.ap2.paymentMandateVct === "mandate.payment.1" &&
+      SUPPORTED_PROTOCOL_PROFILES.ap2.nativeKasStrictlyStandardized === false &&
+      SUPPORTED_PROTOCOL_PROFILES.x402.packages.client.version === "0.1.0-alpha.6" &&
+      SUPPORTED_PROTOCOL_PROFILES.x402.allowMainnet === false &&
+      PURCHASE_STATES.includes("failed_recoverable")
+  );
+
+  const walletVectorDir = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-wallet-vector-"));
+  const walletVectorKey = "0000000000000000000000000000000000000000000000000000000000000001";
+  const walletVectorPath = path.join(walletVectorDir, "wallet-key");
+  fs.writeFileSync(walletVectorPath, walletVectorKey, { mode: 0o600 });
+  const previousEnvKey = process.env.SOMPI_PRIVATE_KEY;
+  const previousMainnet = process.env.SOMPI_ENABLE_MAINNET;
+  delete process.env.SOMPI_PRIVATE_KEY;
+  delete process.env.SOMPI_ENABLE_MAINNET;
+  const walletVector = new KaspaWallet({ networkId: "testnet-10", dataDir: walletVectorDir });
+  check(
+    "wallet vector: fixed private key derives pinned testnet address with mode-0600 storage",
+    walletVector.address === "kaspatest:qpumuen7l8wthtz45p3ftn58pvrs9xlumvkuu2xet8egzkcklqtes5z8rkmpd" &&
+      (fs.statSync(walletVectorPath).mode & 0o777) === 0o600
+  );
+  const walletVectorScript = payToAddressScript(walletVector.address);
+  const walletVectorOutpoint = { transactionId: "11".repeat(32), index: 0 };
+  const walletVectorTx = new Transaction({
+    version: 0,
+    inputs: [
+      {
+        previousOutpoint: walletVectorOutpoint,
+        signatureScript: "",
+        sequence: 0n,
+        sigOpCount: 1,
+        computeBudget: 0n,
+        utxo: {
+          outpoint: walletVectorOutpoint,
+          amount: 100_000_000n,
+          scriptPublicKey: walletVectorScript,
+          blockDaaScore: 1n,
+          isCoinbase: false,
+        },
+      },
+    ],
+    outputs: [{ value: 99_900_000n, scriptPublicKey: walletVectorScript }],
+    lockTime: 0n,
+    subnetworkId: "00".repeat(20),
+    gas: 0n,
+    payload: "",
+  } as any);
+  walletVectorTx.finalize();
+  const walletVectorSignature = walletVector.signInput(walletVectorTx, 0);
+  check(
+    "wallet vector: pinned transaction identity signs with Schnorr plus All sighash",
+    walletVectorTx.id === "f595f033a6b2ce46809bf63899a91ea083bb3043b7f68ac94899a6e21e1b7273" &&
+      /^41[0-9a-f]{130}$/.test(walletVectorSignature) &&
+      walletVectorSignature.endsWith("01")
+  );
+  let mainnetDenied = false;
+  try {
+    new KaspaWallet({ networkId: "mainnet", dataDir: walletVectorDir });
+  } catch (error) {
+    mainnetDenied = error instanceof Error && error.message.includes("Mainnet is disabled");
+  }
+  check("wallet vector: mainnet remains denied by default", mainnetDenied);
+  if (previousEnvKey === undefined) delete process.env.SOMPI_PRIVATE_KEY;
+  else process.env.SOMPI_PRIVATE_KEY = previousEnvKey;
+  if (previousMainnet === undefined) delete process.env.SOMPI_ENABLE_MAINNET;
+  else process.env.SOMPI_ENABLE_MAINNET = previousMainnet;
+  fs.rmSync(walletVectorDir, { recursive: true, force: true });
 
   // --- offline checks: policy engine ---
   const policy = new PolicyEngine(os.tmpdir());
