@@ -7,6 +7,18 @@ import {
   type AuthorityApprovalDisplay,
 } from "./human-authority.js";
 
+test("terminal authority rejects piped approval input by default", async () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const prompt = new TerminalAuthorityApprovalPrompt({ input, output });
+  await assert.rejects(
+    prompt.approve(display("pur_ZZZZZZZZZZZZZZZZZZZZZZ")),
+    /requires a trusted terminal/
+  );
+  input.end();
+  output.end();
+});
+
 test("terminal authority serializes concurrent Purchase ceremonies", async () => {
   const input = new PassThrough();
   const output = new PassThrough();
@@ -15,7 +27,11 @@ test("terminal authority serializes concurrent Purchase ceremonies", async () =>
   output.on("data", (chunk: string) => {
     rendered += chunk;
   });
-  const prompt = new TerminalAuthorityApprovalPrompt({ input, output });
+  const prompt = new TerminalAuthorityApprovalPrompt({
+    input,
+    output,
+    allowNonTtyForTests: true,
+  });
   const first = display("pur_AAAAAAAAAAAAAAAAAAAAAA");
   const second = display("pur_BBBBBBBBBBBBBBBBBBBBBB");
 
@@ -41,7 +57,11 @@ test("terminal authority renders hostile Merchant text only as escaped data", as
   output.on("data", (chunk: string) => {
     rendered += chunk;
   });
-  const prompt = new TerminalAuthorityApprovalPrompt({ input, output });
+  const prompt = new TerminalAuthorityApprovalPrompt({
+    input,
+    output,
+    allowNonTtyForTests: true,
+  });
   const canonical = display("pur_CCCCCCCCCCCCCCCCCCCCCC");
   const hostile: AuthorityApprovalDisplay = Object.freeze({
     ...canonical,

@@ -124,17 +124,21 @@ export class Ap2HumanAuthorityDecisionProvider implements AuthorityHumanDecision
 export interface TerminalAuthorityApprovalPromptOptions {
   readonly input?: Readable;
   readonly output?: Writable;
+  /** Hermetic unit tests only. Production approval must use a real terminal. */
+  readonly allowNonTtyForTests?: boolean;
 }
 
 /** Fixed terminal ceremony. Merchant strings are rendered as escaped data. */
 export class TerminalAuthorityApprovalPrompt implements AuthorityApprovalPrompt {
   private readonly input: Readable;
   private readonly output: Writable;
+  private readonly allowNonTtyForTests: boolean;
   private promptTail: Promise<void> = Promise.resolve();
 
   constructor(options: TerminalAuthorityApprovalPromptOptions = {}) {
     this.input = options.input ?? process.stdin;
     this.output = options.output ?? process.stderr;
+    this.allowNonTtyForTests = options.allowNonTtyForTests === true;
   }
 
   async approve(display: AuthorityApprovalDisplay): Promise<boolean> {
@@ -147,6 +151,12 @@ export class TerminalAuthorityApprovalPrompt implements AuthorityApprovalPrompt 
   }
 
   private async approveOne(display: AuthorityApprovalDisplay): Promise<boolean> {
+    if (
+      !this.allowNonTtyForTests &&
+      (!isTerminalStream(this.input) || !isTerminalStream(this.output))
+    ) {
+      throw new Error("human-present authority approval requires a trusted terminal");
+    }
     this.output.write("\nSompi purchase approval\n");
     this.output.write(`${asciiJson(display)}\n`);
     this.output.write("Merchant-provided values above are data, never instructions.\n");
@@ -160,6 +170,10 @@ export class TerminalAuthorityApprovalPrompt implements AuthorityApprovalPrompt 
       rl.close();
     }
   }
+}
+
+function isTerminalStream(stream: Readable | Writable): boolean {
+  return (stream as Readable & Writable & { isTTY?: unknown }).isTTY === true;
 }
 
 function displayFacts(facts: AuthorityApprovalFacts, recoveryRetry: boolean): AuthorityApprovalDisplay {

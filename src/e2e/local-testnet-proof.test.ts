@@ -17,6 +17,7 @@ test("deterministic local Testnet-10 proof joins AP2, x402, Settlement, Fulfilme
   assert.equal(report.purchase.state, "receipted");
   assert.equal(report.chainMode, "deterministic-in-memory-testnet10");
   assert.equal(report.liveNetworkConformanceClaimed, false);
+  assert.equal(report.initiationMode, "direct-purchase-module");
   assert.equal(report.idempotency.stagingSubmissions, 1);
   assert.equal(report.idempotency.exactMerchantAcceptances, 1);
   assert.deepEqual(report.protocolSeparation.paidRequestExtensionKeys, [
@@ -40,6 +41,15 @@ test("deterministic local Testnet-10 proof joins AP2, x402, Settlement, Fulfilme
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("local vertical can be initiated through the real MCP SDK transport", async () => {
+  const report = await runLocalTestnetProof({
+    initiationMode: "mcp-sdk-in-memory-transport",
+  });
+  assert.equal(report.purchase.state, "receipted");
+  assert.equal(report.initiationMode, "mcp-sdk-in-memory-transport");
+  assert.equal(report.idempotency.duplicatePurchaseReturnedSameId, true);
 });
 
 test("real vertical crash points restart without a second staging or Merchant payment", async () => {

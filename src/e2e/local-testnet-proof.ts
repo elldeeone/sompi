@@ -6,6 +6,8 @@ import {
   decodePaymentSignatureHeader,
   type PaymentPayload,
 } from "@kaspa-x402/core";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type {
   ExactBorrowReservationProvider,
   ServerChainProvider,
@@ -30,6 +32,7 @@ import {
   decodeAp2CommerceAuthorizationPresentation,
   encodeAp2CommerceAuthorizationAcceptance,
   encodeStageAcceptance,
+  type Ap2PublicKeyResolver,
 } from "../adapters/ap2/index.js";
 import {
   AUTHORITY_SIGNER,
@@ -112,6 +115,9 @@ import { VAULT_TEMPLATE_VERSION, buildRedeemScript } from "../vault/template.js"
 import { VaultManager, type VaultConfig } from "../vault.js";
 import { KaspaWallet } from "../wallet.js";
 import { InMemoryKaspaTestnet10 } from "./in-memory-testnet.js";
+import { createSompiMcpServer } from "../mcp/server.js";
+import { PolicyEngine } from "../policy.js";
+import type { SompiPurchaseRuntime } from "../runtime/purchase-runtime.js";
 
 const NOW_MS = 2_000_000_000_000;
 const MERCHANT_ORIGIN = "https://merchant.example";
@@ -133,6 +139,8 @@ const STAGING_PRIVATE_KEY = "02".padStart(64, "0");
 const AUTHORITY_MAC_KEY_ID = "authority-e2e-ipc-key-1";
 const EXPECTED_PURCHASE_ID = createPurchaseId(new Uint8Array(16).fill(0x41));
 
+export const LOCAL_TESTNET_PROOF_PURCHASE_ID = EXPECTED_PURCHASE_ID;
+
 export const LOCAL_TESTNET_PROOF_PROFILE =
   "urn:sompi:e2e:deterministic-in-memory-testnet10:1" as const;
 
@@ -141,7 +149,12 @@ export interface LocalTestnetProofReport {
   readonly generatedAt: string;
   readonly chainMode: "deterministic-in-memory-testnet10";
   readonly liveNetworkConformanceClaimed: false;
-  readonly authorityMode: "real-unix-framed-service-in-process-fixture";
+  readonly authorityMode:
+    | "real-unix-framed-service-in-process-fixture"
+    | "separate-process-human-present";
+  readonly initiationMode:
+    | "direct-purchase-module"
+    | "mcp-sdk-in-memory-transport";
   readonly adapterTransport: "sompi-demo-local-ap2-presentation-endpoints";
   readonly protocolPins: typeof SUPPORTED_PROTOCOL_PROFILES;
   readonly purchase: {
@@ -180,6 +193,15 @@ export interface RunLocalTestnetProofOptions {
   readonly directory?: string;
   readonly keepDirectory?: boolean;
   readonly approve?: boolean;
+  readonly now?: () => number;
+  readonly externalAuthority?: Readonly<{
+    readonly module: Ap2AuthorityModule;
+    readonly trust: Ap2PublicKeyResolver;
+    readonly issuer: string;
+    readonly instrumentId: string;
+    readonly mode: "separate-process-human-present";
+  }>;
+  readonly initiationMode?: LocalTestnetProofReport["initiationMode"];
   readonly stagingVisibleOnSubmit?: boolean;
   readonly faultPoint?: JournalFaultPoint;
   readonly commerceAuthorizationDecorator?: (
@@ -202,7 +224,8 @@ export async function runLocalTestnetProof(
   secureDirectory(directory);
   const resources: Array<() => void | Promise<void>> = [];
   try {
-    const clock = () => NOW_MS;
+    const clock = options.now ?? (() => NOW_MS);
+    const startedAtMs = readProofClock(clock);
     const vaultFixture = createDeterministicVault(directory);
     resources.push(() => vaultFixture.script.free());
     const wallet = new KaspaWallet({
@@ -223,12 +246,30 @@ export async function runLocalTestnetProof(
     (wallet as unknown as { client(): Promise<object> }).client = async () =>
       chain.walletClient();
 
-    const authority = await createAuthorityFixture(
-      path.join(directory, "authority"),
-      clock,
-      options.approve ?? true
+    const initiationMode = options.initiationMode ?? "direct-purchase-module";
+    if (options.externalAuthority && options.approve !== undefined) {
+      throw new Error("external authority proof cannot configure fixture approval");
+    }
+    if (
+      initiationMode === "mcp-sdk-in-memory-transport" &&
+      (options.faultPoint !== undefined ||
+        options.stagingVisibleOnSubmit === false ||
+        options.commerceAuthorizationDecorator !== undefined)
+    ) {
+      throw new Error("MCP-ingress proof does not combine with deterministic restart injection");
+    }
+    const ownedAuthority = options.externalAuthority
+      ? undefined
+      : await createAuthorityFixture(
+          path.join(directory, "authority"),
+          clock,
+          options.approve ?? true
+        );
+    if (ownedAuthority) resources.push(() => ownedAuthority.close());
+    const authority = externalAuthorityContext(
+      options.externalAuthority,
+      ownedAuthority?.module
     );
-    resources.push(() => authority.close());
 
     const merchantStore = new SqliteExactServerStateStore(
       path.join(directory, "merchant", "exact.sqlite")
@@ -249,9 +290,9 @@ export async function runLocalTestnetProof(
       amountAtomic: PRICE_ATOMIC,
       additionalCostCeilingAtomic: ADDITIONAL_COST_CEILING_ATOMIC,
       checkoutTtlMs: 120_000,
-      authorityAudience: AUTHORITY_SIGNER.issuer,
-      expectedAuthorityIssuer: AUTHORITY_SIGNER.issuer,
-      expectedInstrumentId: FIXED_INSTRUMENT_ID,
+      authorityAudience: authority.issuer,
+      expectedAuthorityIssuer: authority.issuer,
+      expectedInstrumentId: authority.instrumentId,
       resource: {
         identity: "resource:sompi:e2e:1",
         url: RESOURCE_URL,
@@ -265,17 +306,18 @@ export async function runLocalTestnetProof(
       chainProvider: inertServerChainProvider(),
       voucherVerifier: { verifyVoucher: () => false } satisfies VoucherVerifier,
       exactTransactionVerifier: chain,
-      exactReservationProvider: exactReservationProvider(),
+      exactReservationProvider: exactReservationProvider(clock),
       serverPublicKey: `02${"11".repeat(32)}`,
       merchantCheckoutSigner: MERCHANT_SIGNER,
       merchantReceiptSigner: MERCHANT_RECEIPT_SIGNER,
       paymentReceiptSigner: PAYMENT_RECEIPT_SIGNER,
-      ap2Trust: fixedTrustStore(),
+      ap2Trust: authority.trust,
       now: clock,
     });
     const transport = new DemoPinnedTransport(merchant, EXPECTED_PURCHASE_ID);
 
     const journalFilename = path.join(directory, "purchase", "journal.sqlite");
+    const policy = new PolicyEngine(directory);
     let faultInjected = false;
     let journal = new PurchaseJournal(journalFilename, {
       now: clock,
@@ -300,6 +342,9 @@ export async function runLocalTestnetProof(
       merchantStore,
       transport,
       authorityModule: authority.module,
+      trust: authority.trust,
+      authorityIssuer: authority.issuer,
+      instrumentId: authority.instrumentId,
       clock,
       commerceAuthorizationDecorator: options.commerceAuthorizationDecorator,
     });
@@ -307,7 +352,15 @@ export async function runLocalTestnetProof(
     let first: PurchaseView | undefined;
     let thrown: unknown;
     try {
-      first = await coordinator.purchase(intent);
+      first = await invokePurchase({
+        mode: initiationMode,
+        coordinator,
+        intent,
+        journal,
+        wallet,
+        vault: vaultFixture.vault,
+        policy,
+      });
     } catch (error) {
       thrown = error;
     }
@@ -333,10 +386,21 @@ export async function runLocalTestnetProof(
         merchantStore,
         transport,
         authorityModule: authority.module,
+        trust: authority.trust,
+        authorityIssuer: authority.issuer,
+        instrumentId: authority.instrumentId,
         clock,
         commerceAuthorizationDecorator: options.commerceAuthorizationDecorator,
       });
-      first = await coordinator.purchase(intent);
+      first = await invokePurchase({
+        mode: initiationMode,
+        coordinator,
+        intent,
+        journal,
+        wallet,
+        vault: vaultFixture.vault,
+        policy,
+      });
       for (let pass = 0; first.state !== "receipted" && pass < 4; pass++) {
         first = await coordinator.recover(first.id);
       }
@@ -347,7 +411,15 @@ export async function runLocalTestnetProof(
     if (first.state !== "receipted") {
       throw new Error(`local proof did not reach receipted state (found ${first.state})`);
     }
-    const duplicate = await coordinator.purchase(intent);
+    const duplicate = await invokePurchase({
+      mode: initiationMode,
+      coordinator,
+      intent,
+      journal,
+      wallet,
+      vault: vaultFixture.vault,
+      policy,
+    });
     if (duplicate.id !== first.id || duplicate.state !== "receipted") {
       throw new Error("duplicate Purchase call did not return the completed idempotent Purchase");
     }
@@ -358,6 +430,9 @@ export async function runLocalTestnetProof(
       chain,
       transport,
       restartCount,
+      authority.mode,
+      initiationMode,
+      startedAtMs,
       options.faultPoint
     );
   } finally {
@@ -498,12 +573,15 @@ function composeCoordinator(input: {
   merchantStore: SqliteExactServerStateStore;
   transport: PinnedHttpTransport;
   authorityModule: Ap2AuthorityModule;
+  trust: Ap2PublicKeyResolver;
+  authorityIssuer: string;
+  instrumentId: string;
   clock: () => number;
   commerceAuthorizationDecorator?: (
     module: CommerceAuthorizationModule
   ) => CommerceAuthorizationModule;
 }): PurchaseCoordinator {
-  const trust = fixedTrustStore();
+  const trust = input.trust;
   const egress = new EgressPolicy({
     allowRules: [{ hostname: "merchant.example", ports: [443] }],
     resolver: async () => [{ address: "93.184.216.34", family: 4 }],
@@ -514,7 +592,7 @@ function composeCoordinator(input: {
     transport: input.transport,
     merchantCheckout: new Ap2MerchantCheckoutVerifier({
       trust,
-      authorityAudience: AUTHORITY_SIGNER.issuer,
+      authorityAudience: input.authorityIssuer,
     }),
     paymentRequirements: new KaspaX402PaymentRequirementsVerifier(),
     now: input.clock,
@@ -522,8 +600,8 @@ function composeCoordinator(input: {
   const commerceEvidence = new JournalAp2CommerceEvidenceSource({
     journal: input.journal,
     trust,
-    expectedAuthorityIssuer: FIXED_AUTHORITY_ISSUER,
-    expectedInstrumentId: FIXED_INSTRUMENT_ID,
+    expectedAuthorityIssuer: input.authorityIssuer,
+    expectedInstrumentId: input.instrumentId,
     now: input.clock,
   });
   const commerceBase = new Ap2HttpCommerceAuthorizationModule({
@@ -627,6 +705,111 @@ function composeCoordinator(input: {
   );
 }
 
+async function invokePurchase(input: {
+  mode: LocalTestnetProofReport["initiationMode"];
+  coordinator: PurchaseCoordinator;
+  intent: PurchaseIntent;
+  journal: PurchaseJournal;
+  wallet: KaspaWallet;
+  vault: VaultManager;
+  policy: PolicyEngine;
+}): Promise<PurchaseView> {
+  if (input.mode === "direct-purchase-module") {
+    return input.coordinator.purchase(input.intent);
+  }
+  if (input.mode !== "mcp-sdk-in-memory-transport") {
+    throw new Error("local proof initiation mode is unsupported");
+  }
+  const runtime: SompiPurchaseRuntime = Object.freeze({
+    purchase: input.coordinator,
+    journal: input.journal,
+    wallet: input.wallet,
+    vault: input.vault,
+    policy: input.policy,
+    async close() {
+      // The proof owns and closes these resources after the MCP session.
+    },
+  });
+  const server = createSompiMcpServer(runtime, "e2e-human-present-proof");
+  const client = new Client({ name: "sompi-e2e-agent", version: "1" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  try {
+    await client.connect(clientTransport);
+    const result = await client.callTool({
+      name: "purchase",
+      arguments: {
+        requestKey: input.intent.requestKey,
+        url: input.intent.resource.url,
+        method: input.intent.resource.method,
+        ...(input.intent.resource.body
+          ? { bodyBase64: Buffer.from(input.intent.resource.body).toString("base64") }
+          : {}),
+        ...(input.intent.resource.mediaType
+          ? { mediaType: input.intent.resource.mediaType }
+          : {}),
+        ...(input.intent.expectedMerchant?.id
+          ? { expectedMerchantId: input.intent.expectedMerchant.id }
+          : {}),
+        ...(input.intent.expectedMerchant?.origin
+          ? { expectedMerchantOrigin: input.intent.expectedMerchant.origin }
+          : {}),
+      },
+    });
+    const publicView = parseMcpPurchaseResult(result);
+    const authoritative = await input.coordinator.status(publicView.id as PurchaseId);
+    if (
+      authoritative.id !== publicView.id ||
+      authoritative.state !== publicView.state ||
+      authoritative.requestKey !== publicView.requestKey
+    ) {
+      throw new Error("MCP Purchase result does not match canonical Purchase state");
+    }
+    return authoritative;
+  } finally {
+    await client.close().catch(() => undefined);
+    await server.close().catch(() => undefined);
+  }
+}
+
+function parseMcpPurchaseResult(result: unknown): {
+  id: string;
+  requestKey: string;
+  state: string;
+} {
+  const candidate = result as {
+    isError?: unknown;
+    content?: readonly { type?: unknown; text?: unknown }[];
+  };
+  const first = candidate.content?.[0];
+  if (
+    candidate.isError === true ||
+    first?.type !== "text" ||
+    typeof first.text !== "string"
+  ) {
+    throw new Error("MCP Purchase invocation failed safely");
+  }
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(first.text);
+  } catch {
+    throw new Error("MCP Purchase result is malformed");
+  }
+  if (!decoded || typeof decoded !== "object" || Array.isArray(decoded)) {
+    throw new Error("MCP Purchase result is malformed");
+  }
+  const view = decoded as Record<string, unknown>;
+  if (
+    typeof view.id !== "string" ||
+    !/^pur_[A-Za-z0-9_-]{22}$/.test(view.id) ||
+    typeof view.requestKey !== "string" ||
+    typeof view.state !== "string"
+  ) {
+    throw new Error("MCP Purchase result is malformed");
+  }
+  return { id: view.id, requestKey: view.requestKey, state: view.state };
+}
+
 async function createAuthorityFixture(
   directory: string,
   now: () => number,
@@ -702,6 +885,39 @@ async function createAuthorityFixture(
   };
 }
 
+function externalAuthorityContext(
+  external: RunLocalTestnetProofOptions["externalAuthority"],
+  fixtureModule: Ap2AuthorityModule | undefined
+): Readonly<{
+  module: Ap2AuthorityModule;
+  trust: Ap2PublicKeyResolver;
+  issuer: string;
+  instrumentId: string;
+  mode: LocalTestnetProofReport["authorityMode"];
+}> {
+  if (!external) {
+    if (!fixtureModule) throw new Error("local authority fixture is unavailable");
+    return Object.freeze({
+      module: fixtureModule,
+      trust: fixedTrustStore(),
+      issuer: AUTHORITY_SIGNER.issuer,
+      instrumentId: FIXED_INSTRUMENT_ID,
+      mode: "real-unix-framed-service-in-process-fixture" as const,
+    });
+  }
+  if (
+    !(external.module instanceof Ap2AuthorityModule) ||
+    !external.trust ||
+    typeof external.trust.resolve !== "function" ||
+    external.mode !== "separate-process-human-present" ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(external.issuer) ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(external.instrumentId)
+  ) {
+    throw new Error("external authority proof configuration is invalid");
+  }
+  return external;
+}
+
 function createDeterministicVault(directory: string): {
   vault: VaultManager;
   config: VaultConfig;
@@ -758,7 +974,7 @@ function createDeterministicVault(directory: string): {
   }
 }
 
-function exactReservationProvider(): ExactBorrowReservationProvider {
+function exactReservationProvider(now: () => number = () => NOW_MS): ExactBorrowReservationProvider {
   const borrowRedeemScript = buildKip10AdditiveRedeemScript({
     ownerPublicKey: OWNER_PUBLIC_KEY,
     amount: ADDITIVE_THRESHOLD_ATOMIC,
@@ -780,7 +996,7 @@ function exactReservationProvider(): ExactBorrowReservationProvider {
       borrowRedeemScript,
       additiveThresholdSompi: ADDITIVE_THRESHOLD_ATOMIC,
       paymentOutputIndex: 1,
-      expiresAt: new Date(NOW_MS + 300_000).toISOString(),
+      expiresAt: new Date(readProofClock(now) + 300_000).toISOString(),
     }),
   };
 }
@@ -815,6 +1031,9 @@ function proofReport(
   chain: InMemoryKaspaTestnet10,
   transport: DemoPinnedTransport,
   restartCount: number,
+  authorityMode: LocalTestnetProofReport["authorityMode"],
+  initiationMode: LocalTestnetProofReport["initiationMode"],
+  generatedAtMs: number,
   injectedFaultPoint?: JournalFaultPoint
 ): LocalTestnetProofReport {
   if (first.state !== "receipted") {
@@ -853,10 +1072,11 @@ function proofReport(
   }
   const report: LocalTestnetProofReport = Object.freeze({
     profile: LOCAL_TESTNET_PROOF_PROFILE,
-    generatedAt: new Date(NOW_MS).toISOString(),
+    generatedAt: new Date(generatedAtMs).toISOString(),
     chainMode: "deterministic-in-memory-testnet10",
     liveNetworkConformanceClaimed: false,
-    authorityMode: "real-unix-framed-service-in-process-fixture",
+    authorityMode,
+    initiationMode,
     adapterTransport: "sompi-demo-local-ap2-presentation-endpoints",
     protocolPins: SUPPORTED_PROTOCOL_PROFILES,
     purchase: Object.freeze({
@@ -944,6 +1164,14 @@ function requiredQuery(url: URL, name: string): string {
 function secureDirectory(directory: string): void {
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   fs.chmodSync(directory, 0o700);
+}
+
+function readProofClock(now: () => number): number {
+  const value = now();
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error("local proof clock is unavailable");
+  }
+  return value;
 }
 
 function assertSecretFreeReport(value: unknown): void {
