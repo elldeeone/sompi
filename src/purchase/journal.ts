@@ -85,32 +85,40 @@ type PaymentAttemptState = (typeof PAYMENT_ATTEMPT_STATES)[number];
 export type EffectState = (typeof EFFECT_STATES)[number];
 type ReservationState = (typeof RESERVATION_STATES)[number];
 
-export type JournalFaultPoint =
-  | "purchase.after_insert"
-  | "purchase_transition.after_state_update"
-  | "evidence.after_metadata_insert"
-  | "policy.after_snapshot_insert"
-  | "reservation.after_insert"
-  | "payment_attempt.after_insert"
-  | "payment_preparation.after_insert"
-  | "treasury_staging_plan.after_insert"
-  | "treasury_staging_observation.after_insert"
-  | "treasury_staging_recovery_plan.after_insert"
-  | "treasury_staging_recovery_observation.after_insert"
-  | "treasury_staging_recovery_accounting.after_insert"
-  | "effect.after_insert"
-  | "effect_claim.after_effect_update"
-  | "spend.after_insert"
-  | "checkout_terms.after_insert"
-  | "authorization_request.after_insert"
-  | "authorization_decision.after_insert"
-  | "fulfilment.after_insert"
-  | "receipt.after_insert"
-  | "treasury_operation.after_intent_insert"
-  | "treasury_operation.after_prepared_update"
-  | "treasury_operation.after_submission_plan"
-  | "treasury_operation.after_observation_insert"
-  | "treasury_operation.after_complete_update";
+/**
+ * Complete executable manifest of transactional fault seams. Tests key their
+ * rollback/restart scenarios by this list so a newly introduced seam cannot
+ * silently escape fault-boundary coverage.
+ */
+export const JOURNAL_FAULT_POINTS = Object.freeze([
+  "purchase.after_insert",
+  "purchase_transition.after_state_update",
+  "evidence.after_metadata_insert",
+  "policy.after_snapshot_insert",
+  "reservation.after_insert",
+  "payment_attempt.after_insert",
+  "payment_preparation.after_insert",
+  "treasury_staging_plan.after_insert",
+  "treasury_staging_observation.after_insert",
+  "treasury_staging_recovery_plan.after_insert",
+  "treasury_staging_recovery_observation.after_insert",
+  "treasury_staging_recovery_accounting.after_insert",
+  "effect.after_insert",
+  "effect_claim.after_effect_update",
+  "spend.after_insert",
+  "checkout_terms.after_insert",
+  "authorization_request.after_insert",
+  "authorization_decision.after_insert",
+  "fulfilment.after_insert",
+  "receipt.after_insert",
+  "treasury_operation.after_intent_insert",
+  "treasury_operation.after_prepared_update",
+  "treasury_operation.after_submission_plan",
+  "treasury_operation.after_observation_insert",
+  "treasury_operation.after_complete_update",
+] as const);
+
+export type JournalFaultPoint = (typeof JOURNAL_FAULT_POINTS)[number];
 
 export interface PurchaseJournalOptions {
   now?: () => number;
