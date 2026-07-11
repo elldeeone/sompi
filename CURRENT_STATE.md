@@ -4,7 +4,7 @@ Last updated: **2026-07-11**
 
 ## Plain-English status
 
-**Phase 0 complete; Phase 1 characterization and threat modelling is next.**
+**Phases 0 and 1 complete; Phase 2 Purchase Journal implementation is next.**
 
 The target design and decisions are complete, local `main` has been normalized
 to the latest verified history, and the implementation branch has been created.
@@ -16,8 +16,7 @@ pre-cutover JSON state; those remain only until the Phase 4 clean cutover.
 - Repository: `https://github.com/elldeeone/sompi`
 - Normalized local `main`: `1bbfa0c` (`Document AP2 and Kaspa-x402 architecture`)
 - Active implementation branch: `ap2-kaspa-purchase-core`
-- Active commit: `1bbfa0c`
-- Relationship to local `main`: `0 behind / 0 ahead`
+- Latest verified implementation milestone: `7ffa290` (`Freeze purchase interfaces and protocol profiles`)
 - Baseline verification: `npm run build` passed
 - Baseline verification: `SOMPI_SMOKE_OFFLINE=1 npm run smoke` passed
 - Remote state: unchanged; local `main` is ahead of `origin/main`
@@ -49,7 +48,7 @@ Do not assume these facts remain current. Re-run Git orientation before Phase
 - AP2 v0.2 human-present + Kaspa-x402 exact + testnet first.
 - Complete deletion of Sompi x402 v1 at cutover; no compatibility layer.
 
-## Completed milestone
+## Completed milestones
 
 Phase 0 is complete:
 
@@ -58,23 +57,39 @@ Phase 0 is complete:
 3. the build and complete offline smoke suite passed on normalized `main`;
 4. `ap2-kaspa-purchase-core` was created from that exact commit.
 
+Phase 1 is complete:
+
+1. current wallet, vault, policy, MCP UX, and old x402 behaviour was classified
+   as retained intent or temporary cutover evidence;
+2. irreversible effects and recovery requirements were mapped in the threat
+   model;
+3. the stable Purchase interface, canonical identifiers, request fingerprint,
+   and evidence digest were implemented and tested;
+4. AP2 v0.2, Kaspa-x402 alpha.6, SD-JWT/JWS, schema, and SQLite implementations
+   were pinned in one supported-profile declaration;
+5. the native-KAS AP2 semantic gap was isolated and recorded in ADR-0010;
+6. fixed wallet/address/signing and Purchase identity vectors pass alongside
+   all existing offline smoke checks.
+
 No remote push, package publish, deployment, or sibling-repository change was
 performed.
 
 ## Next action
 
-Execute **Phase 1: Characterize, model threats, and freeze interfaces** from
-[`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md), then commit the
-verified characterization/threat-model milestone before building the journal.
+Execute **Phase 2: Build the Purchase Journal and recovery foundation** from
+[`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md). Install the exact
+pinned SQLite packages, implement schema and transactional transitions, then
+prove crash, idempotency, reservation, outbox, and restart behaviour before any
+replacement payment path is enabled.
 
 ## Known external uncertainties
 
-These are contained by the design and do not block Phase 0:
+These are contained by the design and do not block Phase 2:
 
 - AP2 and x402 remain evolving standards.
 - The official AP2-compatible x402 integration may change or arrive later.
-- Exact AP2 dependency/profile provenance must be selected and pinned in Phase
-  1 against then-current official sources.
+- AP2 v0.2 has no standardized native-KAS amount mapping; ADR-0010 makes the
+  first profile explicitly experimental and testnet-only.
 - Kaspa-x402's eventual upstream package shape may change independently.
 - Passkey deployment/recovery and autonomous authorization are intentionally
   deferred.
@@ -83,4 +98,6 @@ These are contained by the design and do not block Phase 0:
 
 ## Current blockers
 
-None for beginning the end-to-end build.
+None for Phase 2. Kaspa-x402 alpha.6 expects its `FundingProvider` to assemble
+the exact transaction from public reservation terms; Sompi will implement and
+vector-test that wallet adapter in Phase 4 without changing the sibling repo.

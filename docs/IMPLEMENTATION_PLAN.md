@@ -40,21 +40,21 @@ Gate:
 Purpose: retain proven product behaviour without retaining obsolete protocol
 architecture.
 
-- [ ] Characterize MCP tool inputs, structured results, human summaries, and
+- [x] Characterize MCP tool inputs, structured results, human summaries, and
   recovery guidance that must survive the refactor.
-- [ ] Add golden vectors for wallet derivation/signing and consensus-vault
+- [x] Add golden vectors for wallet derivation/signing and consensus-vault
   creation, spend cap, continuation, and owner recovery.
-- [ ] Characterize current policy behaviour and identify every authorize,
+- [x] Characterize current policy behaviour and identify every authorize,
   reserve, record, and release point.
-- [ ] Map existing irreversible effects and crash windows in wallet, vault,
+- [x] Map existing irreversible effects and crash windows in wallet, vault,
   x402 client/server, and Merchant demo paths.
-- [ ] Write the implementation threat model covering Agent/MCP, authority IPC,
+- [x] Write the implementation threat model covering Agent/MCP, authority IPC,
   Merchant evidence, egress/SSRF, SQLite, secrets, Kaspa RPC, replay, and
   ambiguous network outcomes.
-- [ ] Define the narrow Purchase module interface and canonical identifiers in
+- [x] Define the narrow Purchase module interface and canonical identifiers in
   Sompi terms.
-- [ ] Define one central supported-protocol-profile declaration.
-- [ ] Select and pin an exact AP2 v0.2 upstream commit/schema profile and exact
+- [x] Define one central supported-protocol-profile declaration.
+- [x] Select and pin an exact AP2 v0.2 upstream commit/schema profile and exact
   Kaspa-x402 version/commit for the first implementation; record provenance.
 
 Gate:
