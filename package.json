@@ -34,11 +34,13 @@
     "vendor/kaspa-wasm"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
     "build": "npm run clean && tsc",
+    "test": "npm run build && npm run test:unit && SOMPI_SMOKE_OFFLINE=1 npm run smoke",
+    "test:unit": "node scripts/run-unit-tests.js",
     "start": "node dist/index.js",
     "smoke": "node dist/smoke.js",
     "fixtures:vault": "node scripts/compile-vault-fixtures.js",
@@ -56,10 +58,12 @@
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@noble/curves": "^1.9.7",
     "@noble/hashes": "^1.8.0",
+    "better-sqlite3": "12.11.1",
     "websocket": "^1.0.35",
     "zod": "^3.23.0"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "7.6.13",
     "@types/node": "^22.0.0",
     "@types/websocket": "^1.0.10",
     "typescript": "^5.6.0"

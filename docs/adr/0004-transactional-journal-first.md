@@ -31,6 +31,10 @@ Merchant before retrying.
 
 The journal does not store authority or wallet private keys in plaintext.
 
+The implemented durability, fencing, effect-state, evidence, and accounting
+contract is recorded in
+[`docs/architecture/PURCHASE_JOURNAL.md`](../architecture/PURCHASE_JOURNAL.md).
+
 ## Consequences
 
 - Recovery becomes part of payment correctness, not later operational polish.
