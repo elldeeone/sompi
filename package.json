@@ -16,10 +16,14 @@
     "model-context-protocol"
   ],
   "type": "module",
-  "main": "dist/index.js",
+  "exports": {
+    "./package.json": "./package.json"
+  },
   "bin": {
+    "sompi-authority": "dist/authority-main.js",
     "sompi-mcp": "dist/index.js",
-    "sompi-authority": "dist/authority-main.js"
+    "sompi-vault-recover": "scripts/vault-recover.js",
+    "sompi-verify-authority-isolation": "scripts/verify-authority-isolation.js"
   },
   "files": [
     "CONTEXT.md",
@@ -28,15 +32,18 @@
     "contracts",
     "dist",
     "!dist/**/*.test.js",
+    "!dist/e2e/live-testnet-*.js",
     "docs",
     "policy.example.json",
-    "scripts/compile-vault-fixtures.js",
     "scripts/package.json",
+    "scripts/prepare-package.mjs",
+    "scripts/require-source-tree.mjs",
     "scripts/run-local-e2e.mjs",
     "scripts/run-protocol-conformance.mjs",
     "scripts/vault-fixtures.json",
     "scripts/vault-recover.js",
     "scripts/verify-authority-isolation.js",
+    "scripts/verify-packed-artifact.mjs",
     "test/conformance",
     "vendor/ap2-v0.2-schemas",
     "vendor/kaspa-x402-alpha.6-conformance",
@@ -46,19 +53,20 @@
     "node": ">=22"
   },
   "scripts": {
-    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
-    "build": "npm run clean && tsc",
+    "clean": "node scripts/require-source-tree.mjs clean && node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "node scripts/require-source-tree.mjs build && npm run clean && tsc",
     "test": "npm run build && npm run test:unit && SOMPI_SMOKE_OFFLINE=1 npm run smoke",
-    "test:unit": "node scripts/run-unit-tests.js",
+    "test:unit": "node scripts/require-source-tree.mjs test:unit && node scripts/run-unit-tests.js",
     "test:conformance": "node scripts/run-protocol-conformance.mjs",
     "start": "node dist/index.js",
     "authority:init": "node dist/authority-main.js init",
     "authority:start": "node dist/authority-main.js",
     "smoke": "node dist/smoke.js",
-    "fixtures:vault": "node scripts/compile-vault-fixtures.js",
-    "fixtures:vault:check": "node scripts/compile-vault-fixtures.js --check",
+    "fixtures:vault": "node scripts/require-source-tree.mjs fixtures:vault && node scripts/compile-vault-fixtures.js",
+    "fixtures:vault:check": "node scripts/require-source-tree.mjs fixtures:vault:check && node scripts/compile-vault-fixtures.js --check",
     "proof:e2e-local": "node scripts/run-local-e2e.mjs",
-    "prepublishOnly": "npm run build"
+    "package:verify": "node scripts/verify-packed-artifact.mjs",
+    "prepack": "npm run build && node scripts/prepare-package.mjs"
   },
   "dependencies": {
     "@kaspa-x402/client": "0.1.0-alpha.6",

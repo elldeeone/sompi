@@ -4,13 +4,37 @@ import {
   initializeAuthorityRuntime,
   startAuthorityRuntime,
 } from "./authority/runtime.js";
+import {
+  AUTHORITY_USAGE,
+  CliArgumentError,
+  parseAuthorityArguments,
+  type AuthorityCliCommand,
+} from "./cli/arguments.js";
 
-void main().catch(() => {
-  process.stderr.write("sompi-authority failed to initialize or serve; inspect the operator runbook and secure configuration\n");
-  process.exitCode = 1;
-});
+const command = parseCommandOrExit();
+if (command.kind === "help") {
+  process.stdout.write(`${AUTHORITY_USAGE}\n`);
+} else {
+  void main(command).catch(() => {
+    process.stderr.write("sompi-authority failed to initialize or serve; inspect the operator runbook and secure configuration\n");
+    process.exitCode = 1;
+  });
+}
 
-async function main(): Promise<void> {
+function parseCommandOrExit(): AuthorityCliCommand {
+  try {
+    return parseAuthorityArguments(process.argv.slice(2));
+  } catch (error) {
+    const message =
+      error instanceof CliArgumentError
+        ? error.message
+        : "sompi-authority arguments could not be parsed";
+    process.stderr.write(`fatal: ${message}\n${AUTHORITY_USAGE}\n`);
+    process.exit(2);
+  }
+}
+
+async function main(command: Exclude<AuthorityCliCommand, { kind: "help" }>): Promise<void> {
   const paths = authorityRuntimePaths({
     ...(process.env.SOMPI_AUTHORITY_ROOT_DIR
       ? { rootDirectory: process.env.SOMPI_AUTHORITY_ROOT_DIR }
@@ -34,7 +58,7 @@ async function main(): Promise<void> {
     keyId: process.env.SOMPI_AUTHORITY_IPC_KEY_ID ?? "authority-ipc-key-1",
     instrumentId: process.env.SOMPI_AUTHORITY_INSTRUMENT_ID ?? "kaspa:testnet-10:vault-treasury",
   };
-  if (process.argv[2] === "init") {
+  if (command.kind === "init") {
     const trust = await initializeAuthorityRuntime(paths, identity);
     process.stdout.write(`${JSON.stringify({
       status: "initialized",

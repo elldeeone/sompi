@@ -5,6 +5,11 @@ import { fileURLToPath } from "node:url";
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
+import {
+  CliArgumentError,
+  MCP_USAGE,
+  parseMcpArguments,
+} from "./cli/arguments.js";
 import { SompiRuntimeConfigError, purchaseRuntimeConfigFromEnv } from "./runtime/config.js";
 import {
   createSompiPurchaseRuntime,
@@ -22,13 +27,33 @@ import { generateWalletKey } from "./wallet.js";
 
 const TESTNET = "testnet-10" as const;
 
-const command = process.argv[2];
-if (command === "gen-wallet-key") {
-  generateWalletKeyCommand(process.argv[3]);
-} else if (command === "gen-owner-key") {
-  generateOwnerKeyCommand();
-} else {
-  void main();
+const command = parseCommandOrExit();
+switch (command.kind) {
+  case "help":
+    process.stdout.write(`${MCP_USAGE}\n`);
+    break;
+  case "generate-wallet-key":
+    generateWalletKeyCommand(command.network);
+    break;
+  case "generate-owner-key":
+    generateOwnerKeyCommand();
+    break;
+  case "start":
+    void main();
+    break;
+}
+
+function parseCommandOrExit(): ReturnType<typeof parseMcpArguments> {
+  try {
+    return parseMcpArguments(process.argv.slice(2), process.env.SOMPI_NETWORK);
+  } catch (error) {
+    if (error instanceof CliArgumentError) {
+      process.stderr.write(`fatal: ${error.message}\n${MCP_USAGE}\n`);
+      process.exit(2);
+    }
+    process.stderr.write(`fatal: sompi-mcp arguments could not be parsed\n${MCP_USAGE}\n`);
+    process.exit(2);
+  }
 }
 
 function generateWalletKeyCommand(network = process.env.SOMPI_NETWORK ?? TESTNET): never {
