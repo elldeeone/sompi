@@ -125,7 +125,7 @@ async function verifyPython(
     expectedAudience: FIXED_AUDIENCE,
     expectedPurchaseId: FIXED_PURCHASE_ID as never,
     expectedResourceFingerprint: claims.resource.request_fingerprint as never,
-    expectedPaymentRequirementsDigest: claims.x402.payment_requirements_digest as never,
+    expectedPaymentRequirementsDigest: claims.payment_requirements.digest as never,
     nowSec: FIXED_NOW + 11,
     clockSkewSec: 0,
   });

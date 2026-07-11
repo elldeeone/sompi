@@ -4,11 +4,8 @@ import { issueMerchantCheckout, verifyMerchantCheckout } from "./merchant-checko
 import { LocalAp2TrustStore } from "./crypto.js";
 import {
   KASPA_TESTNET_NETWORK,
-  KASPA_X402_SCHEME,
-  KASPA_X402_VERSION,
   KAS_ASSET,
   SOMPI_MERCHANT_CHECKOUT_PROFILE,
-  SOMPI_X402_BINDING,
   type Ap2PublicTrustEntry,
   type Ap2SigningIdentity,
   type Ap2SigningRole,
@@ -113,11 +110,8 @@ export function fixedMerchantClaims(): MerchantCheckoutClaims {
       network: KASPA_TESTNET_NETWORK,
       pay_to: "kaspatest:qpumuen7l8wthtz45p3ftn58pvrs9xlumvkuu2xet8egzkcklqtes5z8rkmpd",
     },
-    x402: {
-      version: KASPA_X402_VERSION,
-      scheme: KASPA_X402_SCHEME,
-      binding: SOMPI_X402_BINDING,
-      payment_requirements_digest: evidenceDigest("fixed-payment-requirements"),
+    payment_requirements: {
+      digest: evidenceDigest("fixed-payment-requirements"),
     },
     treasury: {
       mode: "separately-reserved",
@@ -139,7 +133,7 @@ export async function fixedVerifiedCheckout(): Promise<VerifiedMerchantCheckout>
     expectedAudience: FIXED_AUDIENCE,
     expectedPurchaseId: FIXED_PURCHASE_ID as never,
     expectedResourceFingerprint: claims.resource.request_fingerprint as never,
-    expectedPaymentRequirementsDigest: claims.x402.payment_requirements_digest as never,
+    expectedPaymentRequirementsDigest: claims.payment_requirements.digest as never,
     nowSec: FIXED_NOW + 1,
   });
 }

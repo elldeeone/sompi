@@ -8,8 +8,10 @@ import {
   Transaction,
   addressFromScriptPublicKey,
   payToAddressScript,
+  payToScriptHashScript,
 } from "./kaspa-wasm.js";
 import { VaultManager, generateOwnerKey } from "./vault.js";
+import { buildRedeemScript } from "./vault/template.js";
 import { KaspaWallet } from "./wallet.js";
 
 test("initial fragmented deposit and singleton top-up use prepare/submit/observe/commit edges", async () => {
@@ -19,6 +21,7 @@ test("initial fragmented deposit and singleton top-up use prepare/submit/observe
   const vault = new VaultManager(directory, "testnet-10");
   vault.create(500_000_000n, generateOwnerKey().publicKey, 300n);
   const walletScript = payToAddressScript(wallet.address);
+  let exhaustedVaultScript: ReturnType<typeof payToScriptHashScript> | undefined;
   const simulator = new UtxoSimulator(wallet.networkId);
   simulator.add(wallet.address, {
     outpoint: { transactionId: "11".repeat(32), index: 0 },
@@ -75,13 +78,29 @@ test("initial fragmented deposit and singleton top-up use prepare/submit/observe
 
     // Simulate an exhausted window which ages through a reset while topping up.
     const configPath = path.join(directory, "vault", "config.json");
+    const current = vault.config();
+    const exhausted = {
+      ...current,
+      windowStartDaa: "0",
+      spentInWindowSompi: current.maxOutflowSompi,
+    };
+    exhausted.address = vaultAddressFor(exhausted, wallet.networkId);
+    exhaustedVaultScript = payToScriptHashScript(
+      buildRedeemScript(
+        exhausted.agentPublic,
+        exhausted.ownerPublic,
+        BigInt(exhausted.maxOutflowSompi),
+        BigInt(exhausted.windowSizeDaa),
+        {
+          windowStartDaa: BigInt(exhausted.windowStartDaa),
+          spentInWindowSompi: BigInt(exhausted.spentInWindowSompi),
+        }
+      )
+    );
+    simulator.rebind(funded.address, exhausted.address, exhaustedVaultScript);
     fs.writeFileSync(
       configPath,
-      JSON.stringify({
-        ...vault.config(),
-        windowStartDaa: "0",
-        spentInWindowSompi: vault.config().maxOutflowSompi,
-      }, null, 2),
+      JSON.stringify(exhausted, null, 2),
       { mode: 0o600 }
     );
     simulator.virtualDaaScore = 1_000n;
@@ -107,6 +126,7 @@ test("initial fragmented deposit and singleton top-up use prepare/submit/observe
     );
   } finally {
     simulator.close();
+    exhaustedVaultScript?.free();
     walletScript.free();
     fs.rmSync(directory, { recursive: true, force: true });
   }
@@ -156,6 +176,31 @@ interface SimulatedEntry {
   covenantId?: string;
 }
 
+function vaultAddressFor(
+  config: ReturnType<VaultManager["config"]>,
+  networkId: string
+): string {
+  const redeem = buildRedeemScript(
+    config.agentPublic,
+    config.ownerPublic,
+    BigInt(config.maxOutflowSompi),
+    BigInt(config.windowSizeDaa),
+    {
+      windowStartDaa: BigInt(config.windowStartDaa),
+      spentInWindowSompi: BigInt(config.spentInWindowSompi),
+    }
+  );
+  const script = payToScriptHashScript(redeem);
+  const address = addressFromScriptPublicKey(script, networkId);
+  try {
+    if (!address) throw new Error("test vault address cannot be derived");
+    return address.toString();
+  } finally {
+    address?.free();
+    script.free();
+  }
+}
+
 class UtxoSimulator {
   virtualDaaScore = 100n;
   private readonly entries = new Map<string, SimulatedEntry[]>();
@@ -165,6 +210,13 @@ class UtxoSimulator {
 
   add(address: string, entry: SimulatedEntry): void {
     this.entries.set(address, [...(this.entries.get(address) ?? []), entry]);
+  }
+
+  rebind(from: string, to: string, scriptPublicKey: unknown): void {
+    const current = this.entries.get(from) ?? [];
+    if (current.length !== 1) throw new Error("test vault UTXO is unavailable for state rebinding");
+    this.entries.set(from, []);
+    this.entries.set(to, [{ ...current[0], scriptPublicKey }]);
   }
 
   rpc() {

@@ -1,5 +1,4 @@
-import { stableStringify } from "@kaspa-x402/core";
-
+import { canonicalEvidenceJson } from "../../purchase/canonical-json.js";
 import { evidenceDigest } from "../../purchase/identity.js";
 import type {
   FulfilmentResult,
@@ -8,9 +7,9 @@ import type {
 } from "../../purchase/coordinator.js";
 import type { PurchaseId, Sha256Digest } from "../../purchase/types.js";
 import type {
-  PaidResponseVerifier,
-  PaidResponseVerifierInput,
-} from "../kaspa-x402/exact-payment-module.js";
+  PaidResourceResponse,
+  PaidResourceResponseVerifier,
+} from "../../purchase/paid-resource-response.js";
 import {
   verifyCheckoutReceipt,
   verifyPaymentReceipt,
@@ -82,7 +81,7 @@ export class Ap2PaidResponseVerificationError extends Error {
 }
 
 /** Production AP2 verifier for a bounded successful Kaspa-x402 HTTP response. */
-export class Ap2PaidResponseVerifier implements PaidResponseVerifier {
+export class Ap2PaidResponseVerifier implements PaidResourceResponseVerifier {
   private readonly evidenceSource: Ap2CommerceEvidenceSource;
   private readonly trust: Ap2PublicKeyResolver;
   private readonly expectedMerchantReceiptIssuer: string;
@@ -110,7 +109,7 @@ export class Ap2PaidResponseVerifier implements PaidResponseVerifier {
   }
 
   async verify(
-    input: Readonly<PaidResponseVerifierInput>
+    input: Readonly<PaidResourceResponse>
   ): Promise<Extract<FulfilmentResult, { status: "fulfilled" }> | undefined> {
     if (!input || !Number.isSafeInteger(input.status)) {
       throw new Ap2PaidResponseVerificationError(
@@ -127,7 +126,7 @@ export class Ap2PaidResponseVerifier implements PaidResponseVerifier {
     const context = clonePlain(input.context, "paid response Purchase context");
     const settlement = clonePlain(input.settlement, "paid response Settlement");
     const mediaType = canonicalMediaType(input.mediaType ?? "application/octet-stream");
-    const purchaseId = requirePurchaseId(context.execution.purchaseId);
+    const purchaseId = requirePurchaseId(context.purchaseId);
 
     let loaded: VerifiedAp2CommerceEvidence | undefined;
     try {
@@ -180,7 +179,7 @@ export class Ap2PaidResponseVerifier implements PaidResponseVerifier {
     );
     const nowSec = Math.floor(readClock(this.now) / 1000);
     const paymentIdentifier = requirePaymentIdentifier(
-      context.execution.paymentIdentifier
+      context.paymentIdentifier
     );
     let checkoutReceipt: VerifiedAp2Receipt;
     let paymentReceipt: VerifiedAp2Receipt;
@@ -224,7 +223,7 @@ export class Ap2PaidResponseVerifier implements PaidResponseVerifier {
       "Settlement evidence"
     );
     assertSettlementJoins(settlement, context, transactionId);
-    const checkoutDigest = requireDigest(context.execution.terms.checkoutDigest);
+    const checkoutDigest = requireDigest(context.terms.checkoutDigest);
     const authorizationEvidenceDigest = requireDigest(
       evidence.authorizationEvidenceDigest
     );
@@ -283,16 +282,16 @@ export class Ap2PaidResponseVerifier implements PaidResponseVerifier {
 
 function assertCommerceEvidenceJoins(
   evidence: VerifiedAp2CommerceEvidence,
-  context: PaidResponseVerifierInput["context"]
+  context: PaidResourceResponse["context"]
 ): void {
   const { checkout, mandates } = evidence;
-  const terms = context.execution.terms;
-  const authorization = context.execution.authorization;
-  const authorizationRequest = context.execution.authorizationRequest;
+  const terms = context.terms;
+  const authorization = context.authorization;
+  const authorizationRequest = context.authorizationRequest;
   if (
     checkout.profile !== SOMPI_MERCHANT_CHECKOUT_PROFILE ||
     evidenceDigest(checkout.artifact) !== checkout.checkoutDigest ||
-    checkout.purchaseId !== context.execution.purchaseId ||
+    checkout.purchaseId !== context.purchaseId ||
     checkout.checkoutDigest !== terms.checkoutDigest ||
     checkout.terms.checkoutDigest !== terms.checkoutDigest ||
     checkout.terms.expiresAt !== terms.expiresAt ||
@@ -310,10 +309,10 @@ function assertCommerceEvidenceJoins(
     checkout.paymentRequirementsDigest !== evidenceDigest(context.paymentRequirements) ||
     checkout.additionalCostCeilingAtomic !== authorizationRequest.additionalCostCeilingAtomic ||
     authorization.decision !== "approved" ||
-    authorization.purchaseId !== context.execution.purchaseId ||
+    authorization.purchaseId !== context.purchaseId ||
     authorization.checkoutDigest !== terms.checkoutDigest ||
     authorization.evidenceDigest !== evidence.authorizationEvidenceDigest ||
-    authorizationRequest.purchaseId !== context.execution.purchaseId ||
+    authorizationRequest.purchaseId !== context.purchaseId ||
     authorizationRequest.resourceUrl !== context.request.url ||
     authorizationRequest.method !== context.request.method ||
     authorizationRequest.terms.checkoutDigest !== terms.checkoutDigest ||
@@ -385,13 +384,13 @@ function assertReceiptJoins(
 }
 
 function assertSettlementJoins(
-  settlement: PaidResponseVerifierInput["settlement"],
-  context: PaidResponseVerifierInput["context"],
+  settlement: PaidResourceResponse["settlement"],
+  context: PaidResourceResponse["context"],
   transactionId: string
 ): void {
-  const terms = context.execution.terms;
+  const terms = context.terms;
   if (
-    transactionId !== context.preparation.transactionId ||
+    transactionId !== context.preparedTransactionId ||
     settlement.amountAtomic !== terms.amountAtomic ||
     settlement.asset !== terms.asset ||
     settlement.network !== terms.network ||
@@ -454,7 +453,7 @@ function verifiedArtifact(input: {
       // artifact profile. The verifier implementation is identified by
       // verifierId; it is not a replacement wire/evidence profile.
       profile: input.profile,
-      detailDigest: evidenceDigest(stableStringify(input.detail)),
+      detailDigest: evidenceDigest(canonicalEvidenceJson(input.detail)),
     }),
   });
 }

@@ -30,11 +30,8 @@ import type {
 
 import {
   KASPA_TESTNET_NETWORK,
-  KASPA_X402_SCHEME,
-  KASPA_X402_VERSION,
   KAS_ASSET,
   SOMPI_MERCHANT_CHECKOUT_PROFILE,
-  SOMPI_X402_BINDING,
   issueCheckoutReceipt,
   issueMerchantCheckout,
   issuePaymentReceipt,
@@ -68,6 +65,7 @@ import {
   requestFingerprint,
 } from "../purchase/identity.js";
 import type { PurchaseId, Sha256Digest } from "../purchase/types.js";
+import { SUPPORTED_PROTOCOL_PROFILES } from "../protocols/profiles.js";
 import type {
   DemoCheckoutAuthorizationRecord,
   DemoCommerceAuthorizationStore,
@@ -85,6 +83,8 @@ const PAYMENT_IDENTIFIER_PATTERN = /^pay_[A-Za-z0-9_-]{43}$/;
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
 const UINT64_MAX = 0xffff_ffff_ffff_ffffn;
 const MAX_HEADER_BYTES = 256 * 1024;
+const X402_VERSION = SUPPORTED_PROTOCOL_PROFILES.x402.version;
+const X402_SCHEME = SUPPORTED_PROTOCOL_PROFILES.x402.scheme;
 
 export interface DemoResource {
   readonly identity: string;
@@ -299,11 +299,8 @@ export class DemoMerchantFixture {
         network: DEMO_NETWORK,
         pay_to: this.config.payTo,
       },
-      x402: {
-        version: KASPA_X402_VERSION,
-        scheme: KASPA_X402_SCHEME,
-        binding: SOMPI_X402_BINDING,
-        payment_requirements_digest: paymentRequirementsDigest,
+      payment_requirements: {
+        digest: paymentRequirementsDigest,
       },
       treasury: {
         mode: "separately-reserved",
@@ -779,10 +776,10 @@ function assertExactPaymentRequired(
 ): asserts required is PaymentRequired & { accepts: [ExactPaymentRequirements] } {
   const accepted = required.accepts[0];
   if (
-    required.x402Version !== KASPA_X402_VERSION ||
+    required.x402Version !== X402_VERSION ||
     required.accepts.length !== 1 ||
     !accepted ||
-    accepted.scheme !== KASPA_X402_SCHEME ||
+    accepted.scheme !== X402_SCHEME ||
     accepted.network !== DEMO_NETWORK ||
     accepted.asset !== KAS_ASSET ||
     accepted.amount !== config.amountAtomic ||

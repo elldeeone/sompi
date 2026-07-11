@@ -53,6 +53,7 @@ import type { EffectObservation } from "../../purchase/journal.js";
 import type { PurchaseId, Sha256Digest } from "../../purchase/types.js";
 import type { SupportedProtocolProfiles } from "../../protocols/profiles.js";
 import type { PinnedHttpTransport } from "../../http/pinned-transport.js";
+import type { PaidResourceResponseVerifier } from "../../purchase/paid-resource-response.js";
 
 const CLIENT_VERSION: SupportedProtocolProfiles["x402"]["packages"]["client"]["version"] =
   "0.1.0-alpha.6";
@@ -142,21 +143,6 @@ export interface KaspaExactRecoveryObserver {
   }): Promise<KaspaExactRecoveryProbe>;
 }
 
-export interface PaidResponseVerifierInput {
-  context: Readonly<KaspaPreparedExecutionContext>;
-  status: number;
-  headers: readonly (readonly [string, string])[];
-  body: Uint8Array;
-  mediaType?: string;
-  settlement: Readonly<SettlementResult>;
-}
-
-export interface PaidResponseVerifier {
-  verify(
-    input: Readonly<PaidResponseVerifierInput>
-  ): Promise<Extract<FulfilmentResult, { status: "fulfilled" }> | undefined>;
-}
-
 export interface KaspaX402ExactPaymentModuleOptions {
   staging: DurableTreasuryStagingSeam;
   funding: ExactAttemptFundingBridge;
@@ -166,7 +152,7 @@ export interface KaspaX402ExactPaymentModuleOptions {
   transport: PinnedHttpTransport;
   settlementVerifier: ExactSettlementVerifier;
   recoveryObserver: KaspaExactRecoveryObserver;
-  paidResponseVerifier?: PaidResponseVerifier;
+  paidResponseVerifier?: PaidResourceResponseVerifier;
   now?: () => number;
 }
 
@@ -227,7 +213,7 @@ export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
   private readonly transport: PinnedHttpTransport;
   private readonly settlementVerifier: ExactSettlementVerifier;
   private readonly recoveryObserver: KaspaExactRecoveryObserver;
-  private readonly paidResponseVerifier?: PaidResponseVerifier;
+  private readonly paidResponseVerifier?: PaidResourceResponseVerifier;
   private readonly now: () => number;
   private readonly usedProviders = new WeakSet<object>();
 
@@ -936,7 +922,20 @@ export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
     if (!this.paidResponseVerifier || response.status < 200 || response.status > 299) return undefined;
     const mediaType = requireSingleHeader(response.headers, "content-type") ?? undefined;
     const fulfilled = await this.paidResponseVerifier.verify({
-      context: cloneForAdapter(context),
+      context: Object.freeze({
+        purchaseId: context.execution.purchaseId,
+        terms: cloneForAdapter(context.execution.terms),
+        authorizationRequest: cloneForAdapter(context.execution.authorizationRequest),
+        authorization: cloneForAdapter(context.execution.authorization),
+        paymentIdentifier: context.execution.paymentIdentifier,
+        request: Object.freeze({
+          url: context.request.url,
+          method: context.request.method,
+          requestFingerprint: context.request.requestFingerprint,
+        }),
+        paymentRequirements: Uint8Array.from(context.paymentRequirements),
+        preparedTransactionId: context.preparation.transactionId,
+      }),
       status: response.status,
       headers: response.headers,
       body: Uint8Array.from(response.body),

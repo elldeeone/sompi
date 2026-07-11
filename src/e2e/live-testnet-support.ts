@@ -1063,7 +1063,7 @@ function loadOrCreateHex(filename: string, byteLength: number): string {
   return value;
 }
 
-function loadOrCreateOwnerKey(filename: string): { readonly privateKey: string; readonly publicKey: string } {
+function loadOrCreateOwnerKey(filename: string): { readonly publicKey: string } {
   if (!fs.existsSync(filename)) {
     const generated = generateOwnerKey();
     writePrivateText(filename, generated.privateKey);
@@ -1074,7 +1074,6 @@ function loadOrCreateOwnerKey(filename: string): { readonly privateKey: string; 
   const keypair = Keypair.fromPrivateKey(privateKey);
   try {
     return Object.freeze({
-      privateKey: privateKeyHex,
       publicKey: String(keypair.xOnlyPublicKey).toLowerCase(),
     });
   } finally {
@@ -1262,7 +1261,9 @@ export function installAuthorityMacKeyPair(
     assertPrivateFile(serverFilename);
     assertPrivateFile(clientFilename);
   } finally {
-    if (!server && !client) key.fill(0);
+    key.fill(0);
+    if (server && server !== key) server.fill(0);
+    if (client && client !== key) client.fill(0);
   }
 }
 

@@ -44,7 +44,7 @@ Purchase authorized.
 
 AP2 intentionally leaves Checkout content to the commerce protocol. Because
 UCP is deferred, the demo Merchant uses the local profile
-`urn:sompi:checkout:single-resource:1` with:
+`urn:sompi:checkout:single-resource:2` with:
 
 - `iss`, `aud`, `kid`, `jti`, `iat`, and `exp`;
 - random 256-bit checkout nonce;
@@ -53,7 +53,7 @@ UCP is deferred, the demo Merchant uses the local profile
 - resource URL, method, and request fingerprint;
 - exact atomic amount as a decimal string;
 - asset `KAS`, network `kaspa:testnet-10`, and exact `payTo`;
-- x402 version, scheme, binding, and Payment Requirements digest;
+- an opaque Payment Requirements digest in `payment_requirements.digest`;
 - expected fulfilment identity/digest when knowable;
 - explicit treasury additional-cost ceiling, covering the KIP-10 inventory
   top-up plus exact and staging transaction fees, or a statement that those
@@ -62,6 +62,14 @@ UCP is deferred, the demo Merchant uses the local profile
 It is a compact ES256 JWS signed by the configured Merchant key. Hash the exact
 compact ASCII/UTF-8 bytes received. Never decode/re-encode before computing
 `checkout_hash`.
+
+The Checkout does not declare an x402 version, scheme, or Kaspa binding. Its
+payment-requirements bytes are intentionally opaque to the AP2 adapter. Sompi's
+composition module bounds and hashes both HTTP headers, the AP2 adapter verifies
+the signed Checkout and digest, and the Kaspa-x402 adapter independently parses
+and verifies `PAYMENT-REQUIRED` against the resulting canonical Checkout Terms.
+The replaced `single-resource:1` profile is rejected; there is no compatibility
+reader.
 
 ## Closed Checkout Mandate
 
@@ -118,6 +126,11 @@ identifier, or Kaspa transaction ID. Those remain separate correlated facts.
 The KAS amount profile is the explicitly experimental profile in ADR-0010.
 Sompi accepts it on testnet only, requires a JSON-safe integer, and compares it
 back to the canonical decimal-string amount without rounding.
+
+That Payment Instrument deliberately retains its native-KAS Kaspa-x402 mapping.
+It is authority-visible AP2 authorization evidence and is separate from the
+protocol-neutral Merchant Checkout digest binding above; it is never embedded
+in x402 wire objects.
 
 ## SD-JWT requirements
 

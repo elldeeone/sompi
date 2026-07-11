@@ -23,8 +23,8 @@ import {
   AP2_PAYMENT_AUTHORIZATION_PATH,
   Ap2AuthorityDecisionEvidenceVerifier,
   Ap2AuthorityModule,
-  Ap2CheckoutTermsModule,
   Ap2HttpCommerceAuthorizationModule,
+  Ap2MerchantCheckoutVerifier,
   Ap2PaidResponseVerifier,
   SOMPI_CHECKOUT_HEADER,
   decodeAp2CommerceAuthorizationPresentation,
@@ -46,6 +46,7 @@ import {
   KaspaExactChainVerifier,
   KaspaTestnet10AddressCodec,
   KaspaX402ExactPaymentModule,
+  KaspaX402PaymentRequirementsVerifier,
   KaspaX402ServerStorePaymentResponseLookup,
   Kip10ExactTransactionBuilder,
   StagingKeyStore,
@@ -78,6 +79,7 @@ import {
   type ScriptPublicKey,
 } from "../kaspa-wasm.js";
 import { SUPPORTED_PROTOCOL_PROFILES } from "../protocols/profiles.js";
+import { SompiCheckoutTermsModule } from "../purchase/checkout-terms-module.js";
 import { EgressPolicy } from "../purchase/egress-policy.js";
 import {
   assertPurchaseRequestKey,
@@ -508,10 +510,13 @@ function composeCoordinator(input: {
     limits: { requestTimeoutMs: 5_000 },
     now: input.clock,
   });
-  const checkout = new Ap2CheckoutTermsModule({
+  const checkout = new SompiCheckoutTermsModule({
     transport: input.transport,
-    trust,
-    authorityAudience: AUTHORITY_SIGNER.issuer,
+    merchantCheckout: new Ap2MerchantCheckoutVerifier({
+      trust,
+      authorityAudience: AUTHORITY_SIGNER.issuer,
+    }),
+    paymentRequirements: new KaspaX402PaymentRequirementsVerifier(),
     now: input.clock,
   });
   const commerceEvidence = new JournalAp2CommerceEvidenceSource({

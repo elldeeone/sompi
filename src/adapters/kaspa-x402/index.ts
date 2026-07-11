@@ -8,6 +8,7 @@ export { ExactOnlyChannelSigner } from "./exact-only-channel-signer.js";
 export { ExactOnlyChannelStore } from "./exact-only-channel-store.js";
 export * from "./abandoned-staging-recovery.js";
 export * from "./chain-verifier.js";
+export * from "./payment-requirements-verifier.js";
 export * from "./exact-attempt-funding-bridge.js";
 export {
   KaspaX402ExactPaymentModule,
@@ -17,7 +18,6 @@ export {
   type ExactAttemptFundingContext,
   type ExactSettlementVerifier,
   type KaspaExactRecoveryObserver,
-  type PaidResponseVerifier,
 } from "./exact-payment-module.js";
 export {
   Kip10ExactTransactionBuilder,

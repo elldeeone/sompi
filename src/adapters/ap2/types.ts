@@ -5,7 +5,7 @@ export const AP2_HUMAN_PRESENT_PROFILE = "ap2-v0.2-hp-direct-sd-jwt-es256" as co
 export const AP2_NATIVE_KAS_INSTRUMENT_PROFILE =
   "urn:sompi:ap2:payment-instrument:kaspa-x402:1" as const;
 export const SOMPI_MERCHANT_CHECKOUT_PROFILE =
-  "urn:sompi:checkout:single-resource:1" as const;
+  "urn:sompi:checkout:single-resource:2" as const;
 export const SOMPI_MERCHANT_RECEIPT_PROFILE = "urn:sompi:receipt:merchant:1" as const;
 export const SOMPI_PAYMENT_RECEIPT_PROFILE = "urn:sompi:receipt:payment:1" as const;
 export const AP2_CHECKOUT_MANDATE_VCT = "mandate.checkout.1" as const;
@@ -17,8 +17,6 @@ export const KAS_ASSET = "KAS" as const;
 export const KAS_ATOMIC_UNIT = "sompi" as const;
 export const KAS_DECIMALS = 8 as const;
 export const KASPA_X402_SCHEME = "exact" as const;
-export const KASPA_X402_VERSION = 2 as const;
-export const SOMPI_X402_BINDING = "sompi-purchase-and-digest-correlation-v1" as const;
 
 export type Ap2SigningRole =
   | "merchant-checkout"
@@ -97,11 +95,9 @@ export interface MerchantCheckoutClaims {
     readonly network: typeof KASPA_TESTNET_NETWORK;
     readonly pay_to: string;
   };
-  readonly x402: {
-    readonly version: typeof KASPA_X402_VERSION;
-    readonly scheme: typeof KASPA_X402_SCHEME;
-    readonly binding: typeof SOMPI_X402_BINDING;
-    readonly payment_requirements_digest: string;
+  /** Digest of opaque payment-requirements bytes; their protocol is not an AP2 claim. */
+  readonly payment_requirements: {
+    readonly digest: string;
   };
   readonly treasury: {
     readonly mode: "separately-reserved";

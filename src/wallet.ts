@@ -1,5 +1,3 @@
-import * as fs from "node:fs";
-import * as path from "node:path";
 import websocket from "websocket";
 
 // The kaspa-wasm wRPC client requires a browser-style WebSocket global.
@@ -22,6 +20,7 @@ import {
   kaspaToSompi,
   sompiToKaspaString,
 } from "./kaspa-wasm.js";
+import { SecureLocalStateDirectory, SecureLocalStateError } from "./secure-local-state.js";
 
 initConsolePanicHook();
 
@@ -69,8 +68,18 @@ export class KaspaWallet {
     assertNetworkAllowed(config.networkId);
     this.config = config;
     this.networkId = config.networkId;
-    this.privateKey = loadOrCreateKey(config.dataDir);
-    this.address = this.privateKey.toAddress(this.networkId).toString();
+    const privateKey = loadOrCreateKey(config.dataDir);
+    let address: Address | undefined;
+    try {
+      address = privateKey.toAddress(this.networkId);
+      this.privateKey = privateKey;
+      this.address = address.toString();
+    } catch (error) {
+      privateKey.free();
+      throw error;
+    } finally {
+      address?.free();
+    }
   }
 
   /** Lazily connect (and reconnect if the socket dropped). */
@@ -565,20 +574,74 @@ function isMempoolNotFound(error: unknown): boolean {
  *  key hex and the receive address for the given network. */
 export function generateWalletKey(networkId: string): { privateKey: string; address: string } {
   assertNetworkAllowed(networkId);
-  const keypair = Keypair.random();
-  return { privateKey: keypair.privateKey, address: keypair.toAddress(networkId).toString() };
+  let keypair: Keypair | undefined;
+  let address: Address | undefined;
+  try {
+    keypair = Keypair.random();
+    address = keypair.toAddress(networkId);
+    return { privateKey: keypair.privateKey, address: address.toString() };
+  } finally {
+    address?.free();
+    keypair?.free();
+  }
 }
+
+const MAX_WALLET_KEY_FILE_BYTES = 256;
 
 function loadOrCreateKey(dataDir: string): PrivateKey {
   const envKey = process.env.SOMPI_PRIVATE_KEY;
-  if (envKey) return new PrivateKey(envKey.trim());
+  if (envKey) return parseWalletPrivateKey(envKey, "SOMPI_PRIVATE_KEY");
 
-  const keyPath = path.join(dataDir, "wallet-key");
-  if (fs.existsSync(keyPath)) {
-    return new PrivateKey(fs.readFileSync(keyPath, "utf8").trim());
+  const state = new SecureLocalStateDirectory(dataDir, "wallet state");
+  if (state.fileExists("wallet-key")) {
+    return readWalletPrivateKey(state);
   }
-  const keypair = Keypair.random();
-  fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(keyPath, keypair.privateKey, { mode: 0o600 });
-  return new PrivateKey(keypair.privateKey);
+
+  let keypair: Keypair | undefined;
+  let bytes: Buffer | undefined;
+  try {
+    keypair = Keypair.random();
+    bytes = Buffer.from(keypair.privateKey, "utf8");
+    try {
+      state.createFileExclusive("wallet-key", bytes, MAX_WALLET_KEY_FILE_BYTES);
+    } catch (error) {
+      // A concurrent initializer may have won the no-clobber publication.
+      // Read and validate that exact winner; unsafe replacements still fail.
+      if (error instanceof SecureLocalStateError && /already exists/.test(error.message)) {
+        return readWalletPrivateKey(state);
+      }
+      throw error;
+    }
+    return parseWalletPrivateKey(keypair.privateKey, "wallet key file");
+  } finally {
+    bytes?.fill(0);
+    keypair?.free();
+  }
+}
+
+function readWalletPrivateKey(state: SecureLocalStateDirectory): PrivateKey {
+  const bytes = state.readFile("wallet-key", MAX_WALLET_KEY_FILE_BYTES);
+  try {
+    return parseWalletPrivateKey(
+      new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+      "wallet key file"
+    );
+  } catch (error) {
+    if (error instanceof Error && error.message === "wallet key material is invalid") throw error;
+    throw new Error("wallet key material is invalid", { cause: error });
+  } finally {
+    bytes.fill(0);
+  }
+}
+
+function parseWalletPrivateKey(value: string, source: string): PrivateKey {
+  const normalized = value.trim();
+  if (!/^[a-fA-F0-9]{64}$/.test(normalized)) {
+    throw new Error(`${source} is invalid`);
+  }
+  try {
+    return new PrivateKey(normalized);
+  } catch (error) {
+    throw new Error(`${source} is invalid`, { cause: error });
+  }
 }

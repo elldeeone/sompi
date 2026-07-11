@@ -6,9 +6,11 @@ import {
   paymentIdentifierExtension,
 } from "@kaspa-x402/core";
 
-import { EgressPolicy } from "../../purchase/egress-policy.js";
-import { evidenceDigest, requestFingerprint } from "../../purchase/identity.js";
-import type { PurchaseEgressSession } from "../../purchase/coordinator.js";
+import {
+  Ap2MerchantCheckoutVerifier,
+  SOMPI_CHECKOUT_HEADER,
+} from "../adapters/ap2/merchant-checkout-verifier.js";
+import { issueMerchantCheckout } from "../adapters/ap2/merchant-checkout.js";
 import {
   FIXED_AUDIENCE,
   FIXED_MERCHANT_ISSUER,
@@ -16,15 +18,18 @@ import {
   MERCHANT_SIGNER,
   fixedMerchantClaims,
   fixedTrustStore,
-} from "./test-fixtures.js";
-import { issueMerchantCheckout } from "./merchant-checkout.js";
-import { Ap2CheckoutTermsModule, SOMPI_CHECKOUT_HEADER } from "./checkout-terms-module.js";
+} from "../adapters/ap2/test-fixtures.js";
+import { KaspaX402PaymentRequirementsVerifier } from "../adapters/kaspa-x402/payment-requirements-verifier.js";
+import type { PurchaseEgressSession } from "./coordinator.js";
+import { EgressPolicy } from "./egress-policy.js";
+import { evidenceDigest, requestFingerprint } from "./identity.js";
+import { SompiCheckoutTermsModule } from "./checkout-terms-module.js";
 
 const URL = "https://merchant.example/resource";
 const PURCHASE_ID = "pur_AAAAAAAAAAAAAAAAAAAAAA";
 const PAY_TO = "kaspatest:qpumuen7l8wthtz45p3ftn58pvrs9xlumvkuu2xet8egzkcklqtes5z8rkmpd";
 
-test("Checkout discovery verifies one Merchant AP2 JWT against one exact PAYMENT-REQUIRED", async () => {
+test("Sompi composes independent AP2 Checkout and Kaspa-x402 requirements verification", async () => {
   const fixture = await checkoutFixture();
   const discovered = await fixture.module.discover({
     purchaseId: PURCHASE_ID as never,
@@ -38,7 +43,7 @@ test("Checkout discovery verifies one Merchant AP2 JWT against one exact PAYMENT
   assert.equal(discovered.paymentRequirements.declaredDigest, evidenceDigest(fixture.paymentHeader));
 });
 
-test("Checkout discovery rejects duplicated headers and requirements substitution", async () => {
+test("Sompi checkout composition rejects duplicated headers and requirements substitution", async () => {
   const duplicate = await checkoutFixture({ duplicateCheckout: true });
   await assert.rejects(
     duplicate.module.discover({
@@ -46,7 +51,7 @@ test("Checkout discovery rejects duplicated headers and requirements substitutio
       resourceFingerprint: duplicate.fingerprint,
       egress: duplicate.egress,
     }),
-    /exactly one SOMPI-CHECKOUT/,
+    /exactly one SOMPI-CHECKOUT/
   );
 
   const substituted = await checkoutFixture({ substituteAmount: true });
@@ -56,7 +61,7 @@ test("Checkout discovery rejects duplicated headers and requirements substitutio
       resourceFingerprint: substituted.fingerprint,
       egress: substituted.egress,
     }),
-    /Payment Requirements digest does not match|does not match the signed AP2 Checkout/,
+    /does not match the signed Checkout Terms/
   );
 });
 
@@ -85,9 +90,8 @@ async function checkoutFixture(options: {
       request_fingerprint: fingerprint,
     },
     price: { ...claims.price, pay_to: PAY_TO },
-    x402: {
-      ...claims.x402,
-      payment_requirements_digest: evidenceDigest(paymentHeader),
+    payment_requirements: {
+      digest: evidenceDigest(paymentHeader),
     },
   }, MERCHANT_SIGNER, { nowSec: FIXED_NOW });
   const policy = new EgressPolicy({
@@ -99,16 +103,16 @@ async function checkoutFixture(options: {
   const egress: PurchaseEgressSession = Object.freeze({
     request,
     requestFor: (
-      input: Parameters<PurchaseEgressSession["requestFor"]>[0],
+      input: Parameters<PurchaseEgressSession["requestFor"]>[0]
     ) => policy.validateRequest(input),
     redirect: (
       previous: Parameters<PurchaseEgressSession["redirect"]>[0],
       location: string,
-      override?: Parameters<PurchaseEgressSession["redirect"]>[2],
+      override?: Parameters<PurchaseEgressSession["redirect"]>[2]
     ) => policy.validateRedirect(previous, location, override),
     responseGuard: (
       hop: Parameters<PurchaseEgressSession["responseGuard"]>[0],
-      abort: Parameters<PurchaseEgressSession["responseGuard"]>[1],
+      abort: Parameters<PurchaseEgressSession["responseGuard"]>[1]
     ) => policy.createResponseGuard(hop, abort),
   });
   const headers: Array<readonly [string, string]> = [
@@ -116,9 +120,12 @@ async function checkoutFixture(options: {
     ["PAYMENT-REQUIRED", paymentHeader],
   ];
   if (options.duplicateCheckout) headers.push([SOMPI_CHECKOUT_HEADER, checkoutArtifact]);
-  const module = new Ap2CheckoutTermsModule({
-    trust: fixedTrustStore(),
-    authorityAudience: FIXED_AUDIENCE,
+  const module = new SompiCheckoutTermsModule({
+    merchantCheckout: new Ap2MerchantCheckoutVerifier({
+      trust: fixedTrustStore(),
+      authorityAudience: FIXED_AUDIENCE,
+    }),
+    paymentRequirements: new KaspaX402PaymentRequirementsVerifier(),
     now: () => (FIXED_NOW + 1) * 1_000,
     transport: {
       async send() {

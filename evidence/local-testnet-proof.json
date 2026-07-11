@@ -1,0 +1,110 @@
+{
+  "profile": "urn:sompi:e2e:deterministic-in-memory-testnet10:1",
+  "generatedAt": "2033-05-18T03:33:20.000Z",
+  "chainMode": "deterministic-in-memory-testnet10",
+  "liveNetworkConformanceClaimed": false,
+  "authorityMode": "real-unix-framed-service-in-process-fixture",
+  "adapterTransport": "sompi-demo-local-ap2-presentation-endpoints",
+  "protocolPins": {
+    "ap2": {
+      "release": "v0.2.0",
+      "gitCommit": "b4587ac1d055888a73b4b21750973cffba961793",
+      "specification": "https://github.com/google-agentic-commerce/AP2/tree/v0.2.0/docs/ap2",
+      "profileId": "ap2-v0.2-hp-direct-sd-jwt-es256",
+      "merchantCheckoutProfile": "urn:sompi:checkout:single-resource:2",
+      "mode": "human-present",
+      "checkoutMandateVct": "mandate.checkout.1",
+      "paymentMandateVct": "mandate.payment.1",
+      "rootSdJwtTyp": "example+sd-jwt",
+      "digestAlgorithm": "sha-256",
+      "signatureAlgorithms": [
+        "ES256"
+      ],
+      "nativeKasProfile": "urn:sompi:ap2:payment-instrument:kaspa-x402:1",
+      "nativeKasStrictlyStandardized": false
+    },
+    "x402": {
+      "version": 2,
+      "scheme": "exact",
+      "network": "kaspa:testnet-10",
+      "allowMainnet": false,
+      "packages": {
+        "core": {
+          "version": "0.1.0-alpha.6",
+          "integrity": "sha512-LKlqnX6p3mZSNRimUEr0J5p5odcgoYK2n2STHi6pfnUNhUejqXmFJJNYz0Vo9f2Utas4vLAGO1KcsioBUIFhMg=="
+        },
+        "covenant": {
+          "version": "0.1.0-alpha.6",
+          "integrity": "sha512-hZSmIMYD0AHGc+cROZ/OlAoHbooGcFmUYn3bvHWCMt1AK310mqKCVyCqWXd0dl2B4K6455UwGfAr1NHmgqWl8Q=="
+        },
+        "client": {
+          "version": "0.1.0-alpha.6",
+          "integrity": "sha512-BEyiCDh7tdMJxOmtlKj/8yxnqskF5SbxcbdcSeTkjHXVTmzm7rBkgQ69Q56DWEvaevtoGVolBrBjcN/Sm7TTdQ=="
+        },
+        "server": {
+          "version": "0.1.0-alpha.6",
+          "integrity": "sha512-Wi84DBsbvxgszJxgw5afjkEDGPR4kdN1CvY/n32YRFRSmDbPup8TGf3m2GyyK2V4FQWcdwP9FsS07kOLthLfkA=="
+        }
+      },
+      "npmGitCommit": "28ac222d3a375b9a2a56c11396f388086eeeae76"
+    },
+    "sqlite": {
+      "implementation": "better-sqlite3",
+      "version": "12.11.1",
+      "integrity": "sha512-dq9AtApgg5PGFtBzPFSBl3HZQjHok5gaQCM6zh2Yk0aSmDCs1CbnVI8/HgASQkNKsWFpseIO9beg5xxpYhbIfA==",
+      "typesVersion": "7.6.13"
+    },
+    "sdJwt": {
+      "implementation": "@sd-jwt/core",
+      "version": "0.20.0",
+      "npmGitCommit": "af170ace9b42984f8c6447caf23256fde6204b31",
+      "integrity": "sha512-thTj5xtKqOvqnULELJGvCa64Hf+Hf7v0Dlao6mTh198rmZcyFCBop3vT1ShgWMhg5cL04ofXeiEhnQR10/8wjA=="
+    },
+    "jose": {
+      "implementation": "jose",
+      "version": "5.10.0",
+      "npmGitCommit": "839b6dad41af850ced40c7a9badf1d725259aefc",
+      "integrity": "sha512-s+3Al/p9g32Iq+oqXxkW//7jk2Vig6FF1CFqzVXoTUXt2qz89YWbL+OwS17NFYEvxC35n0FKeGO2LGYSxeM2Gg=="
+    },
+    "jsonSchema": {
+      "ajvVersion": "8.20.0",
+      "ajvIntegrity": "sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA==",
+      "formatsVersion": "3.0.1",
+      "formatsIntegrity": "sha512-8iUql50EUR+uUcdRQ3HDqa6EVyo3docL8g5WJ3FNcWmu62IbkGUue/pEyLBW8VGKKucTPgqeks4fIU1DA4yowQ=="
+    }
+  },
+  "purchase": {
+    "id": "pur_QUFBQUFBQUFBQUFBQUFBQQ",
+    "state": "receipted",
+    "paymentIdentifier": "pay_G-65DChbE33IuFTud_GkHWq29QcCKlSEB95e5ZtYu_I",
+    "checkoutDigest": "sha256:Fa_uEzUR-jT7JWYrfHPolQYXVIxcn30HJcR96dPlLyM",
+    "authorizationEvidenceDigest": "sha256:AmXL0bA2B5KNkpBaLGqdRzmPszcc08G3_DwxBKWuLPM",
+    "settlementEvidenceDigest": "sha256:9pWEQRtMHTjx2kgNYHtLXJFFWylH8tehV3AEcHA6-l8",
+    "fulfilmentDigest": "sha256:jtetvqEDFfwlEYv57dfdb3_xDswN8OJ7uKzmUj93p9E",
+    "receiptEvidenceDigests": [
+      "sha256:7Wnx6K4yZlNItQgwGYS2ve9l25khwo_0SYXYRo3MgOU",
+      "sha256:YlGkn78SpH2dhxuPu09uMNT_36X3PY7vj9odWX8Y9fE"
+    ]
+  },
+  "transactions": {
+    "stagingTransactionId": "300e349773a925633041b4bd8301f4d41c3b2d6458882b86a2b9549d4d4e7109",
+    "stagingOutpoint": "300e349773a925633041b4bd8301f4d41c3b2d6458882b86a2b9549d4d4e7109:0",
+    "exactTransactionId": "42ec835391ab58327cf14b8e46523b2604497ac8eba384c44fd8f0088c4e72f7",
+    "merchantOutpoint": "42ec835391ab58327cf14b8e46523b2604497ac8eba384c44fd8f0088c4e72f7:1"
+  },
+  "idempotency": {
+    "duplicatePurchaseReturnedSameId": true,
+    "stagingSubmissions": 1,
+    "exactMerchantAcceptances": 1
+  },
+  "recovery": {
+    "restartCount": 0,
+    "finalState": "receipted"
+  },
+  "protocolSeparation": {
+    "paidRequestExtensionKeys": [
+      "payment-identifier"
+    ],
+    "ap2DataInX402Request": false
+  }
+}

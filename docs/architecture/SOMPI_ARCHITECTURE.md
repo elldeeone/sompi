@@ -278,6 +278,12 @@ AP2 and x402 are complementary:
 - x402 negotiates and executes payment for the HTTP resource.
 - Sompi proves that both refer to the same Purchase.
 
+Checkout discovery preserves that separation in code. A Sompi-owned composition
+module performs bounded HTTP/header acquisition, an AP2-only verifier validates
+the Merchant-signed Checkout and its opaque payment-requirements digest, and a
+Kaspa-x402-only verifier validates the exact `PAYMENT-REQUIRED` bytes against
+canonical Checkout Terms. Neither protocol adapter imports the other.
+
 The initial composition does not invent a proprietary AP2-in-x402 wire format:
 
 ```mermaid

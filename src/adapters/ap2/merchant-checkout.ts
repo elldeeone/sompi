@@ -22,11 +22,8 @@ import {
 } from "./crypto.js";
 import {
   KASPA_TESTNET_NETWORK,
-  KASPA_X402_SCHEME,
-  KASPA_X402_VERSION,
   KAS_ASSET,
   SOMPI_MERCHANT_CHECKOUT_PROFILE,
-  SOMPI_X402_BINDING,
   type Ap2PublicKeyResolver,
   type Ap2SigningIdentity,
   type Ap2VerificationClock,
@@ -122,7 +119,7 @@ export async function verifyMerchantCheckout(
     throw new Ap2AdapterError("Merchant Checkout request fingerprint does not match", "binding_mismatch");
   }
   const paymentRequirementsDigest = requireSha256Digest(
-    claims.x402.payment_requirements_digest,
+    claims.payment_requirements.digest,
     "Merchant Checkout Payment Requirements digest"
   ) as Sha256Digest;
   if (
@@ -198,11 +195,11 @@ function validateMerchantCheckoutClaims(
     value,
     [
       "profile", "iss", "aud", "kid", "jti", "iat", "exp", "nonce", "purchase_id",
-      "merchant", "resource", "price", "x402", "treasury",
+      "merchant", "resource", "price", "payment_requirements", "treasury",
     ],
     [
       "profile", "iss", "aud", "kid", "jti", "iat", "exp", "nonce", "purchase_id",
-      "merchant", "resource", "price", "x402", "treasury", "fulfilment",
+      "merchant", "resource", "price", "payment_requirements", "treasury", "fulfilment",
     ],
     "Merchant Checkout payload"
   );
@@ -273,26 +270,19 @@ function validateMerchantCheckoutClaims(
     pay_to: requireKaspaTestnetAddress(priceValue.pay_to),
   };
 
-  const x402Value = requireRecord(value.x402, "Merchant Checkout x402 binding");
-  assertExactKeys(
-    x402Value,
-    ["version", "scheme", "binding", "payment_requirements_digest"],
-    ["version", "scheme", "binding", "payment_requirements_digest"],
-    "Merchant Checkout x402 binding"
+  const paymentRequirementsValue = requireRecord(
+    value.payment_requirements,
+    "Merchant Checkout payment requirements binding"
   );
-  if (
-    x402Value.version !== KASPA_X402_VERSION ||
-    x402Value.scheme !== KASPA_X402_SCHEME ||
-    x402Value.binding !== SOMPI_X402_BINDING
-  ) {
-    throw new Ap2AdapterError("Merchant Checkout x402 profile is unsupported", "profile_mismatch");
-  }
-  const x402 = {
-    version: KASPA_X402_VERSION,
-    scheme: KASPA_X402_SCHEME,
-    binding: SOMPI_X402_BINDING,
-    payment_requirements_digest: requireSha256Digest(
-      x402Value.payment_requirements_digest,
+  assertExactKeys(
+    paymentRequirementsValue,
+    ["digest"],
+    ["digest"],
+    "Merchant Checkout payment requirements binding"
+  );
+  const paymentRequirements = {
+    digest: requireSha256Digest(
+      paymentRequirementsValue.digest,
       "Merchant Checkout Payment Requirements digest"
     ),
   };
@@ -352,7 +342,7 @@ function validateMerchantCheckoutClaims(
     merchant: Object.freeze(merchant),
     resource: Object.freeze(resource),
     price: Object.freeze(price),
-    x402: Object.freeze(x402),
+    payment_requirements: Object.freeze(paymentRequirements),
     treasury: Object.freeze(treasury),
     ...(fulfilment === undefined ? {} : { fulfilment: Object.freeze(fulfilment) }),
   });

@@ -46,13 +46,12 @@ import {
   type CheckoutTermsModule,
   type CommerceAuthorizationModule,
   type FulfilmentModule,
-  type KaspaPreparedExecutionContext,
   type KaspaPaymentModule,
   type SettlementResult,
   type TreasuryModule,
   type VerifiedArtifact,
 } from "../purchase/coordinator.js";
-import type { PaidResponseVerifierInput } from "../adapters/kaspa-x402/exact-payment-module.js";
+import type { PaidResourceResponse } from "../purchase/paid-resource-response.js";
 import { EgressPolicy } from "../purchase/egress-policy.js";
 import { PurchaseJournal } from "../purchase/journal.js";
 import type { Sha256Digest } from "../purchase/types.js";
@@ -632,7 +631,7 @@ function storeEvidence(
 
 async function postExpiryPaidResponse(
   fixture: JournalFixture
-): Promise<PaidResponseVerifierInput> {
+): Promise<PaidResourceResponse> {
   const paymentIdentifier = createPaymentIdentifier(fixture.checkout.purchaseId, 1);
   const [checkoutReceipt, paymentReceipt] = await Promise.all([
     issueCheckoutReceipt({
@@ -667,43 +666,26 @@ async function postExpiryPaidResponse(
     createdAtMs: authorizationRecord.createdAtMs,
     expiresAtMs: authorizationRecord.expiresAtMs,
   };
-  const preparedBytes = Buffer.from("historical-prepared-payment", "utf8");
-  const context: KaspaPreparedExecutionContext = {
-    execution: {
+  const context: PaidResourceResponse["context"] = {
+    purchaseId: fixture.checkout.purchaseId,
+    terms: fixture.checkout.terms,
+    authorizationRequest,
+    authorization: {
       purchaseId: fixture.checkout.purchaseId,
-      terms: fixture.checkout.terms,
-      authorizationRequest,
-      authorization: {
-        purchaseId: fixture.checkout.purchaseId,
-        checkoutDigest: fixture.checkout.checkoutDigest,
-        decision: "approved",
-        authorityId: FIXED_AUTHORITY_ISSUER,
-        evidenceDigest: fixture.authorizationEvidenceDigest,
-        facts: authorizationFacts(authorizationRequest),
-      },
-      paymentIdentifier,
+      checkoutDigest: fixture.checkout.checkoutDigest,
+      decision: "approved",
+      authorityId: FIXED_AUTHORITY_ISSUER,
+      evidenceDigest: fixture.authorizationEvidenceDigest,
+      facts: authorizationFacts(authorizationRequest),
     },
+    paymentIdentifier,
     request: {
       url: fixture.checkout.resourceUrl,
       method: fixture.checkout.method,
-      body: new Uint8Array(),
       requestFingerprint: fixture.checkout.terms.resourceFingerprint,
     },
     paymentRequirements: Buffer.from("fixed-payment-requirements", "utf8"),
-    staging: {
-      transactionId: "33".repeat(32),
-      outpoint: `${"33".repeat(32)}:0`,
-      amountAtomic: "31500000",
-      evidenceDigest: evidenceDigest("historical-staging"),
-      fundingSource: "vault-treasury",
-    },
-    preparation: {
-      preparedBytes,
-      preparedDigest: evidenceDigest(preparedBytes),
-      transactionId: TRANSACTION_ID,
-      requiredFinality: "accepted",
-      fundingSource: "vault-treasury",
-    },
+    preparedTransactionId: TRANSACTION_ID,
   };
   const settlementEvidence = protocolArtifact(
     Buffer.from("historical-settlement", "utf8"),

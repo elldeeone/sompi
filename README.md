@@ -42,6 +42,12 @@ declaration and tested with conformance fixtures. Either adapter can evolve or
 be replaced without changing Purchase state or smuggling one protocol into the
 other.
 
+Checkout discovery follows the same boundary: Sompi bounds and joins the HTTP
+artifacts, AP2 verifies a Merchant Checkout containing only an opaque payment
+requirements digest, and Kaspa-x402 independently verifies the corresponding
+`PAYMENT-REQUIRED` bytes. A structural test prevents the two adapter trees from
+importing each other.
+
 Read the design in this order:
 
 1. [`CONTEXT.md`](CONTEXT.md)

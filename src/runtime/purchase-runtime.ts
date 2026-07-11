@@ -3,8 +3,8 @@ import { lookup } from "node:dns/promises";
 import {
   Ap2AuthorityDecisionEvidenceVerifier,
   Ap2AuthorityModule,
-  Ap2CheckoutTermsModule,
   Ap2HttpCommerceAuthorizationModule,
+  Ap2MerchantCheckoutVerifier,
   loadAp2TrustStore,
 } from "../adapters/ap2/index.js";
 import { Ap2PaidResponseVerifier } from "../adapters/ap2/paid-response-verifier.js";
@@ -19,6 +19,7 @@ import {
   ExactOnlyChannelStore,
   KaspaTestnet10AddressCodec,
   KaspaX402ExactPaymentModule,
+  KaspaX402PaymentRequirementsVerifier,
   AbandonedStagingRecovery,
   Kip10ExactTransactionBuilder,
   KaspaStagingRecoveryModule,
@@ -40,6 +41,7 @@ import {
   PurchaseCoordinator,
   type FulfilmentModule,
 } from "../purchase/coordinator.js";
+import { SompiCheckoutTermsModule } from "../purchase/checkout-terms-module.js";
 import {
   EgressPolicy,
   type EgressResolver,
@@ -126,10 +128,13 @@ export function createSompiPurchaseRuntime(
     );
     const runtimeJournal = journal;
     const runtimeAuthorityReplay = authorityReplay;
-    const checkout = new Ap2CheckoutTermsModule({
+    const checkout = new SompiCheckoutTermsModule({
       transport,
-      trust,
-      authorityAudience: config.authority.issuer,
+      merchantCheckout: new Ap2MerchantCheckoutVerifier({
+        trust,
+        authorityAudience: config.authority.issuer,
+      }),
+      paymentRequirements: new KaspaX402PaymentRequirementsVerifier(),
       now,
     });
     const authorityVerifier = new Ap2AuthorityDecisionEvidenceVerifier({

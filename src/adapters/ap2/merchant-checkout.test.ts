@@ -25,7 +25,7 @@ test("fixed Merchant Checkout key verifies exact bytes into canonical Sompi term
     expectedAudience: FIXED_AUDIENCE,
     expectedPurchaseId: FIXED_PURCHASE_ID as never,
     expectedResourceFingerprint: claims.resource.request_fingerprint as never,
-    expectedPaymentRequirementsDigest: claims.x402.payment_requirements_digest as never,
+    expectedPaymentRequirementsDigest: claims.payment_requirements.digest as never,
     nowSec: FIXED_NOW + 1,
   });
 
@@ -40,6 +40,29 @@ test("fixed Merchant Checkout key verifies exact bytes into canonical Sompi term
     createHash("sha256").update(Buffer.from(artifact, "utf8")).digest("base64url")
   );
   assert.equal(verified.checkoutDigest, `sha256:${verified.checkoutHash}`);
+  assert.equal(verified.profile, "urn:sompi:checkout:single-resource:2");
+  assert.deepEqual(Object.keys(verified.claims.payment_requirements), ["digest"]);
+  assert.equal("x402" in verified.claims, false);
+});
+
+test("Merchant Checkout cleanly rejects the replaced protocol-specific profile", async () => {
+  const claims = fixedMerchantClaims();
+  const key = await importSigningKey(MERCHANT_SIGNER);
+  const legacy = {
+    ...claims,
+    profile: "urn:sompi:checkout:single-resource:1",
+    x402: {
+      version: 2,
+      scheme: "exact",
+      binding: "sompi-purchase-and-digest-correlation-v1",
+      payment_requirements_digest: claims.payment_requirements.digest,
+    },
+  } as Record<string, unknown>;
+  delete legacy.payment_requirements;
+  const artifact = await new SignJWT(legacy as JWTPayload)
+    .setProtectedHeader({ alg: "ES256", kid: MERCHANT_SIGNER.kid, typ: "JWT" })
+    .sign(key);
+  await assertRejectCode(() => verify(artifact), "profile_mismatch");
 });
 
 test("Merchant Checkout fails closed on unknown signed fields and protected key sources", async () => {

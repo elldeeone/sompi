@@ -1,5 +1,3 @@
-import * as fs from "node:fs";
-import * as path from "node:path";
 import { createHash } from "node:crypto";
 import {
   CovenantBinding,
@@ -15,6 +13,7 @@ import {
   payToScriptHashScript,
   payToScriptHashSignatureScript,
 } from "./kaspa-wasm.js";
+import { SecureLocalStateDirectory } from "./secure-local-state.js";
 import { VAULT_TEMPLATE_VERSION, VaultState, buildRedeemScript, buildSigArgs, bytesToHex, hexToBytes } from "./vault/template.js";
 import type { KaspaWallet } from "./wallet.js";
 
@@ -120,6 +119,7 @@ export interface VaultSpendResult {
 
 type VaultSpendConfig = Pick<
   VaultConfig,
+  | "template"
   | "agentPublic"
   | "ownerPublic"
   | "maxOutflowSompi"
@@ -149,6 +149,9 @@ const GRAMS_PER_COMPUTE_BUDGET_UNIT = 100n;
 const DEFAULT_WINDOW_SIZE_DAA = 36_000n; // ~1 hour on testnet-10/mainnet at 10 BPS
 const VAULT_INPUT_COMPUTE_BUDGET = 50;
 const NON_FINAL_SEQUENCE = 0n;
+const MAX_VAULT_AGENT_KEY_BYTES = 256;
+const MAX_VAULT_CONFIG_BYTES = 64 * 1024;
+const UINT64_MAX = (1n << 64n) - 1n;
 
 /**
  * Deterministic fallback fee estimate for a 1-input vault spend.
@@ -183,27 +186,46 @@ export function estimateVaultSpendFeeSompi(
 }
 
 export class VaultManager {
-  private readonly vaultDir: string;
+  private readonly state: SecureLocalStateDirectory;
   private readonly networkId: string;
 
   constructor(dataDir: string, networkId: string) {
-    this.vaultDir = path.join(dataDir, "vault");
+    const root = new SecureLocalStateDirectory(dataDir, "Sompi data");
+    this.state = root.child("vault", "vault state");
     this.networkId = networkId;
   }
 
   get configured(): boolean {
-    return fs.existsSync(path.join(this.vaultDir, "config.json"));
+    const hasConfig = this.state.fileExists("config.json");
+    const hasAgentKey = this.state.fileExists("agent-key");
+    if (hasConfig !== hasAgentKey) {
+      throw new Error(
+        "vault state is incomplete after an interrupted creation; do not recreate or overwrite its secret"
+      );
+    }
+    return hasConfig;
   }
 
   config(): VaultConfig {
-    const config = JSON.parse(fs.readFileSync(path.join(this.vaultDir, "config.json"), "utf8")) as VaultConfig;
-    assertCurrentConfig(config);
-    return config;
+    if (!this.configured) throw new Error("vault is not configured");
+    const bytes = this.state.readFile("config.json", MAX_VAULT_CONFIG_BYTES);
+    try {
+      let config: unknown;
+      try {
+        config = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+      } catch (error) {
+        throw new Error("vault config is malformed", { cause: error });
+      }
+      assertCurrentConfig(config, this.networkId);
+      return config as VaultConfig;
+    } finally {
+      bytes.fill(0);
+    }
   }
 
   create(maxOutflowSompi: bigint, ownerPublicKey: string, windowSizeDaa: bigint = DEFAULT_WINDOW_SIZE_DAA): VaultConfig {
     if (this.configured) {
-      throw new Error(`vault already exists at ${this.vaultDir}; use it or move it aside first`);
+      throw new Error(`vault already exists at ${this.state.directory}; use it or move it aside first`);
     }
     const ownerPublic = ownerPublicKey.trim().toLowerCase();
     if (!/^[0-9a-f]{64}$/.test(ownerPublic)) {
@@ -216,31 +238,46 @@ export class VaultManager {
     if (maxOutflowSompi <= 0n) throw new Error("Vault spending cap must be positive.");
     if (windowSizeDaa <= 0n) throw new Error("windowSizeDaa must be positive");
 
-    const agent = Keypair.random();
-    const agentPublic = String(agent.xOnlyPublicKey);
-    const state = { windowStartDaa: 0n, spentInWindowSompi: 0n };
-    const address = this.deriveAddress(agentPublic, ownerPublic, maxOutflowSompi, windowSizeDaa, state);
+    let agent: Keypair | undefined;
+    let agentBytes: Buffer | undefined;
+    let configBytes: Buffer | undefined;
+    try {
+      agent = Keypair.random();
+      const agentPublic = String(agent.xOnlyPublicKey);
+      const state = { windowStartDaa: 0n, spentInWindowSompi: 0n };
+      const address = this.deriveAddress(agentPublic, ownerPublic, maxOutflowSompi, windowSizeDaa, state);
+      const config: VaultConfig = {
+        template: VAULT_TEMPLATE_VERSION,
+        agentPublic,
+        ownerPublic,
+        maxOutflowSompi: maxOutflowSompi.toString(),
+        windowSizeDaa: windowSizeDaa.toString(),
+        windowStartDaa: "0",
+        spentInWindowSompi: "0",
+        address,
+      };
+      assertCurrentConfig(config, this.networkId);
 
-    fs.mkdirSync(this.vaultDir, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(path.join(this.vaultDir, "agent-key"), agent.privateKey, { mode: 0o600 });
-
-    const config: VaultConfig = {
-      template: VAULT_TEMPLATE_VERSION,
-      agentPublic,
-      ownerPublic,
-      maxOutflowSompi: maxOutflowSompi.toString(),
-      windowSizeDaa: windowSizeDaa.toString(),
-      windowStartDaa: "0",
-      spentInWindowSompi: "0",
-      address,
-    };
-    this.saveConfig(config);
-    return config;
+      agentBytes = Buffer.from(agent.privateKey, "utf8");
+      this.state.createFileExclusive("agent-key", agentBytes, MAX_VAULT_AGENT_KEY_BYTES);
+      configBytes = encodeVaultConfig(config);
+      this.state.createFileExclusive("config.json", configBytes, MAX_VAULT_CONFIG_BYTES);
+      return config;
+    } finally {
+      configBytes?.fill(0);
+      agentBytes?.fill(0);
+      agent?.free();
+    }
   }
 
   private saveConfig(config: VaultConfig): void {
-    fs.mkdirSync(this.vaultDir, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(path.join(this.vaultDir, "config.json"), JSON.stringify(config, null, 2), { mode: 0o600 });
+    assertCurrentConfig(config, this.networkId);
+    const bytes = encodeVaultConfig(config);
+    try {
+      this.state.replaceFileAtomic("config.json", bytes, MAX_VAULT_CONFIG_BYTES);
+    } finally {
+      bytes.fill(0);
+    }
   }
 
   private deriveAddress(
@@ -250,11 +287,14 @@ export class VaultManager {
     windowSizeDaa: bigint,
     state: VaultState
   ): string {
-    const redeem = buildRedeemScript(agentPublic, ownerPublic, maxOutflowSompi, windowSizeDaa, state);
-    const spk = payToScriptHashScript(redeem);
-    const address = addressFromScriptPublicKey(spk, this.networkId);
-    if (!address) throw new Error("could not derive vault address");
-    return address.toString();
+    return deriveVaultAddress(
+      agentPublic,
+      ownerPublic,
+      maxOutflowSompi,
+      windowSizeDaa,
+      state,
+      this.networkId
+    );
   }
 
   async balanceSompi(wallet: KaspaWallet): Promise<bigint> {
@@ -291,17 +331,18 @@ export class VaultManager {
       throw new Error("Vault deposit fee ceiling must be non-negative.");
     }
     const config = this.config();
-    const agentKey = fs.readFileSync(path.join(this.vaultDir, "agent-key"), "utf8").trim();
     const result = config.covenantId
-      ? await topUpVault({
-          wallet,
-          config,
-          privateKey: agentKey,
-          amountSompi,
-          keepFloatSompi,
-          feeCeilingSompi,
-          broadcast: false,
-        })
+      ? await this.withAgentPrivateKey(config, (signingKey) =>
+          topUpVault({
+            wallet,
+            config,
+            signingKey,
+            amountSompi,
+            keepFloatSompi,
+            feeCeilingSompi,
+            broadcast: false,
+          })
+        )
       : await fundInitialVault({
           wallet,
           config,
@@ -522,18 +563,19 @@ export class VaultManager {
     }
     const config = this.config();
     if (!config.covenantId) throw new Error("vault has not been covenant-funded yet");
-    const agentKey = fs.readFileSync(path.join(this.vaultDir, "agent-key"), "utf8").trim();
-    const result = await spendVault({
-      wallet,
-      config,
-      fn: "withdraw",
-      privateKey: agentKey,
-      destination,
-      amount,
-      authorize,
-      feeCeilingSompi,
-      broadcast: false,
-    });
+    const result = await this.withAgentPrivateKey(config, (signingKey) =>
+      spendVault({
+        wallet,
+        config,
+        fn: "withdraw",
+        signingKey,
+        destination,
+        amount,
+        authorize,
+        feeCeilingSompi,
+        broadcast: false,
+      })
+    );
     if (!result.preparedTransaction || !result.configUpdate) {
       throw new Error("vault preparation did not return an immutable transaction and state update");
     }
@@ -776,13 +818,37 @@ export class VaultManager {
         "<windowSizeDaa> <windowStartDaa> <spentInWindowSompi> <destination>"
     );
   }
+
+  private async withAgentPrivateKey<T>(
+    config: VaultConfig,
+    operation: (privateKey: PrivateKey) => T | Promise<T>
+  ): Promise<T> {
+    const bytes = this.state.readFile("agent-key", MAX_VAULT_AGENT_KEY_BYTES);
+    let privateKey: PrivateKey | undefined;
+    try {
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes).trim();
+      if (!/^[a-fA-F0-9]{64}$/.test(text)) throw new Error("vault Agent key material is invalid");
+      try {
+        privateKey = new PrivateKey(text);
+      } catch (error) {
+        throw new Error("vault Agent key material is invalid", { cause: error });
+      }
+      if (!privateKeyMatchesXOnly(privateKey, config.agentPublic)) {
+        throw new Error("vault Agent key does not match the configured public key");
+      }
+      return await operation(privateKey);
+    } finally {
+      privateKey?.free();
+      bytes.fill(0);
+    }
+  }
 }
 
 interface VaultSpendParams {
   wallet: KaspaWallet;
   config: VaultSpendConfig;
   fn: "withdraw" | "recover";
-  privateKey: string;
+  signingKey: PrivateKey;
   destination: string;
   amount?: bigint | "max";
   feeSompi?: bigint;
@@ -801,7 +867,7 @@ async function spendVault(
   params: VaultSpendParams
 ): Promise<VaultSpendResult> {
   const { wallet, config, fn, destination } = params;
-  assertCurrentConfig(config);
+  assertCurrentConfig(config, wallet.networkId);
   const max = BigInt(config.maxOutflowSompi);
   const windowSize = BigInt(config.windowSizeDaa);
   const currentState = stateFromConfig(config);
@@ -844,13 +910,7 @@ async function spendVault(
       outputs: [{ value: amountSompi, scriptPublicKey: destSpk }],
       lockTime: 0n,
     });
-    const recoveryKey = new PrivateKey(params.privateKey);
-    let pushedSig: string;
-    try {
-      pushedSig = createInputSignature(tx, 0, recoveryKey, SighashType.All);
-    } finally {
-      recoveryKey.free();
-    }
+    const pushedSig = createInputSignature(tx, 0, params.signingKey, SighashType.All);
     setInputScripts(tx, [payToScriptHashSignatureScript(redeem, buildSigArgs(hexToBytes(pushedSig).slice(1), "recover"))]);
     assertFeeCoversSignedTx(wallet.networkId, tx, feerate, feeSompi, "vault recovery");
     if (params.broadcast === false) {
@@ -892,8 +952,14 @@ async function spendVault(
     };
     const nextRedeem = buildRedeemScript(config.agentPublic, config.ownerPublic, max, windowSize, nextState);
     const nextSpk = payToScriptHashScript(nextRedeem);
-    const nextAddress = addressFromScriptPublicKey(nextSpk, wallet.networkId)?.toString();
-    if (!nextAddress) throw new Error("could not derive next vault address");
+    const derivedAddress = addressFromScriptPublicKey(nextSpk, wallet.networkId);
+    let nextAddress: string;
+    try {
+      if (!derivedAddress) throw new Error("could not derive next vault address");
+      nextAddress = derivedAddress.toString();
+    } finally {
+      derivedAddress?.free();
+    }
     return { nextState, nextRedeem, nextSpk, nextAddress };
   };
 
@@ -956,13 +1022,7 @@ async function spendVault(
     ],
     lockTime: lockDaa,
   });
-  const agentKey = new PrivateKey(params.privateKey);
-  let pushedSig: string;
-  try {
-    pushedSig = createInputSignature(tx, 0, agentKey, SighashType.All);
-  } finally {
-    agentKey.free();
-  }
+  const pushedSig = createInputSignature(tx, 0, params.signingKey, SighashType.All);
   setInputScripts(tx, [payToScriptHashSignatureScript(redeem, buildSigArgs(hexToBytes(pushedSig).slice(1), "withdraw"))]);
   assertFeeCoversSignedTx(wallet.networkId, tx, feerate, feeSompi, "vault withdrawal");
   if (params.broadcast === false) {
@@ -1012,14 +1072,27 @@ export interface VaultOwnerRecoveryParams {
 export async function recoverVaultWithOwner(
   params: VaultOwnerRecoveryParams
 ): Promise<VaultSpendResult> {
-  return spendVault({
-    wallet: params.wallet,
-    config: params.config,
-    fn: "recover",
-    privateKey: params.privateKey,
-    destination: params.destination,
-    ...(params.feeSompi === undefined ? {} : { feeSompi: params.feeSompi }),
-  });
+  let privateKey: PrivateKey | undefined;
+  try {
+    try {
+      privateKey = new PrivateKey(params.privateKey.trim());
+    } catch (error) {
+      throw new Error("vault owner key material is invalid", { cause: error });
+    }
+    if (!privateKeyMatchesXOnly(privateKey, params.config.ownerPublic)) {
+      throw new Error("vault owner key does not match the configured public key");
+    }
+    return await spendVault({
+      wallet: params.wallet,
+      config: params.config,
+      fn: "recover",
+      signingKey: privateKey,
+      destination: params.destination,
+      ...(params.feeSompi === undefined ? {} : { feeSompi: params.feeSompi }),
+    });
+  } finally {
+    privateKey?.free();
+  }
 }
 
 async function fundInitialVault(params: {
@@ -1114,7 +1187,7 @@ async function fundInitialVault(params: {
 async function topUpVault(params: {
   wallet: KaspaWallet;
   config: VaultConfig;
-  privateKey: string;
+  signingKey: PrivateKey;
   amountSompi: bigint | "max";
   keepFloatSompi: bigint;
   feeCeilingSompi?: bigint;
@@ -1126,7 +1199,7 @@ async function topUpVault(params: {
   configUpdate: Partial<VaultConfig>;
   preparedTransaction?: string;
 }> {
-  const { wallet, config, privateKey, keepFloatSompi } = params;
+  const { wallet, config, signingKey, keepFloatSompi } = params;
   if (!config.covenantId) throw new Error("vault has no covenant id; cannot top up");
   const rpc = await wallet.client();
   const vaultUtxo = await selectCurrentVaultUtxo(wallet, config, true);
@@ -1141,8 +1214,14 @@ async function topUpVault(params: {
   const nextState = lockDaa >= resetTargetDaa ? { windowStartDaa: lockDaa, spentInWindowSompi: 0n } : state;
   const nextRedeem = buildRedeemScript(config.agentPublic, config.ownerPublic, BigInt(config.maxOutflowSompi), windowSize, nextState);
   const nextSpk = payToScriptHashScript(nextRedeem);
-  const nextAddress = addressFromScriptPublicKey(nextSpk, wallet.networkId)?.toString();
-  if (!nextAddress) throw new Error("could not derive next vault address");
+  const derivedAddress = addressFromScriptPublicKey(nextSpk, wallet.networkId);
+  let nextAddress: string;
+  try {
+    if (!derivedAddress) throw new Error("could not derive next vault address");
+    nextAddress = derivedAddress.toString();
+  } finally {
+    derivedAddress?.free();
+  }
   const changeSpk = payToAddressScript(wallet.address);
   const estimate = await rpc.getFeeEstimate();
   const feerate = estimate.estimate?.normalBuckets?.[0]?.feerate ?? 100;
@@ -1182,7 +1261,7 @@ async function topUpVault(params: {
   }
 
   tx = buildTopupTx(config, vaultUtxo, walletUtxos, nextSpk, changeSpk, amountSompi, feeSompi, lockDaa);
-  const pushedVaultSig = createInputSignature(tx, 0, new PrivateKey(privateKey), SighashType.All);
+  const pushedVaultSig = createInputSignature(tx, 0, signingKey, SighashType.All);
   setInputScripts(tx, [
     payToScriptHashSignatureScript(redeem, buildSigArgs(hexToBytes(pushedVaultSig).slice(1), "topup")),
     ...walletUtxos.map((_, index) => wallet.signInput(tx, index + 1)),
@@ -1393,15 +1472,142 @@ function stateFromConfig(config: Pick<VaultConfig, "windowStartDaa" | "spentInWi
   };
 }
 
-function assertCurrentConfig(config: Partial<VaultConfig>): asserts config is VaultConfig {
-  const missing = ["agentPublic", "ownerPublic", "maxOutflowSompi", "windowSizeDaa", "windowStartDaa", "spentInWindowSompi", "address"].filter(
-    (key) => typeof (config as any)[key] !== "string"
-  );
-  if (missing.length) {
-    throw new Error(`vault config is not the current stateful format; recreate the vault (${missing.join(", ")} missing)`);
+function assertCurrentConfig(config: unknown, networkId: string): asserts config is VaultConfig {
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    throw new Error("vault config is not the current stateful format; recreate the vault");
   }
-  if (config.template !== undefined && config.template !== VAULT_TEMPLATE_VERSION) {
-    throw new Error(`unsupported vault template ${config.template}; expected ${VAULT_TEMPLATE_VERSION}`);
+  if (networkId !== "testnet-10") {
+    throw new Error("the initial Sompi vault profile supports only testnet-10");
+  }
+  const record = config as Record<string, unknown>;
+  const required = [
+    "address",
+    "agentPublic",
+    "maxOutflowSompi",
+    "ownerPublic",
+    "spentInWindowSompi",
+    "template",
+    "windowSizeDaa",
+    "windowStartDaa",
+  ];
+  const optional = ["covenantId", "currentOutpoint"];
+  const keys = Object.keys(record).sort();
+  if (
+    required.some((key) => !Object.prototype.hasOwnProperty.call(record, key)) ||
+    keys.some((key) => !required.includes(key) && !optional.includes(key))
+  ) {
+    throw new Error("vault config contains missing or unsupported fields");
+  }
+  if (record.template !== VAULT_TEMPLATE_VERSION) {
+    throw new Error(`unsupported vault template; expected ${VAULT_TEMPLATE_VERSION}`);
+  }
+  if (
+    typeof record.agentPublic !== "string" ||
+    !/^[a-f0-9]{64}$/.test(record.agentPublic) ||
+    typeof record.ownerPublic !== "string" ||
+    !/^[a-f0-9]{64}$/.test(record.ownerPublic)
+  ) {
+    throw new Error("vault config public keys are invalid or noncanonical");
+  }
+  const maxOutflowSompi = canonicalUint64(record.maxOutflowSompi, "maximum outflow");
+  const windowSizeDaa = canonicalUint64(record.windowSizeDaa, "window size");
+  const windowStartDaa = canonicalUint64(record.windowStartDaa, "window start");
+  const spentInWindowSompi = canonicalUint64(record.spentInWindowSompi, "window spend");
+  if (maxOutflowSompi === 0n || windowSizeDaa === 0n) {
+    throw new Error("vault config maximum outflow and window size must be positive");
+  }
+  if (spentInWindowSompi > maxOutflowSompi) {
+    throw new Error("vault config window spend exceeds its maximum outflow");
+  }
+  if (typeof record.address !== "string" || record.address.length === 0 || record.address.length > 256) {
+    throw new Error("vault config address is invalid");
+  }
+
+  const hasCovenantId = Object.prototype.hasOwnProperty.call(record, "covenantId");
+  const hasCurrentOutpoint = Object.prototype.hasOwnProperty.call(record, "currentOutpoint");
+  if (hasCovenantId !== hasCurrentOutpoint) {
+    throw new Error("vault config covenant identity and current outpoint must appear together");
+  }
+  if (hasCovenantId) {
+    if (typeof record.covenantId !== "string" || !/^[a-f0-9]{64}$/.test(record.covenantId)) {
+      throw new Error("vault config covenant identity is invalid or noncanonical");
+    }
+    if (!record.currentOutpoint || typeof record.currentOutpoint !== "object" || Array.isArray(record.currentOutpoint)) {
+      throw new Error("vault config current outpoint is invalid");
+    }
+    const outpoint = record.currentOutpoint as Record<string, unknown>;
+    const outpointKeys = Object.keys(outpoint).sort();
+    if (
+      outpointKeys.length !== 2 ||
+      outpointKeys[0] !== "index" ||
+      outpointKeys[1] !== "txid" ||
+      typeof outpoint.txid !== "string" ||
+      !/^[a-f0-9]{64}$/.test(outpoint.txid) ||
+      (outpoint.index !== 0 && outpoint.index !== 1)
+    ) {
+      throw new Error("vault config current outpoint is invalid or noncanonical");
+    }
+  }
+
+  const derivedAddress = deriveVaultAddress(
+    record.agentPublic,
+    record.ownerPublic,
+    maxOutflowSompi,
+    windowSizeDaa,
+    { windowStartDaa, spentInWindowSompi },
+    networkId
+  );
+  if (record.address !== derivedAddress) {
+    throw new Error("vault config address does not match its covenant state");
+  }
+}
+
+function canonicalUint64(value: unknown, label: string): bigint {
+  if (typeof value !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(value)) {
+    throw new Error(`vault config ${label} is invalid or noncanonical`);
+  }
+  const parsed = BigInt(value);
+  if (parsed > UINT64_MAX) throw new Error(`vault config ${label} exceeds uint64`);
+  return parsed;
+}
+
+function deriveVaultAddress(
+  agentPublic: string,
+  ownerPublic: string,
+  maxOutflowSompi: bigint,
+  windowSizeDaa: bigint,
+  state: VaultState,
+  networkId: string
+): string {
+  const redeem = buildRedeemScript(
+    agentPublic,
+    ownerPublic,
+    maxOutflowSompi,
+    windowSizeDaa,
+    state
+  );
+  const scriptPublicKey = payToScriptHashScript(redeem);
+  const address = addressFromScriptPublicKey(scriptPublicKey, networkId);
+  try {
+    if (!address) throw new Error("could not derive vault address");
+    return address.toString();
+  } finally {
+    address?.free();
+    scriptPublicKey.free();
+  }
+}
+
+function encodeVaultConfig(config: VaultConfig): Buffer {
+  return Buffer.from(`${JSON.stringify(config, null, 2)}\n`, "utf8");
+}
+
+function privateKeyMatchesXOnly(privateKey: PrivateKey, expectedPublicKey: string): boolean {
+  let keypair: Keypair | undefined;
+  try {
+    keypair = privateKey.toKeypair();
+    return String(keypair.xOnlyPublicKey).toLowerCase() === expectedPublicKey.toLowerCase();
+  } finally {
+    keypair?.free();
   }
 }
 
@@ -1751,8 +1957,13 @@ function scriptPublicKeyMatchesAddress(
 }
 
 export function generateOwnerKey(): { privateKey: string; publicKey: string } {
-  const kp = Keypair.random();
-  return { privateKey: kp.privateKey, publicKey: String(kp.xOnlyPublicKey) };
+  let keypair: Keypair | undefined;
+  try {
+    keypair = Keypair.random();
+    return { privateKey: keypair.privateKey, publicKey: String(keypair.xOnlyPublicKey) };
+  } finally {
+    keypair?.free();
+  }
 }
 
 export { bytesToHex };

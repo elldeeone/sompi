@@ -19,8 +19,8 @@ import {
   AP2_PAYMENT_AUTHORIZATION_PATH,
   Ap2AuthorityDecisionEvidenceVerifier,
   Ap2AuthorityModule,
-  Ap2CheckoutTermsModule,
   Ap2HttpCommerceAuthorizationModule,
+  Ap2MerchantCheckoutVerifier,
   Ap2PaidResponseVerifier,
   SOMPI_CHECKOUT_HEADER,
   decodeAp2CommerceAuthorizationPresentation,
@@ -45,6 +45,7 @@ import {
   KaspaStagingRecoveryModule,
   KaspaTestnet10AddressCodec,
   KaspaX402ExactPaymentModule,
+  KaspaX402PaymentRequirementsVerifier,
   KaspaX402ServerStorePaymentResponseLookup,
   Kip10ExactTransactionBuilder,
   RpcChainObservationSource,
@@ -70,6 +71,7 @@ import {
   DemoMerchantFixture,
   type DemoMerchantOffer,
 } from "../demo/merchant-fixture.js";
+import { SompiCheckoutTermsModule } from "../purchase/checkout-terms-module.js";
 import type {
   PinnedHttpTransport,
   PinnedHttpTransportRequest,
@@ -338,10 +340,13 @@ function composeLiveCoordinator(input: {
     limits: { requestTimeoutMs: 20_000 },
     now,
   });
-  const checkout = new Ap2CheckoutTermsModule({
+  const checkout = new SompiCheckoutTermsModule({
     transport: input.transport,
-    trust,
-    authorityAudience: AUTHORITY_SIGNER.issuer,
+    merchantCheckout: new Ap2MerchantCheckoutVerifier({
+      trust,
+      authorityAudience: AUTHORITY_SIGNER.issuer,
+    }),
+    paymentRequirements: new KaspaX402PaymentRequirementsVerifier(),
     now,
   });
   const commerceEvidence = new JournalAp2CommerceEvidenceSource({

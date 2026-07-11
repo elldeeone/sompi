@@ -8,12 +8,11 @@ import {
   evidenceDigest,
 } from "../../purchase/identity.js";
 import type {
-  KaspaPreparedExecutionContext,
   SettlementResult,
   VerifiedArtifact,
 } from "../../purchase/coordinator.js";
 import type { Sha256Digest } from "../../purchase/types.js";
-import type { PaidResponseVerifierInput } from "../kaspa-x402/exact-payment-module.js";
+import type { PaidResourceResponse } from "../../purchase/paid-resource-response.js";
 import {
   issueCheckoutReceipt,
   issuePaymentReceipt,
@@ -57,7 +56,7 @@ test("paid-response verifier returns copied Fulfilment and exact AP2 evidence jo
   const verifier = makeVerifier(source);
   const mutableBody = Uint8Array.from(fixture.input.body);
   const mutableHeaders = fixture.input.headers.map(([name, value]) => [name, value] as [string, string]);
-  const input: PaidResponseVerifierInput = {
+  const input: PaidResourceResponse = {
     ...fixture.input,
     body: mutableBody,
     headers: mutableHeaders,
@@ -287,7 +286,7 @@ interface Fixture {
   readonly paymentIdentifier: string;
   readonly checkoutReceipt: string;
   readonly paymentReceipt: string;
-  readonly input: PaidResponseVerifierInput;
+  readonly input: PaidResourceResponse;
 }
 
 async function makeFixture(): Promise<Fixture> {
@@ -336,60 +335,44 @@ async function makeFixture(): Promise<Fixture> {
     createdAtMs: FIXED_NOW * 1_000,
     expiresAtMs: Date.parse(checkout.terms.expiresAt),
   };
-  const context: KaspaPreparedExecutionContext = {
-    execution: {
+  const context: PaidResourceResponse["context"] = {
+    purchaseId: checkout.purchaseId,
+    terms: checkout.terms,
+    authorizationRequest,
+    authorization: {
       purchaseId: checkout.purchaseId,
-      terms: checkout.terms,
-      authorizationRequest,
-      authorization: {
+      checkoutDigest: checkout.checkoutDigest,
+      decision: "approved",
+      authorityId: AUTHORITY_SIGNER.issuer,
+      evidenceDigest: AUTHORIZATION_DIGEST,
+      facts: {
         purchaseId: checkout.purchaseId,
+        resourceUrl: checkout.resourceUrl,
+        method: checkout.method,
+        requestMediaType: "",
+        requestBodyDigest: authorizationRequest.requestBodyDigest,
+        resourceFingerprint: checkout.terms.resourceFingerprint,
+        merchantId: checkout.terms.merchant.id,
+        merchantOrigin: checkout.terms.merchant.origin,
+        amountAtomic: checkout.terms.amountAtomic,
+        asset: checkout.terms.asset,
+        network: checkout.terms.network,
+        payTo: checkout.terms.payTo,
+        expiresAt: checkout.terms.expiresAt,
         checkoutDigest: checkout.checkoutDigest,
-        decision: "approved",
-        authorityId: AUTHORITY_SIGNER.issuer,
-        evidenceDigest: AUTHORIZATION_DIGEST,
-        facts: {
-          purchaseId: checkout.purchaseId,
-          resourceUrl: checkout.resourceUrl,
-          method: checkout.method,
-          requestMediaType: "",
-          requestBodyDigest: authorizationRequest.requestBodyDigest,
-          resourceFingerprint: checkout.terms.resourceFingerprint,
-          merchantId: checkout.terms.merchant.id,
-          merchantOrigin: checkout.terms.merchant.origin,
-          amountAtomic: checkout.terms.amountAtomic,
-          asset: checkout.terms.asset,
-          network: checkout.terms.network,
-          payTo: checkout.terms.payTo,
-          expiresAt: checkout.terms.expiresAt,
-          checkoutDigest: checkout.checkoutDigest,
-          requestDigest: authorizationRequest.requestDigest,
-          nonceDigest: authorizationRequest.nonceDigest,
-          additionalCostCeilingAtomic: checkout.additionalCostCeilingAtomic,
-        },
+        requestDigest: authorizationRequest.requestDigest,
+        nonceDigest: authorizationRequest.nonceDigest,
+        additionalCostCeilingAtomic: checkout.additionalCostCeilingAtomic,
       },
-      paymentIdentifier,
     },
+    paymentIdentifier,
     request: {
       url: checkout.resourceUrl,
       method: checkout.method,
-      body: new Uint8Array(),
       requestFingerprint: checkout.terms.resourceFingerprint,
     },
     paymentRequirements: Buffer.from("fixed-payment-requirements", "utf8"),
-    staging: {
-      transactionId: "33".repeat(32),
-      outpoint: `${"33".repeat(32)}:0`,
-      amountAtomic: "31500000",
-      evidenceDigest: evidenceDigest("staging"),
-      fundingSource: "vault-treasury",
-    },
-    preparation: {
-      preparedBytes: Buffer.from("prepared", "utf8"),
-      preparedDigest: evidenceDigest("prepared"),
-      transactionId: TRANSACTION_ID,
-      requiredFinality: "accepted",
-      fundingSource: "vault-treasury",
-    },
+    preparedTransactionId: TRANSACTION_ID,
   };
   const evidence: VerifiedAp2CommerceEvidence = Object.freeze({
     checkout,
@@ -433,17 +416,17 @@ function sourceFor(evidence: VerifiedAp2CommerceEvidence): Ap2CommerceEvidenceSo
 }
 
 function withHeaders(
-  input: PaidResponseVerifierInput,
+  input: PaidResourceResponse,
   headers: readonly (readonly [string, string])[]
-): PaidResponseVerifierInput {
+): PaidResourceResponse {
   return { ...input, headers };
 }
 
 function replaceReceiptHeaders(
-  input: PaidResponseVerifierInput,
+  input: PaidResourceResponse,
   checkoutReceipt: string,
   paymentReceipt: string
-): PaidResponseVerifierInput {
+): PaidResourceResponse {
   return withHeaders(input, input.headers.map(([name, value]) => {
     if (name === SOMPI_CHECKOUT_RECEIPT_HEADER) return [name, checkoutReceipt] as const;
     if (name === SOMPI_PAYMENT_RECEIPT_HEADER) return [name, paymentReceipt] as const;

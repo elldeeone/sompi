@@ -45,6 +45,21 @@ The Purchase module uses the lower-level sequence:
 A corrective 402, timeout, or lost response enters reconciliation. Sompi never
 constructs a different payment before determining the first payment's outcome.
 
+## Checkout discovery boundary
+
+Sompi's composition module acquires and bounds the `SOMPI-CHECKOUT` and
+`PAYMENT-REQUIRED` headers. The AP2 adapter verifies only the Merchant Checkout
+and its opaque Payment Requirements digest. A separate Kaspa-x402 adapter
+verifies only `PAYMENT-REQUIRED` against canonical Sompi Checkout Terms. The two
+protocol adapter trees have no imports of each other; a structural unit test
+enforces that boundary for production code and tests.
+
+The local Merchant Checkout profile is
+`urn:sompi:checkout:single-resource:2`. It deliberately carries no x402 version,
+scheme, template, or binding claims. Those are owned and validated here in the
+Kaspa-x402 adapter. The AP2 Payment Instrument's experimental native-KAS mapping
+remains separately defined by ADR-0010.
+
 ## Exact-only adapters
 
 ### FundingProvider
