@@ -23,7 +23,9 @@ import {
   driveLiveTreasuryOperation,
   initializeLiveProof,
   liveBootstrapNeedsCapacity,
+  readProgress,
   readPrivateJsonState,
+  reconcileLiveChainMilestoneInclusion,
   verifyLiveChainMilestoneInclusion,
   writeAtomicJson,
   type LiveChainMilestone,
@@ -267,6 +269,92 @@ test("restart inclusion proof is transaction and accepting-block exact without a
     ),
     /accepting-block proof changed/
   );
+});
+
+test("restart reconciliation refreshes only a DAG-reaccepted transaction's accepting block", async () => {
+  const milestone = Object.freeze({
+    ...chainMilestone(
+      "26".repeat(32),
+      "kaspatest:qq2n2shqkghczyel57af242ffs50x5uj07w7ezg7kwm8frwt5xhljqa3d68et",
+      "1"
+    ),
+    covenantId: "27".repeat(32),
+  });
+  const currentHash = "28".repeat(32);
+  const currentDaaScore = "107";
+  const wallet = {
+    client: async () => ({
+      getVirtualChainFromBlock: async () => ({
+        acceptedTransactionIds: [{
+          acceptingBlockHash: currentHash,
+          acceptedTransactionIds: [milestone.transactionId],
+        }],
+      }),
+      getBlock: async () => ({
+        block: {
+          header: { hash: currentHash, daaScore: currentDaaScore },
+          verboseData: { hash: currentHash },
+        },
+      }),
+    }),
+  } as unknown as KaspaWallet;
+
+  const reconciled = await reconcileLiveChainMilestoneInclusion(milestone, wallet);
+  assert.notEqual(reconciled, milestone);
+  assert.deepEqual(reconciled, {
+    ...milestone,
+    acceptingBlockHash: currentHash,
+    acceptingBlockDaaScore: currentDaaScore,
+  });
+  assert.equal(reconciled.transactionId, milestone.transactionId);
+  assert.equal(reconciled.outpoint, milestone.outpoint);
+  assert.equal(reconciled.observationStartHash, milestone.observationStartHash);
+  assert.equal(reconciled.covenantId, milestone.covenantId);
+  await assert.rejects(
+    verifyLiveChainMilestoneInclusion(milestone, wallet),
+    /accepting-block proof changed/
+  );
+  await verifyLiveChainMilestoneInclusion(reconciled, wallet);
+});
+
+test("recovery milestones remain authoritative when the progress cache is newer", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-live-proof-recovery-source-"));
+  try {
+    const initialized = initializeLiveProof(
+      path.join(root, "proof"),
+      path.join(root, "source"),
+      TEST_NODE_URL
+    );
+    const recovery = readPrivateJsonState<LiveRecoveryRecord>(initialized.layout.recoveryPath);
+    const durableMilestone = chainMilestone(
+      "29".repeat(32),
+      initialized.config.wallets.treasuryAddress,
+      "500000000"
+    );
+    const cacheOnlyMilestone = {
+      ...durableMilestone,
+      transactionId: "2a".repeat(32),
+      outpoint: `${"2a".repeat(32)}:0`,
+    };
+    writeAtomicJson(initialized.layout.recoveryPath, {
+      ...recovery,
+      updatedAt: "2026-07-11T00:00:00.000Z",
+      milestones: { bootstrap: durableMilestone },
+    });
+    writeAtomicJson(initialized.layout.progressPath, {
+      version: 1,
+      runId: initialized.config.runId,
+      updatedAt: "2026-07-11T00:00:01.000Z",
+      bootstrap: cacheOnlyMilestone,
+    });
+
+    const resumed = readProgress(initialized.layout.progressPath, initialized.config.runId);
+    assert.deepEqual(resumed.bootstrap, durableMilestone);
+    assert.equal(resumed.updatedAt, "2026-07-11T00:00:00.000Z");
+    await closeInitialized(initialized);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("live bootstrap capacity and Treasury dispatch preserve restart idempotency", async () => {

@@ -476,12 +476,16 @@ export async function bootstrapLiveProof(input: {
     };
     input.onProgress?.("recovering durable bootstrap operation");
     if (progress.bootstrap) {
-      await revalidateOperationMilestone({
+      const milestone = await revalidateOperationMilestone({
         journal: bootstrapJournal,
         request: bootstrapRequest,
         milestone: progress.bootstrap,
         wallet: treasuryWallet,
       });
+      if (milestone !== progress.bootstrap) {
+        progress = updateProgress(layout, progress, { bootstrap: milestone });
+        writeRecoveryRecord(layout, config, progress);
+      }
     } else {
       const existing = assertOperationRequestMatches(bootstrapJournal, bootstrapRequest);
       if (purchaseHasDownstreamState) {
@@ -542,12 +546,16 @@ export async function bootstrapLiveProof(input: {
     assertPreSpendDurability(initialized, config.sourceWalletDirectory);
     input.onProgress?.("recovering durable KIP-10 inventory operation");
     if (progress.borrowInventory) {
-      await revalidateOperationMilestone({
+      const milestone = await revalidateOperationMilestone({
         journal: purchaseJournal,
         request: borrowRequest,
         milestone: progress.borrowInventory,
         wallet: treasuryWallet,
       });
+      if (milestone !== progress.borrowInventory) {
+        progress = updateProgress(layout, progress, { borrowInventory: milestone });
+        writeRecoveryRecord(layout, config, progress);
+      }
     } else {
       const existing = assertOperationRequestMatches(purchaseJournal, borrowRequest);
       const depositExists = Boolean(
@@ -600,13 +608,17 @@ export async function bootstrapLiveProof(input: {
     assertPreSpendDurability(initialized, config.sourceWalletDirectory);
     input.onProgress?.("recovering durable fresh-vault deposit operation");
     if (progress.vaultDeposit) {
-      await revalidateOperationMilestone({
+      const milestone = await revalidateOperationMilestone({
         journal: purchaseJournal,
         request: depositRequest,
         milestone: progress.vaultDeposit,
         wallet: treasuryWallet,
         deposit: true,
       });
+      if (milestone !== progress.vaultDeposit) {
+        progress = updateProgress(layout, progress, { vaultDeposit: milestone });
+        writeRecoveryRecord(layout, config, progress);
+      }
     } else {
       const existing = assertOperationRequestMatches(purchaseJournal, depositRequest);
       const purchaseExists = Boolean(
@@ -1027,25 +1039,29 @@ interface ParsedExactTransaction {
 }
 
 export function readProgress(filename: string, runId: string): LiveProofProgress {
+  const recoveryPath = path.join(path.dirname(filename), "recovery.json");
+  if (secureFileExists(recoveryPath)) {
+    const recovery = readRecoveryRecord(recoveryPath, runId);
+    // recovery.json is the safety source of truth. progress.json is a
+    // replaceable operator convenience cache; a crash between their atomic
+    // replacements may leave either generation there without authorizing a
+    // replacement transaction.
+    return Object.freeze({
+      version: 1,
+      runId,
+      updatedAt: recovery.updatedAt,
+      ...(recovery.milestones.bootstrap
+        ? { bootstrap: recovery.milestones.bootstrap }
+        : {}),
+      ...(recovery.milestones.borrowInventory
+        ? { borrowInventory: recovery.milestones.borrowInventory }
+        : {}),
+      ...(recovery.milestones.vaultDeposit
+        ? { vaultDeposit: recovery.milestones.vaultDeposit }
+        : {}),
+    });
+  }
   if (!secureFileExists(filename)) {
-    const recoveryPath = path.join(path.dirname(filename), "recovery.json");
-    if (secureFileExists(recoveryPath)) {
-      const recovery = readRecoveryRecord(recoveryPath, runId);
-      return Object.freeze({
-        version: 1,
-        runId,
-        updatedAt: recovery.updatedAt,
-        ...(recovery.milestones.bootstrap
-          ? { bootstrap: recovery.milestones.bootstrap }
-          : {}),
-        ...(recovery.milestones.borrowInventory
-          ? { borrowInventory: recovery.milestones.borrowInventory }
-          : {}),
-        ...(recovery.milestones.vaultDeposit
-          ? { vaultDeposit: recovery.milestones.vaultDeposit }
-          : {}),
-      });
-    }
     return Object.freeze({
       version: 1,
       runId,
@@ -1055,20 +1071,6 @@ export function readProgress(filename: string, runId: string): LiveProofProgress
   const value = readPrivateJson<LiveProofProgress>(filename);
   if (value.version !== 1 || value.runId !== runId) {
     throw new Error("live proof progress belongs to a different run");
-  }
-  const recoveryPath = path.join(path.dirname(filename), "recovery.json");
-  if (secureFileExists(recoveryPath)) {
-    const recovery = readRecoveryRecord(recoveryPath, runId);
-    const progressMilestones = {
-      ...(value.bootstrap ? { bootstrap: value.bootstrap } : {}),
-      ...(value.borrowInventory ? { borrowInventory: value.borrowInventory } : {}),
-      ...(value.vaultDeposit ? { vaultDeposit: value.vaultDeposit } : {}),
-    };
-    if (
-      JSON.stringify(recovery.milestones) !== JSON.stringify(progressMilestones)
-    ) {
-      throw new Error("live proof progress and recovery milestones differ");
-    }
   }
   return value;
 }
@@ -1354,13 +1356,13 @@ function assertOperationRequestMatches(
   return true;
 }
 
-async function revalidateOperationMilestone(input: {
+async function revalidateOperationMilestone<T extends LiveChainMilestone>(input: {
   readonly journal: PurchaseJournal;
   readonly request: TreasuryOperationRequest;
-  readonly milestone: LiveChainMilestone;
+  readonly milestone: T;
   readonly wallet: KaspaWallet;
   readonly deposit?: boolean;
-}): Promise<void> {
+}): Promise<T> {
   const record = input.journal.findTreasuryOperation(input.request.operationKey);
   if (!record || record.state !== "completed" || !record.transactionId) {
     throw new Error("live milestone has no exact completed Treasury operation");
@@ -1412,21 +1414,39 @@ async function revalidateOperationMilestone(input: {
   if (input.milestone.observationStartHash !== observationStartHash) {
     throw new Error("live milestone changed its durable pre-broadcast chain anchor");
   }
-  await verifyLiveChainMilestoneInclusion(input.milestone, input.wallet);
+  return reconcileLiveChainMilestoneInclusion(input.milestone, input.wallet);
 }
 
-export async function verifyLiveChainMilestoneInclusion(
-  milestone: LiveChainMilestone,
+export async function reconcileLiveChainMilestoneInclusion<T extends LiveChainMilestone>(
+  milestone: T,
   wallet: KaspaWallet
-): Promise<void> {
+): Promise<T> {
   const acceptance = await acceptingBlockForTransaction(
     wallet,
     requireHash(milestone.observationStartHash, "Treasury observation start hash"),
     requireHash(milestone.transactionId, "Treasury transaction ID")
   );
   if (
-    milestone.acceptingBlockHash !== acceptance.hash ||
-    milestone.acceptingBlockDaaScore !== acceptance.daaScore
+    milestone.acceptingBlockHash === acceptance.hash &&
+    milestone.acceptingBlockDaaScore === acceptance.daaScore
+  ) {
+    return milestone;
+  }
+  return Object.freeze({
+    ...milestone,
+    acceptingBlockHash: acceptance.hash,
+    acceptingBlockDaaScore: acceptance.daaScore,
+  }) as T;
+}
+
+export async function verifyLiveChainMilestoneInclusion(
+  milestone: LiveChainMilestone,
+  wallet: KaspaWallet
+): Promise<void> {
+  const reconciled = await reconcileLiveChainMilestoneInclusion(milestone, wallet);
+  if (
+    milestone.acceptingBlockHash !== reconciled.acceptingBlockHash ||
+    milestone.acceptingBlockDaaScore !== reconciled.acceptingBlockDaaScore
   ) {
     throw new Error("live milestone accepting-block proof changed");
   }
