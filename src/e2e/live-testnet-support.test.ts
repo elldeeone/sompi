@@ -59,6 +59,7 @@ test("live proof initialization is owner-only, fresh, and restart-stable before 
   try {
     const first = initializeLiveProof(path.join(root, "proof"), source, TEST_NODE_URL);
     const firstConfig = JSON.stringify(first.config);
+    assert.equal(first.vault.initialAddress(), first.config.vault.address);
     assert.equal(fs.statSync(first.layout.root).mode & 0o777, 0o700);
     for (const filename of [
       first.layout.configPath,

@@ -103,6 +103,7 @@ test("vault staging is prepared, submitted, observed, and committed at separate 
 
   try {
     const before = vault.config();
+    assert.equal(vault.initialAddress(), created.address);
     await assert.rejects(
       vault.prepareSend(wallet, wallet.address, 70_000_000n, undefined, 1n),
       /fee exceeds the capacity reserved before signing/
@@ -126,6 +127,8 @@ test("vault staging is prepared, submitted, observed, and committed at separate 
     const committed = vault.commitObservedSend(prepared, observed);
     assert.equal(committed.currentOutpoint?.txid, prepared.transactionId);
     assert.equal(committed.currentOutpoint?.index, 1);
+    assert.notEqual(committed.address, vault.initialAddress());
+    assert.equal(vault.initialAddress(), created.address);
     assert.equal(vault.commitObservedSend(prepared, observed).address, committed.address);
 
     hideSubmittedOutputs = true;

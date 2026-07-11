@@ -223,6 +223,18 @@ export class VaultManager {
     }
   }
 
+  /** Stable address of this vault's zero-state covenant, independent of later rotations. */
+  initialAddress(): string {
+    const config = this.config();
+    return this.deriveAddress(
+      config.agentPublic,
+      config.ownerPublic,
+      BigInt(config.maxOutflowSompi),
+      BigInt(config.windowSizeDaa),
+      { windowStartDaa: 0n, spentInWindowSompi: 0n }
+    );
+  }
+
   create(maxOutflowSompi: bigint, ownerPublicKey: string, windowSizeDaa: bigint = DEFAULT_WINDOW_SIZE_DAA): VaultConfig {
     if (this.configured) {
       throw new Error(`vault already exists at ${this.state.directory}; use it or move it aside first`);

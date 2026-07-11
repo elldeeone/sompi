@@ -320,7 +320,7 @@ export function initializeLiveProof(
     }),
     vault: Object.freeze({
       dataDirectory: vaultDataDirectory,
-      address: vaultConfig.address,
+      address: vault.initialAddress(),
       ownerPublicKey: vaultOwner.publicKey,
       ownerKeyPath: vaultOwnerKeyPath,
     }),
