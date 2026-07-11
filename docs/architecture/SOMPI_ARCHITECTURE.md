@@ -166,8 +166,9 @@ Responsibilities:
 It does not sign authorization, construct AP2 credentials, parse x402 wire
 objects, or directly advance payment state.
 
-The current `paid_fetch` experience may remain as a user-facing mapping onto
-Purchase initiation. Its old x402 v1 implementation and state do not remain.
+The clean-cutover MCP surface exposes `purchase`, `purchase_status`, and
+`purchase_recover`. The former `paid_fetch` tool, x402 v1 implementation, and
+state do not remain; their useful intent is represented directly by Purchase.
 
 ### 6.2 Purchase module
 

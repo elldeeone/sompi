@@ -43,6 +43,7 @@ export interface PurchaseAuthorizationRequest {
   requestDigest: Sha256Digest;
   nonceDigest: Sha256Digest;
   additionalCostCeilingAtomic: string;
+  createdAtMs: number;
   expiresAtMs: number;
 }
 
@@ -198,6 +199,13 @@ export function authorizationFacts(request: PurchaseAuthorizationRequest): Canon
   const terms = request.terms;
   if (!Number.isSafeInteger(request.expiresAtMs) || request.expiresAtMs <= 0) {
     throw new PurchaseContractError("authorization request expiry is invalid");
+  }
+  if (
+    !Number.isSafeInteger(request.createdAtMs) ||
+    request.createdAtMs <= 0 ||
+    request.createdAtMs >= request.expiresAtMs
+  ) {
+    throw new PurchaseContractError("authorization request creation time is invalid");
   }
   if (Date.parse(terms.expiresAt) !== request.expiresAtMs) {
     throw new PurchaseContractError("authorization request expiry does not match Checkout Terms");

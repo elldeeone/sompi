@@ -25,6 +25,7 @@ import {
   AP2_HUMAN_PRESENT_PROFILE,
   AP2_NATIVE_KAS_INSTRUMENT_PROFILE,
   AP2_PAYMENT_MANDATE_VCT,
+  AP2_ROOT_SD_JWT_TYP,
   KASPA_TESTNET_NETWORK,
   KASPA_X402_SCHEME,
   KAS_ASSET,
@@ -223,7 +224,7 @@ async function issueDirectRoot<T extends object>(
     : { delegate_payload: { _sd: [0] } };
   try {
     const issued = await instance.issue(payload, disclosureFrame as never, {
-      header: { kid: signer.kid },
+      header: { kid: signer.kid, typ: AP2_ROOT_SD_JWT_TYP },
     });
     // Make the fully disclosed direct presentation explicit and reject library drift.
     assertDirectRootStructure(issued, discloseCheckoutJwt ? "checkout" : "payment");
@@ -304,9 +305,17 @@ function assertDirectRootStructure(
   assertCompactJwt(issuerJwt);
   const jwtParts = issuerJwt.split(".");
   const headerValue = requireRecord(decodeBase64urlJson(jwtParts[0], "mandate protected header"), "mandate protected header");
-  assertExactKeys(headerValue, ["alg", "kid"], ["alg", "kid"], "mandate protected header");
+  assertExactKeys(
+    headerValue,
+    ["alg", "kid", "typ"],
+    ["alg", "kid", "typ"],
+    "mandate protected header"
+  );
   if (headerValue.alg !== "ES256") {
     throw new Ap2AdapterError("mandate algorithm is outside the pinned profile", "profile_mismatch");
+  }
+  if (headerValue.typ !== AP2_ROOT_SD_JWT_TYP) {
+    throw new Ap2AdapterError("mandate typ is outside the pinned Python profile", "profile_mismatch");
   }
   const kid = requireBoundedText(headerValue.kid, "mandate kid", 160);
 

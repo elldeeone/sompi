@@ -559,6 +559,7 @@ test("treasury staging transaction edges roll back cleanly across restart", () =
       attempt: 1,
       identifier: createPaymentIdentifier(purchaseId, 1),
     });
+    observeMerchantAuthorization(journal, purchaseId, 1);
     const input = treasuryStagingInput(purchaseId, reservation.id, 93);
     journal.close();
 
@@ -574,7 +575,10 @@ test("treasury staging transaction edges roll back cleanly across restart", () =
 
     const afterPlanFault = new PurchaseJournal(filename, { now: clock.now, evidenceDirectory });
     assert.equal(afterPlanFault.treasuryStagingRecoveryContext(purchaseId, 1), undefined);
-    assert.deepEqual(afterPlanFault.effectsForPurchase(purchaseId), []);
+    assert.deepEqual(
+      afterPlanFault.effectsForPurchase(purchaseId).map(({ kind, state }) => ({ kind, state })),
+      [{ kind: "merchant-authorization", state: "observed" }]
+    );
     assert.equal(afterPlanFault.requireReservation(reservation.id).state, "active");
     const plan = afterPlanFault.planTreasuryStaging(input);
     afterPlanFault.transitionPurchase(
@@ -1291,6 +1295,7 @@ function authorizedPurchase(journal: PurchaseJournal, seed: number, amountAtomic
     requestDigest,
     nonceDigest,
     additionalCostCeilingAtomic: "10",
+    createdAtMs: journal.requireAuthorizationRequest(purchase.id).createdAtMs,
     expiresAtMs,
   });
   journal.recordAuthorizationDecision(purchase.id, {
@@ -1423,6 +1428,7 @@ function plannedTreasuryStagingFlow(journal: PurchaseJournal, seed: number, now:
     attempt: 1,
     identifier: createPaymentIdentifier(purchaseId, 1),
   });
+  observeMerchantAuthorization(journal, purchaseId, 1);
   const input = treasuryStagingInput(purchaseId, reservation.id, seed);
   const plan = journal.planTreasuryStaging(input);
   return { purchaseId, policy, reservation, input, plan };
@@ -1478,6 +1484,48 @@ function verifiedEvidence(
     detailDigest: evidenceDigest(`verified:${value}`),
   });
   return artifact.digest;
+}
+
+function observeMerchantAuthorization(
+  journal: PurchaseJournal,
+  purchaseId: PurchaseId,
+  attempt: number
+): Sha256Digest {
+  const paymentIdentifier = createPaymentIdentifier(purchaseId, attempt);
+  const preparedBytes = Buffer.from(
+    `merchant-authorization:${purchaseId}:${paymentIdentifier}`,
+    "utf8"
+  );
+  const effect = journal.planEffect({
+    purchaseId,
+    kind: "merchant-authorization",
+    idempotencyKey: `merchant-authorization:${paymentIdentifier}`,
+    payloadDigest: evidenceDigest(preparedBytes),
+    preparedBytes,
+  });
+  const claim = journal.claimEffect(
+    effect.id,
+    `merchant-authorization-fixture-${attempt}`,
+    60_000
+  );
+  assert.ok(claim);
+  const digest = verifiedEvidence(
+    journal,
+    purchaseId,
+    `merchant-authorization-acceptance:${paymentIdentifier}`,
+    "merchant-authorization",
+    attempt,
+    "test-merchant-authorization-v1",
+    "merchant:test"
+  );
+  journal.markEffectSubmitted(claim, digest);
+  journal.recordEffectObservation(effect.id, claim.lease, {
+    status: "observed",
+    resultDigest: digest,
+    detailDigest: digest,
+  });
+  journal.releaseLease(claim.lease);
+  return digest;
 }
 
 function advanceLifecycle(

@@ -9,11 +9,14 @@ import {
   JOURNAL_APPLICATION_ID,
   JOURNAL_SCHEMA_CHECKSUM,
   JOURNAL_SCHEMA_V1_CHECKSUM,
+  JOURNAL_SCHEMA_V2_CHECKSUM,
+  JOURNAL_SCHEMA_V3_CHECKSUM,
+  JOURNAL_SCHEMA_V3_SQL,
   JOURNAL_SCHEMA_V1_SQL,
   JOURNAL_SCHEMA_VERSION,
 } from "./journal-schema.js";
 
-test("a verified v1 journal migrates transactionally to canonical Purchase facts v2", () => {
+test("a verified v1 journal migrates transactionally through staging recovery facts v4", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-journal-migrate-"));
   fs.chmodSync(directory, 0o700);
   const filename = path.join(directory, "purchase.sqlite");
@@ -26,16 +29,19 @@ test("a verified v1 journal migrates transactionally to canonical Purchase facts
     const migrations = raw.prepare("SELECT version, checksum FROM schema_migrations ORDER BY version").all();
     assert.deepEqual(migrations, [
       { version: 1, checksum: JOURNAL_SCHEMA_V1_CHECKSUM },
-      { version: 2, checksum: JOURNAL_SCHEMA_CHECKSUM },
+      { version: 2, checksum: JOURNAL_SCHEMA_V2_CHECKSUM },
+      { version: 3, checksum: JOURNAL_SCHEMA_V3_CHECKSUM },
+      { version: 4, checksum: JOURNAL_SCHEMA_CHECKSUM },
     ]);
     const tables = raw
-      .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name IN ('checkout_terms', 'purchase_authorizations', 'fulfilments', 'purchase_receipts') ORDER BY name")
+      .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name IN ('checkout_terms', 'purchase_authorizations', 'fulfilments', 'purchase_receipts', 'treasury_operations') ORDER BY name")
       .all();
     assert.deepEqual(tables, [
       { name: "checkout_terms" },
       { name: "fulfilments" },
       { name: "purchase_authorizations" },
       { name: "purchase_receipts" },
+      { name: "treasury_operations" },
     ]);
     raw.close();
   } finally {
@@ -43,7 +49,55 @@ test("a verified v1 journal migrates transactionally to canonical Purchase facts
   }
 });
 
-test("v1 migration rejects checksum or schema drift before applying v2", () => {
+test("a non-empty verified v3 journal migrates additively without losing policy state", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-journal-migrate-v3-"));
+  fs.chmodSync(directory, 0o700);
+  const filename = path.join(directory, "purchase.sqlite");
+  try {
+    const db = new Database(filename);
+    db.exec(JOURNAL_SCHEMA_V3_SQL);
+    db.prepare(
+      "INSERT INTO schema_migrations (version, checksum, applied_at_ms) VALUES (3, ?, ?)"
+    ).run(JOURNAL_SCHEMA_V3_CHECKSUM, 1_700_000_000_000);
+    db.prepare(
+      `INSERT INTO policy_snapshots
+         (digest, version, max_per_payment_atomic, max_per_hour_atomic,
+          approval_above_atomic, activated_at_ms)
+       VALUES (?, 1, '100', '1000', '0', 1)`
+    ).run("sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+    db.prepare(
+      "INSERT INTO journal_policy (singleton, active_digest, updated_at_ms) VALUES (1, ?, 1)"
+    ).run("sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA");
+    db.pragma(`application_id = ${JOURNAL_APPLICATION_ID}`);
+    db.pragma("user_version = 3");
+    db.close();
+
+    const journal = new PurchaseJournal(filename, { now: () => 1_800_000_000_000 });
+    assert.equal(journal.schemaVersion(), 4);
+    assert.equal(journal.requireActivePolicy().maxPerHourAtomic, "1000");
+    journal.close();
+
+    const raw = new Database(filename, { readonly: true });
+    assert.deepEqual(
+      raw.prepare("SELECT version, checksum FROM schema_migrations ORDER BY version").all(),
+      [
+        { version: 3, checksum: JOURNAL_SCHEMA_V3_CHECKSUM },
+        { version: 4, checksum: JOURNAL_SCHEMA_CHECKSUM },
+      ]
+    );
+    assert.equal(
+      (raw.prepare(
+        "SELECT COUNT(*) AS count FROM treasury_staging_recovery_plans"
+      ).get() as { count: number }).count,
+      0
+    );
+    raw.close();
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("v1 migration rejects checksum or schema drift before applying current schema", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-journal-migrate-reject-"));
   fs.chmodSync(directory, 0o700);
   try {

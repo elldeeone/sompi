@@ -317,7 +317,9 @@ export interface AuthorityFreshnessLimits {
 
 export const DEFAULT_AUTHORITY_FRESHNESS_LIMITS: AuthorityFreshnessLimits = Object.freeze({
   maxClockSkewMs: 5_000,
-  maxRequestAgeMs: 30_000,
+  // Matches the bounded human-present request window so a crashed authority
+  // can reacquire the same durable request without minting new approval facts.
+  maxRequestAgeMs: 120_000,
   maxRequestLifetimeMs: 5 * 60_000,
   maxResponseAgeMs: 30_000,
   maxResponseLifetimeMs: 30_000,

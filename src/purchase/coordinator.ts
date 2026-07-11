@@ -18,6 +18,7 @@ import {
   EgressPolicyError,
   EgressPolicy,
   type EgressResponseGuard,
+  type EgressRequestInput,
   type RedirectRequestOverride,
   type SafeTransportHop,
 } from "./egress-policy.js";
@@ -32,16 +33,21 @@ import {
 import { paymentFinalityMeets } from "./finality.js";
 import {
   JournalNotFoundError,
+  JournalEffectBusyError,
   PurchaseJournal,
   TREASURY_STAGING_EFFECT_KIND,
   TREASURY_STAGING_EVIDENCE_KIND,
+  TREASURY_STAGING_RECOVERY_EFFECT_KIND,
   type EffectClaim,
+  type EffectObservation,
   type EffectRecord,
   type PolicyDefinition,
   type PurchaseRecord,
   type RecordObservedSpendInput,
   type RecordObservedTreasuryStagingInput,
+  type RecordTreasuryStagingRecoveryObservationInput,
   type TreasuryStagingObservationRecord,
+  type TreasuryStagingRecoveryJournalContext,
 } from "./journal.js";
 import { projectPurchaseView, type PurchaseProjectionSnapshot } from "./projection.js";
 import {
@@ -62,6 +68,9 @@ import type {
 } from "./types.js";
 
 const PAYMENT_EFFECT_KIND = "kaspa-x402-exact";
+export const COMMERCE_AUTHORIZATION_EFFECT_KIND = "merchant-authorization";
+const COMMERCE_AUTHORIZATION_EFFECT_PROFILE =
+  "urn:sompi:commerce-authorization-effect:1";
 const PURCHASE_COORDINATION_TTL_MS = 60_000;
 const RECOVERY_TTL_MS = 30_000;
 const AUTHORIZATION_REQUEST_PROFILE = "urn:sompi:authorization-request:1";
@@ -128,6 +137,8 @@ export function certifyVerifiedCheckoutDiscovery(input: {
 
 export interface PurchaseEgressSession {
   readonly request: SafeTransportHop;
+  /** Validates an additional Merchant protocol request under the same egress policy. */
+  requestFor(input: EgressRequestInput): Promise<SafeTransportHop>;
   redirect(
     previous: SafeTransportHop,
     location: string,
@@ -168,6 +179,53 @@ export interface AuthorityModule {
       issuer?: string;
     }>;
   }): Promise<AuthorityResult>;
+}
+
+/** Protocol-neutral facts presented to the Merchant before Treasury execution. */
+export interface CommerceAuthorizationContext {
+  purchaseId: PurchaseId;
+  paymentIdentifier: PaymentIdentifier;
+  resourceUrl: string;
+  method: string;
+  checkoutDigest: Sha256Digest;
+  authorizationEvidenceDigest: Sha256Digest;
+  resourceFingerprint: Sha256Digest;
+  merchantId: string;
+  merchantOrigin: string;
+  amountAtomic: string;
+  asset: string;
+  network: string;
+  payTo: string;
+}
+
+export type CommerceAuthorizationSubmissionResult =
+  | { status: "submitted"; submissionDigest: Sha256Digest }
+  | {
+      status: "accepted";
+      submissionDigest: Sha256Digest;
+      acceptance: VerifiedArtifact;
+    };
+
+export type CommerceAuthorizationRecoveryObservation =
+  | EffectObservation
+  | { status: "accepted"; acceptance: VerifiedArtifact };
+
+/**
+ * Merchant-authorization seam. AP2 adapters may present mandates here, but
+ * neither raw AP2 bytes nor this interface ever enter the x402 execution seam.
+ */
+export interface CommerceAuthorizationModule {
+  present(input: {
+    context: Readonly<CommerceAuthorizationContext>;
+    effect: Readonly<EffectRecord>;
+    egress: PurchaseEgressSession;
+    signal: AbortSignal;
+  }): Promise<CommerceAuthorizationSubmissionResult>;
+  observe(input: {
+    context: Readonly<CommerceAuthorizationContext>;
+    effect: Readonly<EffectRecord>;
+    egress: PurchaseEgressSession;
+  }): Promise<CommerceAuthorizationRecoveryObservation>;
 }
 
 export interface TreasuryQuote {
@@ -337,6 +395,94 @@ export interface KaspaPaymentModule {
     effect: EffectRecord;
     egress: PurchaseEgressSession;
   }): Promise<PaymentRecoveryObservation>;
+  /** Replays only the same immutable paid request after an observed Settlement. */
+  recoverFulfilment?(input: {
+    context: KaspaPreparedExecutionContext;
+    egress: PurchaseEgressSession;
+  }): Promise<FulfilmentResult>;
+}
+
+export interface StagingRecoveryPreparationContext {
+  purchaseId: PurchaseId;
+  paymentIdentifier: PaymentIdentifier;
+  terms: CheckoutTerms;
+  paymentRequirements: Uint8Array;
+  stagingEvidenceDigest: Sha256Digest;
+  exactPayment?: {
+    preparedBytes: Uint8Array;
+    preparedDigest: Sha256Digest;
+    transactionId: string;
+    requiredFinality: string;
+  };
+  authorizedAdditionalCostCeilingAtomic: string;
+}
+
+export interface PreparedStagingRecovery {
+  preparedBytes: Uint8Array;
+  preparedDigest: Sha256Digest;
+  exactTransactionId?: string;
+  recoveryTransactionId: string;
+  recoveryOutpoint: string;
+  recoveryAmountAtomic: string;
+  stagingFeeAtomic: string;
+  recoveryFeeAtomic: string;
+  requiredFinality: string;
+}
+
+export interface StagingRecoveryReadiness {
+  proofDigest: Sha256Digest;
+  observedAtMs: number;
+  expiresAtMs: number;
+  /** Adapter-owned, in-memory token. Only the persisted proof facts are canonical. */
+  token: unknown;
+}
+
+export type StagingRecoveryObservation =
+  | {
+      status: "safe_to_submit";
+      evidenceDigest: Sha256Digest;
+      readiness: StagingRecoveryReadiness;
+    }
+  | { status: "pending"; evidenceDigest: Sha256Digest }
+  | {
+      status: "exact_payment_won";
+      transactionId: string;
+      finality: string;
+      evidenceDigest: Sha256Digest;
+    }
+  | {
+      status: "recovery_won";
+      transactionId: string;
+      recoveryOutpoint: string;
+      recoveryAmountAtomic: string;
+      finality: string;
+      evidenceDigest: Sha256Digest;
+    }
+  | {
+      status: "conflict";
+      reason: string;
+      evidenceDigest: Sha256Digest;
+    };
+
+export type StagingRecoverySubmission =
+  | { status: "accepted"; transactionId: string; submissionDigest: Sha256Digest }
+  | { status: "ambiguous"; transactionId: string; submissionDigest: Sha256Digest }
+  | { status: "conflict"; transactionId: string; submissionDigest: Sha256Digest };
+
+/** Kaspa-specific recovery remains behind this Purchase-owned internal seam. */
+export interface TreasuryStagingRecoveryModule {
+  prepare(
+    input: Readonly<StagingRecoveryPreparationContext>
+  ): Promise<Readonly<PreparedStagingRecovery>>;
+  observe(input: {
+    preparedBytes: Uint8Array;
+    signal?: AbortSignal;
+  }): Promise<Readonly<StagingRecoveryObservation>>;
+  submit(input: {
+    preparedBytes: Uint8Array;
+    readiness: Readonly<StagingRecoveryReadiness>;
+    signal: AbortSignal;
+  }): Promise<Readonly<StagingRecoverySubmission>>;
 }
 
 export interface PurchaseReceiptResult {
@@ -401,8 +547,10 @@ export class PurchaseCoordinator implements PurchaseModule {
     private readonly egress: EgressPolicy,
     private readonly checkout: CheckoutTermsModule,
     private readonly authority: AuthorityModule,
+    private readonly commerceAuthorization: CommerceAuthorizationModule,
     private readonly treasury: TreasuryModule,
     private readonly payment: KaspaPaymentModule,
+    private readonly stagingRecovery: TreasuryStagingRecoveryModule,
     private readonly fulfilment: FulfilmentModule,
     options: PurchaseCoordinatorOptions = {}
   ) {
@@ -489,6 +637,10 @@ export class PurchaseCoordinator implements PurchaseModule {
       new Map([
         [PAYMENT_EFFECT_KIND, { observe: (effect) => this.observePaymentEffect(effect) }],
         [
+          COMMERCE_AUTHORIZATION_EFFECT_KIND,
+          { observe: (effect) => this.observeCommerceAuthorizationEffect(effect) },
+        ],
+        [
           TREASURY_STAGING_EFFECT_KIND,
           { observe: (effect) => this.observeTreasuryStagingEffect(effect) },
         ],
@@ -503,6 +655,10 @@ export class PurchaseCoordinator implements PurchaseModule {
         if (!this.resumeProofBackedState(current)) break;
         continue;
       }
+      if (current.state === "authorised") {
+        if (!(await this.prepareExecution(current))) break;
+        continue;
+      }
       if (current.state === "execution_prepared") {
         if (!(await this.submitExecution(current))) break;
         continue;
@@ -512,6 +668,15 @@ export class PurchaseCoordinator implements PurchaseModule {
         continue;
       }
       break;
+    }
+    const stagingRecovery = await this.recoverAbandonedStaging(id);
+    if (stagingRecovery === "exact_payment_won") {
+      const exactSummary = await reconciler.reconcile(
+        `${this.workerId}-exact-winner`,
+        RECOVERY_TTL_MS,
+        id
+      );
+      this.applyRecoverySummary(id, exactSummary);
     }
     return this.status(id);
   }
@@ -548,7 +713,7 @@ export class PurchaseCoordinator implements PurchaseModule {
       discovered.paymentRequirements
     );
     this.journal.bindCheckoutTerms(purchase.id, {
-      terms,
+      terms: canonicalTermsCopy(terms),
       checkoutEvidenceDigest: checkoutEvidence,
       checkoutVerificationProfile: discovered.checkoutEvidence.verification.profile,
       checkoutVerifierId: discovered.checkoutEvidence.verification.verifierId,
@@ -701,9 +866,14 @@ export class PurchaseCoordinator implements PurchaseModule {
 
   private async prepareExecution(purchase: PurchaseRecord): Promise<boolean> {
     const terms = this.journal.requireCheckoutTerms(purchase.id);
-    if (terms.expiresAtMs <= this.now()) {
-      this.journal.transitionPurchase(purchase.id, "authorised", "expired", "checkout_terms_expired", terms.checkoutDigest);
-      return true;
+    if (this.executionAuthorizationExpired(purchase.id)) {
+      try {
+        this.journal.expirePurchaseBeforeTreasury(purchase.id);
+        return true;
+      } catch (error) {
+        if (error instanceof JournalEffectBusyError) return false;
+        throw error;
+      }
     }
     const authorization = this.journal.requireAuthorization(purchase.id);
     if (authorization.decision !== "approved") {
@@ -780,6 +950,9 @@ export class PurchaseCoordinator implements PurchaseModule {
       });
     }
     const attempt = this.journal.createPaymentAttempt({ purchaseId: purchase.id, attempt: attemptNumber, identifier });
+    if (!(await this.ensureCommerceAuthorization(purchase, attemptNumber))) {
+      return false;
+    }
     const existingStaging = this.journal.treasuryStagingRecoveryContext(
       purchase.id,
       attemptNumber
@@ -835,6 +1008,88 @@ export class PurchaseCoordinator implements PurchaseModule {
     return true;
   }
 
+  private async ensureCommerceAuthorization(
+    purchase: PurchaseRecord,
+    attemptNumber: number
+  ): Promise<boolean> {
+    const context = this.commerceAuthorizationContext(purchase.id, attemptNumber);
+    const preparedBytes = Buffer.from(
+      JSON.stringify({
+        profile: COMMERCE_AUTHORIZATION_EFFECT_PROFILE,
+        ...context,
+      }),
+      "utf8"
+    );
+    const payloadDigest = evidenceDigest(preparedBytes);
+    const effect = this.journal.planEffect({
+      purchaseId: purchase.id,
+      kind: COMMERCE_AUTHORIZATION_EFFECT_KIND,
+      idempotencyKey: `merchant-authorization:${context.paymentIdentifier}`,
+      payloadDigest,
+      preparedBytes,
+    });
+    if (effect.state === "observed") return true;
+    if (["executing", "submitted", "ambiguous", "failed_terminal"].includes(effect.state)) {
+      return false;
+    }
+    const claim = this.journal.claimEffect(
+      effect.id,
+      `${this.workerId}-merchant-authorization`,
+      this.effectLeaseTtlMs
+    );
+    if (!claim) return false;
+    let lease = claim.lease;
+    let leaseLost: unknown;
+    const abortController = new AbortController();
+    const heartbeat = setInterval(() => {
+      if (leaseLost) return;
+      try {
+        lease = this.journal.renewLease(lease, this.effectLeaseTtlMs);
+      } catch (error) {
+        leaseLost = error;
+        abortController.abort();
+      }
+    }, Math.max(10, Math.floor(this.effectLeaseTtlMs / 3)));
+    heartbeat.unref();
+    try {
+      const result = await this.commerceAuthorization.present({
+        context,
+        effect: claim.effect,
+        egress: await this.createEgressSession(this.persistedIntent(purchase.id)!),
+        signal: abortController.signal,
+      });
+      if (leaseLost) throw leaseLost;
+      const activeClaim: EffectClaim = { effect: claim.effect, lease };
+      this.journal.markEffectSubmitted(activeClaim, result.submissionDigest);
+      if (result.status === "submitted") return false;
+      const acceptanceDigest = this.storeVerifiedArtifact(
+        purchase.id,
+        "merchant-authorization",
+        result.acceptance,
+        attemptNumber
+      );
+      this.journal.recordEffectObservation(effect.id, lease, {
+        status: "observed",
+        resultDigest: acceptanceDigest,
+        detailDigest: acceptanceDigest,
+      });
+      return true;
+    } catch (error) {
+      const detail = safeErrorDigest("merchant-authorization", error);
+      if (!leaseLost) {
+        try {
+          this.journal.markEffectAmbiguous({ effect: claim.effect, lease }, detail);
+        } catch {
+          // A durable submitted/observed fact may already have won the race.
+        }
+      }
+      return false;
+    } finally {
+      clearInterval(heartbeat);
+      if (!leaseLost) this.journal.releaseLease(lease);
+    }
+  }
+
   private async submitExecution(purchase: PurchaseRecord): Promise<boolean> {
     const attempt = this.journal.paymentAttempts(purchase.id).at(-1);
     if (!attempt) throw new PurchaseCoordinatorError("prepared Purchase has no Payment Attempt", "payment_invariant");
@@ -859,6 +1114,12 @@ export class PurchaseCoordinator implements PurchaseModule {
       return this.submitTreasuryStaging(purchase, staging.effect.id, attempt.attempt);
     }
 
+    const terms = this.journal.requireCheckoutTerms(purchase.id);
+    if (this.executionAuthorizationExpired(purchase.id) && attempt.state === "planned") {
+      this.journal.blockExpiredStagedPurchase(purchase.id);
+      return false;
+    }
+
     const preparation = await this.prepareExactExecution(
       purchase,
       attempt.attempt,
@@ -866,9 +1127,21 @@ export class PurchaseCoordinator implements PurchaseModule {
     );
     reservation = this.journal.requireReservation(preparation.reservationId);
     const effect = this.paymentEffect(purchase.id)!;
+    const preparedAttempt = this.journal.requirePaymentAttempt(
+      purchase.id,
+      attempt.attempt
+    );
+    if (
+      this.executionAuthorizationExpired(purchase.id) &&
+      preparedAttempt.state === "prepared" &&
+      (effect.state === "planned" || effect.state === "retryable")
+    ) {
+      this.journal.blockExpiredStagedPurchase(purchase.id);
+      return false;
+    }
     if (
       effect.state !== "retryable" && (
-        ["submitted", "observed", "failed"].includes(attempt.state) ||
+        ["submitted", "observed", "failed"].includes(preparedAttempt.state) ||
         ["executing", "submitted", "ambiguous", "observed", "failed_terminal"].includes(effect.state)
       )
     ) {
@@ -915,6 +1188,7 @@ export class PurchaseCoordinator implements PurchaseModule {
     );
     let lease = claim.lease;
     let leaseLost: unknown;
+    let verifiedPaidResponse: Extract<FulfilmentResult, { status: "fulfilled" }> | undefined;
     const abortController = new AbortController();
     const heartbeat = setInterval(() => {
       if (leaseLost) return;
@@ -938,9 +1212,7 @@ export class PurchaseCoordinator implements PurchaseModule {
       this.journal.markEffectSubmitted(activeClaim, result.submissionDigest);
       if (result.status === "settled") {
         this.recordSettlement(purchase, activeClaim, result.settlement);
-        if (result.paidResponse) {
-          this.persistFulfilmentResult(this.journal.requirePurchase(purchase.id), result.paidResponse);
-        }
+        verifiedPaidResponse = result.paidResponse;
       }
     } catch (error) {
       const detail = safeErrorDigest("payment-submit", error);
@@ -961,6 +1233,15 @@ export class PurchaseCoordinator implements PurchaseModule {
     } finally {
       clearInterval(heartbeat);
       if (!leaseLost) this.journal.releaseLease(lease);
+    }
+    // Settlement has already been durably observed at this point. Fulfilment
+    // persistence is a later lifecycle step and must never relabel the payment
+    // Effect ambiguous if its own atomic transaction is interrupted.
+    if (verifiedPaidResponse) {
+      this.persistFulfilmentResult(
+        this.journal.requirePurchase(purchase.id),
+        verifiedPaidResponse
+      );
     }
     return true;
   }
@@ -1304,6 +1585,51 @@ export class PurchaseCoordinator implements PurchaseModule {
     return { status: "spend_observed", spend: omitEffectId(spend) };
   }
 
+  private async observeCommerceAuthorizationEffect(
+    effect: EffectRecord
+  ): Promise<ReconciliationObservation> {
+    if (effect.attempt !== undefined || effect.kind !== COMMERCE_AUTHORIZATION_EFFECT_KIND) {
+      throw new PurchaseCoordinatorError(
+        "Merchant authorization Effect has an invalid durable identity",
+        "commerce_authorization_invariant"
+      );
+    }
+    const attempts = this.journal.paymentAttempts(effect.purchaseId);
+    if (attempts.length !== 1) {
+      throw new PurchaseCoordinatorError(
+        "Merchant authorization requires exactly one durable Payment Attempt",
+        "commerce_authorization_invariant"
+      );
+    }
+    const intent = this.persistedIntent(effect.purchaseId);
+    if (!intent) {
+      throw new PurchaseCoordinatorError(
+        "Merchant authorization recovery lost its persisted request",
+        "request_invariant"
+      );
+    }
+    const observation = await this.commerceAuthorization.observe({
+      context: this.commerceAuthorizationContext(
+        effect.purchaseId,
+        attempts[0].attempt
+      ),
+      effect,
+      egress: await this.createEgressSession(intent),
+    });
+    if (observation.status !== "accepted") return observation;
+    const digest = this.storeVerifiedArtifact(
+      effect.purchaseId,
+      "merchant-authorization",
+      observation.acceptance,
+      attempts[0].attempt
+    );
+    return {
+      status: "observed",
+      resultDigest: digest,
+      detailDigest: digest,
+    };
+  }
+
   private async observeTreasuryStagingEffect(
     effect: EffectRecord
   ): Promise<ReconciliationObservation> {
@@ -1335,9 +1661,16 @@ export class PurchaseCoordinator implements PurchaseModule {
     const attempt = this.journal.paymentAttempts(purchase.id).at(-1);
     const spend = this.journal.findSpendForPurchase(purchase.id);
     if (!attempt || !spend) throw new PurchaseCoordinatorError("settled Purchase lacks payment facts", "settlement_invariant");
-    const result = await this.fulfilment.obtain({
+    const egress = await this.createEgressSession(intent);
+    const replayed = this.payment.recoverFulfilment
+      ? await this.payment.recoverFulfilment({
+          context: this.preparedPaymentContext(purchase.id, attempt.attempt),
+          egress,
+        })
+      : { status: "pending" as const };
+    const result = replayed.status === "fulfilled" ? replayed : await this.fulfilment.obtain({
       purchaseId: purchase.id,
-      egress: await this.createEgressSession(intent),
+      egress,
       terms,
       paymentIdentifier: attempt.identifier,
       authorizationEvidenceDigest: this.journal.requireAuthorization(purchase.id).evidenceDigest,
@@ -1418,6 +1751,256 @@ export class PurchaseCoordinator implements PurchaseModule {
     return this.journal.requirePurchase(purchase.id).state === "receipted";
   }
 
+  private async recoverAbandonedStaging(
+    purchaseId: PurchaseId
+  ): Promise<"none" | "pending" | "exact_payment_won" | "recovery_won" | "conflict"> {
+    const attempts = this.journal.paymentAttempts(purchaseId);
+    if (attempts.length !== 1 || this.journal.findSpendForPurchase(purchaseId)) {
+      return "none";
+    }
+    const attempt = attempts[0];
+    const staged = this.journal.treasuryStagingRecoveryContext(
+      purchaseId,
+      attempt.attempt
+    );
+    if (!staged?.observation || staged.reservation.state !== "in_flight") {
+      return "none";
+    }
+    let recovery = this.journal.treasuryStagingRecoveryJournalContext(
+      purchaseId,
+      attempt.attempt
+    );
+    if (!recovery) {
+      const purchase = this.journal.requirePurchase(purchaseId);
+      const paymentEffect = this.paymentEffect(purchaseId, false);
+      const terminalPayment = Boolean(
+        paymentEffect && ["failed_terminal", "abandoned"].includes(paymentEffect.state)
+      );
+      if (
+        purchase.state !== "failed_recoverable" ||
+        (!this.executionAuthorizationExpired(purchaseId) && !terminalPayment)
+      ) {
+        return "none";
+      }
+      const planningLease = this.journal.acquireLease(
+        `treasury-staging-recovery-plan:${purchaseId}`,
+        `${this.workerId}-staging-recovery-plan`,
+        this.effectLeaseTtlMs
+      );
+      if (!planningLease) return "pending";
+      try {
+        recovery = this.journal.treasuryStagingRecoveryJournalContext(
+          purchaseId,
+          attempt.attempt
+        );
+        if (!recovery) {
+          let exactPayment:
+            | StagingRecoveryPreparationContext["exactPayment"]
+            | undefined;
+          try {
+            const preparation = this.journal.requirePaymentPreparation(
+              purchaseId,
+              attempt.attempt
+            );
+            exactPayment = {
+              preparedBytes: this.journal.readPreparedPayment(
+                purchaseId,
+                attempt.attempt
+              ),
+              preparedDigest: preparation.payloadDigest,
+              transactionId: preparation.transactionId,
+              requiredFinality: preparation.requiredFinality,
+            };
+          } catch (error) {
+            if (!(error instanceof JournalNotFoundError)) throw error;
+          }
+          const terms = this.journal.requireCheckoutTerms(purchaseId);
+          const prepared = await this.stagingRecovery.prepare({
+            purchaseId,
+            paymentIdentifier: attempt.identifier,
+            terms: canonicalTermsCopy(terms),
+            paymentRequirements: this.journal.readEvidence(
+              terms.paymentRequirementsDigest
+            ),
+            stagingEvidenceDigest: staged.observation.evidenceDigest,
+            exactPayment,
+            authorizedAdditionalCostCeilingAtomic:
+              staged.reservation.additionalCostCeilingAtomic,
+          });
+          validatePreparedStagingRecovery(
+            prepared,
+            exactPayment?.transactionId,
+            staged.observation.stagingAmountAtomic
+          );
+          this.journal.planTreasuryStagingRecovery({
+            purchaseId,
+            attempt: attempt.attempt,
+            reservationId: staged.reservation.id,
+            stagingEffectId: staged.effect.id,
+            idempotencyKey: `treasury-staging-recovery:${attempt.identifier}`,
+            payloadDigest: prepared.preparedDigest,
+            preparedBytes: Uint8Array.from(prepared.preparedBytes),
+            exactTransactionId: prepared.exactTransactionId,
+            recoveryTransactionId: prepared.recoveryTransactionId,
+            recoveryOutpoint: prepared.recoveryOutpoint,
+            recoveryAmountAtomic: prepared.recoveryAmountAtomic,
+            stagingFeeAtomic: prepared.stagingFeeAtomic,
+            recoveryFeeAtomic: prepared.recoveryFeeAtomic,
+            requiredFinality: prepared.requiredFinality,
+            authorizedAdditionalCostCeilingAtomic:
+              staged.reservation.additionalCostCeilingAtomic,
+          });
+          recovery = this.journal.treasuryStagingRecoveryJournalContext(
+            purchaseId,
+            attempt.attempt
+          );
+        }
+      } finally {
+        this.journal.releaseLease(planningLease);
+      }
+    }
+    if (!recovery) return "pending";
+    return this.driveStagingRecovery(recovery);
+  }
+
+  private async driveStagingRecovery(
+    recovery: TreasuryStagingRecoveryJournalContext
+  ): Promise<"pending" | "exact_payment_won" | "recovery_won" | "conflict"> {
+    if (recovery.accounting) return "recovery_won";
+    if (recovery.effect.state === "observed") return "exact_payment_won";
+    if (recovery.effect.state === "failed_terminal") return "conflict";
+    if (recovery.effect.state === "planned" || recovery.effect.state === "retryable") {
+      const claim = this.journal.beginTreasuryStagingRecovery(
+        recovery.effect.id,
+        `${this.workerId}-staging-recovery`,
+        this.effectLeaseTtlMs
+      );
+      if (!claim) return "pending";
+      let lease = claim.lease;
+      let leaseLost: unknown;
+      const abortController = new AbortController();
+      const heartbeat = setInterval(() => {
+        if (leaseLost) return;
+        try {
+          lease = this.journal.renewLease(lease, this.effectLeaseTtlMs);
+        } catch (error) {
+          leaseLost = error;
+          abortController.abort();
+        }
+      }, Math.max(10, Math.floor(this.effectLeaseTtlMs / 3)));
+      heartbeat.unref();
+      try {
+        const preparedBytes = this.journal.readPreparedTreasuryStagingRecovery(
+          recovery.plan.purchaseId,
+          recovery.plan.attempt
+        );
+        const observed = await this.stagingRecovery.observe({
+          preparedBytes,
+          signal: abortController.signal,
+        });
+        if (leaseLost) throw leaseLost;
+        const outcome = this.recordStagingRecoveryObservation(
+          recovery.effect.id,
+          lease,
+          observed
+        );
+        if (observed.status !== "safe_to_submit") return outcome;
+        // The readiness was observed and durably recorded under this exact
+        // live Effect fence. The adapter token is intentionally never stored.
+        const submitted = await this.stagingRecovery.submit({
+          preparedBytes,
+          readiness: observed.readiness,
+          signal: abortController.signal,
+        });
+        if (leaseLost) throw leaseLost;
+        const activeClaim: EffectClaim = { effect: claim.effect, lease };
+        if (submitted.status === "accepted") {
+          this.journal.markEffectSubmitted(activeClaim, submitted.submissionDigest);
+        } else {
+          this.journal.markEffectAmbiguous(activeClaim, submitted.submissionDigest);
+        }
+        return "pending";
+      } catch (error) {
+        if (!leaseLost) {
+          const current = this.journal.requireEffect(recovery.effect.id);
+          if (current.state === "executing" || current.state === "submitted") {
+            this.journal.markEffectAmbiguous(
+              { effect: claim.effect, lease },
+              safeErrorDigest("staging-recovery-submit", error)
+            );
+          }
+        }
+        return "pending";
+      } finally {
+        clearInterval(heartbeat);
+        if (!leaseLost) this.journal.releaseLease(lease);
+      }
+    }
+
+    const reconcileLease = this.journal.acquireLease(
+      `purchase-reconciliation:${recovery.plan.purchaseId}`,
+      `${this.workerId}-staging-recovery-observer`,
+      RECOVERY_TTL_MS
+    );
+    if (!reconcileLease) return "pending";
+    try {
+      if (this.journal.effectClaimActive(recovery.effect.id)) return "pending";
+      const observed = await this.stagingRecovery.observe({
+        preparedBytes: this.journal.readPreparedTreasuryStagingRecovery(
+          recovery.plan.purchaseId,
+          recovery.plan.attempt
+        ),
+      });
+      const outcome = this.recordStagingRecoveryObservation(
+        recovery.effect.id,
+        reconcileLease,
+        observed
+      );
+      if (observed.status === "safe_to_submit") {
+        const refreshed = this.journal.treasuryStagingRecoveryJournalContext(
+          recovery.plan.purchaseId,
+          recovery.plan.attempt
+        )!;
+        this.journal.releaseLease(reconcileLease);
+        return this.driveStagingRecovery(refreshed);
+      }
+      return outcome;
+    } catch (error) {
+      if (error instanceof JournalEffectBusyError) return "pending";
+      throw error;
+    } finally {
+      // A safe-to-submit observation releases before claiming the Effect.
+      try {
+        this.journal.releaseLease(reconcileLease);
+      } catch {
+        // Already released before the fresh fenced observation.
+      }
+    }
+  }
+
+  private recordStagingRecoveryObservation(
+    effectId: string,
+    lease: Parameters<PurchaseJournal["recordTreasuryStagingRecoveryObservation"]>[1],
+    observed: Readonly<StagingRecoveryObservation>
+  ): "pending" | "exact_payment_won" | "recovery_won" | "conflict" {
+    this.journal.recordTreasuryStagingRecoveryObservation(
+      effectId,
+      lease,
+      stagingRecoveryJournalObservation(observed)
+    );
+    switch (observed.status) {
+      case "safe_to_submit":
+      case "pending":
+        return "pending";
+      case "exact_payment_won":
+        return "exact_payment_won";
+      case "recovery_won":
+        return "recovery_won";
+      case "conflict":
+        return "conflict";
+    }
+  }
+
   private resumeProofBackedState(purchase: PurchaseRecord): boolean {
     const spend = this.journal.findSpendForPurchase(purchase.id);
     if (spend) {
@@ -1432,6 +2015,12 @@ export class PurchaseCoordinator implements PurchaseModule {
     }
     const effect = this.paymentEffect(purchase.id, false);
     if (effect?.state === "retryable") {
+      if (this.executionAuthorizationExpired(purchase.id)) {
+        // A proof-backed retry is still a new Merchant payment submission.
+        // Once authority expires, only resolution of the already-staged funds
+        // may continue; the dedicated staging-recovery race owns that path.
+        return false;
+      }
       const proof = this.journal.effectObservations(effect.id).at(-1)?.detailDigest;
       if (!proof) throw new PurchaseCoordinatorError("retryable Effect has no observation proof", "recovery_invariant");
       this.journal.transitionPurchase(
@@ -1444,6 +2033,12 @@ export class PurchaseCoordinator implements PurchaseModule {
       return true;
     }
     const attempt = this.journal.paymentAttempts(purchase.id).at(-1);
+    if (
+      attempt?.state === "failed" &&
+      attempt.failureCode === "checkout_expired_after_staging"
+    ) {
+      return false;
+    }
     const staging = attempt
       ? this.journal.treasuryStagingRecoveryContext(purchase.id, attempt.attempt)
       : undefined;
@@ -1623,6 +2218,43 @@ export class PurchaseCoordinator implements PurchaseModule {
     };
   }
 
+  private commerceAuthorizationContext(
+    purchaseId: PurchaseId,
+    attemptNumber: number
+  ): CommerceAuthorizationContext {
+    const purchase = this.journal.requirePurchase(purchaseId);
+    const terms = this.journal.requireCheckoutTerms(purchaseId);
+    const authorization = this.journal.requireAuthorization(purchaseId);
+    const attempt = this.journal.requirePaymentAttempt(purchaseId, attemptNumber);
+    if (authorization.decision !== "approved") {
+      throw new PurchaseCoordinatorError(
+        "Merchant authorization requires an approved Purchase Authorization",
+        "authorization_invariant"
+      );
+    }
+    return Object.freeze({
+      purchaseId,
+      paymentIdentifier: attempt.identifier,
+      resourceUrl: purchase.resourceUrl,
+      method: purchase.method,
+      checkoutDigest: terms.checkoutDigest,
+      authorizationEvidenceDigest: authorization.evidenceDigest,
+      resourceFingerprint: terms.resourceFingerprint,
+      merchantId: terms.merchant.id,
+      merchantOrigin: terms.merchant.origin,
+      amountAtomic: terms.amountAtomic,
+      asset: terms.asset,
+      network: terms.network,
+      payTo: terms.payTo,
+    });
+  }
+
+  private executionAuthorizationExpired(purchaseId: PurchaseId): boolean {
+    const terms = this.journal.requireCheckoutTerms(purchaseId);
+    const authorization = this.journal.requireAuthorization(purchaseId);
+    return Math.min(terms.expiresAtMs, authorization.expiresAtMs) <= this.now();
+  }
+
   private treasuryStagingContext(
     purchaseId: PurchaseId,
     attemptNumber: number
@@ -1697,10 +2329,11 @@ export class PurchaseCoordinator implements PurchaseModule {
       method: purchase.method,
       requestMediaType: record.requestMediaType,
       requestBodyDigest: record.requestBodyDigest,
-      terms,
+      terms: canonicalTermsCopy(terms),
       requestDigest: record.requestDigest,
       nonceDigest: record.nonceDigest,
       additionalCostCeilingAtomic: record.additionalCostCeilingAtomic,
+      createdAtMs: record.createdAtMs,
       expiresAtMs: record.expiresAtMs,
     };
   }
@@ -1725,6 +2358,7 @@ export class PurchaseCoordinator implements PurchaseModule {
     });
     return Object.freeze({
       request,
+      requestFor: (input: EgressRequestInput) => this.egress.validateRequest(input),
       redirect: async (
         previous: SafeTransportHop,
         location: string,
@@ -1782,6 +2416,9 @@ export class PurchaseCoordinator implements PurchaseModule {
     const spend = this.journal.findSpendForPurchase(purchase.id);
     const fulfilment = this.journal.findFulfilment(purchase.id);
     const receipts = this.journal.receipts(purchase.id);
+    const recoveryRequired = this.journal.effectsForPurchase(purchase.id).some((effect) =>
+      ["executing", "submitted", "ambiguous", "failed_terminal"].includes(effect.state)
+    ) && !["submitted", "failed_recoverable", "failed_terminal"].includes(purchase.state);
     const paymentAttempts: PaymentAttemptView[] = this.journal.paymentAttempts(purchase.id).map((attempt) => {
       let transactionId: string | undefined;
       let finality: string | undefined;
@@ -1838,6 +2475,7 @@ export class PurchaseCoordinator implements PurchaseModule {
       settlementEvidence: spend?.evidenceDigest,
       fulfilment: fulfilmentProjection,
       receiptEvidence: receipts.map((receipt) => receipt.evidenceDigest),
+      recoveryRequired,
     };
   }
 }
@@ -1995,6 +2633,97 @@ function stagingOutput(
     evidenceDigest: staging.evidenceDigest,
     fundingSource: staging.fundingSource,
   });
+}
+
+function validatePreparedStagingRecovery(
+  prepared: Readonly<PreparedStagingRecovery>,
+  exactTransactionId: string | undefined,
+  stagingAmountAtomic: string
+): void {
+  if (
+    !(prepared.preparedBytes instanceof Uint8Array) ||
+    prepared.preparedBytes.byteLength === 0 ||
+    evidenceDigest(prepared.preparedBytes) !== prepared.preparedDigest ||
+    prepared.exactTransactionId !== exactTransactionId ||
+    !/^[a-f0-9]{64}$/.test(prepared.recoveryTransactionId) ||
+    prepared.recoveryOutpoint !== `${prepared.recoveryTransactionId}:0`
+  ) {
+    throw new PurchaseCoordinatorError(
+      "prepared staging recovery changed its immutable identity",
+      "staging_recovery_mismatch"
+    );
+  }
+  const returned = requireAtomicDecimal(
+    prepared.recoveryAmountAtomic,
+    false,
+    "staging recovery returned amount"
+  );
+  const stagingFee = requireAtomicDecimal(
+    prepared.stagingFeeAtomic,
+    true,
+    "staging transaction fee"
+  );
+  const recoveryFee = requireAtomicDecimal(
+    prepared.recoveryFeeAtomic,
+    false,
+    "staging recovery fee"
+  );
+  const staged = requireAtomicDecimal(
+    stagingAmountAtomic,
+    false,
+    "observed staging amount"
+  );
+  if (returned + recoveryFee !== staged || stagingFee < 0n) {
+    throw new PurchaseCoordinatorError(
+      "prepared staging recovery does not conserve the observed staged value",
+      "staging_recovery_mismatch"
+    );
+  }
+  if (!paymentFinalityMeets(prepared.requiredFinality, prepared.requiredFinality)) {
+    throw new PurchaseCoordinatorError(
+      "prepared staging recovery finality is unsupported",
+      "staging_recovery_mismatch"
+    );
+  }
+}
+
+function stagingRecoveryJournalObservation(
+  observed: Readonly<StagingRecoveryObservation>
+): RecordTreasuryStagingRecoveryObservationInput {
+  switch (observed.status) {
+    case "safe_to_submit":
+      return {
+        status: "safe_to_submit",
+        evidenceDigest: observed.evidenceDigest,
+        readinessProofDigest: observed.readiness.proofDigest,
+        readinessObservedAtMs: observed.readiness.observedAtMs,
+        readinessExpiresAtMs: observed.readiness.expiresAtMs,
+      };
+    case "pending":
+      return { status: "pending", evidenceDigest: observed.evidenceDigest };
+    case "exact_payment_won":
+      return {
+        status: "exact_payment_won",
+        evidenceDigest: observed.evidenceDigest,
+        winningTransactionId: observed.transactionId,
+        winningFinality: observed.finality,
+      };
+    case "recovery_won":
+      return {
+        status: "recovery_won",
+        evidenceDigest: observed.evidenceDigest,
+        winningTransactionId: observed.transactionId,
+        winningFinality: observed.finality,
+        recoveryOutpoint: observed.recoveryOutpoint,
+        recoveryAmountAtomic: observed.recoveryAmountAtomic,
+      };
+    case "conflict":
+      return {
+        status: "conflict",
+        evidenceDigest: observed.evidenceDigest,
+        conflictReason: observed.reason,
+      };
+  }
 }
 
 function reservationState(

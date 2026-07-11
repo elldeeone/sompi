@@ -6,7 +6,20 @@ import type {
   PinnedHttpTransport,
   PinnedHttpTransportRequest,
   PinnedHttpTransportResponse,
-} from "../adapters/kaspa-x402/exact-payment-module.js";
+} from "./pinned-transport.js";
+
+const FORBIDDEN_OUTBOUND_HEADERS = new Set([
+  "connection",
+  "content-length",
+  "host",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+]);
 
 /**
  * Node HTTP transport that connects through one EgressPolicy-approved address.
@@ -27,9 +40,6 @@ export class NodePinnedHttpTransport implements PinnedHttpTransport {
       }
     }) as LookupFunction;
     const headers = headersObject(request.headers);
-    if (Object.prototype.hasOwnProperty.call(headers, "host")) {
-      throw new Error("callers may not override the pinned HTTP authority");
-    }
     headers.host = hop.connection.authority;
     headers["content-length"] = String(request.body.byteLength);
 
@@ -82,13 +92,16 @@ function headersObject(
   const result: Record<string, string | string[]> = Object.create(null);
   for (const [rawName, rawValue] of pairs) {
     const name = rawName.toLowerCase();
-    if (!/^[!#$%&'*+.^_`|~0-9a-z-]+$/.test(name) || /[\r\n]/.test(rawValue)) {
+    if (
+      !/^[!#$%&'*+.^_`|~0-9a-z-]+$/.test(name) ||
+      typeof rawValue !== "string" ||
+      /[\u0000-\u001f\u007f]/.test(rawValue) ||
+      FORBIDDEN_OUTBOUND_HEADERS.has(name) ||
+      Object.prototype.hasOwnProperty.call(result, name)
+    ) {
       throw new Error("outbound HTTP header is invalid");
     }
-    const existing = result[name];
-    if (existing === undefined) result[name] = rawValue;
-    else if (Array.isArray(existing)) existing.push(rawValue);
-    else result[name] = [existing, rawValue];
+    result[name] = rawValue;
   }
   return result;
 }

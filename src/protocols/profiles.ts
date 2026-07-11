@@ -7,6 +7,7 @@ export const SUPPORTED_PROTOCOL_PROFILES = Object.freeze({
     mode: "human-present",
     checkoutMandateVct: "mandate.checkout.1",
     paymentMandateVct: "mandate.payment.1",
+    rootSdJwtTyp: "example+sd-jwt",
     digestAlgorithm: "sha-256",
     signatureAlgorithms: Object.freeze(["ES256"] as const),
     nativeKasProfile: "urn:sompi:ap2:payment-instrument:kaspa-x402:1",

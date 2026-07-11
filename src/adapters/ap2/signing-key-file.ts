@@ -54,11 +54,7 @@ function secureJson(filename: string): unknown {
       throw new Error("secure AP2 file changed while reading");
     }
     const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-    const parsed = JSON.parse(text);
-    if (`${JSON.stringify(parsed, null, 2)}\n` !== text) {
-      throw new Error("secure AP2 JSON must use canonical two-space formatting");
-    }
-    return parsed;
+    return JSON.parse(text);
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("secure AP2")) throw error;
     if (error instanceof Error && error.message.startsWith("AP2")) throw error;

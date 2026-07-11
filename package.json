@@ -1,7 +1,7 @@
 {
   "name": "@elldeeone/sompi",
-  "version": "0.7.0",
-  "description": "Sompi — the agent payment kit for Kaspa. MCP server with policy-enforced wallet tools, Toccata-native.",
+  "version": "0.8.0",
+  "description": "Deterministic agent treasury and purchasing for AP2 and Kaspa-x402 exact on Kaspa testnet-10.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -18,19 +18,28 @@
   "type": "module",
   "main": "dist/index.js",
   "bin": {
-    "sompi-mcp": "dist/index.js"
+    "sompi-mcp": "dist/index.js",
+    "sompi-authority": "dist/authority-main.js"
   },
   "files": [
+    "CONTEXT.md",
+    "CURRENT_STATE.md",
+    "LICENSE",
     "contracts",
-    "deploy",
     "dist",
-    "docs/agent-interaction-ux.md",
-    "docs/escrow-poc.md",
-    "docs/kaspa-escrow-x402.md",
-    "docs/mainnet-readiness.md",
-    "docs/vault-poc.md",
+    "!dist/**/*.test.js",
+    "docs",
     "policy.example.json",
-    "scripts",
+    "scripts/compile-vault-fixtures.js",
+    "scripts/package.json",
+    "scripts/run-local-e2e.mjs",
+    "scripts/run-protocol-conformance.mjs",
+    "scripts/vault-fixtures.json",
+    "scripts/vault-recover.js",
+    "scripts/verify-authority-isolation.js",
+    "test/conformance",
+    "vendor/ap2-v0.2-schemas",
+    "vendor/kaspa-x402-alpha.6-conformance",
     "vendor/kaspa-wasm"
   ],
   "engines": {
@@ -41,17 +50,14 @@
     "build": "npm run clean && tsc",
     "test": "npm run build && npm run test:unit && SOMPI_SMOKE_OFFLINE=1 npm run smoke",
     "test:unit": "node scripts/run-unit-tests.js",
+    "test:conformance": "node scripts/run-protocol-conformance.mjs",
     "start": "node dist/index.js",
+    "authority:init": "node dist/authority-main.js init",
+    "authority:start": "node dist/authority-main.js",
     "smoke": "node dist/smoke.js",
     "fixtures:vault": "node scripts/compile-vault-fixtures.js",
     "fixtures:vault:check": "node scripts/compile-vault-fixtures.js --check",
-    "fixtures:escrow": "node scripts/compile-escrow-fixtures.js",
-    "fixtures:escrow:check": "node scripts/compile-escrow-fixtures.js --check",
-    "demo:escrow": "node dist/demo-escrow.js",
-    "check:public-demo": "node scripts/public-demo-check.js",
-    "check:public-demo-deploy": "node scripts/public-demo-deploy-check.js",
-    "proof:vault": "node scripts/vault-live.js",
-    "proof:vault-commerce": "node scripts/vault-commerce-live.js",
+    "proof:e2e-local": "node scripts/run-local-e2e.mjs",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
@@ -59,21 +65,19 @@
     "@kaspa-x402/core": "0.1.0-alpha.6",
     "@kaspa-x402/covenant": "0.1.0-alpha.6",
     "@kaspa-x402/server": "0.1.0-alpha.6",
-    "@modelcontextprotocol/sdk": "^1.0.0",
-    "@noble/curves": "^1.9.7",
-    "@noble/hashes": "^1.8.0",
+    "@modelcontextprotocol/sdk": "1.29.0",
     "@sd-jwt/core": "0.20.0",
     "ajv": "8.20.0",
     "ajv-formats": "3.0.1",
     "better-sqlite3": "12.11.1",
     "jose": "5.10.0",
-    "websocket": "^1.0.35",
-    "zod": "^3.23.0"
+    "websocket": "1.0.35",
+    "zod": "3.25.76"
   },
   "devDependencies": {
     "@types/better-sqlite3": "7.6.13",
-    "@types/node": "^22.0.0",
-    "@types/websocket": "^1.0.10",
-    "typescript": "^5.6.0"
+    "@types/node": "22.19.21",
+    "@types/websocket": "1.0.10",
+    "typescript": "5.9.3"
   }
 }

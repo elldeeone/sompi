@@ -37,6 +37,8 @@ export interface PurchaseProjectionSnapshot {
     byteLength?: number;
   };
   receiptEvidence: readonly Sha256Digest[];
+  /** A durable external effect exists that must be reconciled before progress. */
+  recoveryRequired?: boolean;
 }
 
 export type ProjectedPurchaseView = PurchaseView;
@@ -120,13 +122,21 @@ export function projectPurchaseView(snapshot: PurchaseProjectionSnapshot): Proje
   const stateProjection = STATE_PROJECTIONS[snapshot.state];
   if (!stateProjection) throw new PurchaseProjectionError("unsupported Purchase state");
 
+  const recoveryPending = snapshot.recoveryRequired === true;
+
   const fulfilment = projectFulfilment(snapshot.fulfilment);
   const view: ProjectedPurchaseView = {
     id: snapshot.id,
     requestKey: snapshot.requestKey,
     state: snapshot.state,
-    summary: boundSummary(stateProjection.summary(snapshot)),
-    userAction: stateProjection.userAction,
+    summary: boundSummary(
+      recoveryPending
+        ? "Purchase needs recovery. An existing external effect must be reconciled before any retry."
+        : stateProjection.summary(snapshot)
+    ),
+    userAction: recoveryPending
+      ? "Run purchase_recover for this Purchase; do not submit another payment."
+      : stateProjection.userAction,
     resourceFingerprint: snapshot.resourceFingerprint,
     ...(snapshot.terms ? { terms: copyTerms(snapshot.terms) } : {}),
     authorization: copyAuthorization(snapshot.authorization),
@@ -145,6 +155,11 @@ export function projectPurchaseView(snapshot: PurchaseProjectionSnapshot): Proje
 export function projectPurchaseSummary(snapshot: PurchaseProjectionSnapshot): string {
   const stateProjection = STATE_PROJECTIONS[snapshot.state];
   if (!stateProjection) throw new PurchaseProjectionError("unsupported Purchase state");
+  if (snapshot.recoveryRequired === true) {
+    return boundSummary(
+      "Purchase needs recovery. An existing external effect must be reconciled before any retry."
+    );
+  }
   return boundSummary(stateProjection.summary(snapshot));
 }
 

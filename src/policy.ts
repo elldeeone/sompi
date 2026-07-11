@@ -1,5 +1,4 @@
 import * as fs from "node:fs";
-import * as path from "node:path";
 
 /**
  * Spending policy enforced below the agent. The agent (LLM) can call
@@ -26,11 +25,6 @@ interface PolicyFileShape {
   requireApprovalAboveSompi?: string | number;
 }
 
-interface SpendRecord {
-  timestampMs: number;
-  amountSompi: string;
-}
-
 const DEFAULT_POLICY: Policy = {
   // 1 KAS per tx, 5 KAS per hour: deliberately conservative defaults
   // suitable for testnet experimentation.
@@ -42,24 +36,14 @@ const DEFAULT_POLICY: Policy = {
 
 export class PolicyEngine {
   private readonly policyPath?: string;
-  private readonly spendLogPath: string;
-  private spendLog: SpendRecord[] = [];
   private cachedPolicy: Policy;
   private cachedMtimeMs = -1;
   private loadError?: string;
 
-  constructor(dataDir: string, policyPath?: string) {
+  constructor(_dataDir: string, policyPath?: string) {
     this.policyPath = policyPath;
     this.cachedPolicy = loadPolicy(policyPath);
     if (policyPath) this.cachedMtimeMs = fs.statSync(policyPath).mtimeMs;
-    this.spendLogPath = path.join(dataDir, "spend-log.json");
-    if (fs.existsSync(this.spendLogPath)) {
-      try {
-        this.spendLog = JSON.parse(fs.readFileSync(this.spendLogPath, "utf8"));
-      } catch {
-        this.spendLog = [];
-      }
-    }
   }
 
   /**
@@ -90,16 +74,12 @@ export class PolicyEngine {
     return this.cachedPolicy;
   }
 
-  /** Sum of sends in the trailing hour, in sompi. */
-  spentLastHour(now = Date.now()): bigint {
-    const cutoff = now - 60 * 60 * 1000;
-    return this.spendLog
-      .filter((r) => r.timestampMs >= cutoff)
-      .reduce((acc, r) => acc + BigInt(r.amountSompi), 0n);
-  }
-
-  /** Throws with an agent-readable reason if the send is not permitted. */
-  authorize(destination: string, amountSompi: bigint): void {
+  /**
+   * Throws when a movement is not permitted. `committedCapacitySompi` comes
+   * from durable Purchase and Treasury Operation journals; policy no longer
+   * maintains a competing JSON spend log.
+   */
+  authorize(destination: string, amountSompi: bigint, committedCapacitySompi = 0n): void {
     const p = this.policy;
     if (amountSompi <= 0n) {
       throw new PolicyViolation("amount must be positive");
@@ -122,7 +102,10 @@ export class PolicyEngine {
         `destination ${destination} is not on the policy allowlist` + OPERATOR_BOUNDARY
       );
     }
-    const spent = this.spentLastHour();
+    if (committedCapacitySompi < 0n) {
+      throw new PolicyViolation("durable Treasury capacity is invalid");
+    }
+    const spent = committedCapacitySompi;
     if (spent + amountSompi > p.maxSompiPerHour) {
       throw new PolicyViolation(
         `send of ${displayAmount(amountSompi)} would exceed the rolling hourly limit ` +
@@ -132,19 +115,10 @@ export class PolicyEngine {
     }
   }
 
-  /** Record a completed send against the rolling-hour budget. */
-  record(amountSompi: bigint, now = Date.now()): void {
-    const cutoff = now - 60 * 60 * 1000;
-    this.spendLog = this.spendLog.filter((r) => r.timestampMs >= cutoff);
-    this.spendLog.push({ timestampMs: now, amountSompi: amountSompi.toString() });
-    fs.writeFileSync(this.spendLogPath, JSON.stringify(this.spendLog), { mode: 0o600 });
-  }
-
   describe(): Record<string, string | string[]> {
     return {
       maxSompiPerTx: this.policy.maxSompiPerTx.toString(),
       maxSompiPerHour: this.policy.maxSompiPerHour.toString(),
-      spentLastHourSompi: this.spentLastHour().toString(),
       allowlist: this.policy.allowlist,
       requireApprovalAboveSompi: this.policy.requireApprovalAboveSompi.toString(),
     };

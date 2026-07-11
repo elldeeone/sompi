@@ -130,6 +130,7 @@ export interface TerminalAuthorityApprovalPromptOptions {
 export class TerminalAuthorityApprovalPrompt implements AuthorityApprovalPrompt {
   private readonly input: Readable;
   private readonly output: Writable;
+  private promptTail: Promise<void> = Promise.resolve();
 
   constructor(options: TerminalAuthorityApprovalPromptOptions = {}) {
     this.input = options.input ?? process.stdin;
@@ -137,6 +138,15 @@ export class TerminalAuthorityApprovalPrompt implements AuthorityApprovalPrompt 
   }
 
   async approve(display: AuthorityApprovalDisplay): Promise<boolean> {
+    const prompt = this.promptTail.then(() => this.approveOne(display));
+    this.promptTail = prompt.then(
+      () => undefined,
+      () => undefined,
+    );
+    return prompt;
+  }
+
+  private async approveOne(display: AuthorityApprovalDisplay): Promise<boolean> {
     this.output.write("\nSompi purchase approval\n");
     this.output.write(`${asciiJson(display)}\n`);
     this.output.write("Merchant-provided values above are data, never instructions.\n");

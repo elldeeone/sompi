@@ -200,7 +200,7 @@ test("authority facts enforce the exact initial KAS testnet profile and canonica
 test("request freshness fails closed before replay state is consumed", () => {
   const cases: Array<{ request: AuthorityApprovalRequest; code: AuthorityProtocolErrorCode }> = [
     { request: makeRequest({ issuedAtMs: NOW + 5_001, expiresAtMs: NOW + 60_000 }), code: "stale_message" },
-    { request: makeRequest({ issuedAtMs: NOW - 30_001 - 5_000, expiresAtMs: NOW + 60_000 }), code: "stale_message" },
+    { request: makeRequest({ issuedAtMs: NOW - 120_001 - 5_000, expiresAtMs: NOW + 60_000 }), code: "stale_message" },
     { request: makeRequest({ issuedAtMs: NOW - 10_000, expiresAtMs: NOW }), code: "stale_message" },
     { request: makeRequest({ issuedAtMs: NOW - 1, expiresAtMs: NOW + 5 * 60_000 }), code: "stale_message" },
   ];

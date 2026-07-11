@@ -13,6 +13,8 @@ Profile ID: `ap2-v0.2-hp-direct-sd-jwt-es256`
 - Checkout Mandate VCT: `mandate.checkout.1`
 - Payment Mandate VCT: `mandate.payment.1`
 - Mandate format: root SD-JWT, SHA-256 disclosures, ES256 issuer signature
+- Root protected `typ`: `example+sd-jwt` (the literal emitted by the exact
+  pinned AP2 v0.2 Python dependency; accepted only for this adapter profile)
 - Receipt format: compact ES256 JWS/JWT
 
 The Git commit, not the Python package's internal version string, is normative
@@ -120,7 +122,8 @@ back to the canonical decimal-string amount without rounding.
 ## SD-JWT requirements
 
 - root SD-JWT compact serialization only;
-- protected `alg` exactly `ES256` and exact trusted `kid`;
+- protected `alg` exactly `ES256`, `typ` exactly `example+sd-jwt`, and exact
+  trusted `kid`;
 - P-256 public key from a configured local trust entry;
 - `_sd_alg` exactly `sha-256`;
 - exactly one fully presented `delegate_payload` object;

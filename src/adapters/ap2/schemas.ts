@@ -56,7 +56,7 @@ export function loadPinnedAp2Schemas(
       throw new Ap2SchemaError("AP2 schema path escaped its pinned root");
     }
     const bytes = fs.readFileSync(filename);
-    if (upstreamDigest(bytes) !== expected) {
+    if (sha256(bytes) !== expected) {
       throw new Ap2SchemaError(`AP2 schema ${name} does not match pinned upstream bytes`);
     }
     let parsed: unknown;
@@ -108,15 +108,6 @@ function requiredValidator(ajv: Ajv2020Instance, id: string): ValidateFunction {
   const validator = ajv.getSchema(id);
   if (!validator) throw new Ap2SchemaError(`pinned AP2 validator ${id} was not registered`);
   return validator;
-}
-
-function upstreamDigest(bytes: Buffer): string {
-  const direct = sha256(bytes);
-  if (Object.values(AP2_SCHEMA_DIGESTS).includes(direct as never)) return direct;
-  // apply_patch necessarily writes a final LF. Two upstream JSON files at the
-  // pinned commit omit it; verify the exact upstream byte sequence explicitly.
-  if (bytes.at(-1) === 0x0a) return sha256(bytes.subarray(0, -1));
-  return direct;
 }
 
 function sha256(bytes: Uint8Array): string {

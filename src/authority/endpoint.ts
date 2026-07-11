@@ -47,6 +47,9 @@ export class AuthorityUnixDecisionServer {
     this.server = new AuthorityUnixServer({
       socketPath: options.socketPath,
       ...(options.timeoutMs === undefined ? {} : { timeoutMs: options.timeoutMs }),
+      ...(options.socketGroupId === undefined
+        ? {}
+        : { socketGroupId: options.socketGroupId }),
       handle: (wire) => options.endpoint.handle(wire),
     });
   }

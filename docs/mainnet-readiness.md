@@ -1,70 +1,32 @@
-# Mainnet readiness
+# Mainnet is not supported
 
-Sompi defaults to testnet. Mainnet is disabled unless the operator explicitly
-sets:
+Status: explicit v0.8 release boundary
 
-```bash
-SOMPI_ENABLE_MAINNET=1
-SOMPI_NETWORK=mainnet
-```
+Sompi's initial AP2 + Kaspa-x402 Purchase runtime supports only Kaspa
+testnet-10. Configuration rejects every other network before opening the
+Purchase Journal or creating signing material. There is no supported
+`SOMPI_ENABLE_MAINNET` escape hatch.
 
-Do not enable this casually. Mainnet means real KAS.
+Do not patch around this check or point a testnet-configured runtime at a
+mainnet node. The current native-KAS AP2 profile is experimental, authority
+operations are software-key based, and release evidence is testnet evidence.
 
-## Operator checklist
+## Preconditions for a future mainnet decision
 
-Before enabling mainnet:
+Mainnet would require a separate ADR and release profile covering at least:
 
-- confirm the agent is running the intended Sompi version
-- use a trusted synced node with UTXO index enabled
-- set a conservative `SOMPI_POLICY`
-- create a vault with an owner key generated on the operator's machine
-- store the owner private key offline
-- choose a vault cap in KAS that matches the real risk tolerance
-- fund only a small regular-wallet float
-- move operating funds into the vault with `vault_deposit`
-- verify `payment_status` reports ready
-- test with a tiny paid request first
-- save receipts and txids for audit
+- independent review of Purchase, authority, x402, wallet, vault, staging
+  recovery, and shared policy-accounting paths;
+- live Testnet-10 evidence across every ambiguous crash edge over an extended
+  soak period;
+- reproducible third-party AP2 and Kaspa-x402 conformance;
+- production Merchant trust onboarding, revocation, and receipt retention;
+- hardware-backed or otherwise production-grade authority-key custody,
+  rotation, backup, and lost-access recovery;
+- audited operator deployment with separate OS users and monitoring;
+- fee/additional-cost limits calibrated to real network economics;
+- tested journal backup, corruption recovery, and disaster restoration;
+- explicit limits, incident response, and a staged-value launch plan.
 
-## Recommended defaults
-
-For first mainnet trials:
-
-- keep `maxSompiPerTx` low
-- keep `maxSompiPerHour` low
-- set `requireApprovalAboveSompi` for anything meaningful
-- use an allowlist if the agent only pays known endpoints
-- keep the vault cap close to the policy cap
-
-The policy is editable. The vault cap is enforced by consensus and cannot be
-changed for an existing vault; create a new vault if the hard cap is wrong.
-
-## Recovery
-
-The owner key can recover the vault without agent cooperation.
-
-Use the owner-side script from a trusted machine:
-
-```bash
-node scripts/vault-recover.js \
-  <ownerPrivateKey> \
-  <agentPublic> \
-  <maxOutflowSompi> \
-  <windowSizeDaa> \
-  <windowStartDaa> \
-  <spentInWindowSompi> \
-  <destination>
-```
-
-The values are shown by `vault_status`. The owner private key should never be
-sent to the agent.
-
-## User-facing wording
-
-If a user asks to use mainnet before opt-in:
-
-```text
-Mainnet is disabled by default because it uses real KAS. I need explicit
-operator confirmation before enabling it. If you intend to use real funds, set
-SOMPI_ENABLE_MAINNET=1 and configure a conservative policy and vault cap first.
-```
+Until a later profile satisfies those gates, the correct response to any
+mainnet request is: “This Sompi release cannot use real KAS; use testnet-10.”

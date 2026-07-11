@@ -29,11 +29,9 @@ test("thin Purchase handlers call only the matching stable module method", async
     bodyBase64: Buffer.from("hello").toString("base64"),
   };
   assert.equal(await handlers.purchase(purchaseInput), view);
-  assert.equal(await handlers.paidFetch(purchaseInput), view);
   assert.equal(await handlers.purchaseStatus({ purchaseId: view.id }), view);
   assert.equal(await handlers.purchaseRecover({ purchaseId: view.id }), view);
   assert.deepEqual(calls, [
-    "purchase:mcp:purchase:1:hello",
     "purchase:mcp:purchase:1:hello",
     `status:${view.id}`,
     `recover:${view.id}`,

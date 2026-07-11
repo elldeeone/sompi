@@ -36,6 +36,12 @@ test("schema loading fails closed after byte tampering", () => {
     fs.cpSync(source, temporary, { recursive: true });
     fs.appendFileSync(path.join(temporary, "checkout_mandate.json"), " ");
     assert.throws(() => loadPinnedAp2Schemas(temporary), Ap2SchemaError);
+    fs.copyFileSync(
+      path.join(source, "checkout_mandate.json"),
+      path.join(temporary, "checkout_mandate.json"),
+    );
+    fs.appendFileSync(path.join(temporary, "types", "merchant.json"), "\n");
+    assert.throws(() => loadPinnedAp2Schemas(temporary), Ap2SchemaError);
   } finally {
     fs.rmSync(temporary, { recursive: true, force: true });
   }

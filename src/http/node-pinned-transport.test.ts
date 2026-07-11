@@ -33,6 +33,29 @@ test("Node transport connects to the pinned address while preserving HTTP author
   }
 });
 
+test("Node transport rejects authority, framing, duplicate, and control-bearing headers", async () => {
+  const transport = new NodePinnedHttpTransport();
+  const hop = fakeHop(1);
+  for (const headers of [
+    [["host", "attacker.example"]],
+    [["content-length", "1"]],
+    [["transfer-encoding", "chunked"]],
+    [["connection", "keep-alive"]],
+    [["x-duplicate", "one"], ["X-Duplicate", "two"]],
+    [["x-control", "value\tcontinued"]],
+  ] as const) {
+    await assert.rejects(
+      transport.send({
+        hop,
+        headers,
+        body: new Uint8Array(),
+        signal: new AbortController().signal,
+      }),
+      /outbound HTTP header is invalid/
+    );
+  }
+});
+
 function fakeHop(port: number): SafeTransportHop {
   const url = `http://merchant.invalid:${port}/resource?x=1`;
   const limits = Object.freeze({

@@ -660,6 +660,7 @@ function authorizedPurchase(journal: PurchaseJournal, seed: number): PurchaseId 
     requestDigest,
     nonceDigest,
     additionalCostCeilingAtomic: "10",
+    createdAtMs: journal.requireAuthorizationRequest(purchase.id).createdAtMs,
     expiresAtMs,
   });
   journal.recordAuthorizationDecision(purchase.id, {

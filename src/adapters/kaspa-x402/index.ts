@@ -6,6 +6,19 @@
 export { KaspaTestnet10AddressCodec } from "./address-codec.js";
 export { ExactOnlyChannelSigner } from "./exact-only-channel-signer.js";
 export { ExactOnlyChannelStore } from "./exact-only-channel-store.js";
+export * from "./abandoned-staging-recovery.js";
+export * from "./chain-verifier.js";
+export * from "./exact-attempt-funding-bridge.js";
+export {
+  KaspaX402ExactPaymentModule,
+  KaspaX402AdapterError,
+  type DurableTreasuryStagingSeam,
+  type ExactAttemptFundingBridge,
+  type ExactAttemptFundingContext,
+  type ExactSettlementVerifier,
+  type KaspaExactRecoveryObserver,
+  type PaidResponseVerifier,
+} from "./exact-payment-module.js";
 export {
   Kip10ExactTransactionBuilder,
   SOMPI_EXACT_FEE_POLICY,
@@ -21,6 +34,9 @@ export {
   type StagingKeyRecord,
   type StagingKeyStoreOptions,
 } from "./staging-key-store.js";
+export * from "./staging-recovery-rpc.js";
+export * from "./staging-recovery-module.js";
+export * from "./vault-treasury-staging.js";
 export {
   VaultTreasuryFundingProvider,
   type VaultTreasuryFundingProviderOptions,

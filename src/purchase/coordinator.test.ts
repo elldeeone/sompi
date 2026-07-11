@@ -9,6 +9,7 @@ import {
   type AuthorityModule,
   type AuthorityResult,
   type CheckoutTermsModule,
+  type CommerceAuthorizationModule,
   type FulfilmentModule,
   type KaspaPaymentModule,
   type PaymentRecoveryObservation,
@@ -19,6 +20,9 @@ import {
   type TreasuryStagingRecoveryObservation,
   type TreasuryStagingSubmissionResult,
   type TreasuryStagingResult,
+  type TreasuryStagingRecoveryModule,
+  type PreparedStagingRecovery,
+  type StagingRecoveryPreparationContext,
   type TreasuryModule,
   type VerifiedArtifact,
 } from "./coordinator.js";
@@ -74,6 +78,8 @@ test("coordinator completes one exact Purchase and idempotently projects linked 
     assert.deepEqual(dependencies.calls, {
       checkout: 1,
       authority: 1,
+      commercePresent: 1,
+      commerceObserve: 0,
       policy: 1,
       quote: 2,
       prepareStaging: 1,
@@ -185,6 +191,7 @@ test("ambiguous Treasury staging is observed before exact preparation and is nev
         .sort((left, right) => left.kind.localeCompare(right.kind)),
       [
         { kind: "kaspa-x402-exact", state: "observed" },
+        { kind: "merchant-authorization", state: "observed" },
         { kind: "treasury-staging", state: "observed" },
       ]
     );
@@ -290,7 +297,9 @@ test("restart after durable preparation reuses exact bytes instead of preparing 
   let journal = new PurchaseJournal(filename, {
     now: () => NOW,
     faultInjector(point: JournalFaultPoint) {
-      if (point === "effect.after_insert" && ++effectInsertions === 2) {
+      // Merchant authorization and Treasury staging are the first two Effects;
+      // crash on the exact payment Effect created after durable preparation.
+      if (point === "effect.after_insert" && ++effectInsertions === 3) {
         throw new Error("crash-after-preparation");
       }
     },
@@ -416,6 +425,188 @@ test("terms waiting on a Treasury quote expire before another dynamic quote", as
   }
 });
 
+test("expiry after staging recovers to the Sompi wallet without preparing an exact payment", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-staging-recovery-no-exact-"));
+  fs.chmodSync(directory, 0o700);
+  const filename = path.join(directory, "purchase.sqlite");
+  let nowMs = NOW;
+  let journal = new PurchaseJournal(filename, { now: () => nowMs });
+  const dependencies = new FakeDependencies();
+  dependencies.termsExpiresAt = new Date(NOW + 1_000).toISOString();
+  dependencies.onStagingObserved = () => { nowMs = NOW + 2_000; };
+  dependencies.stagingRecoveryObserveMode = "safe_to_submit";
+  let coordinator = makeCoordinator(journal, dependencies, () => nowMs);
+  try {
+    const staged = await coordinator.purchase(makeIntent());
+    assert.equal(staged.state, "failed_recoverable");
+    assert.equal(dependencies.calls.prepare, 0);
+
+    const submitted = await coordinator.recover(staged.id);
+    assert.equal(submitted.state, "failed_recoverable");
+    assert.equal(dependencies.recoveryCalls.prepare, 1);
+    assert.equal(dependencies.recoveryCalls.submit, 1);
+    assert.equal(
+      dependencies.recoveryPreparedInputs[0].exactPayment,
+      undefined
+    );
+
+    journal.close();
+    journal = new PurchaseJournal(filename, { now: () => nowMs });
+    coordinator = makeCoordinator(journal, dependencies, () => nowMs);
+    dependencies.stagingRecoveryObserveMode = "recovery_won";
+    const recovered = await coordinator.recover(staged.id);
+    assert.equal(recovered.state, "failed_terminal");
+    assert.equal(recovered.treasury.status, "released");
+    assert.equal(dependencies.recoveryCalls.prepare, 1);
+    assert.equal(dependencies.recoveryCalls.submit, 1);
+    assert.equal(new Set(dependencies.recoveryObservedBytes).size, 1);
+    const context = journal.treasuryStagingRecoveryJournalContext(staged.id, 1)!;
+    assert.equal(context.accounting?.returnedAmountAtomic, "69");
+    assert.equal(context.accounting?.actualAdditionalCostAtomic, "2");
+    assert.equal(context.accounting?.finality, "accepted");
+    assert.equal(context.reservation.state, "released");
+  } finally {
+    journal.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("expiry after exact preparation preserves the immutable exact candidate but never submits it", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-staging-recovery-prepared-exact-"));
+  fs.chmodSync(directory, 0o700);
+  let nowMs = NOW;
+  let exactPrepared = false;
+  let postPreparationClockReads = 0;
+  const clock = () => {
+    if (exactPrepared && ++postPreparationClockReads >= 2) nowMs = NOW + 2_000;
+    return nowMs;
+  };
+  const journal = new PurchaseJournal(path.join(directory, "purchase.sqlite"), {
+    now: clock,
+  });
+  const dependencies = new FakeDependencies();
+  dependencies.termsExpiresAt = new Date(NOW + 1_000).toISOString();
+  dependencies.onExactPrepared = () => { exactPrepared = true; };
+  dependencies.stagingRecoveryObserveMode = "safe_to_submit";
+  const coordinator = makeCoordinator(journal, dependencies, clock);
+  try {
+    const purchase = await coordinator.purchase(makeIntent());
+    assert.equal(
+      purchase.state,
+      "failed_recoverable",
+      `post-preparation clock reads: ${postPreparationClockReads}, now: ${nowMs}`
+    );
+    assert.equal(dependencies.calls.prepare, 1);
+    assert.equal(dependencies.calls.submit, 0);
+
+    await coordinator.recover(purchase.id);
+    assert.equal(dependencies.recoveryCalls.prepare, 1);
+    assert.equal(
+      dependencies.recoveryPreparedInputs[0].exactPayment?.transactionId,
+      "ab".repeat(32)
+    );
+    assert.equal(dependencies.calls.submit, 0);
+    assert.equal(
+      journal.requireTreasuryStagingRecoveryPlan(purchase.id, 1).exactTransactionId,
+      "ab".repeat(32)
+    );
+  } finally {
+    journal.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("ambiguous paid request and recovery sweep reconcile the exact winner without double submit", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-staging-recovery-race-"));
+  fs.chmodSync(directory, 0o700);
+  const filename = path.join(directory, "purchase.sqlite");
+  let nowMs = NOW;
+  let journal = new PurchaseJournal(filename, { now: () => nowMs });
+  const dependencies = new FakeDependencies();
+  dependencies.termsExpiresAt = new Date(NOW + 5_000).toISOString();
+  dependencies.submitMode = "throw";
+  dependencies.observeMode = "pending";
+  const coordinator = makeCoordinator(journal, dependencies, () => nowMs);
+  try {
+    const purchase = await coordinator.purchase(makeIntent());
+    assert.equal(purchase.state, "failed_recoverable");
+    nowMs = NOW + 6_000;
+    dependencies.stagingRecoveryObserveMode = "safe_to_submit";
+    dependencies.stagingRecoverySubmitMode = "ambiguous";
+    await coordinator.recover(purchase.id);
+    assert.equal(dependencies.recoveryCalls.submit, 1);
+
+    journal.close();
+    journal = new PurchaseJournal(filename, { now: () => nowMs });
+    const restarted = makeCoordinator(journal, dependencies, () => nowMs);
+    dependencies.stagingRecoveryObserveMode = "exact_payment_won";
+    dependencies.settleAfterExactRecoveryWinner = true;
+    const settled = await restarted.recover(purchase.id);
+    assert.equal(settled.state, "settled");
+    assert.equal(dependencies.recoveryCalls.submit, 1);
+    assert.equal(journal.findSpendForPurchase(purchase.id)?.transactionId, "ab".repeat(32));
+    assert.equal(
+      journal.treasuryStagingRecoveryJournalContext(purchase.id, 1)?.accounting,
+      undefined
+    );
+  } finally {
+    journal.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("unknown staging spender fails closed and over-ceiling recovery remains persisted for manual authority", async () => {
+  await withFixture(async ({ coordinator, dependencies, intent, journal }) => {
+    dependencies.submitMode = "throw";
+    const purchase = await coordinator.purchase(intent);
+    dependencies.termsExpiresAt = new Date(NOW - 1).toISOString();
+    // The already-authorized journal expiry, not this mutable fixture field,
+    // controls qualification. A terminal exact observation also permits only
+    // staged-fund resolution.
+    dependencies.observeMode = "application_failure";
+    await coordinator.recover(purchase.id);
+    dependencies.stagingRecoveryObserveMode = "conflict";
+    await coordinator.recover(purchase.id);
+    const context = journal.treasuryStagingRecoveryJournalContext(purchase.id, 1);
+    if (context) {
+      assert.equal(context.effect.state, "failed_terminal");
+      assert.equal(context.reservation.state, "in_flight");
+      assert.equal(dependencies.recoveryCalls.submit, 0);
+    }
+  });
+
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-staging-recovery-ceiling-"));
+  fs.chmodSync(directory, 0o700);
+  let nowMs = NOW;
+  const journal = new PurchaseJournal(path.join(directory, "purchase.sqlite"), {
+    now: () => nowMs,
+  });
+  const dependencies = new FakeDependencies();
+  dependencies.termsExpiresAt = new Date(NOW + 1_000).toISOString();
+  dependencies.onStagingObserved = () => { nowMs = NOW + 2_000; };
+  dependencies.stagingRecoveryFeeAtomic = "10";
+  dependencies.stagingRecoveryObserveMode = "safe_to_submit";
+  const coordinator = makeCoordinator(journal, dependencies, () => nowMs);
+  try {
+    const purchase = await coordinator.purchase(makeIntent());
+    await assert.rejects(
+      coordinator.recover(purchase.id),
+      /explicit operator authority is required/
+    );
+    assert.ok(journal.requireTreasuryStagingRecoveryPlan(purchase.id, 1));
+    assert.equal(dependencies.recoveryCalls.prepare, 1);
+    await assert.rejects(
+      coordinator.recover(purchase.id),
+      /explicit operator authority is required/
+    );
+    assert.equal(dependencies.recoveryCalls.prepare, 1);
+    assert.equal(dependencies.recoveryCalls.submit, 0);
+  } finally {
+    journal.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("coordinator requires an address-pinned egress session for direct and redirected commerce", async () => {
   await withFixture(async ({ coordinator, dependencies, intent }) => {
     const unsafe = {
@@ -483,8 +674,10 @@ function makeCoordinator(
     }),
     dependencies.checkout,
     dependencies.authority,
+    dependencies.commerceAuthorization,
     dependencies.treasury,
     dependencies.payment,
+    dependencies.stagingRecovery,
     dependencies.fulfilment,
     {
       now,
@@ -521,9 +714,26 @@ class FakeDependencies {
   settlementMutation?: (settlement: SettlementResult) => SettlementResult;
   stagingSubmitMode: "staged" | "submitted" | "throw" = "staged";
   stagingObserveMode: "pending" | "staged" | "conflict" | "not_found_retryable" = "pending";
+  stagingRecoveryObserveMode:
+    | "safe_to_submit"
+    | "pending"
+    | "exact_payment_won"
+    | "recovery_won"
+    | "conflict" = "pending";
+  stagingRecoverySubmitMode: "accepted" | "ambiguous" | "conflict" = "accepted";
+  stagingRecoveryFeeAtomic = "1";
+  stagingFeeAtomic = "1";
+  onStagingObserved?: () => void;
+  onExactPrepared?: () => void;
+  settleAfterExactRecoveryWinner = false;
+  recoveryCalls = { prepare: 0, observe: 0, submit: 0 };
+  recoveryPreparedInputs: StagingRecoveryPreparationContext[] = [];
+  recoveryObservedBytes: string[] = [];
   calls = {
     checkout: 0,
     authority: 0,
+    commercePresent: 0,
+    commerceObserve: 0,
     policy: 0,
     quote: 0,
     prepareStaging: 0,
@@ -597,6 +807,33 @@ class FakeDependencies {
     },
   };
 
+  readonly commerceAuthorization: CommerceAuthorizationModule = {
+    present: async ({ context }) => {
+      this.calls.commercePresent++;
+      const acceptance = artifact(
+        `merchant-authorization:${context.purchaseId}:${context.paymentIdentifier}`,
+        "test-merchant-authorization",
+        "merchant:test"
+      );
+      return {
+        status: "accepted",
+        submissionDigest: acceptance.declaredDigest!,
+        acceptance,
+      };
+    },
+    observe: async ({ context }) => {
+      this.calls.commerceObserve++;
+      return {
+        status: "accepted",
+        acceptance: artifact(
+          `merchant-authorization:${context.purchaseId}:${context.paymentIdentifier}`,
+          "test-merchant-authorization",
+          "merchant:test"
+        ),
+      };
+    },
+  };
+
   readonly payment: KaspaPaymentModule = {
     prepareStaging: async ({ execution, paymentRequirements }): Promise<PreparedTreasuryStaging> => {
       this.calls.prepareStaging++;
@@ -628,6 +865,7 @@ class FakeDependencies {
       if (this.stagingSubmitMode === "submitted") {
         return { status: "submitted", submissionDigest };
       }
+      this.onStagingObserved?.();
       return {
         status: "staged",
         submissionDigest,
@@ -677,6 +915,7 @@ class FakeDependencies {
       };
       const result = this.preparedMutation?.(prepared) ?? prepared;
       this.prepared.set(execution.purchaseId, result);
+      this.onExactPrepared?.();
       return result;
     },
     submit: async ({ context }): Promise<PaymentSubmissionResult> => {
@@ -724,6 +963,100 @@ class FakeDependencies {
         };
       }
       return { status: "settled", settlement: this.settlement(effect.purchaseId) };
+    },
+  };
+
+  readonly stagingRecovery: TreasuryStagingRecoveryModule = {
+    prepare: async (input) => {
+      this.recoveryCalls.prepare++;
+      this.recoveryPreparedInputs.push(structuredClone(input));
+      const recoveryTransactionId = "ef".repeat(32);
+      const preparedBytes = Buffer.from(
+        JSON.stringify({
+          purchaseId: input.purchaseId,
+          exactTransactionId: input.exactPayment?.transactionId ?? null,
+          recoveryTransactionId,
+        })
+      );
+      const prepared: PreparedStagingRecovery = {
+        preparedBytes,
+        preparedDigest: evidenceDigest(preparedBytes),
+        exactTransactionId: input.exactPayment?.transactionId,
+        recoveryTransactionId,
+        recoveryOutpoint: `${recoveryTransactionId}:0`,
+        recoveryAmountAtomic: (
+          70n - BigInt(this.stagingRecoveryFeeAtomic)
+        ).toString(),
+        stagingFeeAtomic: this.stagingFeeAtomic,
+        recoveryFeeAtomic: this.stagingRecoveryFeeAtomic,
+        requiredFinality: "accepted",
+      };
+      return prepared;
+    },
+    observe: async ({ preparedBytes }) => {
+      this.recoveryCalls.observe++;
+      this.recoveryObservedBytes.push(Buffer.from(preparedBytes).toString("base64url"));
+      const parsed = JSON.parse(Buffer.from(preparedBytes).toString("utf8")) as {
+        exactTransactionId: string | null;
+        recoveryTransactionId: string;
+      };
+      const evidence = evidenceDigest(
+        `staging-recovery:${this.stagingRecoveryObserveMode}:${this.recoveryCalls.observe}`
+      );
+      switch (this.stagingRecoveryObserveMode) {
+        case "safe_to_submit":
+          return {
+            status: "safe_to_submit" as const,
+            evidenceDigest: evidence,
+            readiness: {
+              proofDigest: evidenceDigest(`readiness:${this.recoveryCalls.observe}`),
+              observedAtMs: NOW,
+              expiresAtMs: NOW + 1_000,
+              token: { call: this.recoveryCalls.observe },
+            },
+          };
+        case "pending":
+          return { status: "pending" as const, evidenceDigest: evidence };
+        case "exact_payment_won":
+          if (!parsed.exactTransactionId) throw new Error("no exact candidate");
+          if (this.settleAfterExactRecoveryWinner) this.observeMode = "settled";
+          return {
+            status: "exact_payment_won" as const,
+            transactionId: parsed.exactTransactionId,
+            finality: "accepted",
+            evidenceDigest: evidence,
+          };
+        case "recovery_won":
+          return {
+            status: "recovery_won" as const,
+            transactionId: parsed.recoveryTransactionId,
+            recoveryOutpoint: `${parsed.recoveryTransactionId}:0`,
+            recoveryAmountAtomic: (
+              70n - BigInt(this.stagingRecoveryFeeAtomic)
+            ).toString(),
+            finality: "accepted",
+            evidenceDigest: evidence,
+          };
+        case "conflict":
+          return {
+            status: "conflict" as const,
+            reason: "unknown_staging_spender",
+            evidenceDigest: evidence,
+          };
+      }
+    },
+    submit: async ({ preparedBytes }) => {
+      this.recoveryCalls.submit++;
+      const parsed = JSON.parse(Buffer.from(preparedBytes).toString("utf8")) as {
+        recoveryTransactionId: string;
+      };
+      return {
+        status: this.stagingRecoverySubmitMode,
+        transactionId: parsed.recoveryTransactionId,
+        submissionDigest: evidenceDigest(
+          `staging-recovery-submit:${this.recoveryCalls.submit}`
+        ),
+      };
     },
   };
 
@@ -867,7 +1200,7 @@ async function verifiedAuthorityResult(
   const response = bindAuthorityApprovalResponse(verifiedRequest, {
     responseId: createAuthorityResponseId(new Uint8Array(16).fill(9)),
     respondedAtMs: NOW + 1,
-    expiresAtMs: NOW + 20_000,
+    expiresAtMs: Math.min(approvalRequest.expiresAtMs, NOW + 20_000),
     result: decision === "approved"
       ? {
           decision,

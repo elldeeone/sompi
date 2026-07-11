@@ -66,6 +66,8 @@ export interface Ap2AuthorityDecisionEvidenceVerifierOptions extends Ap2Verifica
   readonly expectedAuthorityIssuer: string;
   readonly expectedAudience?: string;
   readonly expectedInstrumentId: string;
+  /** Production clock read at verification time; fixed nowSec remains for vectors. */
+  readonly now?: () => number;
 }
 
 export interface VerifiedAp2AuthorityDecisionEvidence {
@@ -181,6 +183,12 @@ implements AuthorityDecisionEvidenceVerifier {
   constructor(private readonly options: Ap2AuthorityDecisionEvidenceVerifierOptions) {
     requireBoundedText(options.expectedAuthorityIssuer, "expected authority issuer", 256);
     requireBoundedText(options.expectedInstrumentId, "expected payment instrument ID", MAX_INSTRUMENT_ID_BYTES);
+    if (options.now !== undefined) {
+      const value = options.now();
+      if (!Number.isSafeInteger(value) || value <= 0) {
+        throw new Ap2AdapterError("authority verification clock is invalid", "artifact_malformed");
+      }
+    }
   }
 
   async verify(
@@ -200,7 +208,11 @@ implements AuthorityDecisionEvidenceVerifier {
       issuer: this.options.expectedAuthorityIssuer,
       kid: header.kid,
     });
-    const { nowSec, clockSkewSec } = verificationClock(this.options);
+    const { nowSec, clockSkewSec } = verificationClock(
+      this.options.now
+        ? { ...this.options, nowSec: Math.floor(this.options.now() / 1_000) }
+        : this.options
+    );
     let raw: Record<string, unknown>;
     try {
       const verified = await jwtVerify(artifact, key, {

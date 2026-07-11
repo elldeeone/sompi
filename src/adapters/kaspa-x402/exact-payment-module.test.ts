@@ -136,6 +136,19 @@ test("paid retry is address-pinned, bounded, settlement-verified, and replay-ide
   assert.deepEqual(Buffer.from(fixture.transportRequests[0].body), REQUEST_BODY);
 });
 
+test("post-Settlement fulfilment recovery replays the same keyless payment payload", async () => {
+  const fixture = makeFixture();
+  const prepared = await fixture.prepareExact();
+  const result = await fixture.module.recoverFulfilment({
+    context: fixture.preparedContext(prepared),
+    egress: fixture.egress,
+  });
+  assert.deepEqual(result, { status: "pending" });
+  assert.equal(fixture.calls.payExact, 1, "recovery must not construct another payment");
+  assert.equal(fixture.calls.transport, 1);
+  assert.equal(fixture.paymentSignatures.length, 1);
+});
+
 test("canonical rehydration rejects tampering, payment-id replay, and provider reuse", async () => {
   const fixture = makeFixture();
   const prepared = await fixture.prepareExact();
@@ -350,7 +363,7 @@ test("Settlement requires an exact chain-attested outpoint and authorized total 
       egress: excessive.egress,
       signal: new AbortController().signal,
     }),
-    /staged capacity or the Purchase authorization/
+    /complete additional cost exceeds the Purchase authorization/
   );
 });
 

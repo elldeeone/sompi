@@ -16,11 +16,17 @@ import {
 import {
   expectedSchemaFingerprint,
   expectedV1SchemaFingerprint,
+  expectedV2SchemaFingerprint,
+  expectedV3SchemaFingerprint,
   JOURNAL_APPLICATION_ID,
   JOURNAL_SCHEMA_CHECKSUM,
   JOURNAL_SCHEMA_SQL,
   JOURNAL_SCHEMA_V1_CHECKSUM,
+  JOURNAL_SCHEMA_V2_CHECKSUM,
   JOURNAL_SCHEMA_V2_MIGRATION_SQL,
+  JOURNAL_SCHEMA_V3_CHECKSUM,
+  JOURNAL_SCHEMA_V3_MIGRATION_SQL,
+  JOURNAL_SCHEMA_V4_MIGRATION_SQL,
   JOURNAL_SCHEMA_VERSION,
   schemaFingerprint,
 } from "./journal-schema.js";
@@ -35,6 +41,13 @@ import type {
   Sha256Digest,
 } from "./types.js";
 import { paymentFinalityMeets, requirePaymentFinality } from "./finality.js";
+import type {
+  PreparedTreasuryOperation,
+  TreasuryOperationIntent,
+  TreasuryOperationObservationStatus,
+  TreasuryOperationRecord,
+  TreasuryOperationState,
+} from "../treasury/operation-journal.js";
 
 const PAYMENT_ATTEMPT_STATES = ["planned", "prepared", "submitted", "observed", "failed"] as const;
 const EFFECT_STATES = [
@@ -51,6 +64,9 @@ const RESERVATION_STATES = ["active", "in_flight", "spent", "released", "expired
 
 export const TREASURY_STAGING_EFFECT_KIND = "treasury-staging";
 export const TREASURY_STAGING_EVIDENCE_KIND = "treasury-staging-output";
+export const TREASURY_STAGING_RECOVERY_EFFECT_KIND = "treasury-staging-recovery";
+export const MERCHANT_AUTHORIZATION_EFFECT_KIND = "merchant-authorization";
+export const MERCHANT_AUTHORIZATION_EVIDENCE_KIND = "merchant-authorization";
 
 export const PURCHASE_RECEIPT_SET_PROFILE = "urn:sompi:receipt-set:purchase:1";
 export const PURCHASE_RECEIPT_REQUIREMENTS = Object.freeze([
@@ -78,6 +94,9 @@ export type JournalFaultPoint =
   | "payment_preparation.after_insert"
   | "treasury_staging_plan.after_insert"
   | "treasury_staging_observation.after_insert"
+  | "treasury_staging_recovery_plan.after_insert"
+  | "treasury_staging_recovery_observation.after_insert"
+  | "treasury_staging_recovery_accounting.after_insert"
   | "effect.after_insert"
   | "effect_claim.after_effect_update"
   | "spend.after_insert"
@@ -85,7 +104,12 @@ export type JournalFaultPoint =
   | "authorization_request.after_insert"
   | "authorization_decision.after_insert"
   | "fulfilment.after_insert"
-  | "receipt.after_insert";
+  | "receipt.after_insert"
+  | "treasury_operation.after_intent_insert"
+  | "treasury_operation.after_prepared_update"
+  | "treasury_operation.after_submission_plan"
+  | "treasury_operation.after_observation_insert"
+  | "treasury_operation.after_complete_update";
 
 export interface PurchaseJournalOptions {
   now?: () => number;
@@ -391,6 +415,87 @@ export interface TreasuryStagingRecoveryContext {
   attempt: PaymentAttemptRecord;
   reservation: PolicyReservationRecord;
   observation?: TreasuryStagingObservationRecord;
+}
+
+export interface PlanTreasuryStagingRecoveryInput {
+  purchaseId: PurchaseId;
+  attempt: number;
+  reservationId: string;
+  stagingEffectId: string;
+  idempotencyKey: string;
+  payloadDigest: Sha256Digest;
+  preparedBytes: Uint8Array;
+  exactTransactionId?: string;
+  recoveryTransactionId: string;
+  recoveryOutpoint: string;
+  recoveryAmountAtomic: string;
+  stagingFeeAtomic: string;
+  recoveryFeeAtomic: string;
+  requiredFinality: string;
+  authorizedAdditionalCostCeilingAtomic: string;
+}
+
+export interface TreasuryStagingRecoveryPlanRecord
+  extends Omit<PlanTreasuryStagingRecoveryInput, "preparedBytes"> {
+  effectId: string;
+  preparedRef: string;
+  preparedByteLength: number;
+  createdAtMs: number;
+}
+
+export type TreasuryStagingRecoveryObservationStatus =
+  | "safe_to_submit"
+  | "pending"
+  | "exact_payment_won"
+  | "recovery_won"
+  | "conflict";
+
+export interface RecordTreasuryStagingRecoveryObservationInput {
+  status: TreasuryStagingRecoveryObservationStatus;
+  evidenceDigest: Sha256Digest;
+  readinessProofDigest?: Sha256Digest;
+  readinessObservedAtMs?: number;
+  readinessExpiresAtMs?: number;
+  winningTransactionId?: string;
+  winningFinality?: string;
+  recoveryOutpoint?: string;
+  recoveryAmountAtomic?: string;
+  conflictReason?: string;
+}
+
+export interface TreasuryStagingRecoveryObservationRecord
+  extends RecordTreasuryStagingRecoveryObservationInput {
+  sequence: number;
+  effectId: string;
+  leaseName: string;
+  leaseGeneration: number;
+  observedAtMs: number;
+}
+
+export interface TreasuryStagingRecoveryAccountingRecord {
+  effectId: string;
+  reservationId: string;
+  purchaseId: PurchaseId;
+  attempt: number;
+  recoveryTransactionId: string;
+  recoveryOutpoint: string;
+  returnedAmountAtomic: string;
+  stagingFeeAtomic: string;
+  recoveryFeeAtomic: string;
+  actualAdditionalCostAtomic: string;
+  finality: string;
+  evidenceDigest: Sha256Digest;
+  observedAtMs: number;
+}
+
+export interface TreasuryStagingRecoveryJournalContext {
+  plan: TreasuryStagingRecoveryPlanRecord;
+  effect: EffectRecord;
+  attempt: PaymentAttemptRecord;
+  reservation: PolicyReservationRecord;
+  staging: TreasuryStagingObservationRecord;
+  observations: readonly TreasuryStagingRecoveryObservationRecord[];
+  accounting?: TreasuryStagingRecoveryAccountingRecord;
 }
 
 export interface PlanEffectInput {
@@ -1166,6 +1271,415 @@ export class PurchaseJournal {
     return policyFromRow(row, this.policyAllowlist(row.digest));
   }
 
+  claimTreasuryOperationIntent(input: TreasuryOperationIntent): TreasuryOperationRecord {
+    validateTreasuryOperationIntent(input);
+    const claim = this.db.transaction(() => {
+      const existing = this.findTreasuryOperation(input.operationKey);
+      if (existing) {
+        assertSameTreasuryOperationIntent(existing, input);
+        return existing;
+      }
+      const policy = this.requireActivePolicy();
+      if (policy.digest !== input.policyDigest) {
+        throw new PolicyReservationError(
+          "treasury policy changed; direct operation must re-evaluate against the active snapshot"
+        );
+      }
+      const now = this.timestamp();
+      this.expireReservationsInternal(now);
+      const resolved = input.requestedAmountAtomic === "max"
+        ? undefined
+        : input.requestedAmountAtomic;
+      this.assertDirectTreasuryCapacity(
+        policy,
+        input.kind,
+        input.destination,
+        resolved ?? "0",
+        input.feeCeilingAtomic,
+        now
+      );
+      try {
+        this.db.prepare(
+          `INSERT INTO treasury_operations (
+             operation_key, request_digest, kind, destination,
+             requested_amount_atomic, keep_float_atomic, fee_ceiling_atomic,
+             resolved_amount_atomic, policy_digest,
+             state, retry_count, created_at_ms, updated_at_ms
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'intent', 0, ?, ?)`
+        ).run(
+          input.operationKey,
+          input.requestDigest,
+          input.kind,
+          input.destination,
+          input.requestedAmountAtomic,
+          input.keepFloatAtomic ?? null,
+          input.feeCeilingAtomic,
+          resolved ?? null,
+          input.policyDigest,
+          now,
+          now
+        );
+        this.inject("treasury_operation.after_intent_insert");
+      } catch (cause) {
+        if (isSqliteConstraint(cause)) {
+          throw new PolicyReservationError(
+            "another direct Treasury operation is unresolved; recover it before creating a new movement"
+          );
+        }
+        throw cause;
+      }
+      this.insertTreasuryOperationTransition(
+        input.operationKey,
+        undefined,
+        "intent",
+        "intent_and_capacity_recorded",
+        now
+      );
+      return this.requireTreasuryOperation(input.operationKey);
+    });
+    return claim.immediate();
+  }
+
+  recordPreparedTreasuryOperation(
+    operationKey: string,
+    prepared: PreparedTreasuryOperation
+  ): TreasuryOperationRecord {
+    assertTreasuryOperationKey(operationKey);
+    validatePreparedTreasuryOperation(prepared);
+    const digest = evidenceDigest(prepared.bytes);
+    const stored = this.storePreparedMaterial(prepared.bytes, digest);
+    const record = this.db.transaction(() => {
+      const current = this.requireTreasuryOperation(operationKey);
+      if (current.state !== "intent") {
+        if (
+          current.preparedDigest === stored.digest &&
+          current.transactionId === prepared.transactionId &&
+          current.resolvedAmountAtomic === prepared.amountAtomic &&
+          current.feeAtomic === prepared.feeAtomic &&
+          current.policyDigest === prepared.policyDigest
+        ) {
+          return current;
+        }
+        throw new JournalInvariantError(
+          "direct Treasury operation preparation conflicts with durable material"
+        );
+      }
+      const policy = this.requireActivePolicy();
+      if (
+        current.policyDigest !== prepared.policyDigest ||
+        policy.digest !== prepared.policyDigest
+      ) {
+        throw new PolicyReservationError(
+          "treasury policy changed before direct operation preparation was committed"
+        );
+      }
+      if (
+        current.requestedAmountAtomic !== "max" &&
+        current.requestedAmountAtomic !== prepared.amountAtomic
+      ) {
+        throw new JournalInvariantError("prepared direct Treasury amount changed immutable intent");
+      }
+      if (BigInt(prepared.feeAtomic) > BigInt(current.feeCeilingAtomic)) {
+        throw new PolicyReservationError(
+          "prepared direct Treasury fee exceeds the capacity reserved before signing"
+        );
+      }
+      const now = this.timestamp();
+      this.expireReservationsInternal(now);
+      this.assertDirectTreasuryCapacity(
+        policy,
+        current.kind,
+        current.destination,
+        prepared.amountAtomic,
+        current.feeCeilingAtomic,
+        now,
+        operationKey
+      );
+      const updated = this.db.prepare(
+        `UPDATE treasury_operations
+            SET resolved_amount_atomic = ?, fee_atomic = ?, transaction_id = ?,
+                prepared_digest = ?, prepared_ref = ?, prepared_byte_length = ?,
+                state = 'prepared', updated_at_ms = ?
+          WHERE operation_key = ? AND state = 'intent'`
+      ).run(
+        prepared.amountAtomic,
+        prepared.feeAtomic,
+        prepared.transactionId,
+        stored.digest,
+        stored.storageRef,
+        stored.byteLength,
+        now,
+        operationKey
+      );
+      if (updated.changes !== 1) {
+        throw new JournalInvariantError("concurrent direct Treasury preparation changed state");
+      }
+      this.inject("treasury_operation.after_prepared_update");
+      this.insertTreasuryOperationTransition(
+        operationKey,
+        "intent",
+        "prepared",
+        "signed_material_persisted",
+        now
+      );
+      return this.requireTreasuryOperation(operationKey);
+    });
+    return record.immediate();
+  }
+
+  readPreparedTreasuryOperation(operationKey: string): Buffer {
+    const operation = this.requireTreasuryOperation(operationKey);
+    if (
+      operation.preparedDigest === undefined ||
+      operation.preparedByteLength === undefined
+    ) {
+      throw new JournalInvariantError("direct Treasury operation has no prepared material");
+    }
+    const row = this.db.prepare(
+      "SELECT prepared_ref FROM treasury_operations WHERE operation_key = ?"
+    ).get(operationKey) as { prepared_ref: string | null } | undefined;
+    if (!row?.prepared_ref) {
+      throw new JournalInvariantError("direct Treasury prepared material reference is missing");
+    }
+    return this.readPreparedMaterial(
+      operation.preparedDigest as Sha256Digest,
+      row.prepared_ref,
+      operation.preparedByteLength
+    );
+  }
+
+  readObservedTreasuryOperationDetail(
+    operationKey: string
+  ): Readonly<Record<string, unknown>> {
+    const operation = this.requireTreasuryOperation(operationKey);
+    if (operation.state !== "observed" && operation.state !== "completed") {
+      throw new JournalInvariantError("direct Treasury operation has no observed result");
+    }
+    const row = this.db.prepare(
+      `SELECT detail_json, detail_digest
+         FROM treasury_operation_observations
+        WHERE operation_key = ? AND status = 'observed'
+        ORDER BY sequence DESC LIMIT 1`
+    ).get(operationKey) as { detail_json: string; detail_digest: string } | undefined;
+    if (!row || evidenceDigest(row.detail_json) !== row.detail_digest) {
+      throw new JournalInvariantError("direct Treasury observation failed digest verification");
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(row.detail_json);
+    } catch (cause) {
+      throw new JournalInvariantError("direct Treasury observation is malformed", { cause });
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new JournalInvariantError("direct Treasury observation is malformed");
+    }
+    return Object.freeze(parsed as Record<string, unknown>);
+  }
+
+  planTreasuryOperationSubmission(operationKey: string): boolean {
+    assertTreasuryOperationKey(operationKey);
+    const plan = this.db.transaction(() => {
+      const current = this.requireTreasuryOperation(operationKey);
+      if (current.state !== "prepared") return false;
+      const policy = this.requireActivePolicy();
+      if (policy.digest !== current.policyDigest) {
+        throw new PolicyReservationError(
+          "treasury policy changed before direct operation submission"
+        );
+      }
+      if (!current.resolvedAmountAtomic || current.feeAtomic === undefined) {
+        throw new JournalInvariantError("direct Treasury operation lacks prepared cost facts");
+      }
+      const now = this.timestamp();
+      this.expireReservationsInternal(now);
+      this.assertDirectTreasuryCapacity(
+        policy,
+        current.kind,
+        current.destination,
+        current.resolvedAmountAtomic,
+        current.feeCeilingAtomic,
+        now,
+        operationKey
+      );
+      const updated = this.db.prepare(
+        `UPDATE treasury_operations
+            SET state = 'submission_planned', updated_at_ms = ?
+          WHERE operation_key = ? AND state = 'prepared'`
+      ).run(now, operationKey);
+      if (updated.changes !== 1) return false;
+      this.inject("treasury_operation.after_submission_plan");
+      this.insertTreasuryOperationTransition(
+        operationKey,
+        "prepared",
+        "submission_planned",
+        "submission_intent_committed",
+        now
+      );
+      return true;
+    });
+    return plan.immediate();
+  }
+
+  recordTreasuryOperationSubmissionAccepted(
+    operationKey: string,
+    transactionId: string
+  ): TreasuryOperationRecord {
+    assertTreasuryOperationKey(operationKey);
+    assertTransactionId(transactionId);
+    const record = this.db.transaction(() => {
+      const current = this.requireTreasuryOperation(operationKey);
+      if (current.transactionId !== transactionId) {
+        throw new JournalInvariantError("submitted direct Treasury transaction identity changed");
+      }
+      if (["submitted", "observed", "completed"].includes(current.state)) return current;
+      if (current.state !== "submission_planned") {
+        throw new JournalInvariantError("direct Treasury submission was not durably planned");
+      }
+      const now = this.timestamp();
+      this.db.prepare(
+        `UPDATE treasury_operations SET state = 'submitted', updated_at_ms = ?
+          WHERE operation_key = ? AND state = 'submission_planned'`
+      ).run(now, operationKey);
+      this.insertTreasuryOperationTransition(
+        operationKey,
+        "submission_planned",
+        "submitted",
+        "rpc_accepted",
+        now
+      );
+      return this.requireTreasuryOperation(operationKey);
+    });
+    return record.immediate();
+  }
+
+  recordTreasuryOperationObservation(
+    operationKey: string,
+    status: TreasuryOperationObservationStatus,
+    detail: Readonly<Record<string, unknown>>
+  ): TreasuryOperationRecord {
+    assertTreasuryOperationKey(operationKey);
+    if (!["observed", "not_submitted", "pending"].includes(status)) {
+      throw new JournalInvariantError("direct Treasury observation status is invalid");
+    }
+    const detailJson = canonicalTreasuryObservationJson(detail);
+    if (Buffer.byteLength(detailJson) > 16_384) {
+      throw new JournalInvariantError("direct Treasury observation is oversized");
+    }
+    const detailDigest = evidenceDigest(detailJson);
+    const record = this.db.transaction(() => {
+      const current = this.requireTreasuryOperation(operationKey);
+      if (!["submission_planned", "submitted", "observed"].includes(current.state)) {
+        throw new JournalInvariantError("direct Treasury operation is not awaiting observation");
+      }
+      const now = this.timestamp();
+      this.db.prepare(
+        `INSERT OR IGNORE INTO treasury_operation_observations
+           (operation_key, status, detail_digest, detail_json, observed_at_ms)
+         VALUES (?, ?, ?, ?, ?)`
+      ).run(operationKey, status, detailDigest, detailJson, now);
+      this.inject("treasury_operation.after_observation_insert");
+      if (status === "pending" || current.state === "observed") {
+        return this.requireTreasuryOperation(operationKey);
+      }
+      const next: TreasuryOperationState = status === "observed" ? "observed" : "prepared";
+      const updated = this.db.prepare(
+        `UPDATE treasury_operations
+            SET state = ?, retry_count = retry_count + ?, updated_at_ms = ?
+          WHERE operation_key = ? AND state = ?`
+      ).run(next, status === "not_submitted" ? 1 : 0, now, operationKey, current.state);
+      if (updated.changes !== 1) {
+        throw new JournalInvariantError("concurrent direct Treasury observation changed state");
+      }
+      this.insertTreasuryOperationTransition(
+        operationKey,
+        current.state,
+        next,
+        status === "observed" ? "chain_observed" : "exact_inputs_prove_not_submitted",
+        now
+      );
+      return this.requireTreasuryOperation(operationKey);
+    });
+    return record.immediate();
+  }
+
+  completeTreasuryOperation(operationKey: string): TreasuryOperationRecord {
+    assertTreasuryOperationKey(operationKey);
+    const complete = this.db.transaction(() => {
+      const current = this.requireTreasuryOperation(operationKey);
+      if (current.state === "completed") return current;
+      if (current.state !== "observed") {
+        throw new JournalInvariantError("unobserved direct Treasury operation cannot complete");
+      }
+      const now = this.timestamp();
+      this.db.prepare(
+        `UPDATE treasury_operations
+            SET state = 'completed', updated_at_ms = ?, completed_at_ms = ?
+          WHERE operation_key = ? AND state = 'observed'`
+      ).run(now, now, operationKey);
+      this.inject("treasury_operation.after_complete_update");
+      this.insertTreasuryOperationTransition(
+        operationKey,
+        "observed",
+        "completed",
+        "local_commit_complete",
+        now
+      );
+      return this.requireTreasuryOperation(operationKey);
+    });
+    return complete.immediate();
+  }
+
+  findTreasuryOperation(operationKey: string): TreasuryOperationRecord | undefined {
+    assertTreasuryOperationKey(operationKey);
+    const row = this.db.prepare(
+      "SELECT * FROM treasury_operations WHERE operation_key = ?"
+    ).get(operationKey) as TreasuryOperationRow | undefined;
+    return row ? treasuryOperationFromRow(row) : undefined;
+  }
+
+  requireTreasuryOperation(operationKey: string): TreasuryOperationRecord {
+    const operation = this.findTreasuryOperation(operationKey);
+    if (!operation) {
+      throw new JournalNotFoundError(`Treasury Operation ${operationKey} does not exist`);
+    }
+    return operation;
+  }
+
+  treasuryOperationSpentLastHour(): bigint {
+    const cutoff = this.timestamp() - 60 * 60 * 1000;
+    const rows = this.db.prepare(
+      `SELECT kind, resolved_amount_atomic, fee_atomic FROM treasury_operations
+        WHERE state = 'completed' AND completed_at_ms >= ?`
+    ).all(cutoff) as Array<{
+      kind: TreasuryOperationRecord["kind"];
+      resolved_amount_atomic: string;
+      fee_atomic: string;
+    }>;
+    return rows.reduce(
+      (sum, row) =>
+        sum +
+        (row.kind === "vault_deposit" ? 0n : BigInt(row.resolved_amount_atomic)) +
+        BigInt(row.fee_atomic),
+      0n
+    );
+  }
+
+  treasuryPolicyCapacityUsed(): bigint {
+    const read = this.db.transaction(() => {
+      const now = this.timestamp();
+      this.expireReservationsInternal(now);
+      return this.policyCapacityUsedInternal(now);
+    });
+    return read.immediate();
+  }
+
+  unresolvedTreasuryOperationCount(): number {
+    return (this.db.prepare(
+      `SELECT COUNT(*) AS count FROM treasury_operations
+        WHERE state NOT IN ('completed', 'failed_terminal')`
+    ).get() as { count: number }).count;
+  }
+
   requirePolicy(digest: Sha256Digest): PolicySnapshotRecord {
     const policy = this.findPolicy(digest);
     if (!policy) throw new JournalNotFoundError(`Policy ${digest} does not exist`);
@@ -1317,6 +1831,155 @@ export class PurchaseJournal {
     return release.immediate();
   }
 
+  /**
+   * Terminates a never-staged Purchase after Checkout expiry. Ambiguous
+   * Merchant presentation must be reconciled first; accepted presentation is
+   * harmless but can no longer authorize Treasury execution.
+   */
+  expirePurchaseBeforeTreasury(purchaseId: PurchaseId): PurchaseRecord {
+    const expire = this.db.transaction(() => {
+      const purchase = this.requirePurchase(purchaseId);
+      const terms = this.requireCheckoutTerms(purchaseId);
+      const authorization = this.requireAuthorization(purchaseId);
+      const now = this.timestamp();
+      if (
+        purchase.state !== "authorised" ||
+        Math.min(terms.expiresAtMs, authorization.expiresAtMs) > now
+      ) {
+        throw new JournalInvariantError(
+          "only an authorised Purchase with expired Checkout Terms can terminate before Treasury"
+        );
+      }
+      const commerce = this.effectsForPurchase(purchaseId).filter(
+        (effect) => effect.kind === MERCHANT_AUTHORIZATION_EFFECT_KIND
+      );
+      if (commerce.length > 1) {
+        throw new JournalInvariantError("Purchase has conflicting Merchant authorization Effects");
+      }
+      const effect = commerce[0];
+      if (
+        effect &&
+        !["planned", "retryable", "observed", "abandoned"].includes(effect.state)
+      ) {
+        throw new JournalEffectBusyError(
+          "ambiguous Merchant authorization must be reconciled before expiry"
+        );
+      }
+      const attempts = this.paymentAttempts(purchaseId);
+      if (attempts.length > 1) {
+        throw new JournalInvariantError("expired Purchase has multiple Payment Attempts");
+      }
+      const attempt = attempts[0];
+      if (attempt && attempt.state === "planned") {
+        this.transitionAttemptInternal(
+          attempt,
+          "failed",
+          "checkout_expired_before_treasury",
+          terms.checkoutDigest,
+          now,
+          "checkout_expired_before_treasury"
+        );
+      } else if (attempt && attempt.state !== "failed") {
+        throw new JournalInvariantError("expired pre-Treasury Purchase already advanced execution");
+      }
+      if (effect && (effect.state === "planned" || effect.state === "retryable")) {
+        this.updateEffectState(
+          effect,
+          "abandoned",
+          "checkout_expired_before_treasury",
+          terms.checkoutDigest,
+          now,
+          { errorCode: "checkout_expired_before_treasury" }
+        );
+      }
+      const reservation = this.findReservationForPurchase(purchaseId);
+      if (reservation?.state === "active") {
+        const updated = this.db.prepare(
+          "UPDATE treasury_reservations SET state = 'released', updated_at_ms = ? WHERE id = ? AND state = 'active'"
+        ).run(now, reservation.id);
+        if (updated.changes !== 1) {
+          throw new JournalInvariantError("concurrent expired Reservation release");
+        }
+      } else if (reservation && reservation.state !== "released" && reservation.state !== "expired") {
+        throw new JournalInvariantError("pre-Treasury expiry found irreversible Treasury state");
+      }
+      return this.transitionPurchase(
+        purchaseId,
+        "authorised",
+        "expired",
+        "checkout_expired_before_treasury",
+        terms.checkoutDigest
+      );
+    });
+    return expire.immediate();
+  }
+
+  /** Blocks the first Merchant payment after staging when its authority expired. */
+  blockExpiredStagedPurchase(purchaseId: PurchaseId): PurchaseRecord {
+    const block = this.db.transaction(() => {
+      const purchase = this.requirePurchase(purchaseId);
+      const terms = this.requireCheckoutTerms(purchaseId);
+      const authorization = this.requireAuthorization(purchaseId);
+      const now = this.timestamp();
+      if (
+        purchase.state !== "execution_prepared" ||
+        Math.min(terms.expiresAtMs, authorization.expiresAtMs) > now
+      ) {
+        throw new JournalInvariantError(
+          "only an execution-prepared Purchase with expired Checkout Terms can be blocked"
+        );
+      }
+      const attempts = this.paymentAttempts(purchaseId);
+      if (attempts.length !== 1) {
+        throw new JournalInvariantError("expired staged Purchase must have one Payment Attempt");
+      }
+      const attempt = attempts[0];
+      const staging = this.findTreasuryStagingObservation(purchaseId, attempt.attempt);
+      if (!staging || this.requireEffect(staging.effectId).state !== "observed") {
+        throw new JournalInvariantError("expired staged Purchase lacks verified staging recovery facts");
+      }
+      const paymentEffects = this.effectsForPurchase(purchaseId).filter(
+        (effect) =>
+          effect.attempt === attempt.attempt &&
+          effect.kind === "kaspa-x402-exact"
+      );
+      if (paymentEffects.length > 1 || paymentEffects.some((effect) => effect.state !== "planned")) {
+        throw new JournalInvariantError(
+          "expired staged Purchase may be blocked only before its first payment claim"
+        );
+      }
+      if (attempt.state !== "planned" && attempt.state !== "prepared") {
+        throw new JournalInvariantError("expired staged Payment Attempt already advanced submission");
+      }
+      this.transitionAttemptInternal(
+        attempt,
+        "failed",
+        "checkout_expired_after_staging",
+        terms.checkoutDigest,
+        now,
+        "checkout_expired_after_staging"
+      );
+      if (paymentEffects[0]) {
+        this.updateEffectState(
+          paymentEffects[0],
+          "abandoned",
+          "checkout_expired_after_staging",
+          terms.checkoutDigest,
+          now,
+          { errorCode: "checkout_expired_after_staging" }
+        );
+      }
+      return this.transitionPurchase(
+        purchaseId,
+        "execution_prepared",
+        "failed_recoverable",
+        "checkout_expired_after_staging",
+        terms.checkoutDigest
+      );
+    });
+    return block.immediate();
+  }
+
   releaseInFlightReservation(
     reservationId: string,
     effectId: string,
@@ -1459,6 +2122,11 @@ export class PurchaseJournal {
       if (attempt.state !== "planned") {
         throw new JournalInvariantError(`treasury staging cannot be planned from Attempt state ${attempt.state}`);
       }
+      this.requireObservedMerchantAuthorization(
+        input.purchaseId,
+        input.attempt,
+        attempt.identifier
+      );
       const now = this.timestamp();
       this.expireReservationsInternal(now);
       const reservation = this.requireReservation(input.reservationId);
@@ -1566,6 +2234,11 @@ export class PurchaseJournal {
       }
       const plan = this.requireTreasuryStagingPlan(effect.purchaseId, effect.attempt);
       const attempt = this.requirePaymentAttempt(effect.purchaseId, effect.attempt);
+      this.requireObservedMerchantAuthorization(
+        effect.purchaseId,
+        effect.attempt,
+        attempt.identifier
+      );
       this.readPreparedMaterial(plan.payloadDigest, plan.preparedRef, plan.preparedByteLength);
       this.readPreparedMaterial(effect.payloadDigest, effect.preparedRef, effect.preparedByteLength);
       if (
@@ -1622,6 +2295,37 @@ export class PurchaseJournal {
       return { effect: this.requireEffect(effectId), lease: claimed.lease };
     });
     return begin.immediate();
+  }
+
+  private requireObservedMerchantAuthorization(
+    purchaseId: PurchaseId,
+    attempt: number,
+    paymentIdentifier: string
+  ): EffectRecord {
+    const matches = this.effectsForPurchase(purchaseId).filter(
+      (effect) => effect.kind === MERCHANT_AUTHORIZATION_EFFECT_KIND
+    );
+    if (matches.length !== 1) {
+      throw new JournalInvariantError(
+        "treasury staging requires exactly one durable Merchant authorization Effect"
+      );
+    }
+    const effect = matches[0];
+    if (
+      effect.attempt !== undefined ||
+      effect.idempotencyKey !== `merchant-authorization:${paymentIdentifier}` ||
+      effect.state !== "observed" ||
+      !effect.resultDigest ||
+      !this.isVerifiedEvidenceLinked(purchaseId, effect.resultDigest, {
+        attempt,
+        kind: MERCHANT_AUTHORIZATION_EVIDENCE_KIND,
+      })
+    ) {
+      throw new JournalInvariantError(
+        "treasury staging requires verified Merchant authorization for this Payment Attempt"
+      );
+    }
+    return effect;
   }
 
   recordObservedTreasuryStaging(
@@ -1747,6 +2451,430 @@ export class PurchaseJournal {
     const reservation = this.requireReservation(plan.reservationId);
     const observation = this.findTreasuryStagingObservation(purchaseId, attemptNumber);
     return { plan, effect, attempt, reservation, observation };
+  }
+
+  planTreasuryStagingRecovery(
+    input: PlanTreasuryStagingRecoveryInput
+  ): TreasuryStagingRecoveryPlanRecord {
+    validateTreasuryStagingRecoveryPlanInput(input);
+    const stored = this.storePreparedMaterial(input.preparedBytes, input.payloadDigest);
+    const plan = this.db.transaction(() => {
+      const existingEffectRow = this.db
+        .prepare("SELECT * FROM effects WHERE idempotency_key = ?")
+        .get(input.idempotencyKey) as EffectRow | undefined;
+      if (existingEffectRow) {
+        const existingEffect = effectFromRow(existingEffectRow);
+        if (existingEffect.kind !== TREASURY_STAGING_RECOVERY_EFFECT_KIND) {
+          throw new JournalInvariantError(
+            "staging recovery idempotency key belongs to another Effect kind"
+          );
+        }
+        const existing = this.findTreasuryStagingRecoveryPlanByEffect(existingEffect.id);
+        if (!existing) {
+          throw new JournalInvariantError("staging recovery Effect has no immutable plan");
+        }
+        assertSameTreasuryStagingRecoveryPlan(existing, input, stored);
+        return existing;
+      }
+      if (this.findTreasuryStagingRecoveryPlan(input.purchaseId, input.attempt)) {
+        throw new JournalInvariantError(
+          "Payment Attempt already has a different staging recovery plan"
+        );
+      }
+      const purchase = this.requirePurchase(input.purchaseId);
+      if (purchase.state !== "failed_recoverable") {
+        throw new JournalInvariantError(
+          "staging recovery may be planned only for a recoverable Purchase"
+        );
+      }
+      const attempt = this.requirePaymentAttempt(input.purchaseId, input.attempt);
+      const staging = this.findTreasuryStagingObservation(input.purchaseId, input.attempt);
+      if (!staging || staging.effectId !== input.stagingEffectId) {
+        throw new JournalInvariantError(
+          "staging recovery requires the exact journal-observed staging output"
+        );
+      }
+      const stagingEffect = this.requireEffect(input.stagingEffectId);
+      if (stagingEffect.state !== "observed") {
+        throw new JournalInvariantError("staging recovery source is not durably observed");
+      }
+      const reservation = this.requireReservation(input.reservationId);
+      if (
+        reservation.purchaseId !== input.purchaseId ||
+        reservation.state !== "in_flight" ||
+        staging.reservationId !== reservation.id ||
+        reservation.additionalCostCeilingAtomic !==
+          input.authorizedAdditionalCostCeilingAtomic
+      ) {
+        throw new JournalInvariantError(
+          "staging recovery is not bound to the in-flight Purchase Reservation"
+        );
+      }
+      const preparation = this.findPaymentPreparation(input.purchaseId, input.attempt);
+      if (
+        (preparation?.transactionId ?? undefined) !== input.exactTransactionId ||
+        (preparation === undefined && !["planned", "failed"].includes(attempt.state))
+      ) {
+        throw new JournalInvariantError(
+          "staging recovery exact candidate differs from immutable payment preparation"
+        );
+      }
+      if (this.findSpendForPurchase(input.purchaseId)) {
+        throw new JournalInvariantError("settled Merchant payment cannot be swept");
+      }
+      if (
+        BigInt(input.recoveryAmountAtomic) + BigInt(input.recoveryFeeAtomic) !==
+        BigInt(staging.stagingAmountAtomic)
+      ) {
+        throw new JournalInvariantError("staging recovery does not conserve the staged value");
+      }
+      const now = this.timestamp();
+      const effectId = opaqueId("eff");
+      this.db.prepare(
+        `INSERT INTO effects
+           (id, purchase_id, attempt, kind, idempotency_key, state, version,
+            payload_digest, prepared_ref, prepared_byte_length, created_at_ms, updated_at_ms)
+         VALUES (?, ?, ?, ?, ?, 'planned', 0, ?, ?, ?, ?, ?)`
+      ).run(
+        effectId,
+        input.purchaseId,
+        input.attempt,
+        TREASURY_STAGING_RECOVERY_EFFECT_KIND,
+        input.idempotencyKey,
+        input.payloadDigest,
+        stored.storageRef,
+        stored.byteLength,
+        now,
+        now
+      );
+      this.inject("effect.after_insert");
+      this.insertEffectTransition(
+        effectId,
+        undefined,
+        "planned",
+        "treasury_staging_recovery_planned",
+        input.payloadDigest,
+        now
+      );
+      this.db.prepare(
+        `INSERT INTO treasury_staging_recovery_plans
+           (effect_id, purchase_id, attempt, reservation_id, staging_effect_id,
+            payload_digest, prepared_ref, prepared_byte_length, exact_transaction_id,
+            recovery_transaction_id, recovery_outpoint, recovery_amount_atomic,
+            staging_fee_atomic, recovery_fee_atomic, required_finality,
+            authorized_additional_cost_ceiling_atomic, created_at_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        effectId,
+        input.purchaseId,
+        input.attempt,
+        input.reservationId,
+        input.stagingEffectId,
+        input.payloadDigest,
+        stored.storageRef,
+        stored.byteLength,
+        input.exactTransactionId ?? null,
+        input.recoveryTransactionId,
+        input.recoveryOutpoint,
+        input.recoveryAmountAtomic,
+        input.stagingFeeAtomic,
+        input.recoveryFeeAtomic,
+        input.requiredFinality,
+        input.authorizedAdditionalCostCeilingAtomic,
+        now
+      );
+      this.inject("treasury_staging_recovery_plan.after_insert");
+      return this.requireTreasuryStagingRecoveryPlan(input.purchaseId, input.attempt);
+    });
+    return plan.immediate();
+  }
+
+  findTreasuryStagingRecoveryPlan(
+    purchaseId: PurchaseId,
+    attempt: number
+  ): TreasuryStagingRecoveryPlanRecord | undefined {
+    const row = this.db.prepare(
+      `SELECT p.*, e.idempotency_key
+         FROM treasury_staging_recovery_plans p
+         JOIN effects e ON e.id = p.effect_id
+        WHERE p.purchase_id = ? AND p.attempt = ?`
+    ).get(purchaseId, attempt) as TreasuryStagingRecoveryPlanRow | undefined;
+    return row ? treasuryStagingRecoveryPlanFromRow(row) : undefined;
+  }
+
+  requireTreasuryStagingRecoveryPlan(
+    purchaseId: PurchaseId,
+    attempt: number
+  ): TreasuryStagingRecoveryPlanRecord {
+    const plan = this.findTreasuryStagingRecoveryPlan(purchaseId, attempt);
+    if (!plan) {
+      throw new JournalNotFoundError(
+        `Treasury staging recovery plan ${purchaseId}/${attempt} does not exist`
+      );
+    }
+    return plan;
+  }
+
+  readPreparedTreasuryStagingRecovery(purchaseId: PurchaseId, attempt: number): Buffer {
+    const plan = this.requireTreasuryStagingRecoveryPlan(purchaseId, attempt);
+    return this.readPreparedMaterial(
+      plan.payloadDigest,
+      plan.preparedRef,
+      plan.preparedByteLength
+    );
+  }
+
+  treasuryStagingRecoveryJournalContext(
+    purchaseId: PurchaseId,
+    attempt: number
+  ): TreasuryStagingRecoveryJournalContext | undefined {
+    const plan = this.findTreasuryStagingRecoveryPlan(purchaseId, attempt);
+    if (!plan) return undefined;
+    const staging = this.findTreasuryStagingObservation(purchaseId, attempt);
+    if (!staging) {
+      throw new JournalInvariantError("staging recovery lost its observed source output");
+    }
+    return {
+      plan,
+      effect: this.requireEffect(plan.effectId),
+      attempt: this.requirePaymentAttempt(purchaseId, attempt),
+      reservation: this.requireReservation(plan.reservationId),
+      staging,
+      observations: this.treasuryStagingRecoveryObservations(plan.effectId),
+      accounting: this.findTreasuryStagingRecoveryAccounting(plan.effectId),
+    };
+  }
+
+  beginTreasuryStagingRecovery(
+    effectId: string,
+    holder: string,
+    ttlMs: number
+  ): EffectClaim | undefined {
+    const begin = this.db.transaction(() => {
+      const effect = this.requireEffect(effectId);
+      if (
+        effect.kind !== TREASURY_STAGING_RECOVERY_EFFECT_KIND ||
+        effect.attempt === undefined
+      ) {
+        throw new JournalInvariantError(
+          "staging recovery claim requires its dedicated attempt-bound Effect"
+        );
+      }
+      const plan = this.requireTreasuryStagingRecoveryPlan(
+        effect.purchaseId,
+        effect.attempt
+      );
+      if (
+        plan.effectId !== effect.id ||
+        effect.payloadDigest !== plan.payloadDigest ||
+        effect.preparedRef !== plan.preparedRef ||
+        effect.preparedByteLength !== plan.preparedByteLength
+      ) {
+        throw new JournalInvariantError(
+          "staging recovery Effect is not bound to its immutable plan"
+        );
+      }
+      this.readPreparedMaterial(
+        plan.payloadDigest,
+        plan.preparedRef,
+        plan.preparedByteLength
+      );
+      const reservation = this.requireReservation(plan.reservationId);
+      if (reservation.state !== "in_flight") {
+        throw new JournalInvariantError(
+          "staging recovery requires its original in-flight Reservation"
+        );
+      }
+      if (
+        BigInt(plan.stagingFeeAtomic) + BigInt(plan.recoveryFeeAtomic) >
+        BigInt(plan.authorizedAdditionalCostCeilingAtomic)
+      ) {
+        throw new PolicyReservationError(
+          "staging recovery fee exceeds the still-authorized additional-cost ceiling; explicit operator authority is required"
+        );
+      }
+      if (effect.state !== "planned" && effect.state !== "retryable") {
+        return undefined;
+      }
+      return this.claimEffectInternal(effect, holder, ttlMs);
+    });
+    return begin.immediate();
+  }
+
+  recordTreasuryStagingRecoveryObservation(
+    effectId: string,
+    lease: LeaseToken,
+    input: RecordTreasuryStagingRecoveryObservationInput
+  ): TreasuryStagingRecoveryJournalContext {
+    validateTreasuryStagingRecoveryObservationInput(input);
+    const record = this.db.transaction(() => {
+      this.assertEffectWriter(effectId, lease);
+      let effect = this.requireEffect(effectId);
+      if (
+        effect.kind !== TREASURY_STAGING_RECOVERY_EFFECT_KIND ||
+        effect.attempt === undefined
+      ) {
+        throw new JournalInvariantError(
+          "staging recovery observation requires its dedicated Effect"
+        );
+      }
+      const plan = this.requireTreasuryStagingRecoveryPlan(
+        effect.purchaseId,
+        effect.attempt
+      );
+      const now = this.timestamp();
+      this.db.prepare(
+        `INSERT OR IGNORE INTO treasury_staging_recovery_observations
+           (effect_id, status, evidence_digest, readiness_proof_digest,
+            readiness_observed_at_ms, readiness_expires_at_ms,
+            winning_transaction_id, winning_finality, recovery_outpoint,
+            recovery_amount_atomic, conflict_reason, lease_name,
+            lease_generation, observed_at_ms)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        effectId,
+        input.status,
+        input.evidenceDigest,
+        input.readinessProofDigest ?? null,
+        input.readinessObservedAtMs ?? null,
+        input.readinessExpiresAtMs ?? null,
+        input.winningTransactionId ?? null,
+        input.winningFinality ?? null,
+        input.recoveryOutpoint ?? null,
+        input.recoveryAmountAtomic ?? null,
+        input.conflictReason ?? null,
+        lease.name,
+        lease.generation,
+        now
+      );
+      this.inject("treasury_staging_recovery_observation.after_insert");
+
+      if (input.status === "safe_to_submit") {
+        if (
+          lease.name.startsWith("purchase-reconciliation") &&
+          ["executing", "submitted", "ambiguous"].includes(effect.state)
+        ) {
+          this.insertEffectObservation(
+            effect.id,
+            "not_found_retryable",
+            undefined,
+            input.evidenceDigest,
+            lease,
+            now
+          );
+          this.updateEffectState(
+            effect,
+            "retryable",
+            "observation_not_found_retryable",
+            input.evidenceDigest,
+            now
+          );
+        }
+      } else if (input.status === "exact_payment_won") {
+        if (!plan.exactTransactionId || input.winningTransactionId !== plan.exactTransactionId) {
+          throw new JournalInvariantError("staging recovery observed a different exact winner");
+        }
+        this.insertEffectObservation(
+          effect.id,
+          "observed",
+          input.evidenceDigest,
+          input.evidenceDigest,
+          lease,
+          now
+        );
+        this.updateEffectState(
+          effect,
+          "observed",
+          "exact_payment_won_staging_race",
+          input.evidenceDigest,
+          now,
+          { resultDigest: input.evidenceDigest }
+        );
+      } else if (input.status === "recovery_won") {
+        if (
+          input.winningTransactionId !== plan.recoveryTransactionId ||
+          input.recoveryOutpoint !== plan.recoveryOutpoint ||
+          input.recoveryAmountAtomic !== plan.recoveryAmountAtomic ||
+          !input.winningFinality
+        ) {
+          throw new JournalInvariantError("staging recovery winner differs from its immutable plan");
+        }
+        if (paymentFinalityMeets(input.winningFinality, plan.requiredFinality)) {
+          this.finalizeTreasuryStagingRecoveryInternal(plan, effect, lease, input, now);
+        } else if (["executing", "submitted", "ambiguous"].includes(effect.state)) {
+          this.insertEffectObservation(
+            effect.id,
+            "pending",
+            undefined,
+            input.evidenceDigest,
+            lease,
+            now
+          );
+          if (effect.state !== "ambiguous") {
+            this.updateEffectState(
+              effect,
+              "ambiguous",
+              "staging_recovery_waiting_for_finality",
+              input.evidenceDigest,
+              now
+            );
+          }
+        }
+      } else if (input.status === "conflict") {
+        if (effect.state !== "failed_terminal") {
+          this.insertEffectObservation(
+            effect.id,
+            "conflict",
+            undefined,
+            input.evidenceDigest,
+            lease,
+            now
+          );
+          this.updateEffectState(
+            effect,
+            "failed_terminal",
+            "staging_recovery_conflict",
+            input.evidenceDigest,
+            now,
+            { errorCode: "staging_recovery_conflict" }
+          );
+        }
+      } else if (
+        input.status === "pending" &&
+        ["executing", "submitted"].includes(effect.state)
+      ) {
+        this.insertEffectObservation(
+          effect.id,
+          "pending",
+          undefined,
+          input.evidenceDigest,
+          lease,
+          now
+        );
+        this.updateEffectState(
+          effect,
+          "ambiguous",
+          "staging_recovery_pending",
+          input.evidenceDigest,
+          now
+        );
+      }
+      return this.treasuryStagingRecoveryJournalContext(
+        effect.purchaseId,
+        effect.attempt
+      )!;
+    });
+    return record.immediate();
+  }
+
+  treasuryStagingRecoveryObservations(
+    effectId: string
+  ): TreasuryStagingRecoveryObservationRecord[] {
+    const rows = this.db.prepare(
+      `SELECT * FROM treasury_staging_recovery_observations
+        WHERE effect_id = ? ORDER BY sequence`
+    ).all(effectId) as TreasuryStagingRecoveryObservationRow[];
+    return rows.map(treasuryStagingRecoveryObservationFromRow);
   }
 
   preparePaymentAttempt(input: PreparePaymentAttemptInput): PaymentPreparationRecord {
@@ -2795,10 +3923,54 @@ export class PurchaseJournal {
         this.db.exec(JOURNAL_SCHEMA_V2_MIGRATION_SQL);
         this.db
           .prepare("INSERT INTO schema_migrations (version, checksum, applied_at_ms) VALUES (?, ?, ?)")
+          .run(2, JOURNAL_SCHEMA_V2_CHECKSUM, this.timestamp());
+        this.db.pragma("user_version = 2");
+      });
+      migrateV2.immediate();
+    }
+    if (this.schemaVersion() === 2) {
+      if (applicationId !== JOURNAL_APPLICATION_ID) {
+        throw new JournalInvariantError("Purchase Journal application identity is invalid");
+      }
+      const migration = this.db
+        .prepare("SELECT checksum FROM schema_migrations WHERE version = 2")
+        .get() as { checksum: string } | undefined;
+      if (migration?.checksum !== JOURNAL_SCHEMA_V2_CHECKSUM) {
+        throw new JournalInvariantError("Purchase Journal v2 migration checksum is invalid");
+      }
+      if (schemaFingerprint(this.db) !== expectedV2SchemaFingerprint()) {
+        throw new JournalInvariantError("Purchase Journal v2 schema fingerprint is invalid");
+      }
+      const migrateV3 = this.db.transaction(() => {
+        this.db.exec(JOURNAL_SCHEMA_V3_MIGRATION_SQL);
+        this.db
+          .prepare("INSERT INTO schema_migrations (version, checksum, applied_at_ms) VALUES (?, ?, ?)")
+          .run(3, JOURNAL_SCHEMA_V3_CHECKSUM, this.timestamp());
+        this.db.pragma("user_version = 3");
+      });
+      migrateV3.immediate();
+    }
+    if (this.schemaVersion() === 3) {
+      if (applicationId !== JOURNAL_APPLICATION_ID) {
+        throw new JournalInvariantError("Purchase Journal application identity is invalid");
+      }
+      const migration = this.db
+        .prepare("SELECT checksum FROM schema_migrations WHERE version = 3")
+        .get() as { checksum: string } | undefined;
+      if (migration?.checksum !== JOURNAL_SCHEMA_V3_CHECKSUM) {
+        throw new JournalInvariantError("Purchase Journal v3 migration checksum is invalid");
+      }
+      if (schemaFingerprint(this.db) !== expectedV3SchemaFingerprint()) {
+        throw new JournalInvariantError("Purchase Journal v3 schema fingerprint is invalid");
+      }
+      const migrateV4 = this.db.transaction(() => {
+        this.db.exec(JOURNAL_SCHEMA_V4_MIGRATION_SQL);
+        this.db
+          .prepare("INSERT INTO schema_migrations (version, checksum, applied_at_ms) VALUES (?, ?, ?)")
           .run(JOURNAL_SCHEMA_VERSION, JOURNAL_SCHEMA_CHECKSUM, this.timestamp());
         this.db.pragma(`user_version = ${JOURNAL_SCHEMA_VERSION}`);
       });
-      migrateV2.immediate();
+      migrateV4.immediate();
       return;
     }
     if (version !== 0 || applicationId !== 0) {
@@ -3011,7 +4183,10 @@ export class PurchaseJournal {
         const proofBackedSubmittedFailure =
           state === "submitted" &&
           transition.to_state === "failed" &&
-          transition.reason_code === "payment_abandoned_after_not_found" &&
+          [
+            "payment_abandoned_after_not_found",
+            "staging_recovered_without_payment",
+          ].includes(transition.reason_code) &&
           transition.detail_digest !== null;
         assertAttemptTransition(state, transition.to_state, proofBackedSubmittedFailure);
         state = transition.to_state;
@@ -3122,12 +4297,44 @@ export class PurchaseJournal {
         ) {
           throw new JournalInvariantError(`Treasury staging Effect ${effect.id} is not bound to its plan`);
         }
+        const attempt = this.requirePaymentAttempt(effect.purchaseId, effect.attempt);
+        this.requireObservedMerchantAuthorization(
+          effect.purchaseId,
+          effect.attempt,
+          attempt.identifier
+        );
         const observation = this.findTreasuryStagingObservationByEffect(effect.id);
         if ((effect.state === "observed") !== Boolean(observation)) {
           throw new JournalInvariantError(`Treasury staging Effect ${effect.id} observation state is inconsistent`);
         }
         if (observation && effect.resultDigest !== observation.evidenceDigest) {
           throw new JournalInvariantError(`Treasury staging Effect ${effect.id} result evidence is inconsistent`);
+        }
+      } else if (effect.kind === TREASURY_STAGING_RECOVERY_EFFECT_KIND) {
+        if (effect.attempt === undefined) {
+          throw new JournalInvariantError(
+            `Treasury staging recovery Effect ${effect.id} has no Payment Attempt`
+          );
+        }
+        const plan = this.findTreasuryStagingRecoveryPlanByEffect(effect.id);
+        if (
+          !plan ||
+          plan.purchaseId !== effect.purchaseId ||
+          plan.attempt !== effect.attempt ||
+          plan.payloadDigest !== effect.payloadDigest ||
+          plan.preparedRef !== effect.preparedRef ||
+          plan.preparedByteLength !== effect.preparedByteLength ||
+          plan.idempotencyKey !== effect.idempotencyKey
+        ) {
+          throw new JournalInvariantError(
+            `Treasury staging recovery Effect ${effect.id} is not bound to its plan`
+          );
+        }
+        const accounting = this.findTreasuryStagingRecoveryAccounting(effect.id);
+        if (accounting && (effect.state !== "observed" || effect.resultDigest !== accounting.evidenceDigest)) {
+          throw new JournalInvariantError(
+            `Treasury staging recovery Effect ${effect.id} accounting conflicts with its state`
+          );
         }
       } else if (effect.attempt !== undefined && effect.state !== "planned") {
         const preparation = this.requirePaymentPreparation(effect.purchaseId, effect.attempt);
@@ -3206,6 +4413,78 @@ export class PurchaseJournal {
       }
     }
 
+    const stagingRecoveryPlanRows = this.db.prepare(
+      `SELECT p.*, e.idempotency_key
+         FROM treasury_staging_recovery_plans p
+         JOIN effects e ON e.id = p.effect_id`
+    ).all() as TreasuryStagingRecoveryPlanRow[];
+    for (const row of stagingRecoveryPlanRows) {
+      const plan = treasuryStagingRecoveryPlanFromRow(row);
+      const effect = this.requireEffect(plan.effectId);
+      const staging = this.findTreasuryStagingObservation(plan.purchaseId, plan.attempt);
+      const reservation = this.requireReservation(plan.reservationId);
+      const preparation = this.findPaymentPreparation(plan.purchaseId, plan.attempt);
+      if (
+        effect.kind !== TREASURY_STAGING_RECOVERY_EFFECT_KIND ||
+        effect.purchaseId !== plan.purchaseId ||
+        effect.attempt !== plan.attempt ||
+        effect.payloadDigest !== plan.payloadDigest ||
+        effect.preparedRef !== plan.preparedRef ||
+        effect.preparedByteLength !== plan.preparedByteLength ||
+        effect.idempotencyKey !== plan.idempotencyKey ||
+        !staging ||
+        staging.effectId !== plan.stagingEffectId ||
+        staging.reservationId !== plan.reservationId ||
+        reservation.purchaseId !== plan.purchaseId ||
+        reservation.additionalCostCeilingAtomic !==
+          plan.authorizedAdditionalCostCeilingAtomic ||
+        (preparation?.transactionId ?? undefined) !== plan.exactTransactionId ||
+        BigInt(plan.recoveryAmountAtomic) + BigInt(plan.recoveryFeeAtomic) !==
+          BigInt(staging.stagingAmountAtomic)
+      ) {
+        throw new JournalInvariantError(
+          `Treasury staging recovery plan ${plan.purchaseId}/${plan.attempt} is inconsistent`
+        );
+      }
+      this.readPreparedMaterial(
+        plan.payloadDigest,
+        plan.preparedRef,
+        plan.preparedByteLength
+      );
+    }
+
+    const stagingRecoveryAccountingRows = this.db.prepare(
+      "SELECT * FROM treasury_staging_recovery_accounting"
+    ).all() as TreasuryStagingRecoveryAccountingRow[];
+    for (const row of stagingRecoveryAccountingRows) {
+      const accounting = treasuryStagingRecoveryAccountingFromRow(row);
+      const plan = this.findTreasuryStagingRecoveryPlanByEffect(accounting.effectId);
+      const effect = this.requireEffect(accounting.effectId);
+      const reservation = this.requireReservation(accounting.reservationId);
+      if (
+        !plan ||
+        plan.reservationId !== accounting.reservationId ||
+        plan.purchaseId !== accounting.purchaseId ||
+        plan.attempt !== accounting.attempt ||
+        plan.recoveryTransactionId !== accounting.recoveryTransactionId ||
+        plan.recoveryOutpoint !== accounting.recoveryOutpoint ||
+        plan.recoveryAmountAtomic !== accounting.returnedAmountAtomic ||
+        plan.stagingFeeAtomic !== accounting.stagingFeeAtomic ||
+        plan.recoveryFeeAtomic !== accounting.recoveryFeeAtomic ||
+        BigInt(accounting.actualAdditionalCostAtomic) !==
+          BigInt(accounting.stagingFeeAtomic) + BigInt(accounting.recoveryFeeAtomic) ||
+        !paymentFinalityMeets(accounting.finality, plan.requiredFinality) ||
+        effect.state !== "observed" ||
+        effect.resultDigest !== accounting.evidenceDigest ||
+        reservation.state !== "released" ||
+        reservation.releaseEvidenceDigest !== accounting.evidenceDigest
+      ) {
+        throw new JournalInvariantError(
+          `Treasury staging recovery accounting ${accounting.effectId} is inconsistent`
+        );
+      }
+    }
+
     const reservations = this.db.prepare("SELECT * FROM treasury_reservations").all() as ReservationRow[];
     for (const row of reservations) {
       const reservation = reservationFromRow(row);
@@ -3259,7 +4538,9 @@ export class PurchaseJournal {
             .all(attemptPurchaseId, attemptNumber) as EffectRow[]
         ).map(effectFromRow);
         const paymentEffects = attemptEffects.filter(
-          (effect) => effect.kind !== TREASURY_STAGING_EFFECT_KIND
+          (effect) =>
+            effect.kind !== TREASURY_STAGING_EFFECT_KIND &&
+            effect.kind !== TREASURY_STAGING_RECOVERY_EFFECT_KIND
         );
         const stagingEffect = stagingPlan
           ? attemptEffects.find((effect) => effect.id === stagingPlan.effectId)
@@ -3267,6 +4548,8 @@ export class PurchaseJournal {
         const stagingObservation = stagingPlan
           ? this.findTreasuryStagingObservation(attemptPurchaseId, attemptNumber)
           : undefined;
+        const recoveryAccounting =
+          this.findTreasuryStagingRecoveryAccountingByReservation(reservation.id);
         if (reservation.state === "in_flight") {
           if (stagingPlan) {
             if (
@@ -3337,9 +4620,20 @@ export class PurchaseJournal {
         }
         if (
           reservation.releaseEvidenceDigest &&
+          !recoveryAccounting &&
           !paymentEffects.some((effect) => effect.state === "failed_terminal")
         ) {
           throw new JournalInvariantError(`released Treasury Reservation ${reservation.id} has no terminal Effect`);
+        }
+        if (
+          recoveryAccounting &&
+          (reservation.state !== "released" ||
+            reservation.releaseEvidenceDigest !== recoveryAccounting.evidenceDigest ||
+            attempt.state !== "failed")
+        ) {
+          throw new JournalInvariantError(
+            `recovered Treasury Reservation ${reservation.id} accounting is inconsistent`
+          );
         }
       }
     }
@@ -3448,6 +4742,68 @@ export class PurchaseJournal {
       }
     }
 
+    const treasuryOperations = this.db
+      .prepare("SELECT * FROM treasury_operations ORDER BY operation_key")
+      .all() as TreasuryOperationRow[];
+    for (const row of treasuryOperations) {
+      const operation = treasuryOperationFromRow(row);
+      const transitions = this.db.prepare(
+        `SELECT from_state, to_state, created_at_ms
+           FROM treasury_operation_transitions
+          WHERE operation_key = ? ORDER BY sequence`
+      ).all(operation.operationKey) as Array<{
+        from_state: TreasuryOperationState | null;
+        to_state: TreasuryOperationState;
+        created_at_ms: number;
+      }>;
+      if (
+        transitions.length === 0 ||
+        transitions[0].from_state !== null ||
+        transitions[0].to_state !== "intent"
+      ) {
+        throw new JournalInvariantError(
+          `Treasury Operation ${operation.operationKey} has invalid initial history`
+        );
+      }
+      let state: TreasuryOperationState = "intent";
+      let timestamp = transitions[0].created_at_ms;
+      for (const transition of transitions.slice(1)) {
+        if (
+          transition.from_state !== state ||
+          transition.created_at_ms < timestamp ||
+          !directTreasuryTransitionAllowed(state, transition.to_state)
+        ) {
+          throw new JournalInvariantError(
+            `Treasury Operation ${operation.operationKey} history is inconsistent`
+          );
+        }
+        state = transition.to_state;
+        timestamp = transition.created_at_ms;
+      }
+      if (state !== operation.state) {
+        throw new JournalInvariantError(
+          `Treasury Operation ${operation.operationKey} state does not match immutable history`
+        );
+      }
+      this.requirePolicy(operation.policyDigest as Sha256Digest);
+      if (operation.state !== "intent" && operation.state !== "failed_terminal") {
+        this.readPreparedTreasuryOperation(operation.operationKey);
+      }
+      const observed = this.db.prepare(
+        `SELECT COUNT(*) AS count FROM treasury_operation_observations
+          WHERE operation_key = ? AND status = 'observed'`
+      ).get(operation.operationKey) as { count: number };
+      if (
+        (["observed", "completed"].includes(operation.state) && observed.count !== 1) ||
+        (!(["observed", "completed"].includes(operation.state)) && observed.count !== 0) ||
+        ((operation.state === "completed") !== (operation.completedAtMs !== undefined))
+      ) {
+        throw new JournalInvariantError(
+          `Treasury Operation ${operation.operationKey} observation facts are inconsistent`
+        );
+      }
+    }
+
     const artifacts = this.db.prepare("SELECT * FROM evidence_artifacts").all() as EvidenceArtifactRow[];
     for (const row of artifacts) {
       if (!this.evidenceStore) throw new JournalInvariantError("evidence metadata exists without evidence storage");
@@ -3478,7 +4834,9 @@ export class PurchaseJournal {
       ? attemptEffects.find((effect) => effect.id === stagingPlan.effectId)
       : undefined;
     const paymentEffects = attemptEffects.filter(
-      (effect) => effect.kind !== TREASURY_STAGING_EFFECT_KIND
+      (effect) =>
+        effect.kind !== TREASURY_STAGING_EFFECT_KIND &&
+        effect.kind !== TREASURY_STAGING_RECOVERY_EFFECT_KIND
     );
     const spend = this.findSpendForPurchase(purchaseId);
     const fulfilment = this.findFulfilment(purchaseId);
@@ -3598,6 +4956,7 @@ export class PurchaseJournal {
       requestDigest: request.requestDigest,
       nonceDigest: request.nonceDigest,
       additionalCostCeilingAtomic: request.additionalCostCeilingAtomic,
+      createdAtMs: request.createdAtMs,
       expiresAtMs: request.expiresAtMs,
     });
   }
@@ -3679,6 +5038,144 @@ export class PurchaseJournal {
       .prepare("SELECT * FROM treasury_staging_observations WHERE effect_id = ?")
       .get(effectId) as TreasuryStagingObservationRow | undefined;
     return row ? treasuryStagingObservationFromRow(row) : undefined;
+  }
+
+  private findTreasuryStagingRecoveryPlanByEffect(
+    effectId: string
+  ): TreasuryStagingRecoveryPlanRecord | undefined {
+    const row = this.db.prepare(
+      `SELECT p.*, e.idempotency_key
+         FROM treasury_staging_recovery_plans p
+         JOIN effects e ON e.id = p.effect_id
+        WHERE p.effect_id = ?`
+    ).get(effectId) as TreasuryStagingRecoveryPlanRow | undefined;
+    return row ? treasuryStagingRecoveryPlanFromRow(row) : undefined;
+  }
+
+  private findTreasuryStagingRecoveryAccounting(
+    effectId: string
+  ): TreasuryStagingRecoveryAccountingRecord | undefined {
+    const row = this.db.prepare(
+      "SELECT * FROM treasury_staging_recovery_accounting WHERE effect_id = ?"
+    ).get(effectId) as TreasuryStagingRecoveryAccountingRow | undefined;
+    return row ? treasuryStagingRecoveryAccountingFromRow(row) : undefined;
+  }
+
+  private findTreasuryStagingRecoveryAccountingByReservation(
+    reservationId: string
+  ): TreasuryStagingRecoveryAccountingRecord | undefined {
+    const row = this.db.prepare(
+      "SELECT * FROM treasury_staging_recovery_accounting WHERE reservation_id = ?"
+    ).get(reservationId) as TreasuryStagingRecoveryAccountingRow | undefined;
+    return row ? treasuryStagingRecoveryAccountingFromRow(row) : undefined;
+  }
+
+  private finalizeTreasuryStagingRecoveryInternal(
+    plan: TreasuryStagingRecoveryPlanRecord,
+    effect: EffectRecord,
+    lease: LeaseToken,
+    input: RecordTreasuryStagingRecoveryObservationInput,
+    now: number
+  ): void {
+    const existing = this.findTreasuryStagingRecoveryAccounting(effect.id);
+    if (existing) {
+      if (
+        existing.recoveryTransactionId !== plan.recoveryTransactionId ||
+        existing.recoveryOutpoint !== plan.recoveryOutpoint ||
+        existing.returnedAmountAtomic !== plan.recoveryAmountAtomic ||
+        existing.finality !== input.winningFinality ||
+        existing.evidenceDigest !== input.evidenceDigest
+      ) {
+        throw new JournalInvariantError("conflicting staging recovery accounting");
+      }
+      return;
+    }
+    const reservation = this.requireReservation(plan.reservationId);
+    if (reservation.state !== "in_flight") {
+      throw new JournalInvariantError(
+        "observed staging recovery requires the original in-flight Reservation"
+      );
+    }
+    const actualAdditionalCost =
+      BigInt(plan.stagingFeeAtomic) + BigInt(plan.recoveryFeeAtomic);
+    if (
+      actualAdditionalCost > BigInt(plan.authorizedAdditionalCostCeilingAtomic) ||
+      plan.authorizedAdditionalCostCeilingAtomic !==
+        reservation.additionalCostCeilingAtomic
+    ) {
+      throw new PolicyReservationError(
+        "observed staging recovery exceeds its authorized additional-cost ceiling"
+      );
+    }
+    this.db.prepare(
+      `INSERT INTO treasury_staging_recovery_accounting
+         (effect_id, reservation_id, purchase_id, attempt,
+          recovery_transaction_id, recovery_outpoint, returned_amount_atomic,
+          staging_fee_atomic, recovery_fee_atomic, actual_additional_cost_atomic,
+          finality, evidence_digest, observed_at_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      effect.id,
+      reservation.id,
+      effect.purchaseId,
+      effect.attempt,
+      plan.recoveryTransactionId,
+      plan.recoveryOutpoint,
+      plan.recoveryAmountAtomic,
+      plan.stagingFeeAtomic,
+      plan.recoveryFeeAtomic,
+      actualAdditionalCost.toString(),
+      input.winningFinality,
+      input.evidenceDigest,
+      now
+    );
+    this.inject("treasury_staging_recovery_accounting.after_insert");
+    const released = this.db.prepare(
+      `UPDATE treasury_reservations
+          SET state = 'released', release_evidence_digest = ?, updated_at_ms = ?
+        WHERE id = ? AND state = 'in_flight'`
+    ).run(input.evidenceDigest, now, reservation.id);
+    if (released.changes !== 1) {
+      throw new JournalInvariantError("concurrent staging recovery Reservation release");
+    }
+    const attempt = this.requirePaymentAttempt(effect.purchaseId, effect.attempt!);
+    if (attempt.state !== "failed") {
+      this.transitionAttemptInternal(
+        attempt,
+        "failed",
+        "staging_recovered_without_payment",
+        input.evidenceDigest,
+        now,
+        "staging_recovered_without_payment",
+        attempt.state === "submitted"
+      );
+    }
+    this.insertEffectObservation(
+      effect.id,
+      "observed",
+      input.evidenceDigest,
+      input.evidenceDigest,
+      lease,
+      now
+    );
+    this.updateEffectState(
+      effect,
+      "observed",
+      "staging_recovery_finality_observed",
+      input.evidenceDigest,
+      now,
+      { resultDigest: input.evidenceDigest }
+    );
+    const purchase = this.requirePurchase(effect.purchaseId);
+    if (purchase.state === "failed_recoverable") {
+      this.transitionPurchase(
+        purchase.id,
+        "failed_recoverable",
+        "failed_terminal",
+        "staging_recovered_without_payment",
+        input.evidenceDigest
+      );
+    }
   }
 
   private findSpend(reservationId: string): TreasurySpendRecord | undefined {
@@ -4078,7 +5575,72 @@ export class PurchaseJournal {
       .run(now, now).changes;
   }
 
-  private policyCapacityUsedInternal(now: number): bigint {
+  private assertDirectTreasuryCapacity(
+    policy: PolicySnapshotRecord,
+    kind: TreasuryOperationRecord["kind"],
+    destination: string,
+    amountAtomic: string,
+    feeAtomic: string,
+    now: number,
+    excludeOperationKey?: string
+  ): void {
+    if (
+      kind !== "vault_deposit" &&
+      policy.allowlist.length > 0 &&
+      !policy.allowlist.includes(destination)
+    ) {
+      throw new PolicyReservationError(
+        `payee ${destination} is not on the active policy allowlist`
+      );
+    }
+    const amount = decimalBigInt(
+      amountAtomic,
+      "direct Treasury amount",
+      kind === "vault_deposit"
+    );
+    const fee = decimalBigInt(feeAtomic, "direct Treasury fee ceiling", true);
+    const policyAmount = kind === "vault_deposit" ? 0n : amount;
+    const gross = policyAmount + fee;
+    const maxPerPayment = decimalBigInt(policy.maxPerPaymentAtomic, "per-payment limit");
+    const maxPerHour = decimalBigInt(policy.maxPerHourAtomic, "hourly limit");
+    const approvalThreshold = decimalBigInt(
+      policy.approvalAboveAtomic,
+      "approval threshold",
+      true
+    );
+    if (gross > maxPerPayment) {
+      throw new PolicyReservationError(
+        `gross direct Treasury movement ${gross} exceeds per-payment limit ${maxPerPayment}`
+      );
+    }
+    if (approvalThreshold > 0n && policyAmount > approvalThreshold) {
+      throw new PolicyReservationError(
+        "direct Treasury movement exceeds the operator approval threshold; use a Purchase authorization or operator-controlled transaction"
+      );
+    }
+    const used = this.policyCapacityUsedInternal(now, excludeOperationKey);
+    if (used + gross > maxPerHour) {
+      throw new PolicyReservationError(
+        `gross direct Treasury movement ${gross} would exceed hourly limit ${maxPerHour}; ${used} already used or reserved`
+      );
+    }
+  }
+
+  private insertTreasuryOperationTransition(
+    operationKey: string,
+    fromState: TreasuryOperationState | undefined,
+    toState: TreasuryOperationState,
+    reason: string,
+    createdAtMs: number
+  ): void {
+    this.db.prepare(
+      `INSERT INTO treasury_operation_transitions
+         (operation_key, from_state, to_state, reason, created_at_ms)
+       VALUES (?, ?, ?, ?, ?)`
+    ).run(operationKey, fromState ?? null, toState, reason, createdAtMs);
+  }
+
+  private policyCapacityUsedInternal(now: number, excludeOperationKey?: string): bigint {
     const reservationRows = this.db
       .prepare(
         `SELECT amount_atomic, additional_cost_ceiling_atomic FROM treasury_reservations
@@ -4092,6 +5654,30 @@ export class PurchaseJournal {
          WHERE observed_at_ms >= ?`
       )
       .all(cutoff) as Array<{ actual_amount_atomic: string; actual_additional_cost_atomic: string }>;
+    const recoveryRows = this.db
+      .prepare(
+        `SELECT actual_additional_cost_atomic
+           FROM treasury_staging_recovery_accounting
+          WHERE observed_at_ms >= ?`
+      )
+      .all(cutoff) as Array<{ actual_additional_cost_atomic: string }>;
+    const directRows = this.db.prepare(
+      `SELECT kind, state, resolved_amount_atomic, fee_atomic,
+              fee_ceiling_atomic, requested_amount_atomic
+         FROM treasury_operations
+        WHERE operation_key <> COALESCE(?, '')
+          AND (
+            state IN ('intent', 'prepared', 'submission_planned', 'submitted', 'observed')
+            OR (state = 'completed' AND completed_at_ms >= ?)
+          )`
+    ).all(excludeOperationKey ?? null, cutoff) as Array<{
+      resolved_amount_atomic: string | null;
+      fee_atomic: string | null;
+      fee_ceiling_atomic: string;
+      requested_amount_atomic: string;
+      kind: TreasuryOperationRecord["kind"];
+      state: TreasuryOperationState;
+    }>;
     return (
       reservationRows.reduce(
         (total, row) => total + BigInt(row.amount_atomic) + BigInt(row.additional_cost_ceiling_atomic),
@@ -4100,7 +5686,21 @@ export class PurchaseJournal {
       spendRows.reduce(
         (total, row) => total + BigInt(row.actual_amount_atomic) + BigInt(row.actual_additional_cost_atomic),
         0n
-      )
+      ) +
+      recoveryRows.reduce(
+        (total, row) => total + BigInt(row.actual_additional_cost_atomic),
+        0n
+      ) +
+      directRows.reduce((total, row) => {
+        const amount = row.kind === "vault_deposit"
+          ? "0"
+          : row.resolved_amount_atomic ??
+            (row.requested_amount_atomic === "max" ? "0" : row.requested_amount_atomic);
+        const fee = row.state === "completed"
+          ? row.fee_atomic ?? row.fee_ceiling_atomic
+          : row.fee_ceiling_atomic;
+        return total + BigInt(amount) + BigInt(fee);
+      }, 0n)
     );
   }
 
@@ -4127,6 +5727,28 @@ interface PurchaseRow {
   version: number;
   created_at_ms: number;
   updated_at_ms: number;
+}
+
+interface TreasuryOperationRow {
+  operation_key: string;
+  request_digest: string;
+  kind: string;
+  destination: string;
+  requested_amount_atomic: string;
+  keep_float_atomic: string | null;
+  fee_ceiling_atomic: string;
+  resolved_amount_atomic: string | null;
+  fee_atomic: string | null;
+  transaction_id: string | null;
+  prepared_digest: string | null;
+  prepared_ref: string | null;
+  prepared_byte_length: number | null;
+  policy_digest: string;
+  state: string;
+  retry_count: number;
+  created_at_ms: number;
+  updated_at_ms: number;
+  completed_at_ms: number | null;
 }
 
 interface PurchaseTransitionRow {
@@ -4352,6 +5974,61 @@ interface TreasuryStagingObservationRow {
   observed_at_ms: number;
 }
 
+interface TreasuryStagingRecoveryPlanRow {
+  effect_id: string;
+  purchase_id: string;
+  attempt: number;
+  reservation_id: string;
+  staging_effect_id: string;
+  idempotency_key: string;
+  payload_digest: string;
+  prepared_ref: string;
+  prepared_byte_length: number;
+  exact_transaction_id: string | null;
+  recovery_transaction_id: string;
+  recovery_outpoint: string;
+  recovery_amount_atomic: string;
+  staging_fee_atomic: string;
+  recovery_fee_atomic: string;
+  required_finality: string;
+  authorized_additional_cost_ceiling_atomic: string;
+  created_at_ms: number;
+}
+
+interface TreasuryStagingRecoveryObservationRow {
+  sequence: number;
+  effect_id: string;
+  status: TreasuryStagingRecoveryObservationStatus;
+  evidence_digest: string;
+  readiness_proof_digest: string | null;
+  readiness_observed_at_ms: number | null;
+  readiness_expires_at_ms: number | null;
+  winning_transaction_id: string | null;
+  winning_finality: string | null;
+  recovery_outpoint: string | null;
+  recovery_amount_atomic: string | null;
+  conflict_reason: string | null;
+  lease_name: string;
+  lease_generation: number;
+  observed_at_ms: number;
+}
+
+interface TreasuryStagingRecoveryAccountingRow {
+  effect_id: string;
+  reservation_id: string;
+  purchase_id: string;
+  attempt: number;
+  recovery_transaction_id: string;
+  recovery_outpoint: string;
+  returned_amount_atomic: string;
+  staging_fee_atomic: string;
+  recovery_fee_atomic: string;
+  actual_additional_cost_atomic: string;
+  finality: string;
+  evidence_digest: string;
+  observed_at_ms: number;
+}
+
 interface EffectRow {
   id: string;
   purchase_id: string;
@@ -4450,6 +6127,69 @@ function purchaseFromRow(row: PurchaseRow): PurchaseRecord {
     createdAtMs: row.created_at_ms,
     updatedAtMs: row.updated_at_ms,
   };
+}
+
+function treasuryOperationFromRow(row: TreasuryOperationRow): TreasuryOperationRecord {
+  const state = row.state as TreasuryOperationState;
+  if (![
+    "intent",
+    "prepared",
+    "submission_planned",
+    "submitted",
+    "observed",
+    "completed",
+    "failed_terminal",
+  ].includes(state)) {
+    throw new JournalInvariantError("direct Treasury operation state is invalid");
+  }
+  const operation: TreasuryOperationRecord = Object.freeze({
+    operationKey: row.operation_key,
+    requestDigest: row.request_digest,
+    kind: row.kind as TreasuryOperationRecord["kind"],
+    destination: row.destination,
+    requestedAmountAtomic: row.requested_amount_atomic,
+    ...(row.keep_float_atomic === null ? {} : { keepFloatAtomic: row.keep_float_atomic }),
+    feeCeilingAtomic: row.fee_ceiling_atomic,
+    ...(row.resolved_amount_atomic === null
+      ? {}
+      : { resolvedAmountAtomic: row.resolved_amount_atomic }),
+    ...(row.fee_atomic === null ? {} : { feeAtomic: row.fee_atomic }),
+    ...(row.transaction_id === null ? {} : { transactionId: row.transaction_id }),
+    ...(row.prepared_digest === null ? {} : { preparedDigest: row.prepared_digest }),
+    ...(row.prepared_byte_length === null
+      ? {}
+      : { preparedByteLength: row.prepared_byte_length }),
+    policyDigest: row.policy_digest,
+    state,
+    retryCount: row.retry_count,
+    createdAtMs: row.created_at_ms,
+    updatedAtMs: row.updated_at_ms,
+    ...(row.completed_at_ms === null ? {} : { completedAtMs: row.completed_at_ms }),
+  });
+  validateTreasuryOperationIntent({
+    operationKey: operation.operationKey,
+    requestDigest: operation.requestDigest,
+    kind: operation.kind,
+    destination: operation.destination,
+    requestedAmountAtomic: operation.requestedAmountAtomic,
+    keepFloatAtomic: operation.keepFloatAtomic,
+    feeCeilingAtomic: operation.feeCeilingAtomic,
+    policyDigest: operation.policyDigest!,
+  });
+  if (operation.resolvedAmountAtomic !== undefined) {
+    decimalBigInt(operation.resolvedAmountAtomic, "direct Treasury amount");
+  }
+  if (operation.feeAtomic !== undefined) {
+    decimalBigInt(operation.feeAtomic, "direct Treasury fee", true);
+  }
+  if (operation.transactionId !== undefined) assertTransactionId(operation.transactionId);
+  if (operation.preparedDigest !== undefined) {
+    assertDigest(operation.preparedDigest, "direct Treasury prepared digest");
+  }
+  if (!Number.isSafeInteger(operation.retryCount) || operation.retryCount < 0) {
+    throw new JournalInvariantError("direct Treasury retry count is invalid");
+  }
+  return operation;
 }
 
 function purchaseTransitionFromRow(row: PurchaseTransitionRow): PurchaseTransitionRecord {
@@ -4698,6 +6438,75 @@ function treasuryStagingObservationFromRow(
     evidenceDigest: row.evidence_digest as Sha256Digest,
     evidenceVerificationProfile: row.evidence_verification_profile,
     evidenceVerifierId: row.evidence_verifier_id,
+    observedAtMs: row.observed_at_ms,
+  };
+}
+
+function treasuryStagingRecoveryPlanFromRow(
+  row: TreasuryStagingRecoveryPlanRow
+): TreasuryStagingRecoveryPlanRecord {
+  return {
+    effectId: row.effect_id,
+    purchaseId: row.purchase_id as PurchaseId,
+    attempt: row.attempt,
+    reservationId: row.reservation_id,
+    stagingEffectId: row.staging_effect_id,
+    idempotencyKey: row.idempotency_key,
+    payloadDigest: row.payload_digest as Sha256Digest,
+    preparedRef: row.prepared_ref,
+    preparedByteLength: row.prepared_byte_length,
+    exactTransactionId: row.exact_transaction_id ?? undefined,
+    recoveryTransactionId: row.recovery_transaction_id,
+    recoveryOutpoint: row.recovery_outpoint,
+    recoveryAmountAtomic: row.recovery_amount_atomic,
+    stagingFeeAtomic: row.staging_fee_atomic,
+    recoveryFeeAtomic: row.recovery_fee_atomic,
+    requiredFinality: row.required_finality,
+    authorizedAdditionalCostCeilingAtomic:
+      row.authorized_additional_cost_ceiling_atomic,
+    createdAtMs: row.created_at_ms,
+  };
+}
+
+function treasuryStagingRecoveryObservationFromRow(
+  row: TreasuryStagingRecoveryObservationRow
+): TreasuryStagingRecoveryObservationRecord {
+  return {
+    sequence: row.sequence,
+    effectId: row.effect_id,
+    status: row.status,
+    evidenceDigest: row.evidence_digest as Sha256Digest,
+    readinessProofDigest:
+      (row.readiness_proof_digest as Sha256Digest | null) ?? undefined,
+    readinessObservedAtMs: row.readiness_observed_at_ms ?? undefined,
+    readinessExpiresAtMs: row.readiness_expires_at_ms ?? undefined,
+    winningTransactionId: row.winning_transaction_id ?? undefined,
+    winningFinality: row.winning_finality ?? undefined,
+    recoveryOutpoint: row.recovery_outpoint ?? undefined,
+    recoveryAmountAtomic: row.recovery_amount_atomic ?? undefined,
+    conflictReason: row.conflict_reason ?? undefined,
+    leaseName: row.lease_name,
+    leaseGeneration: row.lease_generation,
+    observedAtMs: row.observed_at_ms,
+  };
+}
+
+function treasuryStagingRecoveryAccountingFromRow(
+  row: TreasuryStagingRecoveryAccountingRow
+): TreasuryStagingRecoveryAccountingRecord {
+  return {
+    effectId: row.effect_id,
+    reservationId: row.reservation_id,
+    purchaseId: row.purchase_id as PurchaseId,
+    attempt: row.attempt,
+    recoveryTransactionId: row.recovery_transaction_id,
+    recoveryOutpoint: row.recovery_outpoint,
+    returnedAmountAtomic: row.returned_amount_atomic,
+    stagingFeeAtomic: row.staging_fee_atomic,
+    recoveryFeeAtomic: row.recovery_fee_atomic,
+    actualAdditionalCostAtomic: row.actual_additional_cost_atomic,
+    finality: row.finality,
+    evidenceDigest: row.evidence_digest as Sha256Digest,
     observedAtMs: row.observed_at_ms,
   };
 }
@@ -5081,6 +6890,94 @@ function validateTreasuryStagingObservationInput(
   assertSafeIdentity(input.evidenceVerifierId, "treasury staging evidence verifier identity", 200);
 }
 
+function validateTreasuryStagingRecoveryPlanInput(
+  input: PlanTreasuryStagingRecoveryInput
+): void {
+  if (!Number.isSafeInteger(input.attempt) || input.attempt < 1) {
+    throw new JournalInvariantError(
+      "treasury staging recovery attempt must be a positive safe integer"
+    );
+  }
+  assertCode(input.reservationId, "staging recovery reservation id");
+  assertCode(input.stagingEffectId, "staging recovery source Effect id");
+  assertSafeIdentity(input.idempotencyKey, "staging recovery idempotency key", 300);
+  assertDigest(input.payloadDigest, "staging recovery payload digest");
+  if (input.exactTransactionId !== undefined) {
+    assertTransactionId(input.exactTransactionId);
+  }
+  assertTransactionId(input.recoveryTransactionId);
+  assertSafeIdentity(input.recoveryOutpoint, "staging recovery outpoint", 200);
+  if (input.recoveryOutpoint !== `${input.recoveryTransactionId}:0`) {
+    throw new JournalInvariantError(
+      "staging recovery output must be output zero of its immutable transaction"
+    );
+  }
+  decimalBigInt(input.recoveryAmountAtomic, "staging recovery returned amount");
+  decimalBigInt(input.stagingFeeAtomic, "staging transaction fee", true);
+  decimalBigInt(input.recoveryFeeAtomic, "staging recovery fee");
+  decimalBigInt(
+    input.authorizedAdditionalCostCeilingAtomic,
+    "staging recovery authorized additional-cost ceiling",
+    true
+  );
+  requirePaymentFinality(input.requiredFinality, "staging recovery finality");
+  if (!Number.isSafeInteger(input.preparedBytes.byteLength) || input.preparedBytes.byteLength < 1) {
+    throw new JournalInvariantError("prepared staging recovery bytes must not be empty");
+  }
+}
+
+function validateTreasuryStagingRecoveryObservationInput(
+  input: RecordTreasuryStagingRecoveryObservationInput
+): void {
+  if (![
+    "safe_to_submit",
+    "pending",
+    "exact_payment_won",
+    "recovery_won",
+    "conflict",
+  ].includes(input.status)) {
+    throw new JournalInvariantError("staging recovery observation status is invalid");
+  }
+  assertDigest(input.evidenceDigest, "staging recovery observation evidence digest");
+  if (input.status === "safe_to_submit") {
+    if (
+      !input.readinessProofDigest ||
+      !Number.isSafeInteger(input.readinessObservedAtMs) ||
+      !Number.isSafeInteger(input.readinessExpiresAtMs) ||
+      input.readinessObservedAtMs! >= input.readinessExpiresAtMs!
+    ) {
+      throw new JournalInvariantError("staging recovery readiness proof is incomplete");
+    }
+    assertDigest(input.readinessProofDigest, "staging recovery readiness proof digest");
+  } else if (
+    input.readinessProofDigest !== undefined ||
+    input.readinessObservedAtMs !== undefined ||
+    input.readinessExpiresAtMs !== undefined
+  ) {
+    throw new JournalInvariantError("non-readiness recovery observation contains a readiness proof");
+  }
+  if (input.winningTransactionId !== undefined) {
+    assertTransactionId(input.winningTransactionId);
+  }
+  if (input.winningFinality !== undefined) {
+    requirePaymentFinality(input.winningFinality, "staging recovery winner finality");
+  }
+  if (input.recoveryOutpoint !== undefined) {
+    assertSafeIdentity(input.recoveryOutpoint, "observed recovery outpoint", 200);
+  }
+  if (input.recoveryAmountAtomic !== undefined) {
+    decimalBigInt(input.recoveryAmountAtomic, "observed recovery amount");
+  }
+  if (input.status === "conflict") {
+    if (!input.conflictReason) {
+      throw new JournalInvariantError("staging recovery conflict has no bounded reason");
+    }
+    assertCode(input.conflictReason, "staging recovery conflict reason");
+  } else if (input.conflictReason !== undefined) {
+    throw new JournalInvariantError("non-conflict recovery observation contains a conflict reason");
+  }
+}
+
 function validateEffectInput(input: PlanEffectInput): void {
   assertCode(input.kind, "effect kind");
   assertSafeIdentity(input.idempotencyKey, "effect idempotency key", 300);
@@ -5349,6 +7246,36 @@ function assertSameTreasuryStagingObservation(
   }
 }
 
+function assertSameTreasuryStagingRecoveryPlan(
+  existing: TreasuryStagingRecoveryPlanRecord,
+  input: PlanTreasuryStagingRecoveryInput,
+  stored: StoredEvidence
+): void {
+  if (
+    existing.purchaseId !== input.purchaseId ||
+    existing.attempt !== input.attempt ||
+    existing.reservationId !== input.reservationId ||
+    existing.stagingEffectId !== input.stagingEffectId ||
+    existing.idempotencyKey !== input.idempotencyKey ||
+    existing.payloadDigest !== input.payloadDigest ||
+    existing.preparedRef !== stored.storageRef ||
+    existing.preparedByteLength !== stored.byteLength ||
+    existing.exactTransactionId !== input.exactTransactionId ||
+    existing.recoveryTransactionId !== input.recoveryTransactionId ||
+    existing.recoveryOutpoint !== input.recoveryOutpoint ||
+    existing.recoveryAmountAtomic !== input.recoveryAmountAtomic ||
+    existing.stagingFeeAtomic !== input.stagingFeeAtomic ||
+    existing.recoveryFeeAtomic !== input.recoveryFeeAtomic ||
+    existing.requiredFinality !== input.requiredFinality ||
+    existing.authorizedAdditionalCostCeilingAtomic !==
+      input.authorizedAdditionalCostCeilingAtomic
+  ) {
+    throw new JournalInvariantError(
+      `staging recovery idempotency conflict for ${input.idempotencyKey}`
+    );
+  }
+}
+
 function assertSameEffect(existing: EffectRecord, input: PlanEffectInput, stored: StoredEvidence): void {
   if (
     existing.purchaseId !== input.purchaseId ||
@@ -5442,7 +7369,7 @@ function assertEffectTransition(from: EffectState, to: EffectState): void {
     executing: ["submitted", "ambiguous", "retryable", "observed", "failed_terminal"],
     submitted: ["ambiguous", "retryable", "observed", "failed_terminal"],
     ambiguous: ["retryable", "observed", "failed_terminal"],
-    retryable: ["executing", "failed_terminal"],
+    retryable: ["executing", "failed_terminal", "abandoned"],
     observed: [],
     failed_terminal: [],
     abandoned: [],
@@ -5461,6 +7388,117 @@ function decimalBigInt(value: string, label: string, allowZero = false): bigint 
     throw new PolicyReservationError(`${label} must be ${allowZero ? "non-negative" : "positive"}`);
   }
   return parsed;
+}
+
+function validateTreasuryOperationIntent(input: TreasuryOperationIntent): void {
+  assertTreasuryOperationKey(input.operationKey);
+  assertDigest(input.requestDigest, "direct Treasury request digest");
+  if (
+    input.kind !== "wallet_send" &&
+    input.kind !== "vault_send" &&
+    input.kind !== "vault_deposit"
+  ) {
+    throw new JournalInvariantError("direct Treasury operation kind is invalid");
+  }
+  if (
+    typeof input.destination !== "string" ||
+    input.destination.length > 256 ||
+    !/^kaspatest:[a-z0-9]+$/.test(input.destination)
+  ) {
+    throw new JournalInvariantError("direct Treasury destination is invalid");
+  }
+  if (input.requestedAmountAtomic !== "max") {
+    decimalBigInt(input.requestedAmountAtomic, "direct Treasury requested amount");
+  }
+  if (input.kind !== "vault_deposit" && input.requestedAmountAtomic === "max") {
+    throw new JournalInvariantError("direct send Treasury operation requires an exact amount");
+  }
+  if (input.keepFloatAtomic !== undefined) {
+    if (input.kind !== "vault_deposit") {
+      throw new JournalInvariantError("keep-float applies only to vault deposits");
+    }
+    decimalBigInt(input.keepFloatAtomic, "vault deposit keep-float", true);
+  }
+  decimalBigInt(input.feeCeilingAtomic, "direct Treasury fee ceiling");
+  assertDigest(input.policyDigest, "direct Treasury policy digest");
+}
+
+function validatePreparedTreasuryOperation(input: PreparedTreasuryOperation): void {
+  if (
+    !(input.bytes instanceof Uint8Array) ||
+    input.bytes.byteLength === 0 ||
+    input.bytes.byteLength > 2_000_000
+  ) {
+    throw new JournalInvariantError("direct Treasury prepared material is empty or oversized");
+  }
+  assertTransactionId(input.transactionId);
+  decimalBigInt(input.amountAtomic, "direct Treasury prepared amount");
+  decimalBigInt(input.feeAtomic, "direct Treasury prepared fee", true);
+  assertDigest(input.policyDigest, "direct Treasury prepared policy digest");
+}
+
+function assertSameTreasuryOperationIntent(
+  existing: TreasuryOperationRecord,
+  input: TreasuryOperationIntent
+): void {
+  if (
+    existing.requestDigest !== input.requestDigest ||
+    existing.kind !== input.kind ||
+    existing.destination !== input.destination ||
+    existing.requestedAmountAtomic !== input.requestedAmountAtomic ||
+    existing.keepFloatAtomic !== input.keepFloatAtomic
+  ) {
+    throw new JournalInvariantError(
+      "direct Treasury operation key is already bound to different immutable intent"
+    );
+  }
+}
+
+function assertTreasuryOperationKey(value: string): void {
+  if (typeof value !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(value)) {
+    throw new JournalInvariantError(
+      "direct Treasury operation key must be 1-160 canonical characters"
+    );
+  }
+}
+
+function canonicalTreasuryObservationJson(value: unknown): string {
+  return JSON.stringify(sortTreasuryJson(value));
+}
+
+function directTreasuryTransitionAllowed(
+  from: TreasuryOperationState,
+  to: TreasuryOperationState
+): boolean {
+  return (
+    (from === "intent" && to === "prepared") ||
+    (from === "prepared" && to === "submission_planned") ||
+    (from === "submission_planned" &&
+      (to === "prepared" || to === "submitted" || to === "observed")) ||
+    (from === "submitted" && (to === "prepared" || to === "observed")) ||
+    (from === "observed" && to === "completed")
+  );
+}
+
+function sortTreasuryJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortTreasuryJson);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, child]) => [key, sortTreasuryJson(child)])
+    );
+  }
+  if (typeof value === "bigint") return value.toString();
+  return value;
+}
+
+function isSqliteConstraint(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    String((error as { code?: unknown }).code).startsWith("SQLITE_CONSTRAINT")
+  );
 }
 
 function assertDigest(value: string, label: string): void {

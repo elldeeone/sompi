@@ -1,0 +1,734 @@
+import type {
+  PreparedVaultSpend,
+  PreparedVaultDeposit,
+  VaultManager,
+} from "../vault.js";
+import type {
+  KaspaWallet,
+  PreparedWalletSend,
+} from "../wallet.js";
+import type {
+  PreparedTreasuryOperationMaterial,
+  TreasuryOperationKind,
+  TreasuryOperationRecord,
+  TreasuryOperationObservationStatus,
+} from "./operation-journal.js";
+
+const PROFILE = "urn:sompi:treasury-operation:prepared:1" as const;
+const OBSERVATION_PROFILE = "urn:sompi:treasury-operation:observation:1" as const;
+const HASH32 = /^[a-f0-9]{64}$/;
+
+export interface TreasuryOperationProbe {
+  readonly status: TreasuryOperationObservationStatus;
+  readonly detail: Readonly<Record<string, unknown>>;
+}
+
+/** Real seam: wallet and consensus-vault adapters both implement it. */
+export interface TreasuryOperationAdapter {
+  readonly kind: TreasuryOperationKind;
+  prepare(
+    intent: TreasuryOperationRecord,
+    authorize: (destination: string, amountAtomic: bigint) => void
+  ): Promise<PreparedTreasuryOperationMaterial>;
+  submit(
+    intent: TreasuryOperationRecord,
+    preparedBytes: Uint8Array
+  ): Promise<{ readonly transactionId: string }>;
+  observe(
+    intent: TreasuryOperationRecord,
+    preparedBytes: Uint8Array
+  ): Promise<TreasuryOperationProbe>;
+  commit(
+    intent: TreasuryOperationRecord,
+    preparedBytes: Uint8Array,
+    observedDetail: Readonly<Record<string, unknown>>
+  ): Promise<void>;
+}
+
+interface WalletEnvelope {
+  readonly version: 1;
+  readonly profile: typeof PROFILE;
+  readonly kind: "wallet_send";
+  readonly binding: OperationBinding;
+  readonly observationStartHash: string;
+  readonly prepared: {
+    readonly transaction: string;
+    readonly transactionEncoding: "kaspa-sdk-safe-json-v2.0.0";
+    readonly transactionId: string;
+    readonly sourceAddress: string;
+    readonly destination: string;
+    readonly destinationOutpoint: { readonly txid: string; readonly index: number };
+    readonly amountAtomic: string;
+    readonly feeAtomic: string;
+    readonly sourceInputs: readonly {
+      readonly txid: string;
+      readonly index: number;
+      readonly amountAtomic: string;
+    }[];
+  };
+}
+
+interface VaultEnvelope {
+  readonly version: 1;
+  readonly profile: typeof PROFILE;
+  readonly kind: "vault_send";
+  readonly binding: OperationBinding;
+  readonly observationStartHash: string;
+  readonly prepared: {
+    readonly transaction: string;
+    readonly transactionEncoding: "kaspa-sdk-safe-json-v2.0.0";
+    readonly transactionId: string;
+    readonly destination: string;
+    readonly destinationOutpoint: { readonly txid: string; readonly index: 0 };
+    readonly amountAtomic: string;
+    readonly feeAtomic: string;
+    readonly continuationOutpoint: { readonly txid: string; readonly index: 1 };
+    readonly continuationAddress: string;
+    readonly continuationAmountAtomic: string;
+    readonly covenantId: string;
+    readonly baseConfigDigest: string;
+    readonly configUpdate: PreparedVaultSpend["configUpdate"];
+  };
+}
+
+interface OperationBinding {
+  readonly operationKey: string;
+  readonly requestDigest: string;
+  readonly destination: string;
+  readonly requestedAmountAtomic: string | "max";
+  readonly keepFloatAtomic?: string;
+  readonly feeCeilingAtomic: string;
+  readonly network: "kaspa:testnet-10";
+}
+
+interface VaultDepositEnvelope {
+  readonly version: 1;
+  readonly profile: typeof PROFILE;
+  readonly kind: "vault_deposit";
+  readonly binding: OperationBinding;
+  readonly observationStartHash: string;
+  readonly prepared: {
+    readonly transaction: string;
+    readonly transactionEncoding: "kaspa-sdk-safe-json-v2.0.0";
+    readonly transactionId: string;
+    readonly depositKind: "initial" | "topup";
+    readonly depositedAtomic: string;
+    readonly feeAtomic: string;
+    readonly vaultAddress: string;
+    readonly vaultOutpoint: { readonly txid: string; readonly index: 0 };
+    readonly vaultAmountAtomic: string;
+    readonly covenantId: string;
+    readonly baseConfigDigest: string;
+    readonly sourceInputs: readonly {
+      readonly address: string;
+      readonly txid: string;
+      readonly index: number;
+      readonly amountAtomic: string;
+    }[];
+    readonly configUpdate: PreparedVaultDeposit["configUpdate"];
+  };
+}
+
+export class WalletTreasuryOperationAdapter implements TreasuryOperationAdapter {
+  readonly kind = "wallet_send" as const;
+
+  constructor(private readonly wallet: KaspaWallet) {
+    if (!wallet || wallet.networkId !== "testnet-10") {
+      throw new Error("wallet Treasury operation adapter requires testnet-10");
+    }
+  }
+
+  async prepare(
+    intent: TreasuryOperationRecord,
+    authorize: (destination: string, amountAtomic: bigint) => void
+  ): Promise<PreparedTreasuryOperationMaterial> {
+    requireIntent(intent, this.kind);
+    if (intent.requestedAmountAtomic === "max") {
+      throw new Error("wallet Treasury operation requires an exact amount");
+    }
+    const amount = BigInt(intent.requestedAmountAtomic);
+    authorize(intent.destination, amount);
+    const observationStartHash = await chainStartHash(this.wallet);
+    const prepared = await this.wallet.prepareSend(
+      intent.destination,
+      amount,
+      BigInt(intent.feeCeilingAtomic)
+    );
+    const envelope = walletEnvelope(intent, observationStartHash, prepared);
+    const bytes = encode(envelope);
+    decodeWallet(bytes, intent);
+    return Object.freeze({
+      bytes,
+      transactionId: prepared.transactionId,
+      amountAtomic: prepared.amountSompi.toString(),
+      feeAtomic: prepared.feeSompi.toString(),
+    });
+  }
+
+  async submit(
+    intent: TreasuryOperationRecord,
+    preparedBytes: Uint8Array
+  ): Promise<{ readonly transactionId: string }> {
+    const envelope = decodeWallet(preparedBytes, intent);
+    return this.wallet.submitPreparedSend(walletPrepared(envelope));
+  }
+
+  async observe(
+    intent: TreasuryOperationRecord,
+    preparedBytes: Uint8Array
+  ): Promise<TreasuryOperationProbe> {
+    const envelope = decodeWallet(preparedBytes, intent);
+    const observation = await this.wallet.observePreparedSend(
+      walletPrepared(envelope),
+      envelope.observationStartHash
+    );
+    return Object.freeze({
+      status: observation.status,
+      detail: Object.freeze({
+        profile: OBSERVATION_PROFILE,
+        kind: this.kind,
+        status: observation.status,
+        operationKey: intent.operationKey,
+        transactionId: envelope.prepared.transactionId,
+        destinationOutpoint: `${envelope.prepared.transactionId}:${envelope.prepared.destinationOutpoint.index}`,
+        amountAtomic: envelope.prepared.amountAtomic,
+      }),
+    });
+  }
+
+  async commit(
+    intent: TreasuryOperationRecord,
+    preparedBytes: Uint8Array,
+    observedDetail: Readonly<Record<string, unknown>>
+  ): Promise<void> {
+    const envelope = decodeWallet(preparedBytes, intent);
+    requireObservedDetail(observedDetail, intent, envelope.prepared.transactionId);
+    // A regular-wallet send has no mutable local chain state to advance. The
+    // durable observed fact itself is the idempotent commit.
+  }
+}
+
+export class VaultSendTreasuryOperationAdapter implements TreasuryOperationAdapter {
+  readonly kind = "vault_send" as const;
+
+  constructor(
+    private readonly vault: VaultManager,
+    private readonly wallet: KaspaWallet
+  ) {
+    if (!vault || !wallet || wallet.networkId !== "testnet-10") {
+      throw new Error("vault Treasury operation adapter requires testnet-10");
+    }
+  }
+
+  async prepare(
+    intent: TreasuryOperationRecord,
+    authorize: (destination: string, amountAtomic: bigint) => void
+  ): Promise<PreparedTreasuryOperationMaterial> {
+    requireIntent(intent, this.kind);
+    const requested = intent.requestedAmountAtomic === "max"
+      ? "max" as const
+      : BigInt(intent.requestedAmountAtomic);
+    const observationStartHash = await chainStartHash(this.wallet);
+    const prepared = await this.vault.prepareSend(
+      this.wallet,
+      intent.destination,
+      requested,
+      (resolved) => authorize(intent.destination, resolved),
+      BigInt(intent.feeCeilingAtomic)
+    );
+    const envelope = vaultEnvelope(intent, observationStartHash, prepared);
+    const bytes = encode(envelope);
+    decodeVault(bytes, intent);
+    return Object.freeze({
+      bytes,
+      transactionId: prepared.transactionId,
+      amountAtomic: prepared.amountSompi.toString(),
+      feeAtomic: prepared.feeSompi.toString(),
+    });
+  }
+
+  async submit(
+    intent: TreasuryOperationRecord,
+    preparedBytes: Uint8Array
+  ): Promise<{ readonly transactionId: string }> {
+    const envelope = decodeVault(preparedBytes, intent);
+    return this.vault.submitPreparedSend(this.wallet, vaultPrepared(envelope));
+  }
+
+  async observe(
+    intent: TreasuryOperationRecord,
+    preparedBytes: Uint8Array
+  ): Promise<TreasuryOperationProbe> {
+    const envelope = decodeVault(preparedBytes, intent);
+    const observation = await this.vault.reconcilePreparedSend(
+      this.wallet,
+      vaultPrepared(envelope),
+      envelope.observationStartHash
+    );
+    return Object.freeze({
+      status: observation.status,
+      detail: Object.freeze({
+        profile: OBSERVATION_PROFILE,
+        kind: this.kind,
+        status: observation.status,
+        operationKey: intent.operationKey,
+        transactionId: envelope.prepared.transactionId,
+        destinationOutpoint: `${envelope.prepared.transactionId}:0`,
+        continuationOutpoint: `${envelope.prepared.transactionId}:1`,
+        amountAtomic: envelope.prepared.amountAtomic,
+        continuationAmountAtomic: envelope.prepared.continuationAmountAtomic,
+        ...(observation.status === "observed" && observation.observation.observedAtDaa !== undefined
+          ? { observedAtDaa: observation.observation.observedAtDaa.toString() }
+          : {}),
+      }),
+    });
+  }
+
+  async commit(
+    intent: TreasuryOperationRecord,
+    preparedBytes: Uint8Array,
+    observedDetail: Readonly<Record<string, unknown>>
+  ): Promise<void> {
+    const envelope = decodeVault(preparedBytes, intent);
+    requireObservedDetail(observedDetail, intent, envelope.prepared.transactionId);
+    const prepared = vaultPrepared(envelope);
+    this.vault.commitObservedSend(prepared, {
+      transactionId: prepared.transactionId,
+      destinationOutpoint: prepared.destinationOutpoint,
+      continuationOutpoint: prepared.continuationOutpoint,
+      amountSompi: prepared.amountSompi,
+      continuationAmountSompi: prepared.continuationAmountSompi,
+      ...(typeof observedDetail.observedAtDaa === "string"
+        ? { observedAtDaa: BigInt(observedDetail.observedAtDaa) }
+        : {}),
+    });
+  }
+}
+
+export class VaultDepositTreasuryOperationAdapter implements TreasuryOperationAdapter {
+  readonly kind = "vault_deposit" as const;
+
+  constructor(
+    private readonly vault: VaultManager,
+    private readonly wallet: KaspaWallet
+  ) {
+    if (!vault || !wallet || wallet.networkId !== "testnet-10") {
+      throw new Error("vault deposit Treasury operation adapter requires testnet-10");
+    }
+  }
+
+  async prepare(
+    intent: TreasuryOperationRecord,
+    _authorize: (destination: string, amountAtomic: bigint) => void
+  ): Promise<PreparedTreasuryOperationMaterial> {
+    requireIntent(intent, this.kind);
+    if (!this.vault.configured || this.vault.config().address !== intent.destination) {
+      throw new Error("vault deposit intent is not bound to the current vault configuration");
+    }
+    const amount = intent.requestedAmountAtomic === "max"
+      ? "max" as const
+      : BigInt(intent.requestedAmountAtomic);
+    const keepFloat = BigInt(intent.keepFloatAtomic ?? "0");
+    if (amount !== "max" && keepFloat !== 0n) {
+      throw new Error("keep-float applies only to a maximum vault deposit");
+    }
+    const observationStartHash = await chainStartHash(this.wallet);
+    const prepared = await this.vault.prepareDeposit(
+      this.wallet,
+      amount,
+      keepFloat,
+      BigInt(intent.feeCeilingAtomic)
+    );
+    const envelope = vaultDepositEnvelope(intent, observationStartHash, prepared);
+    const bytes = encode(envelope);
+    decodeVaultDeposit(bytes, intent);
+    return Object.freeze({
+      bytes,
+      transactionId: prepared.transactionId,
+      amountAtomic: prepared.depositedSompi.toString(),
+      feeAtomic: prepared.feeSompi.toString(),
+    });
+  }
+
+  async submit(
+    intent: TreasuryOperationRecord,
+    preparedBytes: Uint8Array
+  ): Promise<{ readonly transactionId: string }> {
+    const envelope = decodeVaultDeposit(preparedBytes, intent);
+    return this.vault.submitPreparedDeposit(this.wallet, vaultPreparedDeposit(envelope));
+  }
+
+  async observe(
+    intent: TreasuryOperationRecord,
+    preparedBytes: Uint8Array
+  ): Promise<TreasuryOperationProbe> {
+    const envelope = decodeVaultDeposit(preparedBytes, intent);
+    const observation = await this.vault.reconcilePreparedDeposit(
+      this.wallet,
+      vaultPreparedDeposit(envelope),
+      envelope.observationStartHash
+    );
+    return Object.freeze({
+      status: observation.status,
+      detail: Object.freeze({
+        profile: OBSERVATION_PROFILE,
+        kind: this.kind,
+        status: observation.status,
+        operationKey: intent.operationKey,
+        transactionId: envelope.prepared.transactionId,
+        vaultOutpoint: `${envelope.prepared.transactionId}:0`,
+        depositedAtomic: envelope.prepared.depositedAtomic,
+        vaultAmountAtomic: envelope.prepared.vaultAmountAtomic,
+        covenantId: envelope.prepared.covenantId,
+        ...(observation.status === "observed" && observation.observation.observedAtDaa !== undefined
+          ? { observedAtDaa: observation.observation.observedAtDaa.toString() }
+          : {}),
+      }),
+    });
+  }
+
+  async commit(
+    intent: TreasuryOperationRecord,
+    preparedBytes: Uint8Array,
+    observedDetail: Readonly<Record<string, unknown>>
+  ): Promise<void> {
+    const envelope = decodeVaultDeposit(preparedBytes, intent);
+    requireObservedDetail(observedDetail, intent, envelope.prepared.transactionId);
+    const prepared = vaultPreparedDeposit(envelope);
+    this.vault.commitObservedDeposit(prepared, {
+      transactionId: prepared.transactionId,
+      vaultOutpoint: prepared.vaultOutpoint,
+      vaultAmountSompi: prepared.vaultAmountSompi,
+      covenantId: prepared.covenantId,
+      ...(typeof observedDetail.observedAtDaa === "string"
+        ? { observedAtDaa: BigInt(observedDetail.observedAtDaa) }
+        : {}),
+    });
+  }
+}
+
+async function chainStartHash(wallet: KaspaWallet): Promise<string> {
+  const rpc = await wallet.client();
+  const info = await rpc.getBlockDagInfo();
+  const sink = String(info.sink).toLowerCase();
+  if (!HASH32.test(sink)) throw new Error("Kaspa node returned an invalid observation start hash");
+  return sink;
+}
+
+function walletEnvelope(
+  intent: TreasuryOperationRecord,
+  observationStartHash: string,
+  prepared: PreparedWalletSend
+): WalletEnvelope {
+  return Object.freeze({
+    version: 1 as const,
+    profile: PROFILE,
+    kind: "wallet_send" as const,
+    binding: binding(intent),
+    observationStartHash,
+    prepared: Object.freeze({
+      transaction: prepared.transaction,
+      transactionEncoding: prepared.transactionEncoding,
+      transactionId: prepared.transactionId,
+      sourceAddress: prepared.sourceAddress,
+      destination: prepared.destination,
+      destinationOutpoint: Object.freeze({ ...prepared.destinationOutpoint }),
+      amountAtomic: prepared.amountSompi.toString(),
+      feeAtomic: prepared.feeSompi.toString(),
+      sourceInputs: Object.freeze(prepared.sourceInputs.map((input) => Object.freeze({
+        txid: input.txid,
+        index: input.index,
+        amountAtomic: input.amountSompi.toString(),
+      }))),
+    }),
+  });
+}
+
+function vaultEnvelope(
+  intent: TreasuryOperationRecord,
+  observationStartHash: string,
+  prepared: PreparedVaultSpend
+): VaultEnvelope {
+  return Object.freeze({
+    version: 1 as const,
+    profile: PROFILE,
+    kind: "vault_send" as const,
+    binding: binding(intent),
+    observationStartHash,
+    prepared: Object.freeze({
+      transaction: prepared.transaction,
+      transactionEncoding: prepared.transactionEncoding,
+      transactionId: prepared.transactionId,
+      destination: prepared.destination,
+      destinationOutpoint: Object.freeze({ ...prepared.destinationOutpoint }),
+      amountAtomic: prepared.amountSompi.toString(),
+      feeAtomic: prepared.feeSompi.toString(),
+      continuationOutpoint: Object.freeze({ ...prepared.continuationOutpoint }),
+      continuationAddress: prepared.continuationAddress,
+      continuationAmountAtomic: prepared.continuationAmountSompi.toString(),
+      covenantId: prepared.covenantId,
+      baseConfigDigest: prepared.baseConfigDigest,
+      configUpdate: Object.freeze({
+        ...prepared.configUpdate,
+        currentOutpoint: Object.freeze({ ...prepared.configUpdate.currentOutpoint }),
+      }),
+    }),
+  });
+}
+
+function vaultDepositEnvelope(
+  intent: TreasuryOperationRecord,
+  observationStartHash: string,
+  prepared: PreparedVaultDeposit
+): VaultDepositEnvelope {
+  return Object.freeze({
+    version: 1 as const,
+    profile: PROFILE,
+    kind: "vault_deposit" as const,
+    binding: binding(intent),
+    observationStartHash,
+    prepared: Object.freeze({
+      transaction: prepared.transaction,
+      transactionEncoding: prepared.transactionEncoding,
+      transactionId: prepared.transactionId,
+      depositKind: prepared.depositKind,
+      depositedAtomic: prepared.depositedSompi.toString(),
+      feeAtomic: prepared.feeSompi.toString(),
+      vaultAddress: prepared.vaultAddress,
+      vaultOutpoint: Object.freeze({ ...prepared.vaultOutpoint }),
+      vaultAmountAtomic: prepared.vaultAmountSompi.toString(),
+      covenantId: prepared.covenantId,
+      baseConfigDigest: prepared.baseConfigDigest,
+      sourceInputs: Object.freeze(prepared.sourceInputs.map((input) => Object.freeze({
+        address: input.address,
+        txid: input.txid,
+        index: input.index,
+        amountAtomic: input.amountSompi.toString(),
+      }))),
+      configUpdate: Object.freeze({
+        ...prepared.configUpdate,
+        currentOutpoint: Object.freeze({ ...prepared.configUpdate.currentOutpoint }),
+      }),
+    }),
+  });
+}
+
+function binding(intent: TreasuryOperationRecord): OperationBinding {
+  return Object.freeze({
+    operationKey: intent.operationKey,
+    requestDigest: intent.requestDigest,
+    destination: intent.destination,
+    requestedAmountAtomic: intent.requestedAmountAtomic,
+    ...(intent.keepFloatAtomic === undefined ? {} : { keepFloatAtomic: intent.keepFloatAtomic }),
+    feeCeilingAtomic: intent.feeCeilingAtomic,
+    network: "kaspa:testnet-10" as const,
+  });
+}
+
+function vaultPreparedDeposit(envelope: VaultDepositEnvelope): PreparedVaultDeposit {
+  return Object.freeze({
+    transaction: envelope.prepared.transaction,
+    transactionEncoding: envelope.prepared.transactionEncoding,
+    transactionId: envelope.prepared.transactionId,
+    depositKind: envelope.prepared.depositKind,
+    depositedSompi: BigInt(envelope.prepared.depositedAtomic),
+    feeSompi: BigInt(envelope.prepared.feeAtomic),
+    vaultAddress: envelope.prepared.vaultAddress,
+    vaultOutpoint: Object.freeze({ ...envelope.prepared.vaultOutpoint }),
+    vaultAmountSompi: BigInt(envelope.prepared.vaultAmountAtomic),
+    covenantId: envelope.prepared.covenantId,
+    baseConfigDigest: envelope.prepared.baseConfigDigest,
+    sourceInputs: Object.freeze(envelope.prepared.sourceInputs.map((input) => Object.freeze({
+      address: input.address,
+      txid: input.txid,
+      index: input.index,
+      amountSompi: BigInt(input.amountAtomic),
+    }))),
+    configUpdate: Object.freeze({
+      ...envelope.prepared.configUpdate,
+      currentOutpoint: Object.freeze({ ...envelope.prepared.configUpdate.currentOutpoint }),
+    }),
+  });
+}
+
+function walletPrepared(envelope: WalletEnvelope): PreparedWalletSend {
+  return Object.freeze({
+    transaction: envelope.prepared.transaction,
+    transactionEncoding: envelope.prepared.transactionEncoding,
+    transactionId: envelope.prepared.transactionId,
+    sourceAddress: envelope.prepared.sourceAddress,
+    destination: envelope.prepared.destination,
+    destinationOutpoint: Object.freeze({ ...envelope.prepared.destinationOutpoint }),
+    amountSompi: BigInt(envelope.prepared.amountAtomic),
+    feeSompi: BigInt(envelope.prepared.feeAtomic),
+    sourceInputs: Object.freeze(envelope.prepared.sourceInputs.map((input) => Object.freeze({
+      txid: input.txid,
+      index: input.index,
+      amountSompi: BigInt(input.amountAtomic),
+    }))),
+  });
+}
+
+function vaultPrepared(envelope: VaultEnvelope): PreparedVaultSpend {
+  return Object.freeze({
+    transaction: envelope.prepared.transaction,
+    transactionEncoding: envelope.prepared.transactionEncoding,
+    transactionId: envelope.prepared.transactionId,
+    destination: envelope.prepared.destination,
+    destinationOutpoint: Object.freeze({ ...envelope.prepared.destinationOutpoint }),
+    amountSompi: BigInt(envelope.prepared.amountAtomic),
+    feeSompi: BigInt(envelope.prepared.feeAtomic),
+    continuationOutpoint: Object.freeze({ ...envelope.prepared.continuationOutpoint }),
+    continuationAddress: envelope.prepared.continuationAddress,
+    continuationAmountSompi: BigInt(envelope.prepared.continuationAmountAtomic),
+    covenantId: envelope.prepared.covenantId,
+    baseConfigDigest: envelope.prepared.baseConfigDigest,
+    configUpdate: Object.freeze({
+      ...envelope.prepared.configUpdate,
+      currentOutpoint: Object.freeze({ ...envelope.prepared.configUpdate.currentOutpoint }),
+    }),
+  });
+}
+
+function decodeWallet(bytes: Uint8Array, intent: TreasuryOperationRecord): WalletEnvelope {
+  const parsed = decode(bytes) as WalletEnvelope;
+  if (parsed.kind !== "wallet_send") throw new Error("Prepared wallet operation kind changed");
+  const canonical = walletEnvelope(intent, parsed.observationStartHash, walletPrepared(parsed));
+  assertEnvelope(canonical, bytes, intent, parsed.observationStartHash);
+  return canonical;
+}
+
+function decodeVault(bytes: Uint8Array, intent: TreasuryOperationRecord): VaultEnvelope {
+  const parsed = decode(bytes) as VaultEnvelope;
+  if (parsed.kind !== "vault_send") throw new Error("Prepared vault operation kind changed");
+  const canonical = vaultEnvelope(intent, parsed.observationStartHash, vaultPrepared(parsed));
+  assertEnvelope(canonical, bytes, intent, parsed.observationStartHash);
+  return canonical;
+}
+
+function decodeVaultDeposit(
+  bytes: Uint8Array,
+  intent: TreasuryOperationRecord
+): VaultDepositEnvelope {
+  const parsed = decode(bytes) as VaultDepositEnvelope;
+  if (parsed.kind !== "vault_deposit") {
+    throw new Error("Prepared vault deposit operation kind changed");
+  }
+  const canonical = vaultDepositEnvelope(
+    intent,
+    parsed.observationStartHash,
+    vaultPreparedDeposit(parsed)
+  );
+  if (
+    canonical.version !== 1 ||
+    canonical.profile !== PROFILE ||
+    canonical.binding.operationKey !== intent.operationKey ||
+    canonical.binding.requestDigest !== intent.requestDigest ||
+    canonical.binding.destination !== intent.destination ||
+    canonical.binding.requestedAmountAtomic !== intent.requestedAmountAtomic ||
+    canonical.binding.keepFloatAtomic !== intent.keepFloatAtomic ||
+    canonical.binding.feeCeilingAtomic !== intent.feeCeilingAtomic ||
+    canonical.binding.network !== "kaspa:testnet-10" ||
+    !HASH32.test(canonical.observationStartHash) ||
+    !HASH32.test(canonical.prepared.transactionId) ||
+    encode(canonical).toString() !== Buffer.from(bytes).toString()
+  ) {
+    throw new Error("Prepared vault deposit artifact changed its immutable binding");
+  }
+  atomic(canonical.prepared.depositedAtomic, true);
+  atomic(canonical.prepared.feeAtomic, false);
+  atomic(canonical.prepared.vaultAmountAtomic, true);
+  if (
+    intent.requestedAmountAtomic !== "max" &&
+    canonical.prepared.depositedAtomic !== intent.requestedAmountAtomic
+  ) {
+    throw new Error("Prepared vault deposit changed the requested principal");
+  }
+  return canonical;
+}
+
+function assertEnvelope(
+  envelope: WalletEnvelope | VaultEnvelope,
+  bytes: Uint8Array,
+  intent: TreasuryOperationRecord,
+  observationStartHash: string
+): void {
+  requireIntent(intent, envelope.kind);
+  if (
+    envelope.version !== 1 ||
+    envelope.profile !== PROFILE ||
+    envelope.binding.operationKey !== intent.operationKey ||
+    envelope.binding.requestDigest !== intent.requestDigest ||
+    envelope.binding.destination !== intent.destination ||
+    envelope.binding.requestedAmountAtomic !== intent.requestedAmountAtomic ||
+    envelope.binding.keepFloatAtomic !== intent.keepFloatAtomic ||
+    envelope.binding.feeCeilingAtomic !== intent.feeCeilingAtomic ||
+    envelope.binding.network !== "kaspa:testnet-10" ||
+    !HASH32.test(observationStartHash) ||
+    !HASH32.test(envelope.prepared.transactionId) ||
+    envelope.prepared.destination !== intent.destination ||
+    encode(envelope).toString() !== Buffer.from(bytes).toString()
+  ) {
+    throw new Error("Prepared Treasury operation artifact changed its immutable binding");
+  }
+  atomic(envelope.prepared.amountAtomic, true);
+  atomic(envelope.prepared.feeAtomic, false);
+  if (
+    intent.requestedAmountAtomic !== "max" &&
+    envelope.prepared.amountAtomic !== intent.requestedAmountAtomic
+  ) {
+    throw new Error("Prepared Treasury operation changed the requested amount");
+  }
+}
+
+function requireIntent(intent: TreasuryOperationRecord, kind: TreasuryOperationKind): void {
+  if (!intent || intent.kind !== kind || intent.state === "failed_terminal") {
+    throw new Error("Treasury operation intent is invalid for this adapter");
+  }
+}
+
+function requireObservedDetail(
+  detail: Readonly<Record<string, unknown>>,
+  intent: TreasuryOperationRecord,
+  transactionId: string
+): void {
+  if (
+    detail.profile !== OBSERVATION_PROFILE ||
+    detail.kind !== intent.kind ||
+    detail.status !== "observed" ||
+    detail.operationKey !== intent.operationKey ||
+    detail.transactionId !== transactionId
+  ) {
+    throw new Error("Durable Treasury observation changed its operation binding");
+  }
+}
+
+function encode(value: WalletEnvelope | VaultEnvelope | VaultDepositEnvelope): Buffer {
+  const bytes = Buffer.from(JSON.stringify(value), "utf8");
+  if (bytes.byteLength === 0 || bytes.byteLength > 2_000_000) {
+    throw new Error("Prepared Treasury operation artifact is empty or oversized");
+  }
+  return bytes;
+}
+
+function decode(bytes: Uint8Array): unknown {
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength === 0 || bytes.byteLength > 2_000_000) {
+    throw new Error("Prepared Treasury operation artifact is empty or oversized");
+  }
+  try {
+    return JSON.parse(Buffer.from(bytes).toString("utf8"));
+  } catch {
+    throw new Error("Prepared Treasury operation artifact is not JSON");
+  }
+}
+
+function atomic(value: string, positive: boolean): void {
+  if (
+    typeof value !== "string" ||
+    !/^(?:0|[1-9][0-9]*)$/.test(value) ||
+    (positive && value === "0") ||
+    BigInt(value) > (1n << 64n) - 1n
+  ) {
+    throw new Error("Prepared Treasury operation atomic amount is invalid");
+  }
+}

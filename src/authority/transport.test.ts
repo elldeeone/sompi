@@ -6,12 +6,19 @@ import * as path from "node:path";
 import test from "node:test";
 
 import { AUTHORITY_MAC_KEY_BYTES } from "./protocol.js";
+import { AP2_AUTHORITY_REQUEST_TTL_MS } from "../adapters/ap2/authority-module.js";
 import { AuthorityKeyProviderError, AuthorityMacKeyFile } from "./key-provider.js";
 import {
   AuthorityTransportError,
+  AUTHORITY_DECISION_TRANSPORT_TIMEOUT_MS,
   AuthorityUnixClient,
   AuthorityUnixServer,
 } from "./transport.js";
+
+test("production decision transport outlives the human authority request window", () => {
+  assert(AUTHORITY_DECISION_TRANSPORT_TIMEOUT_MS > AP2_AUTHORITY_REQUEST_TTL_MS);
+  assert(AUTHORITY_DECISION_TRANSPORT_TIMEOUT_MS <= 5 * 60_000);
+});
 
 test("Unix authority transport carries exactly one bounded frame with secure permissions", async () => {
   const fixture = fixtureDirectory();
@@ -58,6 +65,56 @@ test("Unix authority client times out with a fixed secret-free error", async () 
         error instanceof AuthorityTransportError &&
         error.code === "timeout" &&
         !String(error).includes("authenticated-request")
+    );
+  } finally {
+    await server.close();
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("Unix authority transport supports an explicitly pinned shared IPC group", async () => {
+  if (
+    typeof process.getuid !== "function" ||
+    typeof process.getgid !== "function"
+  ) {
+    return;
+  }
+  const fixture = fixtureDirectory();
+  const socketPath = path.join(fixture, "authority.sock");
+  const groupId = process.getgid();
+  const userId = process.getuid();
+  const server = new AuthorityUnixServer({
+    socketPath,
+    socketGroupId: groupId,
+    handle: async (wire) => `group-response:${wire}`,
+  });
+  try {
+    await server.start();
+    const socket = fs.lstatSync(socketPath);
+    assert.equal(socket.uid, userId);
+    assert.equal(socket.gid, groupId);
+    assert.equal(socket.mode & 0o777, 0o660);
+    assert.equal(fs.lstatSync(fixture).mode & 0o777, 0o710);
+    const client = new AuthorityUnixClient({
+      socketPath,
+      expectedSocketOwnerUserId: userId,
+      socketGroupId: groupId,
+    });
+    assert.equal(await client.request("authenticated"), "group-response:authenticated");
+    fs.chmodSync(fixture, 0o770);
+    await assert.rejects(
+      client.request("must-not-cross-a-group-writable-directory"),
+      (error: unknown) =>
+        error instanceof AuthorityTransportError && error.code === "unavailable",
+    );
+    fs.chmodSync(fixture, 0o710);
+    assert.throws(
+      () =>
+        new AuthorityUnixClient({
+          socketPath,
+          expectedSocketOwnerUserId: userId,
+        }),
+      AuthorityTransportError,
     );
   } finally {
     await server.close();

@@ -86,6 +86,29 @@ test("MCP-side module rejects substituted Checkout bytes before IPC", async () =
   }
 });
 
+test("durable authorization retries reconstruct one IPC request and do not prompt twice", async () => {
+  const fixture = await authoritySystem(true);
+  try {
+    const first = await fixture.module.request(fixture.input);
+    const recovered = await fixture.module.request(fixture.input);
+    assert.equal(first.status, "decision");
+    assert.equal(recovered.status, "decision");
+    assert.equal(fixture.promptCalls(), 1);
+    if (first.status === "decision" && recovered.status === "decision") {
+      assert.equal(
+        recovered.decision.evidence.evidenceDigest,
+        first.decision.evidence.evidenceDigest,
+      );
+      assert.notEqual(
+        recovered.decision.ipc.message.responseId,
+        first.decision.ipc.message.responseId,
+      );
+    }
+  } finally {
+    await fixture.close();
+  }
+});
+
 async function authoritySystem(approve: boolean) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-ap2-authority-"));
   const socketPath = path.join(directory, "authority.sock");
@@ -102,6 +125,7 @@ async function authoritySystem(approve: boolean) {
     requestDigest: evidenceDigest("purchase-authorization-request"),
     nonceDigest: evidenceDigest("purchase-authorization-nonce"),
     additionalCostCeilingAtomic: checkout.additionalCostCeilingAtomic,
+    createdAtMs: nowMs,
     expiresAtMs: checkout.expiresAtSec * 1_000,
   };
   let displayed: AuthorityApprovalDisplay | undefined;

@@ -15,6 +15,7 @@ import {
   RpcClient,
   SighashType,
   Transaction,
+  addressFromScriptPublicKey,
   createInputSignature,
   createTransactions,
   initConsolePanicHook,
@@ -30,6 +31,32 @@ export interface WalletConfig {
   /** Optional explicit node URL; otherwise the public resolver network is used. */
   nodeUrl?: string;
 }
+
+export interface PreparedWalletSend {
+  readonly transaction: string;
+  readonly transactionEncoding: "kaspa-sdk-safe-json-v2.0.0";
+  readonly transactionId: string;
+  readonly sourceAddress: string;
+  readonly destination: string;
+  readonly destinationOutpoint: { readonly txid: string; readonly index: number };
+  readonly amountSompi: bigint;
+  readonly feeSompi: bigint;
+  readonly sourceInputs: readonly {
+    readonly txid: string;
+    readonly index: number;
+    readonly amountSompi: bigint;
+  }[];
+}
+
+export type WalletSendObservation =
+  | {
+      readonly status: "observed";
+      readonly transactionId: string;
+      readonly destinationOutpoint: { readonly txid: string; readonly index: number };
+      readonly amountSompi: bigint;
+    }
+  | { readonly status: "not_submitted" }
+  | { readonly status: "pending" };
 
 export class KaspaWallet {
   readonly networkId: string;
@@ -113,7 +140,6 @@ export class KaspaWallet {
 
   private async referenceDaaScore(): Promise<bigint | null> {
     const apis: Record<string, string> = {
-      mainnet: "https://api.kaspa.org",
       "testnet-10": "https://api-tn10.kaspa.org",
     };
     const base = apis[this.networkId];
@@ -150,11 +176,22 @@ export class KaspaWallet {
   }
 
   /**
-   * Send `amountSompi` to `destination`. Fee rate is always taken from the
-   * node's estimator (post-Toccata the minimum standard feerate is enforced
-   * by the mempool, so hardcoded fees would be rejected).
+   * Signs one immutable wallet payment without broadcasting it. Callers must
+   * durably persist the returned artifact before `submitPreparedSend`.
+   *
+   * Multi-transaction generators are rejected for this direct-operation seam:
+   * their chained recovery contract needs a separate design and must not be
+   * approximated by partially journalling a batch.
    */
-  async send(destination: string, amountSompi: bigint): Promise<{ txid: string; feeSompi: bigint }> {
+  async prepareSend(
+    destination: string,
+    amountSompi: bigint,
+    feeCeilingSompi?: bigint
+  ): Promise<PreparedWalletSend> {
+    if (amountSompi <= 0n) throw new Error("Prepared wallet send amount must be positive.");
+    if (feeCeilingSompi !== undefined && feeCeilingSompi < 0n) {
+      throw new Error("Prepared wallet send fee ceiling must be non-negative.");
+    }
     const rpc = await this.client();
     const { entries } = await rpc.getUtxosByAddresses([this.address]);
     if (!entries.length) {
@@ -173,12 +210,179 @@ export class KaspaWallet {
       networkId: this.networkId,
     } as any);
 
-    let lastTxid = "";
-    for (const pending of transactions) {
-      await pending.sign([this.privateKey]);
-      lastTxid = await pending.submit(rpc);
+    if (transactions.length !== 1) {
+      for (const pending of transactions) pending.free();
+      throw new Error(
+        "direct wallet operation requires exactly one prepared transaction; consolidate wallet UTXOs first"
+      );
     }
-    return { txid: lastTxid, feeSompi: BigInt(summary.fees ?? 0) };
+    const estimatedFee = BigInt(summary.fees ?? 0);
+    if (feeCeilingSompi !== undefined && estimatedFee > feeCeilingSompi) {
+      for (const pending of transactions) pending.free();
+      throw new Error("wallet fee estimate exceeds the capacity reserved before signing");
+    }
+    const pending = transactions[0];
+    let transaction: Transaction | undefined;
+    try {
+      pending.sign([this.privateKey]);
+      transaction = pending.transaction;
+      const transactionId = String(transaction.finalize());
+      if (!/^[a-f0-9]{64}$/.test(transactionId)) {
+        throw new Error("prepared wallet transaction identity is invalid");
+      }
+      const outputs = transaction.outputs;
+      const destinationIndexes: number[] = [];
+      for (let index = 0; index < outputs.length; index++) {
+        const address = addressFromScriptPublicKey(outputs[index].scriptPublicKey, this.networkId);
+        try {
+          if (address?.toString() === destination) destinationIndexes.push(index);
+        } finally {
+          address?.free();
+        }
+      }
+      if (destinationIndexes.length !== 1) {
+        throw new Error("prepared wallet transaction must contain exactly one destination output");
+      }
+      const destinationIndex = destinationIndexes[0];
+      if (BigInt(outputs[destinationIndex].value) !== amountSompi) {
+        throw new Error("prepared wallet destination output changed the requested amount");
+      }
+      const sourceInputs = transaction.inputs.map((input) => {
+        const utxo = input.utxo;
+        if (!utxo) throw new Error("prepared wallet transaction input is missing recovery UTXO data");
+        return Object.freeze({
+          txid: String(input.previousOutpoint.transactionId),
+          index: input.previousOutpoint.index,
+          amountSompi: BigInt(utxo.amount),
+        });
+      });
+      const prepared: PreparedWalletSend = Object.freeze({
+        transaction: transaction.serializeToSafeJSON(),
+        transactionEncoding: "kaspa-sdk-safe-json-v2.0.0" as const,
+        transactionId,
+        sourceAddress: this.address,
+        destination,
+        destinationOutpoint: Object.freeze({ txid: transactionId, index: destinationIndex }),
+        amountSompi,
+        feeSompi: estimatedFee,
+        sourceInputs: Object.freeze(sourceInputs),
+      });
+      const verified = requirePreparedWalletTransaction(prepared, this.networkId);
+      verified.free();
+      return prepared;
+    } finally {
+      transaction?.free();
+      pending.free();
+    }
+  }
+
+  async submitPreparedSend(prepared: PreparedWalletSend): Promise<{ transactionId: string }> {
+    const transaction = requirePreparedWalletTransaction(prepared, this.networkId);
+    try {
+      const rpc = await this.client();
+      const submitted = await rpc.submitTransaction({ transaction, allowOrphan: false });
+      const transactionId = String(submitted.transactionId);
+      if (transactionId !== prepared.transactionId) {
+        throw new Error("Kaspa node returned a different transaction identity for the prepared wallet send");
+      }
+      return { transactionId };
+    } finally {
+      transaction.free();
+    }
+  }
+
+  /**
+   * Reconciles a prepared send without broadcasting. `not_submitted` is
+   * returned only when the transaction is absent from the pool and every
+   * exact source outpoint remains unspent; only that proof permits retry.
+   */
+  async observePreparedSend(
+    prepared: PreparedWalletSend,
+    observationStartHash?: string
+  ): Promise<WalletSendObservation> {
+    const transaction = requirePreparedWalletTransaction(prepared, this.networkId);
+    transaction.free();
+    const rpc = await this.client();
+    const destination = await rpc.getUtxosByAddresses([prepared.destination]);
+    const destinationMatches = (destination.entries as any[]).filter((entry) => {
+      const outpoint = entry?.outpoint ?? entry?.entry?.outpoint;
+      return (
+        String(outpoint?.transactionId ?? "") === prepared.transactionId &&
+        Number(outpoint?.index) === prepared.destinationOutpoint.index &&
+        BigInt(entry?.amount ?? entry?.entry?.amount ?? -1) === prepared.amountSompi
+      );
+    });
+    if (destinationMatches.length > 1) {
+      throw new Error("Kaspa UTXO index returned duplicate prepared wallet outputs");
+    }
+    if (destinationMatches.length === 1) {
+      return Object.freeze({
+        status: "observed" as const,
+        transactionId: prepared.transactionId,
+        destinationOutpoint: prepared.destinationOutpoint,
+        amountSompi: prepared.amountSompi,
+      });
+    }
+
+    try {
+      const mempool = await rpc.getMempoolEntry({
+        transactionId: prepared.transactionId,
+        includeOrphanPool: false,
+        filterTransactionPool: false,
+      });
+      if (mempool.mempoolEntry.isOrphan) return Object.freeze({ status: "pending" as const });
+      return Object.freeze({
+        status: "observed" as const,
+        transactionId: prepared.transactionId,
+        destinationOutpoint: prepared.destinationOutpoint,
+        amountSompi: prepared.amountSompi,
+      });
+    } catch (error) {
+      if (!isMempoolNotFound(error)) throw error;
+    }
+
+    if (observationStartHash !== undefined) {
+      if (!/^[a-f0-9]{64}$/.test(observationStartHash)) {
+        throw new Error("wallet observation start hash is invalid");
+      }
+      try {
+        const chain = await rpc.getVirtualChainFromBlock({
+          startHash: observationStartHash,
+          includeAcceptedTransactionIds: true,
+        });
+        if (
+          chain.acceptedTransactionIds.some((accepted) =>
+            accepted.acceptedTransactionIds.some((id) => String(id) === prepared.transactionId)
+          )
+        ) {
+          return Object.freeze({
+            status: "observed" as const,
+            transactionId: prepared.transactionId,
+            destinationOutpoint: prepared.destinationOutpoint,
+            amountSompi: prepared.amountSompi,
+          });
+        }
+      } catch {
+        // A pruned/unknown start hash removes our historical proof source. We
+        // may still prove non-submission from intact source outpoints below,
+        // but missing inputs remain ambiguous rather than being retried.
+      }
+    }
+
+    const source = await rpc.getUtxosByAddresses([prepared.sourceAddress]);
+    const live = new Map(
+      (source.entries as any[]).map((entry) => {
+        const outpoint = entry?.outpoint ?? entry?.entry?.outpoint;
+        return [
+          `${String(outpoint?.transactionId ?? "")}:${Number(outpoint?.index)}`,
+          BigInt(entry?.amount ?? entry?.entry?.amount ?? -1),
+        ] as const;
+      })
+    );
+    const allInputsUnspent = prepared.sourceInputs.every(
+      (input) => live.get(`${input.txid}:${input.index}`) === input.amountSompi
+    );
+    return Object.freeze({ status: allInputsUnspent ? "not_submitted" as const : "pending" as const });
   }
 
   /**
@@ -275,20 +479,92 @@ export function parseKasToSompi(kas: string): bigint {
 }
 
 function assertNetworkAllowed(network: string): void {
-  if (!isMainnetNetwork(network)) return;
-  if (process.env.SOMPI_ENABLE_MAINNET === "1") return;
-  throw new Error(
-    "Mainnet is disabled by default. Set SOMPI_ENABLE_MAINNET=1 only after the operator confirms they intend to use real KAS."
-  );
+  if (network !== "testnet-10") {
+    throw new Error("The initial Sompi wallet profile supports only testnet-10.");
+  }
 }
 
-function isMainnetNetwork(network: string): boolean {
-  return network === "mainnet" || network === "kaspa" || network === "kaspa-mainnet";
+function requirePreparedWalletTransaction(
+  prepared: PreparedWalletSend,
+  networkId: string
+): Transaction {
+  if (
+    !prepared ||
+    prepared.transactionEncoding !== "kaspa-sdk-safe-json-v2.0.0" ||
+    typeof prepared.transaction !== "string" ||
+    prepared.transaction.length === 0 ||
+    prepared.transaction.length > 2_000_000 ||
+    !/^[a-f0-9]{64}$/.test(prepared.transactionId) ||
+    prepared.destinationOutpoint.txid !== prepared.transactionId ||
+    !Number.isSafeInteger(prepared.destinationOutpoint.index) ||
+    prepared.destinationOutpoint.index < 0 ||
+    prepared.amountSompi <= 0n ||
+    prepared.feeSompi < 0n ||
+    prepared.sourceInputs.length === 0
+  ) {
+    throw new Error("prepared wallet send metadata is invalid");
+  }
+  let transaction: Transaction;
+  try {
+    transaction = Transaction.deserializeFromSafeJSON(prepared.transaction);
+  } catch {
+    throw new Error("prepared wallet transaction artifact is not valid Kaspa safe JSON");
+  }
+  try {
+    if (
+      String(transaction.finalize()) !== prepared.transactionId ||
+      transaction.serializeToSafeJSON() !== prepared.transaction
+    ) {
+      throw new Error("prepared wallet transaction identity or encoding changed");
+    }
+    const outputs = transaction.outputs;
+    const output = outputs[prepared.destinationOutpoint.index];
+    if (!output || BigInt(output.value) !== prepared.amountSompi) {
+      throw new Error("prepared wallet destination output changed");
+    }
+    const address = addressFromScriptPublicKey(output.scriptPublicKey, networkId);
+    try {
+      if (address?.toString() !== prepared.destination) {
+        throw new Error("prepared wallet destination address changed");
+      }
+    } finally {
+      address?.free();
+    }
+    const inputs = transaction.inputs;
+    if (inputs.length !== prepared.sourceInputs.length) {
+      throw new Error("prepared wallet source inputs changed");
+    }
+    for (let index = 0; index < inputs.length; index++) {
+      const actual = inputs[index];
+      const wanted = prepared.sourceInputs[index];
+      if (
+        String(actual.previousOutpoint.transactionId) !== wanted.txid ||
+        actual.previousOutpoint.index !== wanted.index ||
+        BigInt(actual.utxo?.amount ?? -1) !== wanted.amountSompi ||
+        !/^[a-f0-9]{64}$/.test(wanted.txid) ||
+        !Number.isSafeInteger(wanted.index) ||
+        wanted.index < 0 ||
+        wanted.amountSompi <= 0n
+      ) {
+        throw new Error("prepared wallet source input binding changed");
+      }
+    }
+    return transaction;
+  } catch (error) {
+    transaction.free();
+    throw error;
+  }
+}
+
+function isMempoolNotFound(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /not found|missing|unknown transaction|mempool.*exist/i.test(message);
 }
 
 /** Generate a wallet keypair locally (operator-controlled). Returns the private
  *  key hex and the receive address for the given network. */
 export function generateWalletKey(networkId: string): { privateKey: string; address: string } {
+  assertNetworkAllowed(networkId);
   const keypair = Keypair.random();
   return { privateKey: keypair.privateKey, address: keypair.toAddress(networkId).toString() };
 }

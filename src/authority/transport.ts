@@ -9,8 +9,14 @@ import {
 
 const FRAME_HEADER_BYTES = 4;
 const DEFAULT_TIMEOUT_MS = 10_000;
+export const AUTHORITY_DECISION_TRANSPORT_TIMEOUT_MS = 150_000;
 const SOCKET_MODE = 0o600;
+const GROUP_SOCKET_MODE = 0o660;
 const DIRECTORY_MODE = 0o700;
+// A socket client needs directory traversal and rw access to the socket. It
+// does not need directory write access. Keeping the shared group execute-only
+// prevents a compromised MCP process from unlinking or replacing the socket.
+const GROUP_DIRECTORY_MODE = 0o710;
 const MAX_UNIX_SOCKET_PATH_BYTES = 100;
 export const AUTHORITY_MAX_RESPONSE_FRAME_BYTES =
   AUTHORITY_MAX_WIRE_BYTES + Math.ceil((AUTHORITY_MAX_DECISION_EVIDENCE_BYTES * 4) / 3) + 1_024;
@@ -42,6 +48,8 @@ export interface AuthorityUnixServerOptions {
   readonly socketPath: string;
   readonly handle: (authenticatedRequestWire: string) => string | Promise<string>;
   readonly timeoutMs?: number;
+  /** Shared IPC group for a distinct authority UID and MCP UID. */
+  readonly socketGroupId?: number;
 }
 
 /**
@@ -58,6 +66,7 @@ export class AuthorityUnixServer {
 
   constructor(private readonly options: AuthorityUnixServerOptions) {
     validateSocketPath(options.socketPath);
+    validateOptionalId(options.socketGroupId);
     if (typeof options.handle !== "function") {
       throw new AuthorityTransportError("invalid_configuration");
     }
@@ -71,7 +80,7 @@ export class AuthorityUnixServer {
 
   async start(): Promise<void> {
     if (this.started) throw new AuthorityTransportError("invalid_configuration");
-    prepareSocketDirectory(this.options.socketPath);
+    prepareSocketDirectory(this.options.socketPath, this.options.socketGroupId);
     if (fs.existsSync(this.options.socketPath)) {
       throw new AuthorityTransportError("unavailable");
     }
@@ -93,9 +102,34 @@ export class AuthorityUnixServer {
       this.server.listen(this.options.socketPath);
     });
     try {
-      fs.chmodSync(this.options.socketPath, SOCKET_MODE);
-      const stat = secureSocketStat(this.options.socketPath);
-      this.socketIdentity = { dev: BigInt(stat.dev), ino: BigInt(stat.ino) };
+      const created = fs.lstatSync(this.options.socketPath);
+      this.socketIdentity = {
+        dev: BigInt(created.dev),
+        ino: BigInt(created.ino),
+      };
+      if (this.options.socketGroupId !== undefined) {
+        fs.chownSync(
+          this.options.socketPath,
+          created.uid,
+          this.options.socketGroupId
+        );
+      }
+      fs.chmodSync(
+        this.options.socketPath,
+        this.options.socketGroupId === undefined ? SOCKET_MODE : GROUP_SOCKET_MODE
+      );
+      const stat = secureSocketStat(this.options.socketPath, {
+        expectedOwnerUserId: currentUserId(),
+        ...(this.options.socketGroupId === undefined
+          ? {}
+          : { expectedGroupId: this.options.socketGroupId }),
+      });
+      if (
+        BigInt(stat.dev) !== this.socketIdentity.dev ||
+        BigInt(stat.ino) !== this.socketIdentity.ino
+      ) {
+        throw new AuthorityTransportError("unavailable");
+      }
       this.started = true;
     } catch {
       await closeNetServer(this.server);
@@ -184,6 +218,9 @@ export class AuthorityUnixServer {
 export interface AuthorityUnixClientOptions {
   readonly socketPath: string;
   readonly timeoutMs?: number;
+  /** Required together for a socket owned by the separate authority UID. */
+  readonly expectedSocketOwnerUserId?: number;
+  readonly socketGroupId?: number;
 }
 
 export class AuthorityUnixClient {
@@ -191,13 +228,31 @@ export class AuthorityUnixClient {
 
   constructor(private readonly options: AuthorityUnixClientOptions) {
     validateSocketPath(options.socketPath);
+    validateOptionalId(options.expectedSocketOwnerUserId);
+    validateOptionalId(options.socketGroupId);
+    if (
+      (options.expectedSocketOwnerUserId === undefined) !==
+      (options.socketGroupId === undefined)
+    ) {
+      throw new AuthorityTransportError("invalid_configuration");
+    }
     this.timeoutMs = requireTimeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
   }
 
   request(authenticatedRequestWire: string): Promise<string> {
     const request = encodeFrame(authenticatedRequestWire);
     try {
-      secureSocketStat(this.options.socketPath);
+      secureSocketDirectoryForClient(
+        this.options.socketPath,
+        this.options.socketGroupId
+      );
+      secureSocketStat(this.options.socketPath, {
+        expectedOwnerUserId:
+          this.options.expectedSocketOwnerUserId ?? currentUserId(),
+        ...(this.options.socketGroupId === undefined
+          ? {}
+          : { expectedGroupId: this.options.socketGroupId }),
+      });
     } catch {
       return Promise.reject(new AuthorityTransportError("unavailable"));
     }
@@ -307,31 +362,104 @@ function validateSocketPath(socketPath: string): void {
   }
 }
 
-function prepareSocketDirectory(socketPath: string): void {
+function prepareSocketDirectory(socketPath: string, groupId?: number): void {
   const directory = path.dirname(socketPath);
-  fs.mkdirSync(directory, { recursive: true, mode: DIRECTORY_MODE });
-  const stat = fs.lstatSync(directory);
+  fs.mkdirSync(directory, {
+    recursive: true,
+    mode: groupId === undefined ? DIRECTORY_MODE : GROUP_DIRECTORY_MODE,
+  });
+  let stat = fs.lstatSync(directory);
+  if (!stat.isDirectory() || stat.isSymbolicLink()) {
+    throw new AuthorityTransportError("invalid_configuration");
+  }
+  if (groupId === undefined) {
+    if ((stat.mode & 0o077) !== 0 || stat.uid !== currentUserId()) {
+      throw new AuthorityTransportError("invalid_configuration");
+    }
+    return;
+  }
+  if (stat.uid === currentUserId()) {
+    fs.chownSync(directory, stat.uid, groupId);
+    fs.chmodSync(directory, GROUP_DIRECTORY_MODE);
+    stat = fs.lstatSync(directory);
+  }
   if (
-    !stat.isDirectory() ||
-    stat.isSymbolicLink() ||
-    (stat.mode & 0o077) !== 0 ||
-    (typeof process.getuid === "function" && stat.uid !== process.getuid())
+    stat.uid !== currentUserId() ||
+    stat.gid !== groupId ||
+    !currentGroupIds().includes(groupId) ||
+    (stat.mode & 0o077) !== 0o010
   ) {
     throw new AuthorityTransportError("invalid_configuration");
   }
 }
 
-function secureSocketStat(socketPath: string): fs.Stats {
+function secureSocketDirectoryForClient(
+  socketPath: string,
+  groupId?: number
+): void {
+  const stat = fs.lstatSync(path.dirname(socketPath));
+  if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o002) !== 0) {
+    throw new AuthorityTransportError("unavailable");
+  }
+  if (groupId === undefined) {
+    if ((stat.mode & 0o077) !== 0 || stat.uid !== currentUserId()) {
+      throw new AuthorityTransportError("unavailable");
+    }
+    return;
+  }
+  if (
+    stat.gid !== groupId ||
+    !currentGroupIds().includes(groupId) ||
+    (stat.mode & 0o077) !== 0o010
+  ) {
+    throw new AuthorityTransportError("unavailable");
+  }
+}
+
+function secureSocketStat(
+  socketPath: string,
+  access: { expectedOwnerUserId: number; expectedGroupId?: number }
+): fs.Stats {
   const stat = fs.lstatSync(socketPath);
   if (
     !stat.isSocket() ||
     stat.isSymbolicLink() ||
-    (stat.mode & 0o077) !== 0 ||
-    (typeof process.getuid === "function" && stat.uid !== process.getuid())
+    stat.uid !== access.expectedOwnerUserId ||
+    (stat.mode & 0o007) !== 0
+  ) {
+    throw new AuthorityTransportError("unavailable");
+  }
+  if (access.expectedGroupId === undefined) {
+    if ((stat.mode & 0o070) !== 0) {
+      throw new AuthorityTransportError("unavailable");
+    }
+  } else if (
+    stat.gid !== access.expectedGroupId ||
+    (stat.mode & 0o060) !== 0o060
   ) {
     throw new AuthorityTransportError("unavailable");
   }
   return stat;
+}
+
+function validateOptionalId(value: number | undefined): void {
+  if (
+    value !== undefined &&
+    (!Number.isSafeInteger(value) || value < 0 || value > 0x7fffffff)
+  ) {
+    throw new AuthorityTransportError("invalid_configuration");
+  }
+}
+
+function currentUserId(): number {
+  return typeof process.getuid === "function" ? process.getuid() : 0;
+}
+
+function currentGroupIds(): readonly number[] {
+  if (typeof process.getgroups !== "function") {
+    return typeof process.getgid === "function" ? [process.getgid()] : [0];
+  }
+  return process.getgroups();
 }
 
 function removeOwnedSocket(

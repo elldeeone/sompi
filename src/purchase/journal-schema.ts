@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 
 export const JOURNAL_APPLICATION_ID = 0x534f4d50; // SOMP
-export const JOURNAL_SCHEMA_VERSION = 2;
+export const JOURNAL_SCHEMA_VERSION = 4;
 
 export const JOURNAL_SCHEMA_V1_SQL = `
   CREATE TABLE schema_migrations (
@@ -512,9 +512,203 @@ export const JOURNAL_SCHEMA_V2_MIGRATION_SQL = `
     BEGIN SELECT RAISE(ABORT, 'treasury_staging_observations is immutable'); END;
 `;
 
-export const JOURNAL_SCHEMA_SQL = `${JOURNAL_SCHEMA_V1_SQL}\n${JOURNAL_SCHEMA_V2_MIGRATION_SQL}`;
+/**
+ * Version 3 makes retained non-Purchase Treasury Movements first-class journal
+ * effects. Their capacity is counted in the same SQLite transaction as
+ * Purchase reservations, eliminating the former split JSON accounting race.
+ */
+export const JOURNAL_SCHEMA_V3_MIGRATION_SQL = `
+  CREATE TABLE treasury_operations (
+    operation_key TEXT PRIMARY KEY,
+    request_digest TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL CHECK (kind IN ('wallet_send', 'vault_send', 'vault_deposit')),
+    destination TEXT NOT NULL,
+    requested_amount_atomic TEXT NOT NULL,
+    keep_float_atomic TEXT,
+    fee_ceiling_atomic TEXT NOT NULL,
+    resolved_amount_atomic TEXT,
+    fee_atomic TEXT,
+    transaction_id TEXT UNIQUE,
+    prepared_digest TEXT,
+    prepared_ref TEXT UNIQUE,
+    prepared_byte_length INTEGER,
+    policy_digest TEXT NOT NULL REFERENCES policy_snapshots(digest) ON DELETE RESTRICT,
+    state TEXT NOT NULL CHECK (state IN (
+      'intent', 'prepared', 'submission_planned', 'submitted',
+      'observed', 'completed', 'failed_terminal'
+    )),
+    retry_count INTEGER NOT NULL CHECK (retry_count >= 0),
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    completed_at_ms INTEGER,
+    CHECK ((kind = 'vault_deposit') OR keep_float_atomic IS NULL),
+    CHECK ((prepared_digest IS NULL AND prepared_ref IS NULL
+            AND prepared_byte_length IS NULL AND transaction_id IS NULL
+            AND fee_atomic IS NULL)
+           OR
+           (prepared_digest IS NOT NULL AND prepared_ref IS NOT NULL
+            AND prepared_byte_length > 0 AND transaction_id IS NOT NULL
+            AND resolved_amount_atomic IS NOT NULL AND fee_atomic IS NOT NULL))
+  ) STRICT;
+
+  CREATE UNIQUE INDEX one_unresolved_treasury_operation
+    ON treasury_operations ((1))
+    WHERE state NOT IN ('completed', 'failed_terminal');
+  CREATE INDEX treasury_operation_capacity_window
+    ON treasury_operations(state, completed_at_ms);
+
+  CREATE TABLE treasury_operation_transitions (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    operation_key TEXT NOT NULL REFERENCES treasury_operations(operation_key) ON DELETE RESTRICT,
+    from_state TEXT,
+    to_state TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL
+  ) STRICT;
+
+  CREATE TABLE treasury_operation_observations (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    operation_key TEXT NOT NULL REFERENCES treasury_operations(operation_key) ON DELETE RESTRICT,
+    status TEXT NOT NULL CHECK (status IN ('observed', 'not_submitted', 'pending')),
+    detail_digest TEXT NOT NULL,
+    detail_json TEXT NOT NULL,
+    observed_at_ms INTEGER NOT NULL,
+    UNIQUE (operation_key, status, detail_digest)
+  ) STRICT;
+
+  CREATE TRIGGER immutable_treasury_operation_preparation
+    BEFORE UPDATE OF operation_key, request_digest, kind, destination,
+                     requested_amount_atomic, keep_float_atomic, fee_ceiling_atomic,
+                     resolved_amount_atomic, fee_atomic,
+                     transaction_id, prepared_digest, prepared_ref,
+                     prepared_byte_length, policy_digest
+    ON treasury_operations
+    WHEN OLD.prepared_digest IS NOT NULL
+    BEGIN SELECT RAISE(ABORT, 'Treasury operation intent and preparation are immutable'); END;
+  CREATE TRIGGER immutable_treasury_operations_delete BEFORE DELETE ON treasury_operations
+    BEGIN SELECT RAISE(ABORT, 'Treasury operations are immutable history'); END;
+  CREATE TRIGGER immutable_treasury_operation_transitions_update BEFORE UPDATE ON treasury_operation_transitions
+    BEGIN SELECT RAISE(ABORT, 'Treasury operation transitions are immutable'); END;
+  CREATE TRIGGER immutable_treasury_operation_transitions_delete BEFORE DELETE ON treasury_operation_transitions
+    BEGIN SELECT RAISE(ABORT, 'Treasury operation transitions are immutable'); END;
+  CREATE TRIGGER immutable_treasury_operation_observations_update BEFORE UPDATE ON treasury_operation_observations
+    BEGIN SELECT RAISE(ABORT, 'Treasury operation observations are immutable'); END;
+  CREATE TRIGGER immutable_treasury_operation_observations_delete BEFORE DELETE ON treasury_operation_observations
+    BEGIN SELECT RAISE(ABORT, 'Treasury operation observations are immutable'); END;
+`;
+
+/**
+ * Version 4 makes abandoned staging recovery a dedicated durable effect. The
+ * immutable sweep is persisted before observation or submission, and actual
+ * recovery fees remain in the shared software-policy accounting window after
+ * the reserved Merchant principal is returned.
+ */
+export const JOURNAL_SCHEMA_V4_MIGRATION_SQL = `
+  CREATE TABLE treasury_staging_recovery_plans (
+    effect_id TEXT PRIMARY KEY REFERENCES effects(id) ON DELETE RESTRICT,
+    purchase_id TEXT NOT NULL,
+    attempt INTEGER NOT NULL CHECK (attempt >= 1),
+    reservation_id TEXT NOT NULL UNIQUE,
+    staging_effect_id TEXT NOT NULL UNIQUE REFERENCES treasury_staging_plans(effect_id) ON DELETE RESTRICT,
+    payload_digest TEXT NOT NULL,
+    prepared_ref TEXT NOT NULL,
+    prepared_byte_length INTEGER NOT NULL CHECK (prepared_byte_length > 0),
+    exact_transaction_id TEXT,
+    recovery_transaction_id TEXT NOT NULL UNIQUE,
+    recovery_outpoint TEXT NOT NULL UNIQUE,
+    recovery_amount_atomic TEXT NOT NULL,
+    staging_fee_atomic TEXT NOT NULL,
+    recovery_fee_atomic TEXT NOT NULL,
+    required_finality TEXT NOT NULL,
+    authorized_additional_cost_ceiling_atomic TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    UNIQUE (purchase_id, attempt),
+    FOREIGN KEY (purchase_id, attempt)
+      REFERENCES payment_attempts(purchase_id, attempt) ON DELETE RESTRICT,
+    FOREIGN KEY (reservation_id, purchase_id)
+      REFERENCES treasury_reservations(id, purchase_id) ON DELETE RESTRICT,
+    CHECK (exact_transaction_id IS NULL OR exact_transaction_id <> recovery_transaction_id)
+  ) STRICT;
+
+  CREATE TABLE treasury_staging_recovery_observations (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    effect_id TEXT NOT NULL REFERENCES treasury_staging_recovery_plans(effect_id) ON DELETE RESTRICT,
+    status TEXT NOT NULL CHECK (status IN (
+      'safe_to_submit', 'pending', 'exact_payment_won', 'recovery_won', 'conflict'
+    )),
+    evidence_digest TEXT NOT NULL,
+    readiness_proof_digest TEXT,
+    readiness_observed_at_ms INTEGER,
+    readiness_expires_at_ms INTEGER,
+    winning_transaction_id TEXT,
+    winning_finality TEXT,
+    recovery_outpoint TEXT,
+    recovery_amount_atomic TEXT,
+    conflict_reason TEXT,
+    lease_name TEXT NOT NULL,
+    lease_generation INTEGER NOT NULL CHECK (lease_generation >= 1),
+    observed_at_ms INTEGER NOT NULL,
+    CHECK (
+      (status = 'safe_to_submit' AND readiness_proof_digest IS NOT NULL
+        AND readiness_observed_at_ms IS NOT NULL AND readiness_expires_at_ms IS NOT NULL)
+      OR
+      (status <> 'safe_to_submit' AND readiness_proof_digest IS NULL
+        AND readiness_observed_at_ms IS NULL AND readiness_expires_at_ms IS NULL)
+    ),
+    CHECK ((status = 'conflict') = (conflict_reason IS NOT NULL)),
+    UNIQUE (effect_id, status, evidence_digest)
+  ) STRICT;
+
+  CREATE TABLE treasury_staging_recovery_accounting (
+    effect_id TEXT PRIMARY KEY REFERENCES treasury_staging_recovery_plans(effect_id) ON DELETE RESTRICT,
+    reservation_id TEXT NOT NULL UNIQUE,
+    purchase_id TEXT NOT NULL,
+    attempt INTEGER NOT NULL CHECK (attempt >= 1),
+    recovery_transaction_id TEXT NOT NULL UNIQUE,
+    recovery_outpoint TEXT NOT NULL UNIQUE,
+    returned_amount_atomic TEXT NOT NULL,
+    staging_fee_atomic TEXT NOT NULL,
+    recovery_fee_atomic TEXT NOT NULL,
+    actual_additional_cost_atomic TEXT NOT NULL,
+    finality TEXT NOT NULL,
+    evidence_digest TEXT NOT NULL,
+    observed_at_ms INTEGER NOT NULL,
+    FOREIGN KEY (purchase_id, attempt)
+      REFERENCES payment_attempts(purchase_id, attempt) ON DELETE RESTRICT,
+    FOREIGN KEY (reservation_id, purchase_id)
+      REFERENCES treasury_reservations(id, purchase_id) ON DELETE RESTRICT
+  ) STRICT;
+
+  CREATE INDEX treasury_staging_recovery_policy_window
+    ON treasury_staging_recovery_accounting(observed_at_ms);
+
+  CREATE TRIGGER immutable_treasury_staging_recovery_plans_update
+    BEFORE UPDATE ON treasury_staging_recovery_plans
+    BEGIN SELECT RAISE(ABORT, 'treasury staging recovery plans are immutable'); END;
+  CREATE TRIGGER immutable_treasury_staging_recovery_plans_delete
+    BEFORE DELETE ON treasury_staging_recovery_plans
+    BEGIN SELECT RAISE(ABORT, 'treasury staging recovery plans are immutable'); END;
+  CREATE TRIGGER immutable_treasury_staging_recovery_observations_update
+    BEFORE UPDATE ON treasury_staging_recovery_observations
+    BEGIN SELECT RAISE(ABORT, 'treasury staging recovery observations are immutable'); END;
+  CREATE TRIGGER immutable_treasury_staging_recovery_observations_delete
+    BEFORE DELETE ON treasury_staging_recovery_observations
+    BEGIN SELECT RAISE(ABORT, 'treasury staging recovery observations are immutable'); END;
+  CREATE TRIGGER immutable_treasury_staging_recovery_accounting_update
+    BEFORE UPDATE ON treasury_staging_recovery_accounting
+    BEGIN SELECT RAISE(ABORT, 'treasury staging recovery accounting is immutable'); END;
+  CREATE TRIGGER immutable_treasury_staging_recovery_accounting_delete
+    BEFORE DELETE ON treasury_staging_recovery_accounting
+    BEGIN SELECT RAISE(ABORT, 'treasury staging recovery accounting is immutable'); END;
+`;
+
+export const JOURNAL_SCHEMA_V2_SQL = `${JOURNAL_SCHEMA_V1_SQL}\n${JOURNAL_SCHEMA_V2_MIGRATION_SQL}`;
+export const JOURNAL_SCHEMA_V3_SQL = `${JOURNAL_SCHEMA_V2_SQL}\n${JOURNAL_SCHEMA_V3_MIGRATION_SQL}`;
+export const JOURNAL_SCHEMA_SQL = `${JOURNAL_SCHEMA_V3_SQL}\n${JOURNAL_SCHEMA_V4_MIGRATION_SQL}`;
 
 export const JOURNAL_SCHEMA_V1_CHECKSUM = sha256Text(JOURNAL_SCHEMA_V1_SQL);
+export const JOURNAL_SCHEMA_V2_CHECKSUM = sha256Text(JOURNAL_SCHEMA_V2_SQL);
+export const JOURNAL_SCHEMA_V3_CHECKSUM = sha256Text(JOURNAL_SCHEMA_V3_SQL);
 export const JOURNAL_SCHEMA_CHECKSUM = sha256Text(JOURNAL_SCHEMA_SQL);
 
 export function schemaFingerprint(db: Database.Database): string {
@@ -531,6 +725,8 @@ export function schemaFingerprint(db: Database.Database): string {
 
 let expectedFingerprint: string | undefined;
 let expectedV1Fingerprint: string | undefined;
+let expectedV2Fingerprint: string | undefined;
+let expectedV3Fingerprint: string | undefined;
 
 export function expectedSchemaFingerprint(): string {
   if (expectedFingerprint) return expectedFingerprint;
@@ -551,6 +747,30 @@ export function expectedV1SchemaFingerprint(): string {
     expected.exec(JOURNAL_SCHEMA_V1_SQL);
     expectedV1Fingerprint = schemaFingerprint(expected);
     return expectedV1Fingerprint;
+  } finally {
+    expected.close();
+  }
+}
+
+export function expectedV2SchemaFingerprint(): string {
+  if (expectedV2Fingerprint) return expectedV2Fingerprint;
+  const expected = new Database(":memory:");
+  try {
+    expected.exec(JOURNAL_SCHEMA_V2_SQL);
+    expectedV2Fingerprint = schemaFingerprint(expected);
+    return expectedV2Fingerprint;
+  } finally {
+    expected.close();
+  }
+}
+
+export function expectedV3SchemaFingerprint(): string {
+  if (expectedV3Fingerprint) return expectedV3Fingerprint;
+  const expected = new Database(":memory:");
+  try {
+    expected.exec(JOURNAL_SCHEMA_V3_SQL);
+    expectedV3Fingerprint = schemaFingerprint(expected);
+    return expectedV3Fingerprint;
   } finally {
     expected.close();
   }

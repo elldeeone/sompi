@@ -10,6 +10,8 @@ export const SOMPI_MERCHANT_RECEIPT_PROFILE = "urn:sompi:receipt:merchant:1" as 
 export const SOMPI_PAYMENT_RECEIPT_PROFILE = "urn:sompi:receipt:payment:1" as const;
 export const AP2_CHECKOUT_MANDATE_VCT = "mandate.checkout.1" as const;
 export const AP2_PAYMENT_MANDATE_VCT = "mandate.payment.1" as const;
+/** Literal emitted by the exact AP2 v0.2 Python dependency pin. */
+export const AP2_ROOT_SD_JWT_TYP = "example+sd-jwt" as const;
 export const KASPA_TESTNET_NETWORK = "kaspa:testnet-10" as const;
 export const KAS_ASSET = "KAS" as const;
 export const KAS_ATOMIC_UNIT = "sompi" as const;

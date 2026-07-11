@@ -19,8 +19,6 @@ export interface PurchaseToolHandlers {
   purchase(input: PurchaseToolInput): Promise<PurchaseView>;
   purchaseStatus(input: PurchaseIdentityInput): Promise<PurchaseView>;
   purchaseRecover(input: PurchaseIdentityInput): Promise<PurchaseView>;
-  /** Temporary name bridge; it maps UX only and never invokes legacy x402. */
-  paidFetch(input: PurchaseToolInput): Promise<PurchaseView>;
 }
 
 /** Thin, deterministic MCP input adapters around the stable PurchaseModule. */
@@ -30,7 +28,6 @@ export function createPurchaseToolHandlers(module: PurchaseModule): PurchaseTool
     purchase,
     purchaseStatus: async ({ purchaseId }) => module.status(assertPurchaseId(purchaseId)),
     purchaseRecover: async ({ purchaseId }) => module.recover(assertPurchaseId(purchaseId)),
-    paidFetch: purchase,
   };
 }
 

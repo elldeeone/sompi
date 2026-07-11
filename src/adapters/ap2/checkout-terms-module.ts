@@ -2,7 +2,7 @@ import {
   PAYMENT_REQUIRED_HEADER,
   parsePaymentRequiredHeaderValue,
 } from "@kaspa-x402/client";
-import type { PinnedHttpTransport } from "../kaspa-x402/exact-payment-module.js";
+import type { PinnedHttpTransport } from "../../http/pinned-transport.js";
 import {
   checkoutTermsFactsDigest,
 } from "../../purchase/contracts.js";
@@ -72,6 +72,11 @@ export class Ap2CheckoutTermsModule implements CheckoutTermsModule {
       nowSec: Math.floor(readClock(this.now) / 1_000),
       clockSkewSec: 0,
     });
+    if (checkout.issuer !== checkout.terms.merchant.id) {
+      throw new Error(
+        "Merchant Checkout signing issuer does not equal its canonical Merchant identity"
+      );
+    }
     const parsed = parsePaymentRequiredHeaderValue(paymentHeader, {
       supportedNetworks: [TESTNET],
       supportedSchemes: ["exact"],
@@ -165,8 +170,6 @@ function assertExactPaymentRequired(
     accepted.extra.binding !== "kaspa-exact-v1" ||
     accepted.extra.templateId !== "kaspa-x402-kip10-additive-v1" ||
     accepted.extra.transactionEncoding !== "kaspa-sdk-safe-json-v2.0.0" ||
-    accepted.extra.assetKind !== "native" ||
-    accepted.extra.assetDecimals !== 8 ||
     accepted.extra.paymentOutputIndex !== 1 ||
     !accepted.extra.borrowOutpoint ||
     typeof accepted.extra.borrowAmount !== "string" ||

@@ -45,6 +45,7 @@ test("vault staging is prepared, submitted, observed, and committed at separate 
     )
   );
   let submitted: Transaction | undefined;
+  let hideSubmittedOutputs = false;
   (wallet as any).client = async () => ({
     getUtxosByAddresses: async (addresses: string[]) => {
       if (addresses.length === 1 && addresses[0] === funded.address) {
@@ -61,7 +62,7 @@ test("vault staging is prepared, submitted, observed, and committed at separate 
           ],
         };
       }
-      if (!submitted) return { entries: [] };
+      if (!submitted || hideSubmittedOutputs) return { entries: [] };
       const txid = String(submitted.finalize());
       return {
         entries: [
@@ -85,6 +86,14 @@ test("vault staging is prepared, submitted, observed, and committed at separate 
     },
     getFeeEstimate: async () => ({ estimate: { normalBuckets: [{ feerate: 100 }] } }),
     getServerInfo: async () => ({ virtualDaaScore: "100" }),
+    getMempoolEntry: async () => {
+      throw new Error("transaction not found");
+    },
+    getVirtualChainFromBlock: async () => ({
+      acceptedTransactionIds: submitted
+        ? [{ acceptingBlockHash: "cc".repeat(32), acceptedTransactionIds: [String(submitted.finalize())] }]
+        : [],
+    }),
     submitTransaction: async ({ transaction }: { transaction: Transaction }) => {
       submitted?.free();
       submitted = new Transaction(transaction);
@@ -94,6 +103,10 @@ test("vault staging is prepared, submitted, observed, and committed at separate 
 
   try {
     const before = vault.config();
+    await assert.rejects(
+      vault.prepareSend(wallet, wallet.address, 70_000_000n, undefined, 1n),
+      /fee exceeds the capacity reserved before signing/
+    );
     const prepared = await vault.prepareSend(wallet, wallet.address, 70_000_000n);
     const agentPrivate = fs.readFileSync(path.join(directory, "vault", "agent-key"), "utf8").trim();
     assert.equal(vault.config().currentOutpoint?.txid, fundingTxid);
@@ -114,6 +127,13 @@ test("vault staging is prepared, submitted, observed, and committed at separate 
     assert.equal(committed.currentOutpoint?.txid, prepared.transactionId);
     assert.equal(committed.currentOutpoint?.index, 1);
     assert.equal(vault.commitObservedSend(prepared, observed).address, committed.address);
+
+    hideSubmittedOutputs = true;
+    assert.equal(
+      (await vault.reconcilePreparedSend(wallet, prepared, "dd".repeat(32))).status,
+      "observed",
+      "accepted-chain history must recover after outputs are spent"
+    );
 
     fs.writeFileSync(configPath, JSON.stringify(before, null, 2), { mode: 0o600 });
     const stale = { ...prepared, baseConfigDigest: "sha256:" + "A".repeat(43) };

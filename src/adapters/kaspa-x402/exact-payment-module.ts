@@ -52,6 +52,7 @@ import type {
 import type { EffectObservation } from "../../purchase/journal.js";
 import type { PurchaseId, Sha256Digest } from "../../purchase/types.js";
 import type { SupportedProtocolProfiles } from "../../protocols/profiles.js";
+import type { PinnedHttpTransport } from "../../http/pinned-transport.js";
 
 const CLIENT_VERSION: SupportedProtocolProfiles["x402"]["packages"]["client"]["version"] =
   "0.1.0-alpha.6";
@@ -99,24 +100,6 @@ export interface ExactAttemptFundingBridge {
   createProvider(context: Readonly<ExactAttemptFundingContext>): Promise<FundingProvider>;
 }
 
-export interface PinnedHttpTransportRequest {
-  /** The transport must connect only through this already-resolved hop. */
-  hop: PurchaseEgressSession["request"];
-  headers: readonly (readonly [string, string])[];
-  body: Uint8Array;
-  signal: AbortSignal;
-}
-
-export interface PinnedHttpTransportResponse {
-  status: number;
-  headers: readonly (readonly [string, string])[];
-  body: AsyncIterable<Uint8Array>;
-}
-
-export interface PinnedHttpTransport {
-  send(request: Readonly<PinnedHttpTransportRequest>): Promise<PinnedHttpTransportResponse>;
-}
-
 export interface ExactSettlementVerificationInput {
   source: "paid-http-response" | "recovery-observer";
   context: Readonly<KaspaPreparedExecutionContext>;
@@ -128,7 +111,7 @@ export interface ExactSettlementVerificationInput {
 }
 
 export interface ExactSettlementVerificationResult {
-  /** Actual threshold and fee cost, not the Merchant price and not a ceiling. */
+  /** Actual staging fee + threshold + exact fee, not Merchant price or a ceiling. */
   additionalCostAtomic: string;
   /** Chain-attested exact Merchant payment output. */
   outpoint: string;
@@ -554,6 +537,38 @@ export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
     return structuredClone(probe);
   }
 
+  async recoverFulfilment(input: {
+    context: KaspaPreparedExecutionContext;
+    egress: PurchaseEgressSession;
+  }): Promise<FulfilmentResult> {
+    const rehydrated = await this.rehydrate(input.context, { allowExpired: true });
+    const signatureHeader = encodePaymentSignatureHeader(
+      rehydrated.payment.paymentPayload
+    );
+    const response = await this.sendPreparedPayment(
+      input.context,
+      input.egress,
+      signatureHeader,
+      new AbortController().signal
+    );
+    const paymentResponse = requireSingleHeader(
+      response.headers,
+      PAYMENT_RESPONSE_HEADER
+    );
+    if (!paymentResponse) return { status: "pending" };
+    const processed = await this.processPaymentResponse(
+      "paid-http-response",
+      input.context,
+      rehydrated,
+      Buffer.from(strictHeaderString(paymentResponse, PAYMENT_RESPONSE_HEADER), "ascii")
+    );
+    return await this.verifyPaidResponse(
+      input.context,
+      response,
+      processed.settlement
+    ) ?? { status: "pending" };
+  }
+
   private async createPreparationClient(
     input: Pick<PreparePaymentInput, "execution" | "request" | "staging">,
     requestHash: Hash32Hex,
@@ -863,19 +878,13 @@ export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
       verified.additionalCostAtomic,
       "verified exact additional cost"
     );
-    const maximumCost =
-      BigInt(context.staging.amountAtomic) - BigInt(context.execution.terms.amountAtomic);
     const authorizedCost = BigInt(
       context.execution.authorizationRequest.additionalCostCeilingAtomic
     );
-    if (
-      maximumCost < 0n ||
-      additionalCost > maximumCost ||
-      additionalCost > authorizedCost
-    ) {
+    if (additionalCost > authorizedCost) {
       throw adapterError(
         "settlement_mismatch",
-        "verified exact additional cost exceeds staged capacity or the Purchase authorization"
+        "verified complete additional cost exceeds the Purchase authorization"
       );
     }
     validateVerification(verified.verification);

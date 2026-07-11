@@ -98,6 +98,9 @@ async function checkoutFixture(options: {
   const request = await policy.validateRequest({ url: URL, method: "GET" });
   const egress: PurchaseEgressSession = Object.freeze({
     request,
+    requestFor: (
+      input: Parameters<PurchaseEgressSession["requestFor"]>[0],
+    ) => policy.validateRequest(input),
     redirect: (
       previous: Parameters<PurchaseEgressSession["redirect"]>[0],
       location: string,

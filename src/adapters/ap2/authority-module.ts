@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import {
   createAuthorityNonce,
   createAuthorityRequestId,
@@ -30,7 +32,7 @@ import {
 } from "./authority-decision.js";
 import { AP2_HUMAN_PRESENT_PROFILE } from "./types.js";
 
-const DEFAULT_REQUEST_TTL_MS = 120_000;
+export const AP2_AUTHORITY_REQUEST_TTL_MS = 120_000;
 const CHECKOUT_MEDIA_TYPE = "application/jwt";
 const DECISION_MEDIA_TYPE = "application/jwt";
 const MANDATE_MEDIA_TYPE = "application/sd-jwt";
@@ -69,19 +71,20 @@ export class Ap2AuthorityModule implements AuthorityModule {
       throw new Error("AP2 authority module configuration is incomplete");
     }
     this.now = options.now ?? Date.now;
-    this.requestTtlMs = options.requestTtlMs ?? DEFAULT_REQUEST_TTL_MS;
+    this.requestTtlMs = options.requestTtlMs ?? AP2_AUTHORITY_REQUEST_TTL_MS;
     if (!Number.isSafeInteger(this.requestTtlMs) || this.requestTtlMs <= 0) {
       throw new Error("AP2 authority request TTL is invalid");
     }
   }
 
   async request(input: Parameters<AuthorityModule["request"]>[0]): Promise<AuthorityResult> {
-    const issuedAtMs = this.timestamp();
+    const nowMs = this.timestamp();
+    const issuedAtMs = input.request.createdAtMs;
     const expiresAtMs = Math.min(
       input.request.expiresAtMs,
       issuedAtMs + this.requestTtlMs,
     );
-    if (expiresAtMs <= issuedAtMs) {
+    if (expiresAtMs <= issuedAtMs || expiresAtMs <= nowMs) {
       throw new Error("Checkout Terms expired before authority approval");
     }
     const checkoutEvidence = canonicalCheckoutEvidence(input.checkoutEvidence);
@@ -90,8 +93,22 @@ export class Ap2AuthorityModule implements AuthorityModule {
     return this.options.authenticationProvider.withAuthentication(async (authentication) => {
       const sealed = sealAuthorityApprovalRequest({
         kind: "approval_request",
-        requestId: createAuthorityRequestId(),
-        nonce: createAuthorityNonce(),
+        requestId: createAuthorityRequestId(
+          deterministicTransportBytes(
+            "request-id",
+            input.request.requestDigest,
+            input.request.nonceDigest,
+            16,
+          ),
+        ),
+        nonce: createAuthorityNonce(
+          deterministicTransportBytes(
+            "nonce",
+            input.request.requestDigest,
+            input.request.nonceDigest,
+            32,
+          ),
+        ),
         issuedAtMs,
         expiresAtMs,
         facts,
@@ -133,6 +150,23 @@ export class Ap2AuthorityModule implements AuthorityModule {
     }
     return now;
   }
+}
+
+function deterministicTransportBytes(
+  purpose: "request-id" | "nonce",
+  requestDigest: string,
+  nonceDigest: string,
+  length: 16 | 32,
+): Uint8Array {
+  const digest = createHash("sha256")
+    .update("sompi:authority-transport:v1\0", "utf8")
+    .update(purpose, "utf8")
+    .update("\0", "utf8")
+    .update(requestDigest, "utf8")
+    .update("\0", "utf8")
+    .update(nonceDigest, "utf8")
+    .digest();
+  return Uint8Array.from(digest.subarray(0, length));
 }
 
 function authorityFacts(request: PurchaseAuthorizationRequest) {

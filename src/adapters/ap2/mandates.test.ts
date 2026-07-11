@@ -25,10 +25,11 @@ import {
   fixedTrustStore,
   fixedVerifiedCheckout,
 } from "./test-fixtures.js";
-import type {
-  ClosedCheckoutMandateContent,
-  ClosedPaymentMandateContent,
-  VerifiedMerchantCheckout,
+import {
+  AP2_ROOT_SD_JWT_TYP,
+  type ClosedCheckoutMandateContent,
+  type ClosedPaymentMandateContent,
+  type VerifiedMerchantCheckout,
 } from "./types.js";
 
 test("fixed authority key issues and verifies the pinned direct root AP2 pair", async () => {
@@ -97,6 +98,11 @@ test("closed mandates reject tampered signatures, chains, KB forms, and unknown 
   const unknownHeader = await issueRawRoot(content, "checkout", { crit: ["sompi"] });
   await assertRejectCode(
     () => verifyClosedCheckoutMandate(unknownHeader, verificationOptions(checkout)),
+    "profile_mismatch"
+  );
+  const wrongTyp = await issueRawRoot(content, "checkout", { typ: "dc+sd-jwt" });
+  await assertRejectCode(
+    () => verifyClosedCheckoutMandate(wrongTyp, verificationOptions(checkout)),
     "profile_mismatch"
   );
 });
@@ -202,7 +208,7 @@ async function issueRawRoot(
     ? { delegate_payload: { _sd: [0], 0: { _sd: ["checkout_jwt"] } } }
     : { delegate_payload: { _sd: [0] } };
   return instance.issue(payload, frame as never, {
-    header: { kid: AUTHORITY_SIGNER.kid, ...extraHeader },
+    header: { kid: AUTHORITY_SIGNER.kid, typ: AP2_ROOT_SD_JWT_TYP, ...extraHeader },
   });
 }
 

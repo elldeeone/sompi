@@ -55,6 +55,22 @@ test("amount summaries preserve sompi and add deterministic testnet KAS projecti
   assert.equal(projectPurchaseView(snapshot).treasury.additionalCostCeilingAtomic, "2000000");
 });
 
+test("an external effect awaiting reconciliation overrides an otherwise passive state action", () => {
+  const snapshot = { ...makeSnapshot("authorised"), recoveryRequired: true };
+  const view = projectPurchaseView(snapshot);
+
+  assert.equal(view.state, "authorised");
+  assert.equal(
+    view.summary,
+    "Purchase needs recovery. An existing external effect must be reconciled before any retry."
+  );
+  assert.equal(
+    view.userAction,
+    "Run purchase_recover for this Purchase; do not submit another payment."
+  );
+  assert.equal(projectPurchaseSummary(snapshot), view.summary);
+});
+
 test("projection reconstructs safe fields without leaking errors, evidence bytes, or keys", () => {
   const snapshot = makeSnapshot("failed_recoverable") as PurchaseProjectionSnapshot & Record<string, unknown>;
   snapshot.rawError = "secret raw failure";

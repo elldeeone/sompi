@@ -69,6 +69,47 @@ export interface ObservedVaultSpend {
   observedAtDaa?: bigint;
 }
 
+export type VaultSendReconciliation =
+  | { readonly status: "observed"; readonly observation: ObservedVaultSpend }
+  | { readonly status: "not_submitted" }
+  | { readonly status: "pending" };
+
+export interface PreparedVaultDeposit {
+  readonly transaction: string;
+  readonly transactionEncoding: "kaspa-sdk-safe-json-v2.0.0";
+  readonly transactionId: string;
+  readonly depositKind: "initial" | "topup";
+  readonly depositedSompi: bigint;
+  readonly feeSompi: bigint;
+  readonly vaultAddress: string;
+  readonly vaultOutpoint: { readonly txid: string; readonly index: 0 };
+  readonly vaultAmountSompi: bigint;
+  readonly covenantId: string;
+  readonly baseConfigDigest: string;
+  readonly sourceInputs: readonly {
+    readonly address: string;
+    readonly txid: string;
+    readonly index: number;
+    readonly amountSompi: bigint;
+  }[];
+  readonly configUpdate: Partial<VaultConfig> & {
+    readonly currentOutpoint: { readonly txid: string; readonly index: 0 };
+  };
+}
+
+export interface ObservedVaultDeposit {
+  readonly transactionId: string;
+  readonly vaultOutpoint: { readonly txid: string; readonly index: 0 };
+  readonly vaultAmountSompi: bigint;
+  readonly covenantId: string;
+  readonly observedAtDaa?: bigint;
+}
+
+export type VaultDepositReconciliation =
+  | { readonly status: "observed"; readonly observation: ObservedVaultDeposit }
+  | { readonly status: "not_submitted" }
+  | { readonly status: "pending" };
+
 export interface VaultSpendResult {
   txid: string;
   amountSompi: bigint;
@@ -237,48 +278,229 @@ export class VaultManager {
     return { spendableSompi, unboundSompi };
   }
 
-  async deposit(
+  /** Builds and signs a covenant deposit without broadcasting or changing config. */
+  async prepareDeposit(
     wallet: KaspaWallet,
     amountSompi: bigint | "max",
-    keepFloatSompi: bigint = 0n
-  ): Promise<{ txid: string; depositedSompi: bigint; feeSompi: bigint; vaultAddress: string; covenantId?: string }> {
+    keepFloatSompi: bigint = 0n,
+    feeCeilingSompi?: bigint
+  ): Promise<PreparedVaultDeposit> {
     if (amountSompi !== "max" && amountSompi <= 0n) throw new Error("Vault deposit amount must be positive.");
     if (keepFloatSompi < 0n) throw new Error("keepFloatSompi must be non-negative");
+    if (feeCeilingSompi !== undefined && feeCeilingSompi < 0n) {
+      throw new Error("Vault deposit fee ceiling must be non-negative.");
+    }
     const config = this.config();
     const agentKey = fs.readFileSync(path.join(this.vaultDir, "agent-key"), "utf8").trim();
     const result = config.covenantId
-      ? await topUpVault({ wallet, config, privateKey: agentKey, amountSompi, keepFloatSompi })
-      : await fundInitialVault({ wallet, config, amountSompi, keepFloatSompi });
-
-    this.saveConfig({ ...config, ...result.configUpdate });
-    return {
-      txid: result.txid,
-      depositedSompi: result.depositedSompi,
-      feeSompi: result.feeSompi,
-      vaultAddress: result.configUpdate.address ?? config.address,
-      covenantId: result.configUpdate.covenantId ?? config.covenantId,
-    };
+      ? await topUpVault({
+          wallet,
+          config,
+          privateKey: agentKey,
+          amountSompi,
+          keepFloatSompi,
+          feeCeilingSompi,
+          broadcast: false,
+        })
+      : await fundInitialVault({
+          wallet,
+          config,
+          amountSompi,
+          keepFloatSompi,
+          feeCeilingSompi,
+          broadcast: false,
+        });
+    if (!result.preparedTransaction) {
+      throw new Error("vault deposit preparation did not return signed transaction material");
+    }
+    const transaction = requirePreparedTransaction(result.preparedTransaction, result.txid);
+    try {
+      const output = transaction.outputs[0];
+      if (!output) throw new Error("prepared vault deposit has no covenant output");
+      const address = addressFromScriptPublicKey(output.scriptPublicKey, this.networkId);
+      const vaultAddress = address?.toString();
+      address?.free();
+      if (!vaultAddress) throw new Error("prepared vault deposit address cannot be derived");
+      const covenantId = result.configUpdate.covenantId ?? config.covenantId;
+      if (!covenantId || !/^[a-f0-9]{64}$/.test(covenantId)) {
+        throw new Error("prepared vault deposit covenant identity is invalid");
+      }
+      const binding = output.covenant;
+      if (!binding || String(binding.covenantId) !== covenantId || binding.authorizingInput !== 0) {
+        throw new Error("prepared vault deposit covenant binding changed");
+      }
+      const currentOutpoint = result.configUpdate.currentOutpoint;
+      if (currentOutpoint?.txid !== result.txid || currentOutpoint.index !== 0) {
+        throw new Error("prepared vault deposit continuation outpoint is invalid");
+      }
+      const sourceInputs = transaction.inputs.map((input) => {
+        const utxo = input.utxo;
+        if (!utxo) throw new Error("prepared vault deposit input lacks recovery UTXO data");
+        const source = addressFromScriptPublicKey(utxo.scriptPublicKey, this.networkId);
+        try {
+          const sourceAddress = source?.toString();
+          if (!sourceAddress) throw new Error("prepared vault deposit input address cannot be derived");
+          return Object.freeze({
+            address: sourceAddress,
+            txid: String(input.previousOutpoint.transactionId),
+            index: input.previousOutpoint.index,
+            amountSompi: BigInt(utxo.amount),
+          });
+        } finally {
+          source?.free();
+        }
+      });
+      const prepared: PreparedVaultDeposit = Object.freeze({
+        transaction: result.preparedTransaction,
+        transactionEncoding: "kaspa-sdk-safe-json-v2.0.0" as const,
+        transactionId: result.txid,
+        depositKind: config.covenantId ? "topup" as const : "initial" as const,
+        depositedSompi: result.depositedSompi,
+        feeSompi: result.feeSompi,
+        vaultAddress,
+        vaultOutpoint: Object.freeze({ txid: result.txid, index: 0 as const }),
+        vaultAmountSompi: BigInt(output.value),
+        covenantId,
+        baseConfigDigest: vaultConfigDigest(config),
+        sourceInputs: Object.freeze(sourceInputs),
+        configUpdate: Object.freeze({
+          ...result.configUpdate,
+          currentOutpoint: Object.freeze({ txid: result.txid, index: 0 as const }),
+        }),
+      });
+      const verified = requireBoundPreparedDeposit(prepared, this.networkId);
+      verified.free();
+      return prepared;
+    } finally {
+      transaction.free();
+    }
   }
 
-  async send(
+  async submitPreparedDeposit(
     wallet: KaspaWallet,
-    destination: string,
-    amount: bigint | "max",
-    authorize?: (amountSompi: bigint) => void
-  ): Promise<{ txid: string; amountSompi: bigint; feeSompi: bigint }> {
-    const config = this.config();
-    const agentKey = fs.readFileSync(path.join(this.vaultDir, "agent-key"), "utf8").trim();
-    const result = await spendVault({
-      wallet,
-      config,
-      fn: "withdraw",
-      privateKey: agentKey,
-      destination,
-      amount,
-      authorize,
+    prepared: PreparedVaultDeposit
+  ): Promise<{ transactionId: string }> {
+    const transaction = requireBoundPreparedDeposit(prepared, this.networkId);
+    try {
+      const rpc = await wallet.client();
+      const submitted = await (rpc as any).submitTransaction({ transaction, allowOrphan: false });
+      const transactionId = String(submitted?.transactionId ?? "");
+      if (transactionId !== prepared.transactionId) {
+        throw new Error("Kaspa node returned a different transaction identity for the prepared vault deposit");
+      }
+      return { transactionId };
+    } finally {
+      transaction.free();
+    }
+  }
+
+  async observePreparedDeposit(
+    wallet: KaspaWallet,
+    prepared: PreparedVaultDeposit
+  ): Promise<ObservedVaultDeposit | undefined> {
+    const transaction = requireBoundPreparedDeposit(prepared, this.networkId);
+    transaction.free();
+    const rpc = await wallet.client();
+    const { entries } = await rpc.getUtxosByAddresses([prepared.vaultAddress]);
+    const matches = normalizeEntries(entries).filter((entry) =>
+      entry.txid === prepared.transactionId &&
+      entry.index === 0 &&
+      entry.amount === prepared.vaultAmountSompi &&
+      entry.covenantId === prepared.covenantId &&
+      scriptPublicKeyMatchesAddress(entry.scriptPublicKey, prepared.vaultAddress, this.networkId)
+    );
+    if (matches.length > 1) throw new Error("prepared vault deposit has duplicate on-chain output");
+    if (matches.length === 0) return undefined;
+    return Object.freeze({
+      transactionId: prepared.transactionId,
+      vaultOutpoint: prepared.vaultOutpoint,
+      vaultAmountSompi: prepared.vaultAmountSompi,
+      covenantId: prepared.covenantId,
+      observedAtDaa: matches[0].blockDaaScore,
     });
-    if (result.configUpdate) this.saveConfig({ ...config, ...result.configUpdate });
-    return { txid: result.txid, amountSompi: result.amountSompi, feeSompi: result.feeSompi };
+  }
+
+  async reconcilePreparedDeposit(
+    wallet: KaspaWallet,
+    prepared: PreparedVaultDeposit,
+    observationStartHash?: string
+  ): Promise<VaultDepositReconciliation> {
+    const observed = await this.observePreparedDeposit(wallet, prepared);
+    if (observed) return Object.freeze({ status: "observed" as const, observation: observed });
+    const rpc = await wallet.client();
+    try {
+      const mempool = await rpc.getMempoolEntry({
+        transactionId: prepared.transactionId,
+        includeOrphanPool: false,
+        filterTransactionPool: false,
+      });
+      if (mempool.mempoolEntry) return Object.freeze({ status: "pending" as const });
+    } catch (error) {
+      if (!isMempoolNotFound(error)) throw error;
+    }
+    if (observationStartHash !== undefined) {
+      if (!/^[a-f0-9]{64}$/.test(observationStartHash)) {
+        throw new Error("vault deposit observation start hash is invalid");
+      }
+      try {
+        const chain = await rpc.getVirtualChainFromBlock({
+          startHash: observationStartHash,
+          includeAcceptedTransactionIds: true,
+        });
+        if (
+          chain.acceptedTransactionIds.some((accepted) =>
+            accepted.acceptedTransactionIds.some((id) => String(id) === prepared.transactionId)
+          )
+        ) {
+          return Object.freeze({
+            status: "observed" as const,
+            observation: Object.freeze({
+              transactionId: prepared.transactionId,
+              vaultOutpoint: prepared.vaultOutpoint,
+              vaultAmountSompi: prepared.vaultAmountSompi,
+              covenantId: prepared.covenantId,
+            }),
+          });
+        }
+      } catch {
+        // Historical proof may be pruned. Exact intact inputs can still prove
+        // non-submission; otherwise ambiguity remains locked.
+      }
+    }
+    const addresses = [...new Set(prepared.sourceInputs.map((input) => input.address))];
+    const { entries } = await rpc.getUtxosByAddresses(addresses);
+    const live = new Map(
+      normalizeEntries(entries).map((entry) => [`${entry.txid}:${entry.index}`, entry.amount] as const)
+    );
+    const intact = prepared.sourceInputs.every(
+      (input) => live.get(`${input.txid}:${input.index}`) === input.amountSompi
+    );
+    return Object.freeze({ status: intact ? "not_submitted" as const : "pending" as const });
+  }
+
+  commitObservedDeposit(
+    prepared: PreparedVaultDeposit,
+    observed: ObservedVaultDeposit
+  ): VaultConfig {
+    const transaction = requireBoundPreparedDeposit(prepared, this.networkId);
+    transaction.free();
+    if (
+      observed.transactionId !== prepared.transactionId ||
+      observed.vaultOutpoint.txid !== prepared.transactionId ||
+      observed.vaultOutpoint.index !== 0 ||
+      observed.vaultAmountSompi !== prepared.vaultAmountSompi ||
+      observed.covenantId !== prepared.covenantId
+    ) {
+      throw new Error("vault deposit observation does not match exact prepared transaction");
+    }
+    const current = this.config();
+    const updated: VaultConfig = { ...current, ...prepared.configUpdate };
+    if (vaultConfigMatchesDepositUpdate(current, prepared.configUpdate)) return current;
+    if (vaultConfigDigest(current) !== prepared.baseConfigDigest) {
+      throw new Error("vault state advanced after this deposit was prepared");
+    }
+    this.saveConfig(updated);
+    return updated;
   }
 
   /**
@@ -290,10 +512,14 @@ export class VaultManager {
   async prepareSend(
     wallet: KaspaWallet,
     destination: string,
-    amount: bigint,
-    authorize?: (amountSompi: bigint) => void
+    amount: bigint | "max",
+    authorize?: (amountSompi: bigint) => void,
+    feeCeilingSompi?: bigint
   ): Promise<PreparedVaultSpend> {
-    if (amount <= 0n) throw new Error("Prepared vault send amount must be positive.");
+    if (amount !== "max" && amount <= 0n) throw new Error("Prepared vault send amount must be positive.");
+    if (feeCeilingSompi !== undefined && feeCeilingSompi < 0n) {
+      throw new Error("Prepared vault send fee ceiling must be non-negative.");
+    }
     const config = this.config();
     if (!config.covenantId) throw new Error("vault has not been covenant-funded yet");
     const agentKey = fs.readFileSync(path.join(this.vaultDir, "agent-key"), "utf8").trim();
@@ -305,6 +531,7 @@ export class VaultManager {
       destination,
       amount,
       authorize,
+      feeCeilingSompi,
       broadcast: false,
     });
     if (!result.preparedTransaction || !result.configUpdate) {
@@ -419,6 +646,103 @@ export class VaultManager {
     });
   }
 
+  /**
+   * Read-only reconciliation for an interrupted prepared send. A retry is
+   * allowed only when the transaction is absent from the pool and every exact
+   * source outpoint in the signed artifact remains unspent.
+   */
+  async reconcilePreparedSend(
+    wallet: KaspaWallet,
+    prepared: PreparedVaultSpend,
+    observationStartHash?: string
+  ): Promise<VaultSendReconciliation> {
+    const observed = await this.observePreparedSend(wallet, prepared);
+    if (observed) {
+      return Object.freeze({ status: "observed" as const, observation: observed });
+    }
+    const rpc = await wallet.client();
+    try {
+      const mempool = await rpc.getMempoolEntry({
+        transactionId: prepared.transactionId,
+        includeOrphanPool: false,
+        filterTransactionPool: false,
+      });
+      // Presence proves a submission may have happened, but local vault state
+      // advances only after both exact outputs reach the UTXO index.
+      if (mempool.mempoolEntry) return Object.freeze({ status: "pending" as const });
+    } catch (error) {
+      if (!isMempoolNotFound(error)) throw error;
+    }
+
+    if (observationStartHash !== undefined) {
+      if (!/^[a-f0-9]{64}$/.test(observationStartHash)) {
+        throw new Error("vault observation start hash is invalid");
+      }
+      try {
+        const chain = await rpc.getVirtualChainFromBlock({
+          startHash: observationStartHash,
+          includeAcceptedTransactionIds: true,
+        });
+        if (
+          chain.acceptedTransactionIds.some((accepted) =>
+            accepted.acceptedTransactionIds.some((id) => String(id) === prepared.transactionId)
+          )
+        ) {
+          return Object.freeze({
+            status: "observed" as const,
+            observation: Object.freeze({
+              transactionId: prepared.transactionId,
+              destinationOutpoint: prepared.destinationOutpoint,
+              continuationOutpoint: prepared.continuationOutpoint,
+              amountSompi: prepared.amountSompi,
+              continuationAmountSompi: prepared.continuationAmountSompi,
+            }),
+          });
+        }
+      } catch {
+        // Historical observation may be pruned. Intact exact inputs can still
+        // prove non-submission; otherwise recovery stays pending.
+      }
+    }
+
+    const transaction = requireBoundPreparedTransaction(prepared, this.networkId);
+    try {
+      const inputs = transaction.inputs.map((input) => {
+        const utxo = input.utxo;
+        if (!utxo) throw new Error("prepared vault input is missing recovery UTXO data");
+        const address = addressFromScriptPublicKey(utxo.scriptPublicKey, this.networkId);
+        try {
+          const sourceAddress = address?.toString();
+          if (!sourceAddress) throw new Error("prepared vault input address cannot be derived");
+          return Object.freeze({
+            sourceAddress,
+            txid: String(input.previousOutpoint.transactionId),
+            index: input.previousOutpoint.index,
+            amount: BigInt(utxo.amount),
+          });
+        } finally {
+          address?.free();
+        }
+      });
+      const addresses = [...new Set(inputs.map((input) => input.sourceAddress))];
+      const { entries } = await rpc.getUtxosByAddresses(addresses);
+      const live = new Map(
+        normalizeEntries(entries).map((entry) => [
+          `${entry.txid}:${entry.index}`,
+          entry.amount,
+        ] as const)
+      );
+      const allInputsUnspent = inputs.every(
+        (input) => live.get(`${input.txid}:${input.index}`) === input.amount
+      );
+      return Object.freeze({
+        status: allInputsUnspent ? "not_submitted" as const : "pending" as const,
+      });
+    } finally {
+      transaction.free();
+    }
+  }
+
   commitObservedSend(
     prepared: PreparedVaultSpend,
     observed: ObservedVaultSpend
@@ -454,7 +778,7 @@ export class VaultManager {
   }
 }
 
-export interface VaultSpendParams {
+interface VaultSpendParams {
   wallet: KaspaWallet;
   config: VaultSpendConfig;
   fn: "withdraw" | "recover";
@@ -462,6 +786,7 @@ export interface VaultSpendParams {
   destination: string;
   amount?: bigint | "max";
   feeSompi?: bigint;
+  feeCeilingSompi?: bigint;
   authorize?: (amountSompi: bigint) => void;
   /** Defaults to true. False returns signed safe JSON without an RPC effect. */
   broadcast?: boolean;
@@ -472,7 +797,7 @@ const DUMMY_SIGNATURE = new Uint8Array(65).fill(0xab);
 const DUMMY_WALLET_SIGNATURE_SCRIPT = `41${"ab".repeat(65)}`;
 const MAX_FEE_CONVERGENCE_PASSES = 12;
 
-export async function spendVault(
+async function spendVault(
   params: VaultSpendParams
 ): Promise<VaultSpendResult> {
   const { wallet, config, fn, destination } = params;
@@ -519,7 +844,13 @@ export async function spendVault(
       outputs: [{ value: amountSompi, scriptPublicKey: destSpk }],
       lockTime: 0n,
     });
-    const pushedSig = createInputSignature(tx, 0, new PrivateKey(params.privateKey), SighashType.All);
+    const recoveryKey = new PrivateKey(params.privateKey);
+    let pushedSig: string;
+    try {
+      pushedSig = createInputSignature(tx, 0, recoveryKey, SighashType.All);
+    } finally {
+      recoveryKey.free();
+    }
     setInputScripts(tx, [payToScriptHashSignatureScript(redeem, buildSigArgs(hexToBytes(pushedSig).slice(1), "recover"))]);
     assertFeeCoversSignedTx(wallet.networkId, tx, feerate, feeSompi, "vault recovery");
     if (params.broadcast === false) {
@@ -598,6 +929,10 @@ export async function spendVault(
   }
   if (!converged) throw new Error(`vault withdrawal fee estimate did not converge after ${MAX_FEE_CONVERGENCE_PASSES} passes`);
 
+  if (params.feeCeilingSompi !== undefined && feeSompi > params.feeCeilingSompi) {
+    throw new Error("vault withdrawal fee exceeds the capacity reserved before signing");
+  }
+
   amountSompi = withdrawAmount(params.amount, remainingWindow, utxo.amount, feeSompi);
   const outflow = amountSompi + feeSompi;
   if (outflow > remainingWindow) {
@@ -621,7 +956,13 @@ export async function spendVault(
     ],
     lockTime: lockDaa,
   });
-  const pushedSig = createInputSignature(tx, 0, new PrivateKey(params.privateKey), SighashType.All);
+  const agentKey = new PrivateKey(params.privateKey);
+  let pushedSig: string;
+  try {
+    pushedSig = createInputSignature(tx, 0, agentKey, SighashType.All);
+  } finally {
+    agentKey.free();
+  }
   setInputScripts(tx, [payToScriptHashSignatureScript(redeem, buildSigArgs(hexToBytes(pushedSig).slice(1), "withdraw"))]);
   assertFeeCoversSignedTx(wallet.networkId, tx, feerate, feeSompi, "vault withdrawal");
   if (params.broadcast === false) {
@@ -655,12 +996,46 @@ export async function spendVault(
   };
 }
 
+export interface VaultOwnerRecoveryParams {
+  readonly wallet: KaspaWallet;
+  readonly config: VaultConfig;
+  readonly privateKey: string;
+  readonly destination: string;
+  readonly feeSompi?: bigint;
+}
+
+/**
+ * Explicit operator-only escape path for the unrestricted covenant owner.
+ * Agent and MCP execution use prepare/submit/observe through the journal; this
+ * export cannot invoke the capped Agent withdrawal branch.
+ */
+export async function recoverVaultWithOwner(
+  params: VaultOwnerRecoveryParams
+): Promise<VaultSpendResult> {
+  return spendVault({
+    wallet: params.wallet,
+    config: params.config,
+    fn: "recover",
+    privateKey: params.privateKey,
+    destination: params.destination,
+    ...(params.feeSompi === undefined ? {} : { feeSompi: params.feeSompi }),
+  });
+}
+
 async function fundInitialVault(params: {
   wallet: KaspaWallet;
   config: VaultConfig;
   amountSompi: bigint | "max";
   keepFloatSompi: bigint;
-}): Promise<{ txid: string; depositedSompi: bigint; feeSompi: bigint; configUpdate: Partial<VaultConfig> }> {
+  feeCeilingSompi?: bigint;
+  broadcast?: boolean;
+}): Promise<{
+  txid: string;
+  depositedSompi: bigint;
+  feeSompi: bigint;
+  configUpdate: Partial<VaultConfig>;
+  preparedTransaction?: string;
+}> {
   const { wallet, config, keepFloatSompi } = params;
   const rpc = await wallet.client();
   let walletUtxos = params.amountSompi === "max" ? await listWalletUtxos(wallet) : await selectWalletUtxos(wallet, params.amountSompi);
@@ -698,6 +1073,9 @@ async function fundInitialVault(params: {
       `Regular wallet balance ${displayAmount(walletTotal)} cannot cover vault deposit ${displayAmount(amountSompi)} plus fee ${displayAmount(feeSompi)}.`
     );
   }
+  if (params.feeCeilingSompi !== undefined && feeSompi > params.feeCeilingSompi) {
+    throw new Error("vault deposit fee exceeds the capacity reserved before signing");
+  }
 
   tx = buildGenesisDepositTx(walletUtxos, vaultSpk, changeSpk, amountSompi, feeSompi);
   setInputScripts(
@@ -707,6 +1085,19 @@ async function fundInitialVault(params: {
   assertFeeCoversSignedTx(wallet.networkId, tx, feerate, feeSompi, "vault deposit");
   const covenantId = tx.outputs[0].covenant?.covenantId?.toString();
   if (!covenantId) throw new Error("failed to populate genesis covenant id");
+  const preparedTxid = String(tx.finalize());
+  if (params.broadcast === false) {
+    return {
+      txid: preparedTxid,
+      depositedSompi: amountSompi,
+      feeSompi,
+      preparedTransaction: tx.serializeToSafeJSON(),
+      configUpdate: {
+        covenantId,
+        currentOutpoint: { txid: preparedTxid, index: 0 },
+      },
+    };
+  }
   const { transactionId } = await (rpc as any).submitTransaction({ transaction: tx, allowOrphan: false });
   const txid = String(transactionId);
   return {
@@ -726,7 +1117,15 @@ async function topUpVault(params: {
   privateKey: string;
   amountSompi: bigint | "max";
   keepFloatSompi: bigint;
-}): Promise<{ txid: string; depositedSompi: bigint; feeSompi: bigint; configUpdate: Partial<VaultConfig> }> {
+  feeCeilingSompi?: bigint;
+  broadcast?: boolean;
+}): Promise<{
+  txid: string;
+  depositedSompi: bigint;
+  feeSompi: bigint;
+  configUpdate: Partial<VaultConfig>;
+  preparedTransaction?: string;
+}> {
   const { wallet, config, privateKey, keepFloatSompi } = params;
   if (!config.covenantId) throw new Error("vault has no covenant id; cannot top up");
   const rpc = await wallet.client();
@@ -778,6 +1177,9 @@ async function topUpVault(params: {
       `Regular wallet balance ${displayAmount(walletTotal)} cannot cover vault top-up ${displayAmount(amountSompi)} plus fee ${displayAmount(feeSompi)}.`
     );
   }
+  if (params.feeCeilingSompi !== undefined && feeSompi > params.feeCeilingSompi) {
+    throw new Error("vault top-up fee exceeds the capacity reserved before signing");
+  }
 
   tx = buildTopupTx(config, vaultUtxo, walletUtxos, nextSpk, changeSpk, amountSompi, feeSompi, lockDaa);
   const pushedVaultSig = createInputSignature(tx, 0, new PrivateKey(privateKey), SighashType.All);
@@ -786,6 +1188,21 @@ async function topUpVault(params: {
     ...walletUtxos.map((_, index) => wallet.signInput(tx, index + 1)),
   ]);
   assertFeeCoversSignedTx(wallet.networkId, tx, feerate, feeSompi, "vault top-up");
+  const preparedTxid = String(tx.finalize());
+  if (params.broadcast === false) {
+    return {
+      txid: preparedTxid,
+      depositedSompi: amountSompi,
+      feeSompi,
+      preparedTransaction: tx.serializeToSafeJSON(),
+      configUpdate: {
+        windowStartDaa: nextState.windowStartDaa.toString(),
+        spentInWindowSompi: nextState.spentInWindowSompi.toString(),
+        address: nextAddress,
+        currentOutpoint: { txid: preparedTxid, index: 0 },
+      },
+    };
+  }
   const { transactionId } = await (rpc as any).submitTransaction({ transaction: tx, allowOrphan: false });
   const txid = String(transactionId);
   return {
@@ -1052,6 +1469,11 @@ function maxBigInt(a: bigint, b: bigint): bigint {
   return a > b ? a : b;
 }
 
+function isMempoolNotFound(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /not found|missing|unknown transaction|mempool.*exist/i.test(message);
+}
+
 function requirePreparedTransaction(transactionJson: string, expectedTxid: string): Transaction {
   if (typeof transactionJson !== "string" || transactionJson.length === 0 || transactionJson.length > 2_000_000) {
     throw new Error("prepared vault transaction artifact is empty or oversized");
@@ -1117,6 +1539,105 @@ function requireBoundPreparedTransaction(
       binding.authorizingInput !== 0
     ) {
       throw new Error("prepared vault continuation covenant binding changed");
+    }
+    return transaction;
+  } catch (error) {
+    transaction.free();
+    throw error;
+  }
+}
+
+function requireBoundPreparedDeposit(
+  prepared: PreparedVaultDeposit,
+  networkId: string
+): Transaction {
+  if (
+    !prepared ||
+    prepared.transactionEncoding !== "kaspa-sdk-safe-json-v2.0.0" ||
+    !/^[a-f0-9]{64}$/.test(prepared.transactionId) ||
+    (prepared.depositKind !== "initial" && prepared.depositKind !== "topup") ||
+    prepared.depositedSompi <= 0n ||
+    prepared.feeSompi < 0n ||
+    prepared.vaultAmountSompi < prepared.depositedSompi ||
+    prepared.vaultOutpoint.txid !== prepared.transactionId ||
+    prepared.vaultOutpoint.index !== 0 ||
+    !/^[a-f0-9]{64}$/.test(prepared.covenantId) ||
+    !/^sha256:[A-Za-z0-9_-]{43}$/.test(prepared.baseConfigDigest) ||
+    prepared.sourceInputs.length === 0 ||
+    prepared.configUpdate.currentOutpoint?.txid !== prepared.transactionId ||
+    prepared.configUpdate.currentOutpoint.index !== 0
+  ) {
+    throw new Error("prepared vault deposit metadata is invalid");
+  }
+  const transaction = requirePreparedTransaction(prepared.transaction, prepared.transactionId);
+  try {
+    const output = transaction.outputs[0];
+    if (!output || BigInt(output.value) !== prepared.vaultAmountSompi) {
+      throw new Error("prepared vault deposit output amount changed");
+    }
+    const address = addressFromScriptPublicKey(output.scriptPublicKey, networkId);
+    try {
+      if (address?.toString() !== prepared.vaultAddress) {
+        throw new Error("prepared vault deposit output address changed");
+      }
+    } finally {
+      address?.free();
+    }
+    const binding = output.covenant;
+    if (
+      !binding ||
+      String(binding.covenantId) !== prepared.covenantId ||
+      binding.authorizingInput !== 0
+    ) {
+      throw new Error("prepared vault deposit covenant binding changed");
+    }
+    const inputs = transaction.inputs;
+    if (inputs.length !== prepared.sourceInputs.length) {
+      throw new Error("prepared vault deposit source inputs changed");
+    }
+    let inputTotal = 0n;
+    for (let index = 0; index < inputs.length; index++) {
+      const actual = inputs[index];
+      const wanted = prepared.sourceInputs[index];
+      const utxo = actual.utxo;
+      if (
+        !utxo ||
+        String(actual.previousOutpoint.transactionId) !== wanted.txid ||
+        actual.previousOutpoint.index !== wanted.index ||
+        BigInt(utxo.amount) !== wanted.amountSompi
+      ) {
+        throw new Error("prepared vault deposit source input binding changed");
+      }
+      const source = addressFromScriptPublicKey(utxo.scriptPublicKey, networkId);
+      try {
+        if (source?.toString() !== wanted.address) {
+          throw new Error("prepared vault deposit source address changed");
+        }
+      } finally {
+        source?.free();
+      }
+      inputTotal += wanted.amountSompi;
+    }
+    const outputTotal = transaction.outputs.reduce(
+      (sum, candidate) => sum + BigInt(candidate.value),
+      0n
+    );
+    if (inputTotal - outputTotal !== prepared.feeSompi) {
+      throw new Error("prepared vault deposit fee changed");
+    }
+    if (prepared.depositKind === "initial") {
+      if (
+        prepared.vaultAmountSompi !== prepared.depositedSompi ||
+        prepared.configUpdate.covenantId !== prepared.covenantId
+      ) {
+        throw new Error("prepared initial vault deposit config changed");
+      }
+    } else if (
+      prepared.configUpdate.address !== prepared.vaultAddress ||
+      typeof prepared.configUpdate.windowStartDaa !== "string" ||
+      typeof prepared.configUpdate.spentInWindowSompi !== "string"
+    ) {
+      throw new Error("prepared vault top-up continuation config changed");
     }
     return transaction;
   } catch (error) {
@@ -1198,6 +1719,18 @@ function vaultConfigMatchesUpdate(
     config.currentOutpoint?.txid === update.currentOutpoint.txid &&
     config.currentOutpoint.index === update.currentOutpoint.index
   );
+}
+
+function vaultConfigMatchesDepositUpdate(
+  current: VaultConfig,
+  update: PreparedVaultDeposit["configUpdate"]
+): boolean {
+  for (const [key, value] of Object.entries(update) as Array<
+    [keyof VaultConfig, VaultConfig[keyof VaultConfig]]
+  >) {
+    if (JSON.stringify(current[key]) !== JSON.stringify(value)) return false;
+  }
+  return true;
 }
 
 function scriptPublicKeyMatchesAddress(

@@ -1,0 +1,8 @@
+dist/**/*.test.js
+src/
+node_modules/
+.git/
+.github/
+.agents/
+.codex/
+goal.md

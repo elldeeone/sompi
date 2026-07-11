@@ -99,8 +99,8 @@ Purpose: move orchestration and recovery out of the agent-facing entrypoint.
   expiry, and evidence digest invariants.
 - [ ] Implement separate Purchase Authorization and Treasury Movement checks.
 - [ ] Route payment preparation/execution/reconciliation through internal seams.
-- [ ] Route current `paid_fetch` UX through the Purchase interface while its
-  external replacement flow is still under test.
+- [ ] Replace the useful `paid_fetch` intent with the clean-cutover Purchase
+  interface; retain no compatibility tool or old payment path.
 - [ ] Add `purchase`, `purchase_status`, and `purchase_recover` interfaces or
   settle the final minimal MCP surface using characterization evidence.
 - [ ] Project deterministic, secret-free summaries from canonical Purchase
