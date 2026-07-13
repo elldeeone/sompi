@@ -39,6 +39,7 @@ export interface TreasuryOperationView {
   readonly recoveryRequired: boolean;
   readonly safeToRetry: boolean;
   readonly cancellationRequested: boolean;
+  readonly preparationFenced: boolean;
 }
 
 export interface TreasuryOperationModuleOptions {
@@ -166,7 +167,7 @@ export class TreasuryOperationModule {
       return view(record);
     }
 
-    if (record.cancellationRequested && (record.state === "intent" || record.state === "prepared")) {
+    if (record.preparationFenced || (record.cancellationRequested && (record.state === "intent" || record.state === "prepared"))) {
       return view(record);
     }
 
@@ -211,6 +212,11 @@ export class TreasuryOperationModule {
                 { cause: error }
               );
             }
+          } else {
+            this.journal.fenceTreasuryOperationPreparation(
+              operationKey,
+              "unknown_preparation_failure",
+            );
           }
           throw error;
         }
@@ -409,14 +415,18 @@ function requireOperationKey(value: string): string {
 
 function view(record: TreasuryOperationRecord): TreasuryOperationView {
   const recoveryRequired =
+    record.preparationFenced ||
     record.cancellationRequested ||
     record.state === "submission_planned" ||
     record.state === "submitted";
-  const safeToRetry =
+  const safeToRetry = !record.preparationFenced && (
     record.state === "prepared" ||
-    (record.state === "intent" && record.retryCount < record.retryLimit);
+    (record.state === "intent" && record.retryCount < record.retryLimit)
+  );
   const summary = record.state === "completed"
     ? `Treasury operation ${record.operationKey} completed with transaction ${record.transactionId}.`
+    : record.preparationFenced
+      ? `Treasury operation ${record.operationKey} requires operator reconciliation before preparation can continue.`
     : recoveryRequired
       ? `Treasury operation ${record.operationKey} has an ambiguous or not-yet-observed submission; reconcile it before retrying.`
     : record.state === "prepared"
@@ -440,6 +450,7 @@ function view(record: TreasuryOperationRecord): TreasuryOperationView {
     recoveryRequired,
     safeToRetry: record.cancellationRequested ? false : safeToRetry,
     cancellationRequested: record.cancellationRequested,
+    preparationFenced: record.preparationFenced,
   });
 }
 

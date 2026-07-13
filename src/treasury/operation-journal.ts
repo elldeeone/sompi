@@ -18,6 +18,7 @@ export interface TreasuryOperationRecord {
   readonly feeCeilingAtomic: string;
   readonly retryLimit: number;
   readonly cancellationRequested: boolean;
+  readonly preparationFenced: boolean;
   readonly resolvedAmountAtomic?: string;
   readonly feeAtomic?: string;
   readonly transactionId?: string;
@@ -92,6 +93,7 @@ export interface TreasuryOperationJournal {
     operationKey: string,
     reasonCode: string
   ): TreasuryOperationRecord;
+  fenceTreasuryOperationPreparation(operationKey: string, reasonCode: string): TreasuryOperationRecord;
   requestTreasuryOperationCancellation(operationKey: string): TreasuryOperationRecord;
   cancelTreasuryOperation(operationKey: string): TreasuryOperationRecord;
   readPreparedTreasuryOperation(operationKey: string): Buffer;

@@ -827,6 +827,7 @@ function publicTreasuryOperation(operation: TreasuryOperationView) {
     recoveryRequired: operation.recoveryRequired,
     safeToRetry: operation.safeToRetry,
     cancellationRequested: operation.cancellationRequested,
+    preparationFenced: operation.preparationFenced,
     network: TESTNET,
   };
 }

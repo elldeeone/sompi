@@ -490,6 +490,7 @@ function fakeTreasuryOperationView(
     recoveryRequired: false,
     safeToRetry: false,
     cancellationRequested: false,
+    preparationFenced: false,
   };
 }
 

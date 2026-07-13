@@ -1652,10 +1652,38 @@ export class PurchaseJournal {
     return failed.immediate();
   }
 
+  fenceTreasuryOperationPreparation(
+    operationKey: string,
+    reasonCode: string,
+  ): TreasuryOperationRecord {
+    assertTreasuryOperationKey(operationKey);
+    assertCode(reasonCode, "Treasury preparation fence reason");
+    const fenced = this.db.transaction(() => {
+      const current = this.requireTreasuryOperation(operationKey);
+      if (current.preparationFenced) return current;
+      if (current.state !== "intent") {
+        throw new JournalInvariantError("only an unprepared direct Treasury operation may be fenced");
+      }
+      const now = this.timestamp();
+      const updated = this.db.prepare(
+        `UPDATE treasury_operations
+            SET preparation_fenced = 1, updated_at_ms = ?
+          WHERE operation_key = ? AND state = 'intent' AND preparation_fenced = 0`
+      ).run(now, operationKey);
+      if (updated.changes !== 1) throw new JournalInvariantError("concurrent direct Treasury preparation fence");
+      this.insertTreasuryOperationTransition(operationKey, "intent", "intent", reasonCode, now);
+      return this.requireTreasuryOperation(operationKey);
+    });
+    return fenced.immediate();
+  }
+
   cancelTreasuryOperation(operationKey: string): TreasuryOperationRecord {
     assertTreasuryOperationKey(operationKey);
     const current = this.requireTreasuryOperation(operationKey);
     if (current.state === "completed" || current.state === "failed_terminal") return current;
+    if (current.state === "intent" && current.preparationFenced) {
+      return this.requestTreasuryOperationCancellation(operationKey);
+    }
     if (current.state === "intent") {
       return this.failTreasuryOperationPreparation(operationKey, "cancelled_before_effect");
     }
@@ -5018,6 +5046,11 @@ export class PurchaseJournal {
           `Treasury Operation ${operation.operationKey} state does not match immutable history`
         );
       }
+      if (operation.preparationFenced && operation.state !== "intent") {
+        throw new JournalInvariantError(
+          `Treasury Operation ${operation.operationKey} preparation fence is bound to the wrong state`
+        );
+      }
       this.requirePolicy(operation.policyDigest as Sha256Digest);
       if (operation.state !== "intent" && operation.state !== "failed_terminal") {
         this.readPreparedTreasuryOperation(operation.operationKey);
@@ -6288,6 +6321,7 @@ interface TreasuryOperationRow {
   policy_digest: string;
   retry_limit: number;
   cancellation_requested: number;
+  preparation_fenced: number;
   state: string;
   retry_count: number;
   created_at_ms: number;
@@ -6697,6 +6731,7 @@ function treasuryOperationFromRow(row: TreasuryOperationRow): TreasuryOperationR
     feeCeilingAtomic: row.fee_ceiling_atomic,
     retryLimit: row.retry_limit,
     cancellationRequested: row.cancellation_requested === 1,
+    preparationFenced: row.preparation_fenced === 1,
     ...(row.resolved_amount_atomic === null
       ? {}
       : { resolvedAmountAtomic: row.resolved_amount_atomic }),

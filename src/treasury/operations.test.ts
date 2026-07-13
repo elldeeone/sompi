@@ -457,6 +457,26 @@ test("cancellation during preparation fences returned signed material without su
   });
 });
 
+test("unknown preparation errors remain durably fenced and do not retry or release capacity", async () => {
+  await withFixture(async ({ module, journal, wallet }) => {
+    wallet.prepareErrors = 1;
+    await assert.rejects(() => module.execute({
+      operationKey: "direct:unknown-preparation",
+      kind: "wallet_send",
+      destination: DESTINATION,
+      amountAtomic: "100",
+    }), /injected prepare crash/);
+    const fenced = journal.requireTreasuryOperation("direct:unknown-preparation");
+    assert.equal(fenced.preparationFenced, true);
+    assert.equal(journal.treasuryPolicyCapacityUsed(), 110n);
+    const recovered = await module.recover("direct:unknown-preparation");
+    assert.equal(recovered.preparationFenced, true);
+    assert.equal(wallet.prepareCalls, 1);
+    assert.equal((await module.cancel("direct:unknown-preparation")).state, "intent");
+    assert.equal(journal.treasuryPolicyCapacityUsed(), 110n);
+  });
+});
+
 class FakeAdapter implements TreasuryOperationAdapter {
   readonly transactionId: string;
   prepareCalls = 0;

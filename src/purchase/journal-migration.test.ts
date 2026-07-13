@@ -13,6 +13,7 @@ import {
   JOURNAL_SCHEMA_V4_SQL,
   JOURNAL_SCHEMA_V5_SQL,
   JOURNAL_SCHEMA_V6_SQL,
+  JOURNAL_SCHEMA_V7_SQL,
   JOURNAL_SCHEMA_V1_SQL,
   JOURNAL_SCHEMA_VERSION,
 } from "./journal-schema.js";
@@ -21,7 +22,7 @@ test("clean cutover rejects every superseded journal schema without mutation", (
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-journal-migrate-"));
   fs.chmodSync(directory, 0o700);
   try {
-    const schemas = [JOURNAL_SCHEMA_V1_SQL, JOURNAL_SCHEMA_V2_SQL, JOURNAL_SCHEMA_V3_SQL, JOURNAL_SCHEMA_V4_SQL, JOURNAL_SCHEMA_V5_SQL, JOURNAL_SCHEMA_V6_SQL];
+    const schemas = [JOURNAL_SCHEMA_V1_SQL, JOURNAL_SCHEMA_V2_SQL, JOURNAL_SCHEMA_V3_SQL, JOURNAL_SCHEMA_V4_SQL, JOURNAL_SCHEMA_V5_SQL, JOURNAL_SCHEMA_V6_SQL, JOURNAL_SCHEMA_V7_SQL];
     for (let index = 0; index < schemas.length; index += 1) {
       const version = index + 1;
       const filename = path.join(directory, `v${version}.sqlite`);

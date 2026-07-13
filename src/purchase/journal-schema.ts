@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 
 export const JOURNAL_APPLICATION_ID = 0x534f4d50; // SOMP
-export const JOURNAL_SCHEMA_VERSION = 7;
+export const JOURNAL_SCHEMA_VERSION = 8;
 
 export const JOURNAL_SCHEMA_V1_SQL = `
   CREATE TABLE schema_migrations (
@@ -771,6 +771,8 @@ export const JOURNAL_SCHEMA_V7_MIGRATION_SQL = `
     ADD COLUMN retry_limit INTEGER NOT NULL DEFAULT 3 CHECK (retry_limit > 0);
   ALTER TABLE treasury_operations
     ADD COLUMN cancellation_requested INTEGER NOT NULL DEFAULT 0 CHECK (cancellation_requested IN (0, 1));
+  ALTER TABLE treasury_operations
+    ADD COLUMN preparation_fenced INTEGER NOT NULL DEFAULT 0 CHECK (preparation_fenced IN (0, 1));
 
   CREATE TABLE journal_admission_budget (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -816,7 +818,8 @@ export const JOURNAL_SCHEMA_V3_SQL = `${JOURNAL_SCHEMA_V2_SQL}\n${JOURNAL_SCHEMA
 export const JOURNAL_SCHEMA_V4_SQL = `${JOURNAL_SCHEMA_V3_SQL}\n${JOURNAL_SCHEMA_V4_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V5_SQL = `${JOURNAL_SCHEMA_V4_SQL}\n${JOURNAL_SCHEMA_V5_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V6_SQL = `${JOURNAL_SCHEMA_V5_SQL}\n${JOURNAL_SCHEMA_V6_MIGRATION_SQL}`;
-export const JOURNAL_SCHEMA_SQL = `${JOURNAL_SCHEMA_V6_SQL}\n${JOURNAL_SCHEMA_V7_MIGRATION_SQL}`;
+export const JOURNAL_SCHEMA_V7_SQL = `${JOURNAL_SCHEMA_V6_SQL}\n${JOURNAL_SCHEMA_V7_MIGRATION_SQL}`;
+export const JOURNAL_SCHEMA_SQL = JOURNAL_SCHEMA_V7_SQL;
 
 export const JOURNAL_SCHEMA_V1_CHECKSUM = sha256Text(JOURNAL_SCHEMA_V1_SQL);
 export const JOURNAL_SCHEMA_V2_CHECKSUM = sha256Text(JOURNAL_SCHEMA_V2_SQL);
