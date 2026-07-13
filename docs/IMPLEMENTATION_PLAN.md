@@ -1,6 +1,6 @@
 # Sompi AP2 + Kaspa-x402 implementation plan
 
-Status: **In progress — Phases 0 through 2 complete**
+Status: **In progress — Phases 0 through 2 complete; post-scan hardening in progress**
 
 Architecture: [`docs/architecture/SOMPI_ARCHITECTURE.md`](architecture/SOMPI_ARCHITECTURE.md)
 
@@ -89,6 +89,118 @@ Gate:
 - Duplicate Purchase/payment identifiers and replayed effects are rejected.
 - Policy capacity cannot be lost or double-consumed across a crash.
 - Recovery does not blindly resubmit a possibly executed payment.
+
+## Phase 2A: Codify the validated security architecture
+
+Purpose: make the completed deep-scan evidence and cross-repository covenant,
+AP2, and x402 validation authoritative before implementation changes.
+
+- [x] Preserve the canonical scan report, manifest, findings, coverage, and
+  selected hardening proposals outside temporary storage.
+- [x] Add Operator Provisioning, Operator Manifest, Chain Evidence, Finality
+  Floor, and Admission Lease to `CONTEXT.md`.
+- [x] Accept ADRs for Operator Provisioning, Chain Evidence/finality, and
+  bounded operation lifecycles; explicitly amend ADR-0008.
+- [x] Record native covenant-ID versus KIP-10 script-template continuation
+  evidence and valid owner termination.
+- [x] Record that local depth confirmation is not Kaspa consensus finality.
+- [x] Update this plan, the target architecture, threat model, and
+  `CURRENT_STATE.md` to one consistent source of truth.
+
+Gate:
+
+- Documentation links and accepted ADR index are complete.
+- No decision requires changes to AP2/x402 wire objects or Kaspa-x402.
+- The repository baseline suite still passes.
+
+## Phase 2B: Install trusted operator configuration
+
+Purpose: remove recovery authority, policy, transport, and evidence trust from
+the Agent-facing data path before those facts drive more runtime work.
+
+- [ ] Implement a strict, canonical, versioned Operator Manifest with digest
+  and monotonic revision.
+- [ ] Implement secure operator-owned installation and descriptor-stable
+  runtime reads with exact ownership/mode/link/ancestor checks.
+- [ ] Add short-lived `sompi-operator` preview/install/provision/status flows.
+- [ ] Validate owner and generated Agent values as real secp256k1 x-only public
+  keys; bind Agent public key, template, derived address, and exact vault-config
+  digest before runtime ownership transfer or funding.
+- [ ] Project immutable Treasury policy, vault bootstrap, HTTPS Merchant egress,
+  Chain Evidence sources/floors, and Admission Lease budgets.
+- [ ] Bind manifest identity into vault configuration, policy snapshots,
+  Purchases, Treasury operations, and Chain Evidence.
+- [ ] Remove MCP `vault_create`, MCP owner-key generation, `SOMPI_POLICY`,
+  policy hot reload, production HTTP opt-in, and all runtime fallbacks.
+- [ ] Reject funded-vault static-parameter drift and require explicit owner
+  recovery/recreation.
+
+Gate:
+
+- The MCP process has no manifest installer or vault recovery-authority setter.
+- Symlink, hardlink, owner, mode, ancestor, rename, byte, revision, x-only-key,
+  and manifest-drift tests fail closed.
+- Hermetic fixtures may inject HTTP only without real Treasury credentials.
+- Focused provisioning PoCs, full suite, and packed-artifact smoke pass.
+
+## Phase 2C: Centralize Chain Evidence and finality
+
+Purpose: make one deep module own transaction identity, evidence levels,
+history, negative evidence, continuation semantics, and Finality Floors.
+
+- [ ] Define typed provisional, accepted, depth-confirmed, consensus-final,
+  historical, absent, unknown, and unavailable evidence.
+- [ ] Keep protocol finality, operator depth policy, and Kaspa consensus
+  finality as separate durable fields.
+- [ ] Persist Merchant protocol finality and Sompi's effective operator floor
+  separately; display/sign the effective floor in Authority/AP2 evidence.
+- [ ] Implement distinct native covenant-binding and KIP-10 script-template
+  continuation evidence variants plus valid vault owner termination.
+- [ ] Persist accepted transaction/spend/continuation evidence before terminal
+  Purchase, wallet, vault, staging, recovery, or capacity-release transitions.
+- [ ] Treat RPC errors, pruning, missing current UTXOs, and contradictory
+  sources as unknown/unavailable rather than absence.
+- [ ] Enforce operation-specific operator floors; Merchant requirements may
+  strengthen but never lower them; mempool never terminalizes state.
+- [ ] Route exact Settlement, wallet send, vault deposit/send/continuation,
+  staging, recovery-winner selection, and policy release through the module.
+- [ ] Implement the private Testnet-10 two-witness adapter (operator wRPC plus
+  independent HTTPS accepted-chain evidence) and durable history profile
+  without changing Kaspa-x402.
+
+Gate:
+
+- All thirteen chain evidence/finality PoCs fail against the fixed behavior.
+- Spent/pruned-output restart tests reconcile from retained accepted evidence.
+- A lying or unavailable single RPC cannot mint stronger evidence than its
+  configured profile permits.
+- Full suite and live read-only Testnet-10 evidence checks pass.
+
+## Phase 2D: Bound operational lifecycles
+
+Purpose: prevent retained sockets, prompts, evidence, Purchases, or Treasury
+preparations from exhausting the system or surviving without a safe terminal
+path.
+
+- [ ] Add pre-authentication socket and authenticated-prompt Admission Leases
+  inside the Trusted Authority.
+- [ ] Add pre-validation Purchase-count and Evidence Attachment byte Admission
+  Leases inside the Purchase module/Journal.
+- [ ] Add bounded direct-Treasury preparation retries and exclusive-slot lease
+  recovery inside the Treasury module.
+- [ ] Install conservative budgets through the Operator Manifest and expose
+  stable secret-free saturation status.
+- [ ] Define cancellation, timeout, restart expiry, operator recovery, and
+  observability at each owning module.
+- [ ] Preserve leases/reservations and enter Reconciliation after any possible
+  external effect.
+
+Gate:
+
+- Socket flood, prompt queue, Purchase/evidence exhaustion, retry saturation,
+  restart, and cancellation-race tests pass.
+- Capacity is neither leaked nor reused while an effect may still exist.
+- No central scheduler or cross-module lifecycle semantics are introduced.
 
 ## Phase 3: Deepen the Purchase module behind existing MCP UX
 

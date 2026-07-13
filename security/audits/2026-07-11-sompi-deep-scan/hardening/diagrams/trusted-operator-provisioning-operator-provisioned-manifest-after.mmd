@@ -1,0 +1,24 @@
+flowchart LR
+    Operator["Operator"]
+    Provision["Operator-only provision command\nvalidate and atomically install"]
+    Manifest["Secure operator manifest\nversion, digest, owner key, policy, HTTPS"]
+    MCP["sompi-mcp\nread-only configuration consumer"]
+    Agent["Agent or MCP caller\nuntrusted"]
+    Vault["Vault configuration"]
+    Policy["Treasury policy"]
+    Egress["Merchant transport policy"]
+    Journal["Durable active manifest digest"]
+
+    Operator --> Provision
+    Provision --> Manifest
+    Manifest --> MCP
+    Manifest --> Journal
+    Agent -->|"Purchase and Treasury intent only"| MCP
+    MCP --> Vault
+    MCP --> Policy
+    MCP --> Egress
+
+    classDef danger fill:#ffd6d6,stroke:#b42318,color:#3d0b08;
+    classDef guard fill:#d9f2e6,stroke:#147d52,color:#082b1c;
+    class Agent danger;
+    class Provision,Manifest guard;

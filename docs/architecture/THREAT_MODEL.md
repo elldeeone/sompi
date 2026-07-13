@@ -23,6 +23,8 @@ unaccounted treasury movement.
 - prepared Kaspa transactions, transaction IDs, outpoints, and finality;
 - Fulfilment bodies and digests;
 - operator configuration, trust roots, and recovery state.
+- Operator Manifest identity, Chain Evidence, finality floors, and Admission
+  Lease capacity.
 
 ## Trust zones
 
@@ -44,6 +46,14 @@ A separate deterministic process with its own credential and authenticated
 local IPC. It independently validates and displays canonical approval facts.
 It does not fetch Merchant content or accept free-form Agent instructions.
 
+### Operator Provisioning zone
+
+A short-lived non-agentic principal installs the canonical Operator Manifest
+and may bootstrap or recover a vault. The MCP and Authority runtime principals
+receive only the projections they require and cannot replace or loosen the
+manifest. Operator Provisioning and AP2 approval use different credentials and
+ceremonies.
+
 ### Merchant zone
 
 Externally controlled. Checkout terms, x402 responses, redirects, fulfilment,
@@ -54,7 +64,19 @@ and semantic bindings verify.
 
 Kaspa-x402 code is trusted only within its pinned version and tested
 invariants. RPC nodes, network timing, and HTTP transport are untrusted. Chain
-observations require the configured finality and identity checks.
+observations remain untrusted until the Chain Evidence module validates their
+identity, mechanism-specific facts, source profile, history, and configured
+Finality Floor. The initial private Testnet-10 profile requires the operator-
+controlled node and an independent HTTPS accepted-chain witness to agree; this
+is still not a cryptographic inclusion proof or a public/mainnet claim.
+
+### Chain Evidence zone
+
+The Chain Evidence module converts raw node/index observations into durable
+typed facts. It is trusted to enforce monotonic evidence levels and per-operation
+Finality Floors, but its adapter cannot manufacture authenticity that its
+configured backend does not provide. Current UTXOs and mempool entries are
+provisional; retained accepted history is required after outputs are spent.
 
 ### Journal zone
 
@@ -69,6 +91,7 @@ stored in journal plaintext.
 - Merchant URLs, DNS, redirects, headers, bodies, and signatures;
 - authority IPC requests/responses;
 - policy and environment configuration;
+- the Operator Manifest installation and runtime-reader filesystem path;
 - local database and restart/recovery paths;
 - Kaspa RPC responses and websocket lifecycle;
 - x402 `PaymentRequired`, `PaymentPayload`, and `SettlementResponse` objects;
@@ -99,6 +122,18 @@ stored in journal plaintext.
 | Database corruption | Integrity check, backups/runbook, fail closed, no automatic destructive reset | Corrupt pages/schema version |
 | Multiple Sompi processes | Database lock/lease and idempotent transitions | Concurrent worker test |
 | Clock manipulation | bounded skew and chain/receipt time checks; short expiries | future iat, expired exp, skew edges |
+| Agent changes recovery key or policy | Operator-only manifest installation; no MCP installer capability | Attempt MCP vault/policy mutation and manifest substitution |
+| Invalid x-only recovery key | Parse as a real secp256k1 x-only point before any key/state creation | All-zero, out-of-range, malformed and substituted points |
+| Manifest path/provenance substitution | Operator ownership, safe ancestors/modes/links, descriptor-stable canonical read, digest binding | Symlink, hardlink, rename, chmod, owner and byte substitution |
+| Cleartext Merchant authorization | HTTPS-only production projection from Operator Manifest | HTTP configuration and redirect downgrade attempts |
+| Provisional observation terminalizes state | Chain Evidence Finality Floor; mempool never terminal | Mempool exact/vault/staging/wallet observations |
+| Merchant lowers finality | Effective floor is max(operator floor, supported Merchant requirement) | Merchant-selected mempool with stronger operator floor |
+| Approval omits finality policy | Display and sign the effective floor in canonical Authority/AP2 evidence | Substitute Merchant requirement or operator floor after approval |
+| Spent output erases history | Persist accepted transaction/spend/continuation evidence before terminal transition | Spend accepted output, prune node history, restart and reconcile |
+| RPC error treated as absence | Typed unknown/unavailable distinct from corroborated absence | timeout, disconnect, not-indexed, pruned cursor and malformed response |
+| Native/KIP-10 continuation confusion | Separate native covenant-binding and script-template evidence variants | Missing covenant ID on valid KIP-10 and wrong ID/state on vault |
+| Authority/Purchase/Treasury exhaustion | Per-module bounded Admission Leases acquired before scarce retention | socket flood, prompt queue, evidence bytes, direct preparation retries |
+| Cancellation releases live effect | Terminal cancellation only with proof of non-execution; otherwise Reconciliation | abort during and after RPC/Merchant invocation |
 
 ## Canonical binding chain
 
@@ -141,6 +176,13 @@ PurchaseId + attempt number
 | Submit exact Kaspa payment | prepared payment + submission intent | txid/outpoint/UTXO/finality and x402 idempotency state | observe/reconcile; do not rebuild blindly |
 | Ask Merchant to fulfil | settled attempt + request fingerprint | idempotent Merchant result/resource digest | retry same payment ID/request only |
 | Obtain receipts | mandate/settlement/fulfilment digests | signed receipt reference | refetch receipt; never repay |
+
+All Kaspa observations in this matrix cross the Chain Evidence module. The
+protocol finality label, local depth-confirmation policy, and Kaspa consensus
+finality are recorded independently. The first interactive profile requires at
+least accepted-chain evidence for state advancement and a stronger configured
+depth floor where the Operator Manifest requires it; it never calls local depth
+Kaspa consensus finality.
 
 ## Cryptographic policy
 

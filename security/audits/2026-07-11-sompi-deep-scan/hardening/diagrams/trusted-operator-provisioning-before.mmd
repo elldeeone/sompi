@@ -1,0 +1,20 @@
+flowchart LR
+    Operator["Operator intent"]
+    Agent["Agent or MCP caller\nuntrusted"]
+    Env["Environment and filesystem\nprovenance unchecked"]
+    MCP["sompi-mcp"]
+    Vault["Vault configuration\nrecovery key and cap"]
+    Policy["Hot-reloaded Treasury policy"]
+    Egress["Merchant transport policy"]
+    Treasury["Wallet and vault signing"]
+
+    Operator -.->|"prose and path setup"| Agent
+    Agent -->|"vault_create key and cap"| MCP
+    Env -->|"SOMPI_POLICY bytes"| Policy
+    Env -->|"HTTP opt-in"| Egress
+    MCP --> Vault
+    Policy --> Treasury
+    Egress --> Treasury
+
+    classDef danger fill:#ffd6d6,stroke:#b42318,color:#3d0b08;
+    class Agent,Env danger;

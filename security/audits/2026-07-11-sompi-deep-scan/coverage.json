@@ -1,0 +1,155 @@
+{
+  "completeness": "complete",
+  "deferred": [],
+  "documentType": "codex-security.coverage",
+  "excludePaths": [],
+  "explicitExclusions": [
+    {
+      "pattern": ".git/**",
+      "reason": "Git internals are not part of the immutable revision's authoritative source tree."
+    },
+    {
+      "pattern": "node_modules/** and generated dist/**",
+      "reason": "Generated dependencies and build output were not authoritative inputs; validation rebuilt them with npm ci and npm run build from the pinned revision."
+    }
+  ],
+  "includePaths": [
+    "."
+  ],
+  "inventoryStrategy": "repository",
+  "mode": "deep_repository",
+  "openQuestions": [
+    {
+      "followUpPrompt": "At revision 4ebb82d4f82bac46ae3addd112c4752f29630a8a, design and test one fail-closed chain-evidence seam across src/adapters/kaspa-x402/chain-verifier.ts, staging-recovery-rpc.ts, and direct Treasury observation.",
+      "question": "Which proof-backed or independently operated Kaspa observer design should become the common chain-evidence control for exact settlement, direct Treasury operations, and staging recovery?"
+    },
+    {
+      "followUpPrompt": "At revision 4ebb82d4f82bac46ae3addd112c4752f29630a8a, design an operator-only vault bootstrap and provenance-checked policy-loading path that keeps all authority credentials outside MCP.",
+      "question": "Which operator-authenticated ceremony should own vault recovery-key and policy-file provenance before broader deployment?"
+    }
+  ],
+  "scanId": "ccc03842-b6f7-41d2-b169-cc7b9e6b90da",
+  "schemaVersion": "1.0",
+  "surfaces": [
+    {
+      "disposition": "reported",
+      "id": "COV-MCP-VAULT",
+      "label": "Untrusted Agent and vault bootstrap",
+      "notes": "Reported CAN-001, CAN-008, and CAN-027. CAN-010 was rejected during validation.",
+      "receiptRefs": [
+        "artifacts/03_coverage/repository_coverage_ledger.md",
+        "artifacts/05_findings/validation_summary.md",
+        "artifacts/05_findings/attack_path_analysis_report.md"
+      ],
+      "riskArea": "Agent trust, vault owner authority, validation-time storage"
+    },
+    {
+      "disposition": "reported",
+      "id": "COV-AUTHORITY-IPC",
+      "label": "Trusted Authority IPC and prompt lifetime",
+      "notes": "Reported CAN-009 and CAN-013. CAN-011 and CAN-012 were rejected during validation.",
+      "receiptRefs": [
+        "artifacts/03_coverage/repository_coverage_ledger.md",
+        "artifacts/05_findings/validation_summary.md",
+        "artifacts/05_findings/attack_path_analysis_report.md"
+      ],
+      "riskArea": "Unix-socket admission, replay, prompt queues, service availability"
+    },
+    {
+      "disposition": "reported",
+      "id": "COV-MERCHANT-EGRESS",
+      "label": "Merchant egress",
+      "notes": "Reported CAN-007. CAN-014, CAN-015, CAN-028, and CAN-029 were rejected after attack-path analysis.",
+      "receiptRefs": [
+        "artifacts/03_coverage/repository_coverage_ledger.md",
+        "artifacts/05_findings/validation_summary.md",
+        "artifacts/05_findings/attack_path_analysis_report.md"
+      ],
+      "riskArea": "URL policy, DNS, pinned transport, cleartext opt-in, response lifecycle"
+    },
+    {
+      "disposition": "reported",
+      "id": "COV-AP2-EVIDENCE",
+      "label": "AP2 authorization and evidence",
+      "notes": "CAN-007 crosses this surface. CAN-002 was rejected after attack-path analysis; CAN-011 and CAN-012 were rejected during validation.",
+      "receiptRefs": [
+        "artifacts/03_coverage/repository_coverage_ledger.md",
+        "artifacts/05_findings/validation_summary.md",
+        "artifacts/05_findings/attack_path_analysis_report.md"
+      ],
+      "riskArea": "Signed-fact binding, Merchant authorization state, authority evidence"
+    },
+    {
+      "disposition": "reported",
+      "id": "COV-X402-SETTLEMENT",
+      "label": "Kaspa-x402 exact settlement",
+      "notes": "Reported CAN-003, CAN-016, and CAN-017. CAN-005 was rejected after attack-path analysis.",
+      "receiptRefs": [
+        "artifacts/03_coverage/repository_coverage_ledger.md",
+        "artifacts/05_findings/validation_summary.md",
+        "artifacts/05_findings/attack_path_analysis_report.md"
+      ],
+      "riskArea": "Preparation, single-RPC observation, Settlement, accepted-payment recovery"
+    },
+    {
+      "disposition": "reported",
+      "id": "COV-STAGING-RECOVERY",
+      "label": "Treasury staging and recovery",
+      "notes": "Reported CAN-004, CAN-006, CAN-018, CAN-020, CAN-026, CAN-030, and CAN-033. CAN-019 and CAN-022 were rejected after attack-path analysis.",
+      "receiptRefs": [
+        "artifacts/03_coverage/repository_coverage_ledger.md",
+        "artifacts/05_findings/validation_summary.md",
+        "artifacts/05_findings/attack_path_analysis_report.md"
+      ],
+      "riskArea": "Exact-versus-recovery race, absence proof, finality, winner evidence, capacity release"
+    },
+    {
+      "disposition": "reported",
+      "id": "COV-DIRECT-TREASURY",
+      "label": "Direct wallet and vault operations",
+      "notes": "Reported CAN-001, CAN-008, CAN-023, CAN-024, CAN-025, and CAN-031. CAN-010 was rejected during validation.",
+      "receiptRefs": [
+        "artifacts/03_coverage/repository_coverage_ledger.md",
+        "artifacts/05_findings/validation_summary.md",
+        "artifacts/05_findings/attack_path_analysis_report.md"
+      ],
+      "riskArea": "Direct movement, observation finality, durable continuation, exclusivity"
+    },
+    {
+      "disposition": "reported",
+      "id": "COV-JOURNAL-POLICY",
+      "label": "Purchase journal and policy accounting",
+      "notes": "Reported CAN-020, CAN-027, CAN-030, and CAN-031. CAN-019, CAN-021, and CAN-022 were rejected after attack-path analysis.",
+      "receiptRefs": [
+        "artifacts/03_coverage/repository_coverage_ledger.md",
+        "artifacts/05_findings/validation_summary.md",
+        "artifacts/05_findings/attack_path_analysis_report.md"
+      ],
+      "riskArea": "Durable effects, reservations, terminal transitions, storage and capacity release"
+    },
+    {
+      "disposition": "reported",
+      "id": "COV-LOCAL-STATE",
+      "label": "Local state provenance",
+      "notes": "Reported CAN-008 and CAN-032.",
+      "receiptRefs": [
+        "artifacts/03_coverage/repository_coverage_ledger.md",
+        "artifacts/05_findings/validation_summary.md",
+        "artifacts/05_findings/attack_path_analysis_report.md"
+      ],
+      "riskArea": "Secure state, runtime configuration, operator-owned paths and keys"
+    },
+    {
+      "disposition": "no_issue_found",
+      "id": "COV-SUPPLY-DOCS",
+      "label": "Supply chain, scripts, fixtures, tests, architecture and documentation",
+      "notes": "All authoritative files received five rounds of independent review; no unique reportable finding survived on this surface.",
+      "receiptRefs": [
+        "artifacts/03_coverage/repository_coverage_ledger.md",
+        "artifacts/05_findings/validation_summary.md",
+        "artifacts/05_findings/attack_path_analysis_report.md"
+      ],
+      "riskArea": "Dependency pins, lifecycle scripts, proof artifacts and non-runtime surfaces"
+    }
+  ]
+}

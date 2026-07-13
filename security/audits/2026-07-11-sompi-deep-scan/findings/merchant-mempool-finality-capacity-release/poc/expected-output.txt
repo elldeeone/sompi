@@ -1,0 +1,11 @@
+[+] exact source hashes match vulnerable revision 4ebb82d4f82bac46ae3addd112c4752f29630a8a
+[+] Merchant PAYMENT-REQUIRED with finality=mempool passed verification
+[+] authority facts and display omit decoded finality
+[+] recovery plan copied requiredFinality=mempool
+[+] classifier returned recovery_won at mempool while staging status=unspent
+[+] journal state before observation: reservation=in_flight, capacity=70
+[+] journal state after observation: reservation=released, capacity=5, purchase=failed_terminal
+[+] durable reopen preserved released reservation and recovery accounting
+[+] primitive reproduced: provisional recovery released 65 units of policy capacity
+[!] not claimed: no dual acceptance or direct theft; one-spend consensus still applies
+[!] not exercised: eviction, later exact winner, and capacity reuse

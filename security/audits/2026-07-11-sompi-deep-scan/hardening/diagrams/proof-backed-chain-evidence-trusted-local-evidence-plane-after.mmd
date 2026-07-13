@@ -1,0 +1,30 @@
+flowchart LR
+    PublicRPC["Public or configured RPC\ntelemetry only"]
+    Merchant["Merchant\nuntrusted response and requested finality"]
+    Node["Operator-controlled Kaspa node\nconsensus and UTXO state"]
+    Index["Accepted transaction history index\nretained winner evidence"]
+    Gateway["Sompi Chain Evidence Gateway\nlocal authenticated client"]
+    Exact["Kaspa-x402 exact adapter"]
+    Recovery["Staging recovery adapter"]
+    Direct["Wallet and vault adapters"]
+    Purchase["Purchase module"]
+    Journal["Purchase Journal\nproof references and canonical facts"]
+
+    PublicRPC -.->|"non-authoritative telemetry"| Gateway
+    Node --> Index
+    Node -->|"accepted chain and DAA"| Gateway
+    Index -->|"historical tx and winner"| Gateway
+    Merchant --> Exact
+    Merchant --> Recovery
+    Gateway --> Exact
+    Gateway --> Recovery
+    Gateway --> Direct
+    Exact --> Purchase
+    Recovery --> Purchase
+    Direct --> Purchase
+    Purchase --> Journal
+
+    classDef danger fill:#ffd6d6,stroke:#b42318,color:#3d0b08;
+    classDef guard fill:#d9f2e6,stroke:#147d52,color:#082b1c;
+    class PublicRPC,Merchant danger;
+    class Node,Index,Gateway guard;

@@ -1,4 +1,4 @@
-# ADR-0008: One repository/package and two executables initially
+# ADR-0008: One repository/package and two long-running executables initially
 
 - Status: Accepted
 - Date: 2026-07-11
@@ -16,6 +16,10 @@ internal modules and expose:
 
 - `sompi-mcp` as the agent-facing executable;
 - `sompi-authority` as the isolated deterministic approval executable.
+
+ADR-0011 amends the administrative surface by adding `sompi-operator`, a
+short-lived provisioning command in the same package. It is not a third
+long-running process and it is never exposed through MCP.
 
 Keep the demo Merchant as a development/conformance fixture. Split packages or
 repositories only when independent release cadence, ownership, reuse, or

@@ -1,26 +1,34 @@
 # Current state
 
-Last updated: **2026-07-11**
+Last updated: **2026-07-13**
 
 ## Plain-English status
 
-**Phases 0 through 2 complete; Phase 3 Purchase module deepening is next.**
+**The first human-present AP2 + Kaspa-x402 exact vertical exists and passed live
+Testnet-10 proof, but the post-scan hardening cutover is now the active gate.**
 
-The target design and decisions are complete, the implementation branch has a
-crash-safe Purchase Journal and recovery foundation, and all Phase 2 gates pass.
-The current source still contains Sompi's existing x402 v1 escrow path and
-pre-cutover JSON state; those remain only until the Phase 4 clean cutover.
+Phases 0 through 6 were implemented through `4ebb82d`, including the stable
+Purchase module, clean Kaspa-x402 alpha.6 exact path, isolated interactive AP2
+Authority, demo Merchant, crash recovery, local vertical proof, and live
+Testnet-10 evidence. The completed deep security scan then found 21 medium/low
+issues concentrated in chain evidence/finality, operator provisioning, and
+unbounded operation lifecycles. Those three deep Modules must now land before
+the original phase gates can be considered final.
 
 ## Git orientation at codification
 
 - Repository: `https://github.com/elldeeone/sompi`
 - Normalized local `main`: `1bbfa0c` (`Document AP2 and Kaspa-x402 architecture`)
 - Active implementation branch: `ap2-kaspa-purchase-core`
-- Latest verified implementation milestone: `2b68a54` (`Add transactional Purchase Journal`)
-- Phase 2 verification: `npm test` passed (36 focused tests plus complete offline smoke)
-- Phase 2 adversarial review: two independent reviews found no remaining blocker
-  or high-severity issue
-- Remote state: unchanged; local `main` is ahead of `origin/main`
+- Current branch/HEAD/upstream: `ap2-kaspa-purchase-core` at
+  `4ebb82d4f82bac46ae3addd112c4752f29630a8a`, exactly synced.
+- Latest implementation milestone: `4ebb82d` (`Add interactive human-present
+  authority proof`).
+- Untouched post-scan baseline: `npm test` passed with 339 tests, one privileged
+  ownership test skipped, and complete offline smoke.
+- Sealed deep scan: 21 findings, 8 medium and 13 low, no high/critical.
+- Canonical scan results and selected hardening proposals are preserved under
+  `security/audits/2026-07-11-sompi-deep-scan/`.
 
 Do not assume these facts remain current. Re-run Git orientation before Phase
 0, preserve unrelated changes, and update this section with the verified base.
@@ -89,20 +97,35 @@ Phase 2 is complete:
    tampering, corruption, lifecycle restarts, and real multi-process races are
    covered by the Phase 2 suite.
 
+Phases 3 through 6 have an implemented pre-hardening vertical:
+
+1. MCP exposes the stable Purchase interface and the Purchase module owns the
+   lifecycle and recovery orchestration;
+2. Kaspa-x402 alpha.6 exact executes through durable wallet/vault staging with
+   the bespoke x402 v1 runtime removed;
+3. a separate deterministic `sompi-authority` verifies and signs human-present
+   AP2 evidence;
+4. the demo Merchant joins Checkout, mandates, exact Settlement, Fulfilment,
+   and AP2 receipts;
+5. local crash/replay proofs and live Testnet-10 Purchase evidence passed.
+
+The deep scan reopened their security acceptance gates. They are not considered
+final until Phases 2A through 2D remove the validated weaknesses and the full
+vertical is rerun.
+
 No remote push, package publish, deployment, or sibling-repository change was
 performed.
 
 ## Next action
 
-Execute **Phase 3: Deepen the Purchase module behind existing MCP UX** from
-[`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md). Implement canonical
-Checkout Terms and authorization/treasury seams, route orchestration through the
-stable Purchase interface, add deterministic status projection, and enforce the
-outbound egress policy before protocol cutover.
+Commit the completed **Phase 2A** authoritative post-scan architecture, then
+execute **Phase 2B: trusted Operator Provisioning**. It establishes the manifest
+identity, OS-principal model, vault provenance, HTTPS policy, evidence sources,
+finality floors, and Admission Lease budgets consumed by the remaining fixes.
 
 ## Known external uncertainties
 
-These are contained by the design and do not block Phase 3:
+These are contained by the design and do not block the hardening cutover:
 
 - AP2 and x402 remain evolving standards.
 - The official AP2-compatible x402 integration may change or arrive later.
@@ -113,9 +136,12 @@ These are contained by the design and do not block Phase 3:
   deferred.
 - Real third-party AP2 interoperability will require another implementation;
   the initial proof uses Sompi's demo Merchant fixture.
+- The private Testnet-10 Chain Evidence profile uses the operator node at
+  `10.0.3.26` plus an independent HTTPS accepted-chain witness. This is suitable
+  for the initial proof, not a public/mainnet cryptographic inclusion claim.
 
 ## Current blockers
 
-None for Phase 3. Kaspa-x402 alpha.6 expects its `FundingProvider` to assemble
-the exact transaction from public reservation terms; Sompi will implement and
-vector-test that wallet adapter in Phase 4 without changing the sibling repo.
+None for the documentation or implementation milestones. Live funded reruns
+will require a fresh Testnet-10 Treasury wallet only after all offline and
+read-only gates pass. No sibling Kaspa-x402 change is required.

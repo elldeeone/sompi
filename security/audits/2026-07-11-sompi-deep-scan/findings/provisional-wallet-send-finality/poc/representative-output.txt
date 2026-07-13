@@ -1,0 +1,1 @@
+{"provisionalObservationCompleted":true,"stateBeforeEviction":"completed","stateAfterEvictionAndRestart":"completed","mempoolQueriesBeforeEviction":1,"mempoolQueriesAfterRestart":1,"acceptedChainQueries":0,"independentAcceptedChainEvidence":false}

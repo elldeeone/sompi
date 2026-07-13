@@ -13,11 +13,13 @@ stable interface is expressed in Sompi domain terms. AP2 and Kaspa-x402 sit at
 separate seams so either can change without spreading protocol knowledge
 through the wallet, policy, MCP tools, journal, or receipts.
 
-The initial repository remains one TypeScript package with two production
-executables and one development fixture:
+The initial repository remains one TypeScript package with two long-running
+production executables, one short-lived administrative command, and one
+development fixture:
 
 - `sompi-mcp`: the agent-facing MCP executable;
 - `sompi-authority`: the deterministic Trusted Authority executable;
+- `sompi-operator`: the non-agentic Operator Provisioning command;
 - demo Merchant: an end-to-end/conformance fixture, not a third production
   product.
 
@@ -31,17 +33,22 @@ flowchart TD
     Agent["Agent / MCP client"] --> MCP["sompi-mcp"]
     MCP --> Purchase["Deep Purchase module"]
     Authority["sompi-authority\ndeterministic and non-agentic"] --> Purchase
+    Operator["sompi-operator\nshort-lived"] --> Manifest["Immutable Operator Manifest"]
+    Manifest --> Purchase
+    Manifest --> Authority
 
     Purchase --> Journal["SQLite Purchase Journal"]
     Purchase --> Policy["Purchase and treasury policy"]
     Purchase --> Vault["Wallet and consensus vault"]
     Purchase --> AP2["Pinned AP2 adapter"]
     Purchase --> X402["Kaspa-x402 execution adapter"]
+    Purchase --> Chain["Chain Evidence module"]
 
     AP2 --> Merchant["AP2-aware Merchant fixture"]
     X402 --> KX["Kaspa-x402"]
     KX --> Merchant
     KX --> Kaspa["Kaspa testnet"]
+    Chain --> Kaspa
 
     Purchase --> Evidence["Evidence attachments and receipts"]
 ```
@@ -60,8 +67,11 @@ one small interface. MCP tools remain thin projections of this interface.
 | Durable workflow and recovery | Purchase Journal | Ad-hoc JSON files |
 | Purchase Authorization | Trusted Authority + AP2 adapter | Agent/LLM process |
 | Treasury reservation and movement | Policy + wallet/vault modules | AP2 mandate semantics |
+| Operator trust and configuration | Operator Provisioning module | Agent/MCP input or protocol wires |
 | HTTP payment negotiation | x402/Kaspa-x402 | Sompi-owned wire encoders |
 | Kaspa signing and settlement | Kaspa-x402 + Sompi funding adapters | AP2 adapter |
+| Kaspa observation and finality policy | Chain Evidence module | x402 wire labels or per-caller RPC rules |
+| Scarce operation admission | Owning Authority/Purchase/Treasury module | One global scheduler |
 | Merchant terms and fulfilment | Merchant commerce implementation | Kaspa covenant logic |
 | Protocol artifacts | Evidence store | Canonical Purchase columns |
 
@@ -222,7 +232,35 @@ The first correct authority need not use WebAuthn. The signer is an internal
 seam so a passkey adapter may be added after RP identity, origin, enrolment,
 recovery, and credential portability are designed and threat-modelled.
 
-### 6.5 AP2 adapter
+### 6.5 Operator Provisioning
+
+`sompi-operator` is a short-lived, non-agentic administrative command. It owns
+the complete Operator Manifest ceremony: preview, exact validation, explicit
+confirmation, secure installation, vault bootstrap, and status. It is not a
+daemon and no installer capability is composed into `sompi-mcp`.
+
+The Operator Manifest is canonical, versioned, digest-addressed, monotonic, and
+restart-activated. It supplies immutable typed projections for Treasury policy,
+vault bootstrap, Merchant egress, Chain Evidence sources/floors, and Admission
+Lease budgets. Runtime modules record its revision/digest but do not parse its
+storage representation.
+
+Production provisioning uses distinct OS principals: an operator/root installer
+publishes a manifest readable by a fixed runtime group but not writable by MCP.
+The generated Agent signing key may be owned by the MCP runtime, but its public
+key, template, derived address, and exact vault-configuration digest are bound
+by the operator-owned manifest. Same-UID injection exists only in hermetic tests.
+
+Static vault parameters are part of covenant identity. A manifest that changes
+the owner key, Agent key, cap, window, network, or template cannot be applied to
+an already funded vault; it requires explicit owner recovery and recreation.
+
+The filesystem implementation verifies safe ownership, modes, ancestors,
+regular-file identity, link count, descriptor stability, canonical bytes, and
+crash-safe publication. Runtime access is read-only under a principal that
+cannot replace the operator-owned file.
+
+### 6.6 AP2 adapter
 
 The AP2 adapter owns:
 
@@ -244,7 +282,7 @@ interface.
 Human-present closed mandates are first. Autonomous/open mandates are a later
 capability with separate policy and threat-model acceptance gates.
 
-### 6.6 Kaspa-x402 adapter
+### 6.7 Kaspa-x402 adapter
 
 The adapter consumes Kaspa-x402 through its real implementation seams,
 including `FundingProvider`, `ChannelSigner`, `ChannelStore`, and
@@ -269,6 +307,52 @@ No Kaspa-x402 change is required for initial AP2 integration. AP2 evidence is
 linked at the Purchase layer through canonical identifiers and digests.
 Kaspa-x402's possible future registration beneath official x402 core is an
 independent upstream-alignment task, not a Sompi dependency.
+
+### 6.8 Chain Evidence module
+
+The Chain Evidence module is the sole interpreter of Kaspa observation and
+finality for privileged Sompi state transitions. Consumers request evidence in
+Sompi terms and receive a typed result whose facts, source/verifier profile,
+manifest identity, observation time, finality level, and digest are durable.
+
+It distinguishes provisional mempool presence, accepted-chain observation,
+operator depth confirmation, Kaspa consensus finality, retained accepted
+history, corroborated absence, and unknown/unavailable evidence. A Merchant
+requirement may raise but never lower the operation's Operator Manifest floor.
+
+Continuation evidence is mechanism-specific:
+
+- a SompiVault continuation binds a native covenant ID, authorizing input,
+  expected output index, script, amount, and decoded state;
+- a KIP-10 exact continuation binds its source outpoint, same-index output
+  script, threshold/value rule, and transaction facts without inventing a
+  native covenant ID;
+- owner recovery is a valid terminating vault branch.
+
+The Merchant's requested protocol finality and Sompi's effective Finality Floor
+are separate canonical facts. The effective floor is displayed and signed by
+the Trusted Authority and bound into the experimental AP2 payment instrument.
+AP2 Success is emitted only after that floor is satisfied.
+
+The initial private Testnet-10 adapter requires agreement between the operator-
+controlled wRPC node and an independently operated HTTPS accepted-chain witness,
+then retains every accepted fact required for later recovery. The unauthenticated
+LAN route to `ws://10.0.3.26` cannot mint accepted evidence alone. Pruned,
+missing, contradictory, or unavailable history never becomes proof of absence.
+A public/mainnet profile requires an independently verified evidence plane or
+equivalent locally verified inclusion/finality source.
+
+### 6.9 Bounded operational lifecycles
+
+Scarce work acquires an Admission Lease at the owning module's interface before
+it consumes sockets, prompts, Purchase/evidence capacity, or the direct-Treasury
+slot. The Trusted Authority, Purchase module/Journal, and Treasury module each
+own their distinct budgets, deadlines, cancellation, expiry, recovery, and
+observability semantics.
+
+Cancellation is terminal only while non-execution is proven. After a possible
+blockchain or Merchant effect, the owning lease remains fenced and the work
+enters Reconciliation. No central scheduler is introduced.
 
 ## 7. AP2 and x402 composition
 
@@ -339,6 +423,10 @@ and does not reproduce its extension lifecycle.
   documented assumptions;
 - SQLite transactions and verified reconciliation logic;
 - explicitly configured Merchant and network trust roots.
+- an operator-owned, securely installed Operator Manifest and its immutable
+  runtime projections;
+- the private Testnet-10 operator-controlled node and independent HTTPS witness
+  only within the explicitly recorded initial Chain Evidence profile.
 
 ### Untrusted
 
@@ -347,6 +435,7 @@ and does not reproduce its extension lifecycle.
 - URLs, redirects, DNS results, response bodies, and extension data;
 - AP2/x402 artifacts before pinned-profile validation;
 - network responses and timeouts;
+- raw UTXO, mempool, accepted-history, DAA-depth, and RPC absence assertions;
 - process survival between any two state transitions.
 
 ### Required controls
@@ -360,6 +449,11 @@ and does not reproduce its extension lifecycle.
 - policy reservation before signing/submission;
 - evidence issuer/key verification and rotation handling;
 - authority IPC authentication, freshness, and request/response binding;
+- operator-only configuration installation, restart activation, provenance,
+  and manifest-digest binding;
+- explicit per-operation Finality Floors with mempool never terminal;
+- durable accepted history and mechanism-specific continuation validation;
+- bounded Admission Leases before scarce work is retained;
 - secrets excluded from logs, MCP results, journal plaintext, and evidence;
 - negative tests for every cross-artifact field mismatch.
 
@@ -373,6 +467,8 @@ and does not reproduce its extension lifecycle.
 - Upgrade through deliberate changes that update the pin, adapter, fixtures,
   support declaration, and interoperability evidence together.
 - Persist canonical Purchase facts plus immutable version-tagged artifacts.
+- Version Operator Manifest, Chain Evidence, and Finality Floor profiles
+  independently of AP2/x402 wire profiles.
 - Fail closed on unknown required capabilities; ignore unknown optional data
   only where the pinned standard explicitly permits it.
 - Do not build a universal `PaymentRail` interface until a second real adapter
@@ -389,6 +485,9 @@ wallet, MCP, journal, or canonical receipts.
 - current working Sompi behaviour characterized;
 - SQLite Purchase Journal and reconciliation;
 - deep Purchase module;
+- immutable Operator Provisioning and bounded Admission Leases;
+- typed Chain Evidence with retained accepted history and explicit finality
+  floors;
 - Kaspa-x402 `exact` on testnet;
 - clean deletion of Sompi x402 v1;
 - separate deterministic Trusted Authority;

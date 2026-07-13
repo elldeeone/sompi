@@ -1,0 +1,120 @@
+{
+  "documentType": "codex-security.scan-manifest",
+  "scan": {
+    "artifacts": [
+      {
+        "mediaType": "application/json",
+        "path": "findings.json",
+        "sha256": "5d587397d7b33a80b9b7e1225be58389220f39c18b421c709113154f8a5f831b"
+      },
+      {
+        "mediaType": "application/json",
+        "path": "coverage.json",
+        "sha256": "f59aa91315d651970785762ae9552f53b521cbf9c2875856c2456a909e58c031"
+      },
+      {
+        "mediaType": "application/octet-stream",
+        "path": "artifacts/03_coverage/repository_coverage_ledger.md",
+        "sha256": "dfd882601d37e5b89eaeaa1b0a712db85a917d2ed4ad137edaef9b66456ddf5a"
+      },
+      {
+        "mediaType": "application/octet-stream",
+        "path": "artifacts/05_findings/attack_path_analysis_report.md",
+        "sha256": "108a442639e4283123880e286d0ca2069040017cb01cf8ba6457c0c7236a886e"
+      },
+      {
+        "mediaType": "application/octet-stream",
+        "path": "artifacts/05_findings/validation_summary.md",
+        "sha256": "c62218185ded34320f991e895ba0cfcd2c083394502a04b173495b96a45e3e16"
+      }
+    ],
+    "completedAt": "2026-07-11T22:08:34.646Z",
+    "coverageRef": "coverage.json",
+    "findingsRef": "findings.json",
+    "hardening": {
+      "portfolioPath": "hardening/hardening.md"
+    },
+    "id": "ccc03842-b6f7-41d2-b169-cc7b9e6b90da",
+    "producer": {
+      "name": "codex-security-plugin",
+      "version": "0.1.11"
+    },
+    "scope": {
+      "artifactsReviewed": [
+        "CONTEXT.md",
+        "docs/architecture/SOMPI_ARCHITECTURE.md",
+        "docs/adr/",
+        "docs/IMPLEMENTATION_PLAN.md",
+        "CURRENT_STATE.md",
+        "all authoritative tracked source, test, script, configuration, and documentation paths"
+      ],
+      "context": "The repository threat model was synthesized during the threat-model phase from checked-in architecture and all independent discovery models; it was not supplied as an external assessment.",
+      "excludePaths": [],
+      "includePaths": [
+        "."
+      ],
+      "limitations": [
+        "The supported release is human-present AP2 v0.2 plus Kaspa-x402 exact on Testnet-10; no mainnet safety or conformance claim is made.",
+        "Safe local harnesses replaced live malicious Merchant, RPC, blockchain, and resource-exhaustion experiments where external side effects were unnecessary.",
+        "Deployment-specific operator practices, filesystem ownership, node selection, and external quotas were not observable from the repository."
+      ],
+      "runtimeStatus": "No production deployment was assessed. A scan-local git archive passed npm ci, TypeScript build, 339 unit tests with one expected root-only skip, and 13 offline smoke checks.",
+      "summary": "Deep repository-wide review of the immutable Sompi revision, including runtime code, adapters, authority IPC, Treasury and vault operations, durable state, tests, scripts, configuration, dependency metadata, and architecture controls.",
+      "validationMode": "Five independent deep-discovery rounds followed by centralized exact-revision validation, executable local PoCs, counterevidence review, and per-candidate attack-path calibration."
+    },
+    "sealedAt": "2026-07-11T22:08:34.646Z",
+    "startedAt": "2026-07-11T14:56:19.438416Z",
+    "status": "completed",
+    "target": {
+      "displayName": "sompi",
+      "kind": "git_revision",
+      "remote": "https://github.com/elldeeone/sompi",
+      "revision": "4ebb82d4f82bac46ae3addd112c4752f29630a8a",
+      "targetId": "target_sha256_f51b34e6f0c1b137358a36dd9b5b41e564f506fe049cad6a1df24eb7561a49c1"
+    },
+    "threatModel": {
+      "assets": [
+        "wallet and covenant-vault signing authority",
+        "Trusted Authority credentials and human approval decisions",
+        "policy limits, reservations, capacity releases, and spend history",
+        "canonical Purchase state and immutable protocol evidence",
+        "prepared transactions, outpoints, finality and recovery-winner evidence",
+        "operator configuration, trust roots, policy provenance and recovery state",
+        "availability of Authority, MCP, journal and evidence storage"
+      ],
+      "assumptions": [
+        "Host administrator, root and kernel compromise are out of scope",
+        "The supported runtime is Testnet-10 and human-present; autonomous, batch, UCP, passkey and mainnet paths remain gated",
+        "Pinned implementation code is trusted only within its verified contracts; all external protocol and RPC values remain untrusted data",
+        "The target repository and validation build exactly match the recorded revision"
+      ],
+      "attackerCapabilities": [
+        "choose MCP tools, structured arguments, identifiers, timing, retries and bodies",
+        "control or collude with a configured Merchant while possessing its legitimate signing identity",
+        "control the selected Kaspa RPC's UTXO, mempool, DAA, finality, error and submission claims",
+        "act on-path where cleartext Merchant HTTP is explicitly enabled",
+        "consume sockets, prompt slots, operation slots and durable storage from intended lower-trust entry points",
+        "replace writable or symlinked local configuration without root",
+        "spend legitimately received outputs and exploit delayed observation or process restart"
+      ],
+      "securityObjectives": [
+        "authorization, policy reservation, stable identity and recovery state precede irreversible effects",
+        "one untrusted observer cannot manufacture settlement, finality, absence or winner evidence",
+        "Agent input cannot become operator authority or policy",
+        "ambiguous effects are reconciled before retry and current UTXO views are not treated as historical proof",
+        "resource admission remains bounded before and after authentication",
+        "unknown protocol profiles and unsafe configuration provenance fail closed"
+      ],
+      "summary": "Sompi must let a fully untrusted Agent initiate and observe a human-authorized Purchase without allowing Agent, Merchant, RPC, network, local lower-privilege process, crash, or configuration input to alter canonical Purchase facts, authority decisions, Treasury movement, Settlement evidence, recovery accounting, or operator-owned control state.",
+      "trustBoundaries": [
+        "fully untrusted Agent and MCP arguments into deterministic Sompi MCP",
+        "separately credentialed Trusted Authority over authenticated local IPC",
+        "untrusted but configured Merchant and AP2/x402 protocol artifacts",
+        "untrusted Kaspa RPC, DNS, HTTP and network timing into chain-evidence adapters",
+        "operator-owned local configuration and secure state versus lower-privilege local processes",
+        "durable journal state before irreversible Merchant or blockchain effects"
+      ]
+    }
+  },
+  "schemaVersion": "1.0"
+}

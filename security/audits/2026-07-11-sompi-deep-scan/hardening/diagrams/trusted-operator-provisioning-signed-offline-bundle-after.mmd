@@ -1,0 +1,22 @@
+flowchart LR
+    Operator["Operator or offline administration host"]
+    Signer["Configuration signing key\nseparate from wallet and Authority"]
+    Bundle["Signed versioned configuration bundle"]
+    Verify["Runtime verifier\ntrust root, signature, monotonic revision"]
+    Agent["Agent or MCP caller\nuntrusted"]
+    MCP["sompi-mcp"]
+    Controls["Vault, Treasury policy, HTTPS egress"]
+    Journal["Durable bundle digest and revision"]
+
+    Operator --> Signer
+    Signer --> Bundle
+    Bundle --> Verify
+    Verify --> MCP
+    Verify --> Journal
+    Agent -->|"intent only"| MCP
+    MCP --> Controls
+
+    classDef danger fill:#ffd6d6,stroke:#b42318,color:#3d0b08;
+    classDef guard fill:#d9f2e6,stroke:#147d52,color:#082b1c;
+    class Agent danger;
+    class Signer,Verify guard;

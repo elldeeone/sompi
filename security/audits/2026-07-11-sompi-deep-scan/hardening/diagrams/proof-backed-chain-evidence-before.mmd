@@ -1,0 +1,23 @@
+flowchart LR
+    RPC["Selected Kaspa RPC\nuntrusted chain view"]
+    Merchant["Merchant\nuntrusted response and finality"]
+    Exact["Kaspa-x402 exact verifier"]
+    Recovery["Staging recovery observer"]
+    Direct["Wallet and vault observers"]
+    Purchase["Purchase coordinator"]
+    Journal["Purchase Journal\nsettlement, winner, capacity"]
+    Vault["Vault and Treasury state"]
+
+    RPC -->|"UTXO, mempool, DAA, absence"| Exact
+    RPC -->|"UTXO, mempool, DAA, absence"| Recovery
+    RPC -->|"UTXO, mempool, DAA"| Direct
+    Merchant -->|"Settlement and requested finality"| Exact
+    Merchant -->|"Requested finality"| Recovery
+    Exact -->|"locally labelled observed/final"| Purchase
+    Recovery -->|"winner, absence, or conflict"| Purchase
+    Direct -->|"observed"| Vault
+    Purchase --> Journal
+    Vault --> Journal
+
+    classDef danger fill:#ffd6d6,stroke:#b42318,color:#3d0b08;
+    class RPC,Merchant danger;

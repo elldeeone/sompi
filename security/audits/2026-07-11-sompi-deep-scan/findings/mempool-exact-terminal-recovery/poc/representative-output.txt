@@ -1,0 +1,11 @@
+[+] source and compiled hashes match revision 4ebb82d4f82bac46ae3addd112c4752f29630a8a
+[+] required finality: accepted
+[+] recorded winner finality: mempool
+[+] durable effect after restart: observed
+[+] reservation after restart: in_flight
+[+] settlement spend recorded: false
+[+] recovery accounting recorded: false
+[+] coordinator result: exact_payment_won
+[+] observer calls after restart: 0
+[+] new recovery claim possible: false
+[+] reproduced terminal recovery state from provisional mempool evidence

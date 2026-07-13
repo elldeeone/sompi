@@ -1,0 +1,23 @@
+flowchart LR
+    Agent["Agent or compromised MCP\nuntrusted work"]
+    Socket["Authority sockets\ncap and absolute pre-auth deadline"]
+    Prompt["Prompt queue\ncap, deadline, cancellation"]
+    Purchase["Purchase intake\negress check and storage quota"]
+    Treasury["Direct Treasury\nprevalidate or terminalize"]
+    Resources["Bounded descriptors, timers, disk,\ncapacity, operation slot"]
+    Operator["Legitimate operator work"]
+
+    Agent --> Socket
+    Socket --> Prompt
+    Agent --> Purchase
+    Agent --> Treasury
+    Socket --> Resources
+    Prompt --> Resources
+    Purchase --> Resources
+    Treasury --> Resources
+    Operator --> Resources
+
+    classDef danger fill:#ffd6d6,stroke:#b42318,color:#3d0b08;
+    classDef guard fill:#d9f2e6,stroke:#147d52,color:#082b1c;
+    class Agent danger;
+    class Socket,Prompt,Purchase,Treasury guard;

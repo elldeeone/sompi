@@ -1,0 +1,25 @@
+{
+  "node": "v24.15.0",
+  "unsignedReflectedAcceptances": [
+    {
+      "stage": "checkout",
+      "signatureOrMacPresent": false
+    },
+    {
+      "stage": "payment",
+      "signatureOrMacPresent": false
+    }
+  ],
+  "moduleResult": "accepted",
+  "synthesizedVerifierId": "sompi:ap2-commerce-http:v1",
+  "configuredCleartextHop": {
+    "protocol": "http:",
+    "authority": "merchant.example",
+    "port": 80
+  },
+  "sourceChain": {
+    "paymentSignatureForwarded": true,
+    "nodeHttpSelected": true
+  },
+  "liveMitmOrBroadcastPerformed": false
+}

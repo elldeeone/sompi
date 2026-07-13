@@ -131,6 +131,46 @@ Deterministic recovery that compares persisted intent with Kaspa and Merchant
 observations after interruption. It advances or repairs state without blindly
 repeating an irreversible action.
 
+### Operator Provisioning
+
+A short-lived, non-agentic ceremony that validates and installs one immutable
+Operator Manifest before either production executable starts. It owns the
+recovery public key, vault cap/window, Treasury policy, Merchant HTTPS allow
+rules, supported testnet profile, trusted chain-evidence sources, and finality
+floors. The Agent and MCP process cannot create, replace, or loosen it.
+
+### Operator Manifest
+
+The canonical, versioned operator configuration installed by Operator
+Provisioning. Its exact bytes have a stable digest and monotonic revision.
+Runtime modules receive immutable typed projections plus that identity; they do
+not independently parse environment variables or policy files. A funded vault
+is bound to the static manifest facts from which its script and address were
+derived.
+
+### Chain Evidence
+
+A durable, typed assertion about one Kaspa transaction, outpoint, spend, or
+continuation. It records canonical facts, observation/proof profile, source
+identity, finality level, time, and digest. Current UTXO or mempool presence is
+an observation, not durable accepted history and not Kaspa consensus finality.
+
+### Finality Floor
+
+The operator-owned minimum evidence level required before a specific Purchase
+or Treasury transition becomes terminal. Protocol finality, local
+depth-confirmation policy, and Kaspa consensus finality remain separate facts.
+A Merchant may require a stronger floor but cannot lower Sompi's floor. The
+effective floor is part of exact human-present Purchase Authorization.
+
+### Admission Lease
+
+A bounded, expiring right to consume one scarce runtime resource such as an
+Authority socket/prompt, pre-validation Purchase/evidence capacity, or direct
+Treasury preparation slot. The owning module durably defines acquisition,
+cancellation, expiry, recovery, and terminal release; cancellation after a
+possible external effect always enters Reconciliation.
+
 ## Product invariants
 
 1. The Agent can request but cannot authorize its own Purchase.
@@ -150,6 +190,14 @@ repeating an irreversible action.
 11. Agent-controlled URLs are subject to egress policy, redirect checks,
     private-network protection, and request fingerprinting.
 12. Mainnet remains disabled until every recorded mainnet gate is satisfied.
+13. Only Operator Provisioning may establish or loosen operator trust,
+    recovery authority, policy, Merchant transport, or chain-evidence floors.
+14. Only the Chain Evidence module may promote raw node observations into facts
+    that terminalize Settlement, Treasury Movement, or recovery.
+15. `mempool`, `accepted`, local depth confirmation, and Kaspa consensus
+    finality are never treated as interchangeable.
+16. Scarce work acquires a bounded Admission Lease before consuming sockets,
+    prompts, evidence bytes, Purchase rows, or exclusive Treasury preparation.
 
 ## Non-goals for the first end-to-end release
 

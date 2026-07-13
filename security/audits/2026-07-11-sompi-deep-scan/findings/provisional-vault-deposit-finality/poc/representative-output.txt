@@ -1,0 +1,1 @@
+{"affectedRevisionMatched":true,"acceptedProvisionalDaa":"0","operationStateBeforeEviction":"completed","chainEvidenceAfterEviction":"not_submitted","operationStateAfterRestart":"completed","persistedNonexistentOutpoint":true,"vaultOutputQueries":2,"mempoolQueries":1,"acceptedChainQueries":1,"independentAcceptedChainEvidence":false}

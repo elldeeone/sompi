@@ -1,0 +1,8 @@
+[+] affected revision: 4ebb82d4f82bac46ae3addd112c4752f29630a8a
+[+] queued prompt promises: 128
+[+] settled after 50 ms: 0
+[+] first prompt rendered: true
+[+] second prompt rendered: false
+[+] rendered ceremonies: 1
+[+] prompt queue remained blocked behind the unanswered first ceremony
+[+] no socket, credential, Merchant, RPC, or blockchain operation was performed

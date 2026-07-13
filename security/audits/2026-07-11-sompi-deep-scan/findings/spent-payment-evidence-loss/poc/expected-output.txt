@@ -1,0 +1,7 @@
+target_module_sha256=fdcc120c4424b38f87dfac8f1ff90bb7138fc686e5315f7c488ca63a292627f7
+current_utxo_entries=0
+current_mempool_contains_transaction=false
+accepted_history_contains_transaction=true
+accepted_history_queries=0
+observer_status=pending
+result=VULNERABLE

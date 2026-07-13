@@ -1,0 +1,6 @@
+{
+  "verboseOnlyAccepted": true,
+  "status": "observed",
+  "finality": "mempool",
+  "sameIncompleteObjectWithoutVerbose": "rejected: Kaspa RPC transaction identity cannot be derived"
+}

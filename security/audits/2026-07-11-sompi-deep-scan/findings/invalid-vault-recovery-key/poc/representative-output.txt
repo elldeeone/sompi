@@ -1,0 +1,8 @@
+[+] package version: 0.8.0
+[+] candidate: ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+[+] pinned SDK accepts candidate: false
+[+] VaultManager.create accepts candidate: true
+[+] persisted ownerPublic matches candidate: true
+[+] restart accepts poisoned configuration: true
+[+] vulnerability reproduced: invalid x-only recovery authority persisted
+[+] cleanup: temporary vault state removed

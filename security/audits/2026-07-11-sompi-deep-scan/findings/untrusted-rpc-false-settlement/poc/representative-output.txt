@@ -1,0 +1,3 @@
+[+] loaded Sompi RPC observation adapter
+[+] fake RPC calls: serverInfo=1 utxos=1 mempool=0
+{"acceptedFabrication":true,"status":"observed","finality":"confirmed"}

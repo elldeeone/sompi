@@ -1,0 +1,5 @@
+[+] loaded production VaultTreasuryStaging
+[+] accepted provisional observation: observedAtDaa=0
+[+] durable vault commit calls: 1
+[+] emitted staging evidence before accepted-finality proof
+{"acceptedDaaZero":true,"commitCalls":1,"emittedStagedEvidence":true,"observedAtDaaInEvidence":"0"}
