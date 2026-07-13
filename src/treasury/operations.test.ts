@@ -27,6 +27,7 @@ import type {
   TreasuryOperationAdapter,
   TreasuryOperationProbe,
 } from "./operation-adapters.js";
+import { TreasuryPreparationError } from "./operation-adapters.js";
 import { TreasuryOperationModule } from "./operations.js";
 
 const NOW = 1_900_000_000_000;
@@ -288,6 +289,144 @@ test("vault send maximum is rejected before intent or signing", async () => {
   });
 });
 
+test("pinned adapter validation rejects an SDK-invalid destination before durable claim", async () => {
+  await withFixture(async ({ journal, module, wallet }) => {
+    wallet.validationError = new TreasuryPreparationError(
+      "invalid_destination",
+      "validation",
+      "invalid destination",
+    );
+    await assert.rejects(
+      module.execute({
+        operationKey: "direct:invalid-address",
+        kind: "wallet_send",
+        destination: "kaspatest:a",
+        amountAtomic: "100",
+      }),
+      TreasuryPreparationError,
+    );
+    assert.equal(journal.findTreasuryOperation("direct:invalid-address"), undefined);
+    assert.equal(wallet.prepareCalls, 0);
+  });
+});
+
+test("permanent pre-effect preparation failure terminalizes and releases the shared slot", async () => {
+  await withFixture(async ({ journal, module, wallet }) => {
+    wallet.typedPrepareErrors.push(new TreasuryPreparationError(
+      "invalid_transaction_shape",
+      "preparation",
+      "permanent shape failure",
+    ));
+    const failed = await module.execute({
+      operationKey: "direct:permanent-pre-effect",
+      kind: "wallet_send",
+      destination: DESTINATION,
+      amountAtomic: "100",
+    });
+    assert.equal(failed.state, "failed_terminal");
+    assert.equal(journal.requireTreasuryOperation("direct:permanent-pre-effect").state, "failed_terminal");
+    assert.equal(journal.treasuryPolicyCapacityUsed(), 0n);
+    wallet.probes.push(observed(wallet.transactionId));
+    const next = await module.execute({
+      operationKey: "direct:slot-reuse",
+      kind: "wallet_send",
+      destination: DESTINATION,
+      amountAtomic: "1",
+    });
+    assert.equal(next.state, "completed");
+  });
+});
+
+test("typed transient preparation failures use durable bounded retries across restart", async () => {
+  await withFixture(async ({ directory, journal, policy, wallet, vault, deposit }) => {
+    wallet.typedPrepareErrors.push(
+      new TreasuryPreparationError("transient_unavailable", "preparation", "node unavailable"),
+    );
+    wallet.probes.push(observed(wallet.transactionId));
+    const module = new TreasuryOperationModule({
+      journal,
+      policy,
+      adapters: [wallet, vault, deposit],
+      feeCeilingAtomic: "10",
+      directTreasuryRetries: 2,
+    });
+    await assert.rejects(
+      module.execute({
+        operationKey: "direct:transient-restart",
+        kind: "wallet_send",
+        destination: DESTINATION,
+        amountAtomic: "100",
+      }),
+      TreasuryPreparationError,
+    );
+    assert.equal(journal.requireTreasuryOperation("direct:transient-restart").retryCount, 1);
+    journal.close();
+    const restarted = new PurchaseJournal(path.join(directory, "purchase.sqlite"), { now: () => NOW });
+    try {
+      const recovered = new TreasuryOperationModule({
+        journal: restarted,
+        policy,
+        adapters: [wallet, vault, deposit],
+        feeCeilingAtomic: "10",
+        directTreasuryRetries: 2,
+      });
+      const completed = await recovered.recover("direct:transient-restart");
+      assert.equal(completed.state, "completed");
+      assert.equal(completed.retryCount, 1);
+    } finally {
+      restarted.close();
+    }
+  });
+});
+
+test("retry exhaustion is exact and cancellation never frees prepared or submitted work", async () => {
+  await withFixture(async ({ module, journal, wallet }) => {
+    wallet.typedPrepareErrors.push(
+      new TreasuryPreparationError("transient_unavailable", "preparation", "temporary one"),
+      new TreasuryPreparationError("transient_unavailable", "preparation", "temporary two"),
+    );
+    await assert.rejects(() => module.execute({
+      operationKey: "direct:retry-exhaustion",
+      kind: "wallet_send",
+      destination: DESTINATION,
+      amountAtomic: "100",
+    }), TreasuryPreparationError);
+    await assert.rejects(() => module.recover("direct:retry-exhaustion"), /retry limit/);
+    await assert.rejects(() => module.recover("direct:retry-exhaustion"), /retry limit/);
+    assert.equal(journal.requireTreasuryOperation("direct:retry-exhaustion").retryCount, 2);
+  }, { directTreasuryRetries: 2 });
+
+  await withFixture(async ({ module, journal, wallet }) => {
+    wallet.typedPrepareErrors.push(
+      new TreasuryPreparationError("transient_unavailable", "preparation", "temporary"),
+    );
+    await assert.rejects(() => module.execute({
+      operationKey: "direct:cancel-before-effect",
+      kind: "wallet_send",
+      destination: DESTINATION,
+      amountAtomic: "100",
+    }), TreasuryPreparationError);
+    assert.equal((await module.cancel("direct:cancel-before-effect")).state, "failed_terminal");
+    assert.equal(journal.treasuryPolicyCapacityUsed(), 0n);
+
+    wallet.probes.push(pending(wallet.transactionId));
+    wallet.submitErrors = 1;
+    const ambiguous = await module.execute({
+      operationKey: "direct:cancel-after-preparation",
+      kind: "wallet_send",
+      destination: DESTINATION,
+      amountAtomic: "100",
+    });
+    assert.equal(ambiguous.state, "submission_planned");
+    const cancelled = await module.cancel("direct:cancel-after-preparation");
+    assert.equal(cancelled.cancellationRequested, true);
+    assert.equal(cancelled.recoveryRequired, true);
+    const fenced = await module.recover("direct:cancel-after-preparation");
+    assert.equal(fenced.state, "submission_planned");
+    assert.equal(wallet.submitCalls, 1);
+  });
+});
+
 class FakeAdapter implements TreasuryOperationAdapter {
   readonly transactionId: string;
   prepareCalls = 0;
@@ -295,6 +434,8 @@ class FakeAdapter implements TreasuryOperationAdapter {
   observeCalls = 0;
   commitCalls = 0;
   prepareErrors = 0;
+  readonly typedPrepareErrors: TreasuryPreparationError[] = [];
+  validationError?: TreasuryPreparationError;
   submitErrors = 0;
   commitErrors = 0;
   feeAtomic = "10";
@@ -307,11 +448,17 @@ class FakeAdapter implements TreasuryOperationAdapter {
     this.transactionId = txByte.repeat(64);
   }
 
+  validateRequest(): void {
+    if (this.validationError) throw this.validationError;
+  }
+
   async prepare(
     intent: TreasuryOperationRecord,
     authorize: (destination: string, amountAtomic: bigint) => void
   ): Promise<PreparedTreasuryOperationMaterial> {
     this.prepareCalls += 1;
+    const typedError = this.typedPrepareErrors.shift();
+    if (typedError) throw typedError;
     if (this.prepareErrors-- > 0) throw new Error("injected prepare crash");
     this.onPrepare?.(intent);
     const amount = intent.requestedAmountAtomic === "max" ? 100n : BigInt(intent.requestedAmountAtomic);
@@ -375,7 +522,7 @@ async function withFixture(
     deposit: FakeAdapter;
     module: TreasuryOperationModule;
   }) => Promise<void>,
-  limits: { maxPerPaymentAtomic?: string; maxPerHourAtomic?: string } = {}
+  limits: { maxPerPaymentAtomic?: string; maxPerHourAtomic?: string; directTreasuryRetries?: number } = {}
 ): Promise<void> {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-treasury-operation-"));
   fs.chmodSync(directory, 0o700);
@@ -396,6 +543,9 @@ async function withFixture(
     policy,
     adapters: [wallet, vault, deposit],
     feeCeilingAtomic: "10",
+    ...(limits.directTreasuryRetries === undefined
+      ? {}
+      : { directTreasuryRetries: limits.directTreasuryRetries }),
   });
   try {
     await run({ directory, journal, policy, wallet, vault, deposit, module });

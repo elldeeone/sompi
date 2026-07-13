@@ -10,6 +10,7 @@ import {
   parseAuthorityArguments,
   type AuthorityCliCommand,
 } from "./cli/arguments.js";
+import { loadOperatorManifest } from "./operator/manifest.js";
 
 const command = parseCommandOrExit();
 if (command.kind === "help") {
@@ -74,8 +75,17 @@ async function main(command: Exclude<AuthorityCliCommand, { kind: "help" }>): Pr
     process.env.SOMPI_AUTHORITY_SOCKET_GID,
     "authority socket group ID"
   );
+  const manifestPath = process.env.SOMPI_OPERATOR_MANIFEST;
+  const operatorUid = requiredNumericId(process.env.SOMPI_OPERATOR_UID, "operator user ID");
+  const runtimeGid = requiredNumericId(process.env.SOMPI_RUNTIME_GID, "runtime group ID");
+  if (!manifestPath) throw new Error("SOMPI_OPERATOR_MANIFEST is required");
+  const manifest = loadOperatorManifest(manifestPath, {
+    expectedOperatorUserId: operatorUid,
+    runtimeGroupId: runtimeGid,
+  });
   const authority = await startAuthorityRuntime(paths, identity, {
     ...(socketGroupId === undefined ? {} : { socketGroupId }),
+    admission: manifest.manifest.admission,
   });
   process.stderr.write("sompi-authority listening on its configured Unix socket\n");
   let stopping = false;
@@ -98,5 +108,12 @@ function optionalNumericId(value: string | undefined, label: string): number | u
   if (!Number.isSafeInteger(parsed) || parsed > 0x7fffffff) {
     throw new Error(`${label} is invalid`);
   }
+  return parsed;
+}
+
+function requiredNumericId(value: string | undefined, label: string): number {
+  if (value === undefined) throw new Error(`${label} is required`);
+  const parsed = optionalNumericId(value, label);
+  if (parsed === undefined) throw new Error(`${label} is required`);
   return parsed;
 }

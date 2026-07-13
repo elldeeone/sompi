@@ -288,6 +288,30 @@ test("status is strictly read-only and calls no protocol or treasury dependency"
   });
 });
 
+test("known-denied egress is rejected before durable Purchase or evidence admission", async () => {
+  await withFixture(async ({ coordinator, journal, intent }) => {
+    const denied = {
+      ...intent,
+      requestKey: assertPurchaseRequestKey("test:coordinator:denied-egress"),
+      resource: {
+        ...intent.resource,
+        url: "https://blocked.invalid/resource",
+        body: Buffer.alloc(1024, 0xa5),
+      },
+    };
+    await assert.rejects(
+      coordinator.purchase(denied),
+      (error: unknown) => error instanceof Error && "code" in error && error.code === "host_denied",
+    );
+    assert.equal(journal.findPurchaseByRequestKey(denied.requestKey), undefined);
+    const evidenceDirectory = `${journal.filename}.evidence`;
+    assert.deepEqual(fs.readdirSync(evidenceDirectory), []);
+    const status = journal.admissionStatus();
+    assert.equal(status?.prevalidationPurchases.used, 0);
+    assert.equal(status?.evidenceBytes.used, 0);
+  });
+});
+
 test("restart after durable preparation reuses exact bytes instead of preparing or signing again", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-coordinator-prepared-"));
   fs.chmodSync(directory, 0o700);
@@ -644,7 +668,16 @@ async function withFixture(
 ): Promise<void> {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-coordinator-"));
   fs.chmodSync(directory, 0o700);
-  const journal = new PurchaseJournal(path.join(directory, "purchase.sqlite"), { now: () => NOW });
+  const journal = new PurchaseJournal(path.join(directory, "purchase.sqlite"), {
+    now: () => NOW,
+    admission: {
+      authorityPreauthSockets: 32,
+      authorityPrompts: 4,
+      prevalidationPurchases: 128,
+      evidenceBytes: 67_108_864,
+      directTreasuryRetries: 3,
+    },
+  });
   const dependencies = new FakeDependencies();
   const coordinator = makeCoordinator(journal, dependencies);
   try {

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 
 export const JOURNAL_APPLICATION_ID = 0x534f4d50; // SOMP
-export const JOURNAL_SCHEMA_VERSION = 6;
+export const JOURNAL_SCHEMA_VERSION = 7;
 
 export const JOURNAL_SCHEMA_V1_SQL = `
   CREATE TABLE schema_migrations (
@@ -765,11 +765,58 @@ export const JOURNAL_SCHEMA_V6_MIGRATION_SQL = `
     BEGIN SELECT RAISE(ABORT, 'Chain Evidence is immutable'); END;
 `;
 
+/** Clean-cutover epoch for boundary-owned durable Admission Leases. */
+export const JOURNAL_SCHEMA_V7_MIGRATION_SQL = `
+  ALTER TABLE treasury_operations
+    ADD COLUMN retry_limit INTEGER NOT NULL DEFAULT 3 CHECK (retry_limit > 0);
+  ALTER TABLE treasury_operations
+    ADD COLUMN cancellation_requested INTEGER NOT NULL DEFAULT 0 CHECK (cancellation_requested IN (0, 1));
+
+  CREATE TABLE journal_admission_budget (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    prevalidation_purchase_limit INTEGER NOT NULL CHECK (prevalidation_purchase_limit > 0),
+    evidence_byte_limit INTEGER NOT NULL CHECK (evidence_byte_limit > 0),
+    direct_treasury_retry_limit INTEGER NOT NULL CHECK (direct_treasury_retry_limit > 0),
+    reserved_purchase_count INTEGER NOT NULL DEFAULT 0 CHECK (reserved_purchase_count >= 0),
+    reserved_evidence_bytes INTEGER NOT NULL DEFAULT 0 CHECK (reserved_evidence_bytes >= 0),
+    committed_evidence_bytes INTEGER NOT NULL DEFAULT 0 CHECK (committed_evidence_bytes >= 0),
+    updated_at_ms INTEGER NOT NULL
+  ) STRICT;
+
+  CREATE TABLE admission_leases (
+    lease_id TEXT PRIMARY KEY,
+    owner TEXT NOT NULL,
+    resource TEXT NOT NULL CHECK (resource IN ('prevalidation_purchase', 'evidence_bytes')),
+    purchase_id TEXT REFERENCES purchases(id) ON DELETE RESTRICT,
+    digest TEXT,
+    storage_ref TEXT,
+    quantity INTEGER NOT NULL CHECK (quantity >= 0),
+    state TEXT NOT NULL CHECK (state IN (
+      'offered', 'admitted', 'active', 'completed', 'cancelled', 'expired', 'failed_terminal'
+    )),
+    deadline_at_ms INTEGER,
+    outcome TEXT,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    CHECK (resource <> 'prevalidation_purchase' OR purchase_id IS NOT NULL),
+    CHECK (resource <> 'evidence_bytes' OR digest IS NOT NULL),
+    CHECK (state IN ('offered', 'admitted', 'active') OR outcome IS NOT NULL)
+  ) STRICT;
+
+  CREATE INDEX active_admission_leases
+    ON admission_leases(resource, state, deadline_at_ms);
+
+  CREATE TRIGGER immutable_admission_leases_delete
+    BEFORE DELETE ON admission_leases
+    BEGIN SELECT RAISE(ABORT, 'Admission Leases are immutable history'); END;
+`;
+
 export const JOURNAL_SCHEMA_V2_SQL = `${JOURNAL_SCHEMA_V1_SQL}\n${JOURNAL_SCHEMA_V2_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V3_SQL = `${JOURNAL_SCHEMA_V2_SQL}\n${JOURNAL_SCHEMA_V3_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V4_SQL = `${JOURNAL_SCHEMA_V3_SQL}\n${JOURNAL_SCHEMA_V4_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V5_SQL = `${JOURNAL_SCHEMA_V4_SQL}\n${JOURNAL_SCHEMA_V5_MIGRATION_SQL}`;
-export const JOURNAL_SCHEMA_SQL = `${JOURNAL_SCHEMA_V5_SQL}\n${JOURNAL_SCHEMA_V6_MIGRATION_SQL}`;
+export const JOURNAL_SCHEMA_V6_SQL = `${JOURNAL_SCHEMA_V5_SQL}\n${JOURNAL_SCHEMA_V6_MIGRATION_SQL}`;
+export const JOURNAL_SCHEMA_SQL = `${JOURNAL_SCHEMA_V6_SQL}\n${JOURNAL_SCHEMA_V7_MIGRATION_SQL}`;
 
 export const JOURNAL_SCHEMA_V1_CHECKSUM = sha256Text(JOURNAL_SCHEMA_V1_SQL);
 export const JOURNAL_SCHEMA_V2_CHECKSUM = sha256Text(JOURNAL_SCHEMA_V2_SQL);

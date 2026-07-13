@@ -1238,8 +1238,9 @@ function treasuryOperationSetup(
     kind: "wallet_send",
     destination: "kaspatest:merchant",
     requestedAmountAtomic: "100",
-    feeCeilingAtomic: "10",
-    policyDigest: policy.digest,
+        feeCeilingAtomic: "10",
+        retryLimit: 3,
+        policyDigest: policy.digest,
   };
   const prepared: PreparedTreasuryOperation = {
     bytes: Buffer.from(`treasury-prepared-${seed}`, "utf8"),

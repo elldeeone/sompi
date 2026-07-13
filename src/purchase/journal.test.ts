@@ -57,21 +57,30 @@ test("Journal binds one immutable Operator Manifest identity before durable work
     revision: 2,
     digest: `sha256:${Buffer.alloc(32, 2).toString("base64url")}`,
   };
+  const admission = {
+    authorityPreauthSockets: 32,
+    authorityPrompts: 4,
+    prevalidationPurchases: 128,
+    evidenceBytes: 67_108_864,
+    directTreasuryRetries: 3,
+  } as const;
   try {
     const first = new PurchaseJournal(filename, {
       operatorManifestIdentity: firstIdentity,
+      admission,
     });
     assert.deepEqual(first.operatorManifestIdentity(), firstIdentity);
     first.close();
 
     const same = new PurchaseJournal(filename, {
       operatorManifestIdentity: firstIdentity,
+      admission,
     });
     assert.deepEqual(same.operatorManifestIdentity(), firstIdentity);
     same.close();
 
     assert.throws(
-      () => new PurchaseJournal(filename, { operatorManifestIdentity: secondIdentity }),
+      () => new PurchaseJournal(filename, { operatorManifestIdentity: secondIdentity, admission }),
       /different Operator Manifest/
     );
 
@@ -80,7 +89,7 @@ test("Journal binds one immutable Operator Manifest identity before durable work
     unbound.createPurchase(purchaseInput(91));
     unbound.close();
     assert.throws(
-      () => new PurchaseJournal(unboundPath, { operatorManifestIdentity: firstIdentity }),
+      () => new PurchaseJournal(unboundPath, { operatorManifestIdentity: firstIdentity, admission }),
       /cannot bind an existing development Journal/
     );
   } finally {

@@ -28,8 +28,8 @@ export class AuthorityDecisionEndpoint {
     }
   }
 
-  async handle(authenticatedRequestWire: string): Promise<string> {
-    const result = await this.service.handleDecision(authenticatedRequestWire);
+  async handle(authenticatedRequestWire: string, signal?: AbortSignal): Promise<string> {
+    const result = await this.service.handleDecision(authenticatedRequestWire, signal);
     return encodeAuthorityDecisionEndpointResult(result);
   }
 }

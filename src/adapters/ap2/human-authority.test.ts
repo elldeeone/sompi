@@ -3,6 +3,7 @@ import { PassThrough } from "node:stream";
 import test from "node:test";
 
 import {
+  AuthorityPromptBusyError,
   TerminalAuthorityApprovalPrompt,
   type AuthorityApprovalDisplay,
 } from "./human-authority.js";
@@ -95,6 +96,42 @@ test("terminal authority renders hostile Merchant text only as escaped data", as
 
   input.write(`${hostile.purchaseId}\n`);
   assert.equal(await decision, true);
+  input.end();
+  output.end();
+});
+
+test("bounded prompt admission cancels the head, ignores its late answer, and admits the next request", async () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  output.setEncoding("utf8");
+  let rendered = "";
+  output.on("data", (chunk: string) => { rendered += chunk; });
+  const prompt = new TerminalAuthorityApprovalPrompt({
+    input,
+    output,
+    allowNonTtyForTests: true,
+    maxPrompts: 2,
+  });
+  const first = display("pur_DDDDDDDDDDDDDDDDDDDDDD");
+  const second = display("pur_EEEEEEEEEEEEEEEEEEEEEE");
+  const third = display("pur_FFFFFFFFFFFFFFFFFFFFFF");
+  const firstAbort = new AbortController();
+  const firstDecision = prompt.approve(first, firstAbort.signal);
+  const secondDecision = prompt.approve(second);
+  await assert.rejects(
+    prompt.approve(third),
+    AuthorityPromptBusyError,
+  );
+  await until(() => rendered.includes(first.purchaseId));
+  firstAbort.abort();
+  await assert.rejects(firstDecision, { name: "AbortError" });
+  await until(() => rendered.includes(second.purchaseId));
+  input.write(`${first.purchaseId}\n`);
+  assert.equal(await secondDecision, false, "a late answer cannot approve the next Purchase");
+  const thirdDecision = prompt.approve(third);
+  await until(() => rendered.includes(third.purchaseId));
+  input.write(`${third.purchaseId}\n`);
+  assert.equal(await thirdDecision, true);
   input.end();
   output.end();
 });

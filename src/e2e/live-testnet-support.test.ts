@@ -389,6 +389,7 @@ test("live bootstrap capacity and Treasury dispatch preserve restart idempotency
     retryCount: 0,
     recoveryRequired: false,
     safeToRetry: false,
+    cancellationRequested: false,
   };
   let executeCalls = 0;
   let recoverCalls = 0;

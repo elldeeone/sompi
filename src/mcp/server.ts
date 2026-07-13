@@ -392,6 +392,18 @@ export function registerSompiTools(
   );
 
   register(
+    "treasury_operation_cancel",
+    {
+      description:
+        "Cancel a direct Treasury Movement only while non-execution is proven; prepared or submitted work remains fenced for reconciliation.",
+      inputSchema: { operationKey: TREASURY_OPERATION_KEY },
+    },
+    "TREASURY_OPERATION_CANCEL_FAILED",
+    async ({ operationKey }: { operationKey: string }) =>
+      publicTreasuryOperation(await requireTreasuryOperations(treasuryOperations).cancel(operationKey))
+  );
+
+  register(
     "get_policy",
     {
       description:
@@ -440,6 +452,24 @@ export function registerSompiTools(
     },
     "PURCHASE_RECOVERY_FAILED",
     async (input) => publicPurchaseView(await purchases.purchaseRecover(input))
+  );
+
+  register(
+    "purchase_admission_status",
+    {
+      description: "Read secret-free Purchase and Evidence admission budgets and saturation status.",
+    },
+    "PURCHASE_ADMISSION_STATUS_FAILED",
+    async () => {
+      const status = journal.admissionStatus();
+      if (!status) throw new McpPublicError("ADMISSION_STATUS_UNAVAILABLE", "Purchase admission status is unavailable.");
+      return {
+        summary: status.prevalidationPurchases.saturated || status.evidenceBytes.saturated
+          ? "Purchase admission is saturated; no partial durable state is retained."
+          : "Purchase admission has capacity.",
+        status,
+      };
+    }
   );
 
   // Assert the journal at registration time without exposing its filename.
@@ -796,6 +826,7 @@ function publicTreasuryOperation(operation: TreasuryOperationView) {
     retryCount: operation.retryCount,
     recoveryRequired: operation.recoveryRequired,
     safeToRetry: operation.safeToRetry,
+    cancellationRequested: operation.cancellationRequested,
     network: TESTNET,
   };
 }

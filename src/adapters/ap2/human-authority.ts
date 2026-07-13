@@ -40,7 +40,7 @@ export interface AuthorityApprovalDisplay {
 
 export interface AuthorityApprovalPrompt {
   /** Only the exact Purchase ID confirms approval; every other result denies. */
-  approve(display: AuthorityApprovalDisplay): Promise<boolean>;
+  approve(display: AuthorityApprovalDisplay, signal?: AbortSignal): Promise<boolean>;
 }
 
 export interface Ap2HumanAuthorityOptions {
@@ -70,6 +70,7 @@ export class Ap2HumanAuthorityDecisionProvider implements AuthorityHumanDecision
   }
 
   async decide(context: AuthorityHumanDecisionContext): Promise<AuthorityHumanDecision> {
+    context.signal.throwIfAborted();
     const nowMs = this.timestamp();
     const message = context.request.message;
     const checkoutEvidence = message.checkoutEvidence;
@@ -89,7 +90,8 @@ export class Ap2HumanAuthorityDecisionProvider implements AuthorityHumanDecision
       throw new Error("authority request expired before a decision could be signed");
     }
     const display = displayFacts(message.facts, context.recoveryRetry);
-    const approved = await this.options.prompt.approve(display);
+    const approved = await this.options.prompt.approve(display, context.signal);
+    context.signal.throwIfAborted();
     context.renewLease();
 
     const signingTimeMs = this.timestamp();
@@ -126,6 +128,16 @@ export interface TerminalAuthorityApprovalPromptOptions {
   readonly output?: Writable;
   /** Hermetic unit tests only. Production approval must use a real terminal. */
   readonly allowNonTtyForTests?: boolean;
+  readonly maxPrompts?: number;
+}
+
+export class AuthorityPromptBusyError extends Error {
+  readonly code = "busy" as const;
+
+  constructor() {
+    super("authority prompt capacity is saturated");
+    this.name = "AuthorityPromptBusyError";
+  }
 }
 
 /** Fixed terminal ceremony. Merchant strings are rendered as escaped data. */
@@ -133,24 +145,70 @@ export class TerminalAuthorityApprovalPrompt implements AuthorityApprovalPrompt 
   private readonly input: Readable;
   private readonly output: Writable;
   private readonly allowNonTtyForTests: boolean;
-  private promptTail: Promise<void> = Promise.resolve();
+  private readonly maxPrompts: number;
+  private readonly queue: Array<PromptEntry> = [];
+  private active?: PromptEntry;
 
   constructor(options: TerminalAuthorityApprovalPromptOptions = {}) {
     this.input = options.input ?? process.stdin;
     this.output = options.output ?? process.stderr;
     this.allowNonTtyForTests = options.allowNonTtyForTests === true;
+    this.maxPrompts = options.maxPrompts ?? 4;
+    if (!Number.isSafeInteger(this.maxPrompts) || this.maxPrompts <= 0 || this.maxPrompts > 128) {
+      throw new Error("authority prompt budget is invalid");
+    }
   }
 
-  async approve(display: AuthorityApprovalDisplay): Promise<boolean> {
-    const prompt = this.promptTail.then(() => this.approveOne(display));
-    this.promptTail = prompt.then(
-      () => undefined,
-      () => undefined,
-    );
-    return prompt;
+  approve(display: AuthorityApprovalDisplay, signal?: AbortSignal): Promise<boolean> {
+    if (signal?.aborted) return Promise.reject(abortError());
+    if (this.queue.length + (this.active ? 1 : 0) >= this.maxPrompts) {
+      return Promise.reject(new AuthorityPromptBusyError());
+    }
+    return new Promise<boolean>((resolve, reject) => {
+      const entry: PromptEntry = {
+        display,
+        signal: signal ?? new AbortController().signal,
+        resolve,
+        reject,
+      };
+      const abort = () => {
+        if (this.active === entry) return;
+        const index = this.queue.indexOf(entry);
+        if (index === -1) return;
+        this.queue.splice(index, 1);
+        reject(abortError());
+      };
+      entry.abort = abort;
+      entry.signal.addEventListener("abort", abort, { once: true });
+      this.queue.push(entry);
+      this.pump();
+    });
   }
 
-  private async approveOne(display: AuthorityApprovalDisplay): Promise<boolean> {
+  pendingCount(): number {
+    return this.queue.length + (this.active ? 1 : 0);
+  }
+
+  private pump(): void {
+    if (this.active || this.queue.length === 0) return;
+    const entry = this.queue.shift()!;
+    if (entry.signal.aborted) {
+      entry.reject(abortError());
+      this.pump();
+      return;
+    }
+    this.active = entry;
+    void this.approveOne(entry.display, entry.signal)
+      .then(entry.resolve, entry.reject)
+      .finally(() => {
+        entry.signal.removeEventListener("abort", entry.abort!);
+        if (this.active === entry) this.active = undefined;
+        this.pump();
+      });
+  }
+
+  private async approveOne(display: AuthorityApprovalDisplay, signal: AbortSignal): Promise<boolean> {
+    signal.throwIfAborted();
     if (
       !this.allowNonTtyForTests &&
       (!isTerminalStream(this.input) || !isTerminalStream(this.output))
@@ -164,12 +222,28 @@ export class TerminalAuthorityApprovalPrompt implements AuthorityApprovalPrompt 
     try {
       const answer = await rl.question(
         `To approve, type the exact Purchase ID ${asciiJson(display.purchaseId)}; anything else denies: `,
+        { signal },
       );
+      signal.throwIfAborted();
       return answer === display.purchaseId;
     } finally {
       rl.close();
     }
   }
+}
+
+interface PromptEntry {
+  readonly display: AuthorityApprovalDisplay;
+  readonly signal: AbortSignal;
+  readonly resolve: (value: boolean) => void;
+  readonly reject: (reason: unknown) => void;
+  abort?: () => void;
+}
+
+function abortError(): Error {
+  const error = new Error("authority prompt was cancelled");
+  error.name = "AbortError";
+  return error;
 }
 
 function isTerminalStream(stream: Readable | Writable): boolean {

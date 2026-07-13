@@ -80,6 +80,7 @@ async function main(): Promise<void> {
         new VaultDepositTreasuryOperationAdapter(runtime.vault, runtime.wallet, runtime.chainEvidence, config.finalityFloors.vault),
       ],
       feeCeilingAtomic: config.treasuryOperationFeeCeilingAtomic,
+      directTreasuryRetries: config.admission.directTreasuryRetries,
     });
     const server = createSompiMcpServer(runtime, packageVersion(), treasuryOperations);
     const transport = new StdioServerTransport();

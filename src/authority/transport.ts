@@ -6,10 +6,12 @@ import {
   AUTHORITY_MAX_DECISION_EVIDENCE_BYTES,
   AUTHORITY_MAX_WIRE_BYTES,
 } from "./protocol.js";
+import type { AdmissionBudgetProjection } from "../admission.js";
 
 const FRAME_HEADER_BYTES = 4;
 const DEFAULT_TIMEOUT_MS = 10_000;
 export const AUTHORITY_DECISION_TRANSPORT_TIMEOUT_MS = 150_000;
+export const AUTHORITY_PREAUTH_FRAME_DEADLINE_MS = 2_000;
 const SOCKET_MODE = 0o600;
 const GROUP_SOCKET_MODE = 0o660;
 const DIRECTORY_MODE = 0o700;
@@ -46,8 +48,11 @@ export class AuthorityTransportError extends Error {
 
 export interface AuthorityUnixServerOptions {
   readonly socketPath: string;
-  readonly handle: (authenticatedRequestWire: string) => string | Promise<string>;
+  readonly handle: (authenticatedRequestWire: string, signal?: AbortSignal) => string | Promise<string>;
   readonly timeoutMs?: number;
+  /** Manifest projection in production; explicit values are used by hermetic tests. */
+  readonly admission?: Pick<AdmissionBudgetProjection, "authorityPreauthSockets">;
+  readonly preauthFrameDeadlineMs?: number;
   /** Shared IPC group for a distinct authority UID and MCP UID. */
   readonly socketGroupId?: number;
 }
@@ -61,6 +66,11 @@ export class AuthorityUnixServer {
   private readonly server: net.Server;
   private readonly sockets = new Set<net.Socket>();
   private readonly timeoutMs: number;
+  private readonly preauthCapacity: number;
+  private readonly preauthFrameDeadlineMs: number;
+  private preauthCount = 0;
+  private overloadRejections = 0;
+  private readonly lifetimes = new Map<net.Socket, AbortController>();
   private started = false;
   private socketIdentity?: { dev: bigint; ino: bigint };
 
@@ -71,6 +81,10 @@ export class AuthorityUnixServer {
       throw new AuthorityTransportError("invalid_configuration");
     }
     this.timeoutMs = requireTimeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+    this.preauthCapacity = validatePreauthCapacity(options.admission?.authorityPreauthSockets ?? 32);
+    this.preauthFrameDeadlineMs = requirePreauthDeadline(
+      options.preauthFrameDeadlineMs ?? AUTHORITY_PREAUTH_FRAME_DEADLINE_MS
+    );
     this.server = net.createServer({ allowHalfOpen: true }, (socket) => this.accept(socket));
     this.server.on("error", () => {
       // `start` and active sockets surface fixed public errors. Never emit a
@@ -139,7 +153,17 @@ export class AuthorityUnixServer {
   }
 
   async close(): Promise<void> {
-    for (const socket of this.sockets) socket.destroy();
+    const sockets = [...this.sockets];
+    await Promise.all(sockets.map((socket) => new Promise<void>((resolve) => {
+      if (socket.destroyed) {
+        resolve();
+        return;
+      }
+      socket.once("close", resolve);
+      socket.destroy();
+    })));
+    for (const controller of this.lifetimes.values()) controller.abort();
+    this.lifetimes.clear();
     this.sockets.clear();
     if (this.server.listening) await closeNetServer(this.server);
     removeOwnedSocket(this.options.socketPath, this.socketIdentity);
@@ -148,9 +172,17 @@ export class AuthorityUnixServer {
   }
 
   private accept(socket: net.Socket): void {
+    if (this.preauthCount >= this.preauthCapacity) {
+      this.overloadRejections += 1;
+      socket.destroy();
+      return;
+    }
+    this.preauthCount += 1;
     this.sockets.add(socket);
     socket.setNoDelay(true);
-    socket.setTimeout(this.timeoutMs);
+    let preauth = true;
+    let deadline: NodeJS.Timeout | undefined;
+    let controller: AbortController | undefined;
     let chunks: Buffer[] = [];
     let total = 0;
     let expected: number | undefined;
@@ -160,16 +192,28 @@ export class AuthorityUnixServer {
       if (failed) return;
       failed = true;
       chunks = [];
+      releasePreauth();
+      controller?.abort();
       socket.destroy();
     };
 
+    const releasePreauth = () => {
+      if (!preauth) return;
+      preauth = false;
+      this.preauthCount -= 1;
+      if (deadline) clearTimeout(deadline);
+    };
+
+    deadline = setTimeout(fail, this.preauthFrameDeadlineMs);
+    deadline.unref();
     socket.on("timeout", fail);
-    socket.on("error", () => {
-      failed = true;
-    });
+    socket.on("error", fail);
     socket.on("close", () => {
       this.sockets.delete(socket);
       chunks = [];
+      releasePreauth();
+      controller?.abort();
+      this.lifetimes.delete(socket);
     });
     socket.on("data", (chunk: Buffer) => {
       if (failed) return;
@@ -203,14 +247,30 @@ export class AuthorityUnixServer {
         fail();
         return;
       }
+      releasePreauth();
+      controller = new AbortController();
+      this.lifetimes.set(socket, controller);
+      socket.setTimeout(this.timeoutMs);
       void Promise.resolve()
-        .then(() => this.options.handle(requestWire))
+        .then(() => this.options.handle(requestWire, controller!.signal))
         .then((responseWire) => {
-          if (failed || socket.destroyed) return;
+          if (failed || socket.destroyed || controller?.signal.aborted) return;
           const response = encodeFrame(responseWire, AUTHORITY_MAX_RESPONSE_FRAME_BYTES);
           socket.end(response);
         })
         .catch(fail);
+    });
+  }
+
+  admissionStatus(): Readonly<{
+    readonly preauthSockets: number;
+    readonly budget: number;
+    readonly overloadRejections: number;
+  }> {
+    return Object.freeze({
+      preauthSockets: this.preauthCount,
+      budget: this.preauthCapacity,
+      overloadRejections: this.overloadRejections,
     });
   }
 }
@@ -345,6 +405,20 @@ function strictUtf8(bytes: Uint8Array): string {
 
 function requireTimeout(value: number): number {
   if (!Number.isSafeInteger(value) || value <= 0 || value > 5 * 60_000) {
+    throw new AuthorityTransportError("invalid_configuration");
+  }
+  return value;
+}
+
+function validatePreauthCapacity(value: number): number {
+  if (!Number.isSafeInteger(value) || value <= 0 || value > 1_024) {
+    throw new AuthorityTransportError("invalid_configuration");
+  }
+  return value;
+}
+
+function requirePreauthDeadline(value: number): number {
+  if (!Number.isSafeInteger(value) || value <= 0 || value > 30_000) {
     throw new AuthorityTransportError("invalid_configuration");
   }
   return value;

@@ -568,6 +568,9 @@ export class PurchaseCoordinator implements PurchaseModule {
 
   async purchase(intent: PurchaseIntent): Promise<PurchaseView> {
     const canonicalIntent = canonicalIntentCopy(intent);
+    // Egress policy is reversible local admission. It must run before the
+    // Journal creates immutable Purchase or request-body evidence state.
+    const initialEgress = await this.createEgressSession(canonicalIntent);
     const fingerprint = requestFingerprint(canonicalIntent.resource);
     const purchase = this.journal.createPurchase({
       id: createPurchaseId(this.entropy(16)),
@@ -591,7 +594,7 @@ export class PurchaseCoordinator implements PurchaseModule {
         const current = this.journal.requirePurchase(purchase.id);
         switch (current.state) {
           case "created":
-            await this.bindTerms(current, canonicalIntent);
+            await this.bindTerms(current, canonicalIntent, initialEgress);
             continue;
           case "terms_bound":
             if (!(await this.createAuthorizationRequest(current, canonicalIntent))) return this.status(current.id);
@@ -684,11 +687,15 @@ export class PurchaseCoordinator implements PurchaseModule {
     return this.status(id);
   }
 
-  private async bindTerms(purchase: PurchaseRecord, intent: PurchaseIntent): Promise<void> {
+  private async bindTerms(
+    purchase: PurchaseRecord,
+    intent: PurchaseIntent,
+    initialEgress?: PurchaseEgressSession,
+  ): Promise<void> {
     const discovered = await this.checkout.discover({
       purchaseId: purchase.id,
       resourceFingerprint: purchase.resourceFingerprint,
-      egress: await this.createEgressSession(intent),
+      egress: initialEgress ?? await this.createEgressSession(intent),
     });
     if (
       !VERIFIED_CHECKOUT_DISCOVERIES.has(discovered) ||

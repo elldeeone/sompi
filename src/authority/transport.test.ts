@@ -110,6 +110,102 @@ test("authority handler exceptions never cross the Unix IPC seam", async () => {
   }
 });
 
+test("Authority pre-auth Admission Lease enforces the exact cap before parser state", async () => {
+  const fixture = fixtureDirectory();
+  const socketPath = path.join(fixture, "authority.sock");
+  const server = new AuthorityUnixServer({
+    socketPath,
+    admission: { authorityPreauthSockets: 2 },
+    handle: () => "unused",
+  });
+  const clients: net.Socket[] = [];
+  try {
+    await server.start();
+    const partial = frame("incomplete");
+    partial.writeUInt32BE(100, 0);
+    for (let index = 0; index < 3; index += 1) {
+      const client = await connectRaw(socketPath);
+      client.write(partial.subarray(0, 5));
+      clients.push(client);
+    }
+    await delay(25);
+    assert.equal(server.admissionStatus().preauthSockets, 2);
+    assert.equal(server.admissionStatus().budget, 2);
+    assert.equal(server.admissionStatus().overloadRejections >= 1, true);
+  } finally {
+    for (const client of clients) client.destroy();
+    await server.close();
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("drip-fed pre-auth bytes cannot renew the absolute frame deadline", async () => {
+  const fixture = fixtureDirectory();
+  const socketPath = path.join(fixture, "authority.sock");
+  const server = new AuthorityUnixServer({
+    socketPath,
+    timeoutMs: 500,
+    preauthFrameDeadlineMs: 50,
+    admission: { authorityPreauthSockets: 1 },
+    handle: () => "must-not-run",
+  });
+  await server.start();
+  const drip = await connectRaw(socketPath);
+  try {
+    const header = Buffer.alloc(4);
+    header.writeUInt32BE(4096, 0);
+    drip.write(header);
+    for (let index = 0; index < 4; index += 1) {
+      await delay(20);
+      drip.write(Buffer.from([0x41]));
+    }
+    await delay(50);
+    assert.equal(server.admissionStatus().preauthSockets, 0);
+    assert.equal(drip.destroyed, true);
+  } finally {
+    drip.destroy();
+    await server.close();
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
+test("disconnect, malformed frame, shutdown, and handoff release pre-auth permits exactly once", async () => {
+  const fixture = fixtureDirectory();
+  const socketPath = path.join(fixture, "authority.sock");
+  let calls = 0;
+  const server = new AuthorityUnixServer({
+    socketPath,
+    admission: { authorityPreauthSockets: 1 },
+    handle: (wire) => {
+      calls += 1;
+      return `ok:${wire}`;
+    },
+    preauthFrameDeadlineMs: 100,
+  });
+  try {
+    await server.start();
+    const disconnected = await connectRaw(socketPath);
+    disconnected.write(Buffer.from([0, 0, 0, 50, 0x41]));
+    disconnected.destroy();
+    await delay(15);
+    assert.equal(server.admissionStatus().preauthSockets, 0);
+
+    const malformed = await connectRaw(socketPath);
+    malformed.end(Buffer.from([0, 0, 0, 0]));
+    await delay(15);
+    assert.equal(server.admissionStatus().preauthSockets, 0);
+
+    const client = new AuthorityUnixClient({ socketPath, timeoutMs: 500 });
+    assert.equal(await client.request("legitimate"), "ok:legitimate");
+    assert.equal(calls, 1);
+    assert.equal(server.admissionStatus().preauthSockets, 0);
+  } finally {
+    await server.close();
+    assert.equal(server.admissionStatus().preauthSockets, 0);
+    fs.rmSync(fixture, { recursive: true, force: true });
+  }
+});
+
 test("Unix authority transport supports an explicitly pinned shared IPC group", async () => {
   if (
     typeof process.getuid !== "function" ||
@@ -204,6 +300,18 @@ function frame(value: string): Buffer {
   framed.writeUInt32BE(payload.byteLength, 0);
   payload.copy(framed, 4);
   return framed;
+}
+
+function connectRaw(socketPath: string): Promise<net.Socket> {
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ path: socketPath, allowHalfOpen: true });
+    socket.once("connect", () => resolve(socket));
+    socket.once("error", reject);
+  });
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
 function fixtureDirectory(): string {

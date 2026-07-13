@@ -144,6 +144,53 @@ test("authority service recovers persisted evidence after a crash without repeat
   }
 });
 
+test("authority decision cancellation aborts human work, releases admission, and cannot persist a decision", async () => {
+  const fixture = authorityFixture();
+  const replay = new SqliteAuthorityReplayStore(path.join(fixture.directory, "replay.sqlite"), {
+    now: () => NOW,
+  });
+  const decisions = new SqliteAuthorityDecisionStore(path.join(fixture.directory, "decisions.sqlite"));
+  let started!: () => void;
+  const decisionStarted = new Promise<void>((resolve) => { started = resolve; });
+  const service = new AuthorityService({
+    replayStore: replay,
+    decisionStore: decisions,
+    authenticationProvider: fixture.keyProvider,
+    now: () => NOW,
+    admission: { authorityPrompts: 1 },
+    humanDecision: {
+      async decide(context) {
+        started();
+        return await new Promise<never>((_resolve, reject) => {
+          context.signal.addEventListener("abort", () => reject(new Error("cancelled")), { once: true });
+        });
+      },
+    },
+  });
+  const request = sealAuthorityApprovalRequest(makeRequest(), authentication());
+  const transport = new AbortController();
+  try {
+    const pending = service.handleDecision(request.wire, transport.signal);
+    await decisionStarted;
+    transport.abort();
+    await assert.rejects(
+      pending,
+      (error: unknown) => error instanceof AuthorityServiceError && error.code === "unavailable",
+    );
+    assert.equal(decisions.find(request.requestDigest), undefined);
+    assert.deepEqual(service.admissionStatus(), {
+      activePrompts: 0,
+      budget: 1,
+      saturated: false,
+    });
+  } finally {
+    service.close();
+    replay.close();
+    decisions.close();
+    fixture.cleanup();
+  }
+});
+
 function makeRequest(): AuthorityApprovalRequest {
   const facts = makeFacts();
   return {

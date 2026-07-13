@@ -41,6 +41,10 @@ import type {
   TreasuryOperationState,
 } from "../treasury/operation-journal.js";
 import type { ChainEvidenceRecord } from "../chain-evidence/types.js";
+import {
+  validateAdmissionBudgets,
+  type AdmissionBudgetProjection,
+} from "../admission.js";
 
 const PAYMENT_ATTEMPT_STATES = ["planned", "prepared", "submitted", "observed", "failed"] as const;
 const EFFECT_STATES = [
@@ -119,6 +123,22 @@ export interface PurchaseJournalOptions {
   preparedMaterialDirectory?: string;
   faultInjector?: (point: JournalFaultPoint) => void;
   operatorManifestIdentity?: Readonly<{ revision: number; digest: string }>;
+  /** Manifest projection in production; explicit values are used by hermetic tests. */
+  admission?: AdmissionBudgetProjection;
+}
+
+export interface JournalAdmissionStatus {
+  readonly prevalidationPurchases: Readonly<{
+    used: number;
+    budget: number;
+    saturated: boolean;
+  }>;
+  readonly evidenceBytes: Readonly<{
+    used: number;
+    reserved: number;
+    budget: number;
+    saturated: boolean;
+  }>;
 }
 
 export interface CreatePurchaseInput {
@@ -644,12 +664,31 @@ export class PolicyReservationError extends Error {
   }
 }
 
+export class PurchaseAdmissionError extends Error {
+  readonly code = "purchase_admission_saturated" as const;
+
+  constructor(message = "Purchase admission capacity is saturated") {
+    super(message);
+    this.name = "PurchaseAdmissionError";
+  }
+}
+
+export class EvidenceAdmissionError extends Error {
+  readonly code = "evidence_admission_saturated" as const;
+
+  constructor(message = "Evidence admission capacity is saturated") {
+    super(message);
+    this.name = "EvidenceAdmissionError";
+  }
+}
+
 export class PurchaseJournal {
   private readonly db: Database.Database;
   private readonly now: () => number;
   private readonly faultInjector?: (point: JournalFaultPoint) => void;
   private readonly evidenceStore?: EvidenceStore;
   private readonly preparedMaterialStore?: EvidenceStore;
+  private readonly admission?: AdmissionBudgetProjection;
 
   constructor(readonly filename: string, options: PurchaseJournalOptions = {}) {
     this.now = options.now ?? Date.now;
@@ -661,6 +700,14 @@ export class PurchaseJournal {
       validateDatabaseFiles(databasePath);
       this.migrate();
       this.bindOperatorManifest(options.operatorManifestIdentity);
+      const existingAdmission = options.admission ?? this.readAdmissionProjection();
+      if (options.operatorManifestIdentity && !existingAdmission) {
+        throw new JournalInvariantError("production Purchase Journal requires the Operator Manifest admission projection");
+      }
+      this.admission = existingAdmission === undefined
+        ? undefined
+        : validateAdmissionBudgets(existingAdmission);
+      if (this.admission) this.ensureAdmissionBudget();
       const evidenceDirectory =
         options.evidenceDirectory ?? (filename === ":memory:" ? undefined : `${filename}.evidence`);
       this.evidenceStore = evidenceDirectory ? new EvidenceStore(evidenceDirectory) : undefined;
@@ -669,6 +716,7 @@ export class PurchaseJournal {
       this.preparedMaterialStore = preparedMaterialDirectory
         ? new EvidenceStore(preparedMaterialDirectory)
         : undefined;
+      if (this.admission) this.reconcileAdmissionLeases();
       this.verifyStartup();
     } catch (error) {
       if (this.db.open) this.db.close();
@@ -690,6 +738,37 @@ export class PurchaseJournal {
       .prepare("SELECT revision, digest FROM operator_manifest_binding WHERE singleton = 1")
       .get() as { revision: number; digest: string } | undefined;
     return row ? Object.freeze({ revision: row.revision, digest: row.digest }) : undefined;
+  }
+
+  admissionStatus(): JournalAdmissionStatus | undefined {
+    if (!this.admission) return undefined;
+    const row = this.db.prepare(
+      `SELECT prevalidation_purchase_limit, evidence_byte_limit,
+              reserved_purchase_count, reserved_evidence_bytes,
+              committed_evidence_bytes
+         FROM journal_admission_budget WHERE singleton = 1`
+    ).get() as {
+      prevalidation_purchase_limit: number;
+      evidence_byte_limit: number;
+      reserved_purchase_count: number;
+      reserved_evidence_bytes: number;
+      committed_evidence_bytes: number;
+    } | undefined;
+    if (!row) throw new JournalInvariantError("Journal admission budget is missing");
+    const evidenceUsed = row.reserved_evidence_bytes + row.committed_evidence_bytes;
+    return Object.freeze({
+      prevalidationPurchases: Object.freeze({
+        used: row.reserved_purchase_count,
+        budget: row.prevalidation_purchase_limit,
+        saturated: row.reserved_purchase_count >= row.prevalidation_purchase_limit,
+      }),
+      evidenceBytes: Object.freeze({
+        used: evidenceUsed,
+        reserved: row.reserved_evidence_bytes,
+        budget: row.evidence_byte_limit,
+        saturated: evidenceUsed >= row.evidence_byte_limit,
+      }),
+    });
   }
 
   recordChainEvidence(record: Readonly<ChainEvidenceRecord>): ChainEvidenceRecord {
@@ -774,8 +853,10 @@ export class PurchaseJournal {
           now,
           now
         );
+      const admissionLease = this.admitPurchaseInternal(input, now);
       this.inject("purchase.after_insert");
       this.insertPurchaseTransition(input.id, undefined, "created", "purchase_created", undefined, now);
+      this.completePurchaseAdmissionInternal(admissionLease, now);
       return this.requirePurchase(input.id);
     });
     return create.immediate();
@@ -1147,59 +1228,73 @@ export class PurchaseJournal {
     if (!this.evidenceStore) {
       throw new JournalInvariantError("an evidence directory is required for immutable evidence storage");
     }
-    const stored = this.evidenceStore.store(input.bytes);
-    const attach = this.db.transaction(() => {
-      this.requirePurchase(purchaseId);
-      if (input.attempt !== undefined) this.requirePaymentAttempt(purchaseId, input.attempt);
-      const existing = this.findEvidence(stored.digest);
-      if (existing) {
-        assertSameEvidenceBlob(existing, stored.byteLength, stored.storageRef);
-      } else {
-        const now = this.timestamp();
+    const digest = evidenceDigest(input.bytes);
+    const lease = this.admitEvidenceInternal(purchaseId, digest, input.bytes.byteLength);
+    let stored: StoredEvidence;
+    try {
+      stored = this.evidenceStore.store(input.bytes);
+    } catch (error) {
+      this.cancelEvidenceAdmission(lease, "write_failed");
+      throw error;
+    }
+    try {
+      const attach = this.db.transaction(() => {
+        this.requirePurchase(purchaseId);
+        if (input.attempt !== undefined) this.requirePaymentAttempt(purchaseId, input.attempt);
+        const existing = this.findEvidence(stored.digest);
+        if (existing) {
+          assertSameEvidenceBlob(existing, stored.byteLength, stored.storageRef);
+        } else {
+          const now = this.timestamp();
+          this.db
+            .prepare(
+              `INSERT INTO evidence_artifacts
+                 (digest, media_type, profile, issuer, byte_length, storage_ref, created_at_ms)
+               VALUES (?, ?, ?, ?, ?, ?, ?)`
+            )
+            .run(
+              stored.digest,
+              "application/octet-stream",
+              "urn:sompi:evidence-blob:1",
+              null,
+              stored.byteLength,
+              stored.storageRef,
+              now
+            );
+          this.inject("evidence.after_metadata_insert");
+        }
+        const attachedAtMs = this.timestamp();
         this.db
           .prepare(
-            `INSERT INTO evidence_artifacts
-               (digest, media_type, profile, issuer, byte_length, storage_ref, created_at_ms)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`
+            `INSERT OR IGNORE INTO evidence_links
+               (purchase_id, digest, kind, attempt, media_type, profile, issuer, attached_at_ms)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
           )
           .run(
+            purchaseId,
             stored.digest,
-            "application/octet-stream",
-            "urn:sompi:evidence-blob:1",
-            null,
-            stored.byteLength,
-            stored.storageRef,
-            now
+            input.kind,
+            input.attempt ?? null,
+            input.mediaType,
+            input.profile,
+            input.issuer ?? null,
+            attachedAtMs
           );
-        this.inject("evidence.after_metadata_insert");
-      }
-      const attachedAtMs = this.timestamp();
-      this.db
-        .prepare(
-          `INSERT OR IGNORE INTO evidence_links
-             (purchase_id, digest, kind, attempt, media_type, profile, issuer, attached_at_ms)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-        )
-        .run(
+        const attachment = this.requireEvidenceAttachment(
           purchaseId,
           stored.digest,
           input.kind,
-          input.attempt ?? null,
-          input.mediaType,
-          input.profile,
-          input.issuer ?? null,
-          attachedAtMs
+          input.attempt
         );
-      const attachment = this.requireEvidenceAttachment(
-        purchaseId,
-        stored.digest,
-        input.kind,
-        input.attempt
-      );
-      assertSameEvidenceAttachment(attachment, input);
-      return attachment;
-    });
-    return attach.immediate();
+        assertSameEvidenceAttachment(attachment, input);
+        this.completeEvidenceAdmissionInternal(lease, !existing, this.timestamp());
+        return attachment;
+      });
+      return attach.immediate();
+    } catch (error) {
+      this.cancelEvidenceAdmission(lease, "journal_write_failed");
+      throw error;
+    }
   }
 
   readEvidence(digest: Sha256Digest): Buffer {
@@ -1358,9 +1453,9 @@ export class PurchaseJournal {
           `INSERT INTO treasury_operations (
              operation_key, request_digest, kind, destination,
              requested_amount_atomic, keep_float_atomic, fee_ceiling_atomic,
-             resolved_amount_atomic, policy_digest,
+             resolved_amount_atomic, policy_digest, retry_limit,
              state, retry_count, created_at_ms, updated_at_ms
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'intent', 0, ?, ?)`
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'intent', 0, ?, ?)`
         ).run(
           input.operationKey,
           input.requestDigest,
@@ -1371,6 +1466,7 @@ export class PurchaseJournal {
           input.feeCeilingAtomic,
           resolved ?? null,
           input.policyDigest,
+          input.retryLimit,
           now,
           now
         );
@@ -1480,6 +1576,109 @@ export class PurchaseJournal {
       return this.requireTreasuryOperation(operationKey);
     });
     return record.immediate();
+  }
+
+  recordTreasuryPreparationRetry(
+    operationKey: string,
+    reasonCode: string,
+  ): TreasuryOperationRecord {
+    assertTreasuryOperationKey(operationKey);
+    assertCode(reasonCode, "Treasury preparation retry reason");
+    const retry = this.db.transaction(() => {
+      const current = this.requireTreasuryOperation(operationKey);
+      if (current.state !== "intent") {
+        throw new JournalInvariantError(
+          "only an unprepared direct Treasury operation can record a preparation retry",
+        );
+      }
+      if (current.retryCount >= current.retryLimit) {
+        throw new JournalInvariantError("direct Treasury preparation retry limit is exhausted");
+      }
+      const now = this.timestamp();
+      const updated = this.db.prepare(
+        `UPDATE treasury_operations
+            SET retry_count = retry_count + 1, updated_at_ms = ?
+          WHERE operation_key = ? AND state = 'intent' AND retry_count < retry_limit`
+      ).run(now, operationKey);
+      if (updated.changes !== 1) throw new JournalInvariantError("concurrent direct Treasury retry accounting");
+      this.insertTreasuryOperationTransition(
+        operationKey,
+        "intent",
+        "intent",
+        reasonCode,
+        now,
+      );
+      return this.requireTreasuryOperation(operationKey);
+    });
+    return retry.immediate();
+  }
+
+  failTreasuryOperationPreparation(
+    operationKey: string,
+    reasonCode: string,
+  ): TreasuryOperationRecord {
+    assertTreasuryOperationKey(operationKey);
+    if (
+      reasonCode !== "invalid_destination" &&
+      reasonCode !== "invalid_transaction_shape" &&
+      reasonCode !== "cancelled_before_effect"
+    ) {
+      throw new JournalInvariantError("direct Treasury terminal preparation reason is invalid");
+    }
+    const failed = this.db.transaction(() => {
+      const current = this.requireTreasuryOperation(operationKey);
+      if (current.state === "failed_terminal") return current;
+      if (current.state !== "intent") {
+        throw new JournalInvariantError(
+          "only an unprepared direct Treasury operation may fail terminally",
+        );
+      }
+      const now = this.timestamp();
+      const updated = this.db.prepare(
+        `UPDATE treasury_operations
+            SET state = 'failed_terminal', updated_at_ms = ?
+          WHERE operation_key = ? AND state = 'intent'`
+      ).run(now, operationKey);
+      if (updated.changes !== 1) throw new JournalInvariantError("concurrent direct Treasury terminalization");
+      this.insertTreasuryOperationTransition(
+        operationKey,
+        "intent",
+        "failed_terminal",
+        reasonCode,
+        now,
+      );
+      return this.requireTreasuryOperation(operationKey);
+    });
+    return failed.immediate();
+  }
+
+  cancelTreasuryOperation(operationKey: string): TreasuryOperationRecord {
+    assertTreasuryOperationKey(operationKey);
+    const current = this.requireTreasuryOperation(operationKey);
+    if (current.state === "completed" || current.state === "failed_terminal") return current;
+    if (current.state === "intent") {
+      return this.failTreasuryOperationPreparation(operationKey, "cancelled_before_effect");
+    }
+    const cancelled = this.db.transaction(() => {
+      const latest = this.requireTreasuryOperation(operationKey);
+      if (latest.cancellationRequested) return latest;
+      const now = this.timestamp();
+      const updated = this.db.prepare(
+        `UPDATE treasury_operations
+            SET cancellation_requested = 1, updated_at_ms = ?
+          WHERE operation_key = ? AND cancellation_requested = 0`
+      ).run(now, operationKey);
+      if (updated.changes !== 1) throw new JournalInvariantError("concurrent direct Treasury cancellation");
+      this.insertTreasuryOperationTransition(
+        operationKey,
+        latest.state,
+        latest.state,
+        "cancellation_requested",
+        now,
+      );
+      return this.requireTreasuryOperation(operationKey);
+    });
+    return cancelled.immediate();
   }
 
   readPreparedTreasuryOperation(operationKey: string): Buffer {
@@ -5713,6 +5912,291 @@ export class PurchaseJournal {
     );
   }
 
+  private ensureAdmissionBudget(): void {
+    if (!this.admission) return;
+    const existing = this.db.prepare(
+      "SELECT * FROM journal_admission_budget WHERE singleton = 1"
+    ).get() as {
+      prevalidation_purchase_limit: number;
+      evidence_byte_limit: number;
+      direct_treasury_retry_limit: number;
+    } | undefined;
+    if (existing) {
+      if (
+        existing.prevalidation_purchase_limit !== this.admission.prevalidationPurchases ||
+        existing.evidence_byte_limit !== this.admission.evidenceBytes ||
+        existing.direct_treasury_retry_limit !== this.admission.directTreasuryRetries
+      ) {
+        throw new JournalInvariantError("Purchase Journal admission projection changed without a new Operator Manifest");
+      }
+      return;
+    }
+    this.db.prepare(
+      `INSERT INTO journal_admission_budget
+         (singleton, prevalidation_purchase_limit, evidence_byte_limit,
+          direct_treasury_retry_limit, updated_at_ms)
+       VALUES (1, ?, ?, ?, ?)`
+    ).run(
+      this.admission.prevalidationPurchases,
+      this.admission.evidenceBytes,
+      this.admission.directTreasuryRetries,
+      this.timestamp(),
+    );
+  }
+
+  private readAdmissionProjection(): AdmissionBudgetProjection | undefined {
+    const row = this.db.prepare(
+      `SELECT prevalidation_purchase_limit, evidence_byte_limit,
+              direct_treasury_retry_limit
+         FROM journal_admission_budget WHERE singleton = 1`
+    ).get() as {
+      prevalidation_purchase_limit: number;
+      evidence_byte_limit: number;
+      direct_treasury_retry_limit: number;
+    } | undefined;
+    if (!row) return undefined;
+    return {
+      authorityPreauthSockets: 32,
+      authorityPrompts: 4,
+      prevalidationPurchases: row.prevalidation_purchase_limit,
+      evidenceBytes: row.evidence_byte_limit,
+      directTreasuryRetries: row.direct_treasury_retry_limit,
+    };
+  }
+
+  private admitPurchaseInternal(input: CreatePurchaseInput, now: number): string | undefined {
+    if (!this.admission) return undefined;
+    const budget = this.db.prepare(
+      "SELECT reserved_purchase_count, prevalidation_purchase_limit FROM journal_admission_budget WHERE singleton = 1"
+    ).get() as { reserved_purchase_count: number; prevalidation_purchase_limit: number } | undefined;
+    if (!budget) throw new JournalInvariantError("Journal admission budget is missing");
+    if (budget.reserved_purchase_count >= budget.prevalidation_purchase_limit) {
+      throw new PurchaseAdmissionError();
+    }
+    const leaseId = `purchase:${input.id}`;
+    this.db.prepare(
+      `INSERT INTO admission_leases
+         (lease_id, owner, resource, purchase_id, quantity, state,
+          deadline_at_ms, created_at_ms, updated_at_ms)
+       VALUES (?, ?, 'prevalidation_purchase', ?, 1, 'admitted', ?, ?, ?)`
+    ).run(leaseId, `purchase-journal:${process.pid}`, input.id, now + 60_000, now, now);
+    this.db.prepare(
+      "UPDATE admission_leases SET state = 'active', updated_at_ms = ? WHERE lease_id = ?"
+    ).run(now, leaseId);
+    this.db.prepare(
+      `UPDATE journal_admission_budget
+          SET reserved_purchase_count = reserved_purchase_count + 1, updated_at_ms = ?
+        WHERE singleton = 1`
+    ).run(now);
+    return leaseId;
+  }
+
+  private completePurchaseAdmissionInternal(leaseId: string | undefined, now: number): void {
+    if (!leaseId) return;
+    const updated = this.db.prepare(
+      `UPDATE admission_leases
+          SET state = 'completed', outcome = 'purchase_retained', updated_at_ms = ?
+        WHERE lease_id = ? AND state = 'active'`
+    ).run(now, leaseId);
+    if (updated.changes !== 1) throw new JournalInvariantError("Purchase Admission Lease was released more than once");
+  }
+
+  private admitEvidenceInternal(
+    purchaseId: PurchaseId,
+    digest: Sha256Digest,
+    byteLength: number,
+  ): string | undefined {
+    if (!this.admission) return undefined;
+    const acquire = this.db.transaction(() => {
+      this.requirePurchase(purchaseId);
+      const existing = this.findEvidence(digest);
+      const quantity = existing ? 0 : byteLength;
+      const budget = this.db.prepare(
+        `SELECT reserved_evidence_bytes, committed_evidence_bytes, evidence_byte_limit
+           FROM journal_admission_budget WHERE singleton = 1`
+      ).get() as {
+        reserved_evidence_bytes: number;
+        committed_evidence_bytes: number;
+        evidence_byte_limit: number;
+      } | undefined;
+      if (!budget) throw new JournalInvariantError("Journal admission budget is missing");
+      if (budget.reserved_evidence_bytes + budget.committed_evidence_bytes + quantity > budget.evidence_byte_limit) {
+        throw new EvidenceAdmissionError();
+      }
+      const leaseId = `evidence:${process.pid}:${randomBytes(12).toString("hex")}`;
+      const now = this.timestamp();
+      this.db.prepare(
+        `INSERT INTO admission_leases
+           (lease_id, owner, resource, purchase_id, digest, storage_ref, quantity,
+            state, deadline_at_ms, created_at_ms, updated_at_ms)
+         VALUES (?, ?, 'evidence_bytes', ?, ?, ?, ?, 'admitted', ?, ?, ?)`
+      ).run(
+        leaseId,
+        `purchase-journal:${process.pid}`,
+        purchaseId,
+        digest,
+        storageRefForDigest(digest),
+        quantity,
+        now + 60_000,
+        now,
+        now,
+      );
+      this.db.prepare(
+        "UPDATE admission_leases SET state = 'active', updated_at_ms = ? WHERE lease_id = ?"
+      ).run(now, leaseId);
+      if (quantity > 0) {
+        this.db.prepare(
+          `UPDATE journal_admission_budget
+              SET reserved_evidence_bytes = reserved_evidence_bytes + ?, updated_at_ms = ?
+            WHERE singleton = 1`
+        ).run(quantity, now);
+      }
+      return leaseId;
+    });
+    return acquire.immediate();
+  }
+
+  private completeEvidenceAdmissionInternal(
+    leaseId: string | undefined,
+    uniqueBlob: boolean,
+    now: number,
+  ): void {
+    if (!leaseId) return;
+    const lease = this.db.prepare(
+      "SELECT quantity, state FROM admission_leases WHERE lease_id = ?"
+    ).get(leaseId) as { quantity: number; state: string } | undefined;
+    if (!lease || lease.state !== "active") {
+      throw new JournalInvariantError("Evidence Admission Lease was released more than once");
+    }
+    const updated = this.db.prepare(
+      `UPDATE admission_leases
+          SET state = 'completed', outcome = ?, updated_at_ms = ?
+        WHERE lease_id = ? AND state = 'active'`
+    ).run(uniqueBlob ? "blob_committed" : "blob_deduplicated", now, leaseId);
+    if (updated.changes !== 1) throw new JournalInvariantError("Evidence Admission Lease completion raced");
+    if (lease.quantity > 0) {
+      this.db.prepare(
+        `UPDATE journal_admission_budget
+            SET reserved_evidence_bytes = reserved_evidence_bytes - ?,
+                committed_evidence_bytes = committed_evidence_bytes + ?,
+                updated_at_ms = ?
+          WHERE singleton = 1`
+      ).run(lease.quantity, uniqueBlob ? lease.quantity : 0, now);
+    }
+  }
+
+  private cancelEvidenceAdmission(leaseId: string | undefined, outcome: string): void {
+    if (!leaseId || !this.admission) return;
+    let storageRef: string | undefined;
+    let digest: Sha256Digest | undefined;
+    const cancel = this.db.transaction(() => {
+      const lease = this.db.prepare(
+        "SELECT quantity, state, storage_ref, digest FROM admission_leases WHERE lease_id = ?"
+      ).get(leaseId) as { quantity: number; state: string; storage_ref: string | null; digest: string | null } | undefined;
+      if (!lease) return;
+      if (lease.state !== "active") return;
+      storageRef = lease.storage_ref ?? undefined;
+      digest = lease.digest as Sha256Digest | undefined;
+      const now = this.timestamp();
+      this.db.prepare(
+        `UPDATE admission_leases
+            SET state = 'cancelled', outcome = ?, updated_at_ms = ?
+          WHERE lease_id = ? AND state = 'active'`
+      ).run(outcome, now, leaseId);
+      if (lease.quantity > 0) {
+        this.db.prepare(
+          `UPDATE journal_admission_budget
+              SET reserved_evidence_bytes = reserved_evidence_bytes - ?, updated_at_ms = ?
+            WHERE singleton = 1`
+        ).run(lease.quantity, now);
+      }
+    });
+    cancel.immediate();
+    if (storageRef && digest && !this.findEvidence(digest)) {
+      this.evidenceStore?.removeUnreferenced(digest);
+    }
+  }
+
+  private reconcileAdmissionLeases(): void {
+    if (!this.admission || !this.evidenceStore) return;
+    const remove = new Set<Sha256Digest>();
+    const reconcile = this.db.transaction(() => {
+      const leases = this.db.prepare(
+        `SELECT lease_id, resource, purchase_id, digest, quantity, state
+           FROM admission_leases WHERE state IN ('offered', 'admitted', 'active')`
+      ).all() as Array<{
+        lease_id: string;
+        resource: string;
+        purchase_id: string | null;
+        digest: string | null;
+        quantity: number;
+        state: string;
+      }>;
+      const now = this.timestamp();
+      for (const lease of leases) {
+        if (lease.resource === "prevalidation_purchase") {
+          const purchase = lease.purchase_id
+            ? this.db.prepare("SELECT id FROM purchases WHERE id = ?").get(lease.purchase_id)
+            : undefined;
+          if (purchase) {
+            this.db.prepare(
+              `UPDATE admission_leases SET state = 'completed', outcome = 'purchase_retained', updated_at_ms = ?
+                WHERE lease_id = ? AND state IN ('offered', 'admitted', 'active')`
+            ).run(now, lease.lease_id);
+          } else {
+            this.db.prepare(
+              `UPDATE admission_leases SET state = 'cancelled', outcome = 'restart_recovery', updated_at_ms = ?
+                WHERE lease_id = ? AND state IN ('offered', 'admitted', 'active')`
+            ).run(now, lease.lease_id);
+          }
+          continue;
+        }
+        const linked = lease.purchase_id && lease.digest
+          ? this.db.prepare(
+              "SELECT 1 FROM evidence_links WHERE purchase_id = ? AND digest = ? LIMIT 1"
+            ).get(lease.purchase_id, lease.digest)
+          : undefined;
+        const artifact = lease.digest
+          ? this.db.prepare("SELECT 1 FROM evidence_artifacts WHERE digest = ?").get(lease.digest)
+          : undefined;
+        if (linked && artifact) {
+          this.db.prepare(
+            `UPDATE admission_leases SET state = 'completed', outcome = 'restart_recovered', updated_at_ms = ?
+              WHERE lease_id = ? AND state IN ('offered', 'admitted', 'active')`
+          ).run(now, lease.lease_id);
+        } else {
+          this.db.prepare(
+            `UPDATE admission_leases SET state = 'cancelled', outcome = 'restart_recovered', updated_at_ms = ?
+              WHERE lease_id = ? AND state IN ('offered', 'admitted', 'active')`
+          ).run(now, lease.lease_id);
+          if (lease.digest && !artifact) remove.add(lease.digest as Sha256Digest);
+        }
+      }
+      this.db.prepare(
+        `UPDATE journal_admission_budget
+            SET reserved_purchase_count = (
+                  SELECT COUNT(*) FROM admission_leases
+                   WHERE resource = 'prevalidation_purchase'
+                     AND state NOT IN ('cancelled', 'expired', 'failed_terminal')
+                ),
+                reserved_evidence_bytes = (
+                  SELECT COALESCE(SUM(quantity), 0) FROM admission_leases
+                   WHERE resource = 'evidence_bytes' AND state IN ('offered', 'admitted', 'active')
+                ),
+                committed_evidence_bytes = (
+                  SELECT COALESCE(SUM(quantity), 0) FROM admission_leases
+                   WHERE resource = 'evidence_bytes' AND state = 'completed' AND outcome IN ('blob_committed', 'restart_recovered')
+                ),
+                updated_at_ms = ?
+          WHERE singleton = 1`
+      ).run(now);
+    });
+    reconcile.immediate();
+    for (const digest of remove) {
+      if (!this.findEvidence(digest)) this.evidenceStore.removeUnreferenced(digest);
+    }
+  }
+
   private inject(point: JournalFaultPoint): void {
     this.faultInjector?.(point);
   }
@@ -5776,6 +6260,8 @@ interface TreasuryOperationRow {
   prepared_ref: string | null;
   prepared_byte_length: number | null;
   policy_digest: string;
+  retry_limit: number;
+  cancellation_requested: number;
   state: string;
   retry_count: number;
   created_at_ms: number;
@@ -6183,6 +6669,8 @@ function treasuryOperationFromRow(row: TreasuryOperationRow): TreasuryOperationR
     requestedAmountAtomic: row.requested_amount_atomic,
     ...(row.keep_float_atomic === null ? {} : { keepFloatAtomic: row.keep_float_atomic }),
     feeCeilingAtomic: row.fee_ceiling_atomic,
+    retryLimit: row.retry_limit,
+    cancellationRequested: row.cancellation_requested === 1,
     ...(row.resolved_amount_atomic === null
       ? {}
       : { resolvedAmountAtomic: row.resolved_amount_atomic }),
@@ -6207,6 +6695,7 @@ function treasuryOperationFromRow(row: TreasuryOperationRow): TreasuryOperationR
     requestedAmountAtomic: operation.requestedAmountAtomic,
     keepFloatAtomic: operation.keepFloatAtomic,
     feeCeilingAtomic: operation.feeCeilingAtomic,
+    retryLimit: operation.retryLimit,
     policyDigest: operation.policyDigest!,
   });
   if (operation.resolvedAmountAtomic !== undefined) {
@@ -6221,6 +6710,9 @@ function treasuryOperationFromRow(row: TreasuryOperationRow): TreasuryOperationR
   }
   if (!Number.isSafeInteger(operation.retryCount) || operation.retryCount < 0) {
     throw new JournalInvariantError("direct Treasury retry count is invalid");
+  }
+  if (!Number.isSafeInteger(operation.retryLimit) || operation.retryLimit <= 0) {
+    throw new JournalInvariantError("direct Treasury retry limit is invalid");
   }
   return operation;
 }
@@ -7457,6 +7949,9 @@ function validateTreasuryOperationIntent(input: TreasuryOperationIntent): void {
     decimalBigInt(input.keepFloatAtomic, "vault deposit keep-float", true);
   }
   decimalBigInt(input.feeCeilingAtomic, "direct Treasury fee ceiling");
+  if (!Number.isSafeInteger(input.retryLimit) || input.retryLimit <= 0 || input.retryLimit > 128) {
+    throw new JournalInvariantError("direct Treasury retry limit is invalid");
+  }
   assertDigest(input.policyDigest, "direct Treasury policy digest");
 }
 
@@ -7483,7 +7978,8 @@ function assertSameTreasuryOperationIntent(
     existing.kind !== input.kind ||
     existing.destination !== input.destination ||
     existing.requestedAmountAtomic !== input.requestedAmountAtomic ||
-    existing.keepFloatAtomic !== input.keepFloatAtomic
+    existing.keepFloatAtomic !== input.keepFloatAtomic ||
+    existing.retryLimit !== input.retryLimit
   ) {
     throw new JournalInvariantError(
       "direct Treasury operation key is already bound to different immutable intent"
@@ -7508,13 +8004,19 @@ function directTreasuryTransitionAllowed(
   to: TreasuryOperationState
 ): boolean {
   return (
-    (from === "intent" && to === "prepared") ||
+    from === to ||
+    (from === "intent" && (to === "intent" || to === "prepared" || to === "failed_terminal")) ||
     (from === "prepared" && to === "submission_planned") ||
     (from === "submission_planned" &&
       (to === "prepared" || to === "submitted" || to === "observed")) ||
     (from === "submitted" && (to === "prepared" || to === "observed")) ||
     (from === "observed" && to === "completed")
   );
+}
+
+function storageRefForDigest(digest: Sha256Digest): string {
+  assertDigest(digest, "evidence digest");
+  return `sha256-${digest.slice("sha256:".length)}.evidence`;
 }
 
 function sortTreasuryJson(value: unknown): unknown {

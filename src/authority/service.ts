@@ -68,6 +68,7 @@ export interface AuthorityHumanDecisionContext {
   readonly recoveryRetry: boolean;
   /** Explicit heartbeat for long-running deterministic UI/signing adapters. */
   renewLease(): void;
+  readonly signal: AbortSignal;
 }
 
 export interface AuthorityHumanDecisionProvider {
@@ -87,6 +88,9 @@ export interface AuthorityServiceOptions {
   readonly responseTtlMs?: number;
   readonly leaseHeartbeatMs?: number;
   readonly faultInjector?: AuthorityServiceFaultInjector;
+  /** Manifest projection in production; explicit values are used by hermetic tests. */
+  readonly admission?: Readonly<{ authorityPrompts: number }>;
+  readonly maxHumanDecisionMs?: number;
 }
 
 export interface AuthorityServiceDecisionResponse {
@@ -103,6 +107,10 @@ export class AuthorityService {
   private readonly now: () => number;
   private readonly responseTtlMs: number;
   private readonly leaseHeartbeatMs: number;
+  private readonly promptCapacity: number;
+  private readonly maxHumanDecisionMs: number;
+  private readonly shutdownController = new AbortController();
+  private activePrompts = 0;
 
   constructor(private readonly options: AuthorityServiceOptions) {
     if (
@@ -117,6 +125,8 @@ export class AuthorityService {
     this.now = options.now ?? Date.now;
     this.responseTtlMs = options.responseTtlMs ?? 20_000;
     this.leaseHeartbeatMs = options.leaseHeartbeatMs ?? 5_000;
+    this.promptCapacity = requirePromptCapacity(options.admission?.authorityPrompts ?? 4);
+    this.maxHumanDecisionMs = requireHumanDecisionTimeout(options.maxHumanDecisionMs ?? 120_000);
     if (
       !Number.isSafeInteger(this.responseTtlMs) ||
       this.responseTtlMs <= 0 ||
@@ -133,8 +143,21 @@ export class AuthorityService {
     return (await this.handleDecision(authenticatedRequestWire)).responseWire;
   }
 
+  close(): void {
+    this.shutdownController.abort();
+  }
+
+  admissionStatus(): Readonly<{ activePrompts: number; budget: number; saturated: boolean }> {
+    return Object.freeze({
+      activePrompts: this.activePrompts,
+      budget: this.promptCapacity,
+      saturated: this.activePrompts >= this.promptCapacity,
+    });
+  }
+
   async handleDecision(
-    authenticatedRequestWire: string
+    authenticatedRequestWire: string,
+    transportSignal?: AbortSignal,
   ): Promise<AuthorityServiceDecisionResponse> {
     try {
       return await this.options.authenticationProvider.withAuthentication(async (authentication) => {
@@ -167,11 +190,19 @@ export class AuthorityService {
         if (persisted) {
           assertDecisionMatchesRequest(persisted, request);
         } else {
-          const human = await this.collectHumanDecision(request);
-          const now = this.timestamp();
-          persisted = this.options.decisionStore.persist(
-            storedDecisionFromHuman(request, human, now)
-          );
+          if (this.activePrompts >= this.promptCapacity) {
+            throw new AuthorityServiceError("busy");
+          }
+          this.activePrompts += 1;
+          try {
+            const human = await this.collectHumanDecision(request, transportSignal);
+            const now = this.timestamp();
+            persisted = this.options.decisionStore.persist(
+              storedDecisionFromHuman(request, human, now)
+            );
+          } finally {
+            this.activePrompts -= 1;
+          }
           assertDecisionMatchesRequest(persisted, request);
           this.options.faultInjector?.("after_decision_persisted");
         }
@@ -201,15 +232,29 @@ export class AuthorityService {
   }
 
   private async collectHumanDecision(
-    request: VerifiedAuthorityApprovalRequest
+    request: VerifiedAuthorityApprovalRequest,
+    transportSignal?: AbortSignal,
   ): Promise<AuthorityHumanDecision> {
     let heartbeatError: AuthorityServiceError | undefined;
+    const leaseController = new AbortController();
+    const now = this.timestamp();
+    const remainingMs = request.message.expiresAtMs - now;
+    if (remainingMs <= 0) throw new AuthorityServiceError("stale");
+    const decisionTimeoutMs = Math.min(this.maxHumanDecisionMs, remainingMs);
+    const expiryTimer = setTimeout(() => leaseController.abort(), decisionTimeoutMs);
+    expiryTimer.unref();
+    const signal = AbortSignal.any([
+      this.shutdownController.signal,
+      leaseController.signal,
+      ...(transportSignal ? [transportSignal] : []),
+    ]);
     const renew = () => {
       if (heartbeatError) throw heartbeatError;
       try {
         renewAuthorityReplayLease(this.options.replayStore, request, this.timestamp());
       } catch {
         heartbeatError = new AuthorityServiceError("unavailable");
+        leaseController.abort();
         throw heartbeatError;
       }
     };
@@ -227,6 +272,7 @@ export class AuthorityService {
           request,
           recoveryRetry: request.acceptedAtMs > request.message.issuedAtMs + this.leaseHeartbeatMs,
           renewLease: renew,
+          signal,
         })
       );
       if (heartbeatError) throw heartbeatError;
@@ -236,10 +282,25 @@ export class AuthorityService {
         signedEvidence: Uint8Array.from(decision.signedEvidence),
       }) as AuthorityHumanDecision;
     } catch (error) {
+      if (signal.aborted) {
+        if (heartbeatError) throw heartbeatError;
+        throw new AuthorityServiceError(
+          this.timestamp() >= request.message.expiresAtMs ? "stale" : "unavailable"
+        );
+      }
+      if (
+        error &&
+        typeof error === "object" &&
+        "code" in error &&
+        (error as { code?: unknown }).code === "busy"
+      ) {
+        throw new AuthorityServiceError("busy");
+      }
       if (error instanceof AuthorityServiceError) throw error;
       throw new AuthorityServiceError("decision_invalid");
     } finally {
       clearInterval(timer);
+      clearTimeout(expiryTimer);
     }
   }
 
@@ -379,4 +440,18 @@ function responseExpiry(now: number, requestExpiry: number, ttlMs: number): numb
 
 function digestBytes(value: Uint8Array): Sha256Digest {
   return `sha256:${createHash("sha256").update(value).digest("base64url")}` as Sha256Digest;
+}
+
+function requirePromptCapacity(value: number): number {
+  if (!Number.isSafeInteger(value) || value <= 0 || value > 128) {
+    throw new AuthorityServiceError("unavailable");
+  }
+  return value;
+}
+
+function requireHumanDecisionTimeout(value: number): number {
+  if (!Number.isSafeInteger(value) || value <= 0 || value > 5 * 60_000) {
+    throw new AuthorityServiceError("unavailable");
+  }
+  return value;
 }

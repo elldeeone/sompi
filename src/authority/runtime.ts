@@ -21,6 +21,7 @@ import { AUTHORITY_MAC_KEY_BYTES } from "./protocol.js";
 import { SqliteAuthorityReplayStore } from "./replay-store.js";
 import { AuthorityService } from "./service.js";
 import { AUTHORITY_DECISION_TRANSPORT_TIMEOUT_MS } from "./transport.js";
+import type { AdmissionBudgetProjection } from "../admission.js";
 
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
@@ -149,6 +150,7 @@ export interface RunningAuthority {
 
 export interface AuthorityRuntimeAccessOptions {
   readonly socketGroupId?: number;
+  readonly admission?: AdmissionBudgetProjection;
 }
 
 export async function initializeAuthorityRuntime(
@@ -238,6 +240,9 @@ export async function startAuthorityRuntime(
   identity: AuthorityIdentityConfig,
   access: AuthorityRuntimeAccessOptions = {},
 ): Promise<RunningAuthority> {
+  if (!access.admission) {
+    throw new Error("sompi-authority requires the Operator Manifest admission projection");
+  }
   validateAuthorityRuntimePaths(paths);
   assertIdentity(identity.issuer, "authority issuer");
   assertIdentity(identity.kid, "authority signing key ID");
@@ -252,13 +257,16 @@ export async function startAuthorityRuntime(
     signer,
     trust,
     instrumentId: identity.instrumentId,
-    prompt: new TerminalAuthorityApprovalPrompt(),
+    prompt: new TerminalAuthorityApprovalPrompt(
+      access.admission ? { maxPrompts: access.admission.authorityPrompts } : {},
+    ),
   });
   const service = new AuthorityService({
     replayStore: replay,
     decisionStore: decisions,
     authenticationProvider: authentication,
     humanDecision,
+    ...(access.admission ? { admission: { authorityPrompts: access.admission.authorityPrompts } } : {}),
   });
   const server = new AuthorityUnixDecisionServer({
     socketPath: paths.socket,
@@ -266,6 +274,7 @@ export async function startAuthorityRuntime(
     ...(access.socketGroupId === undefined
       ? {}
       : { socketGroupId: access.socketGroupId }),
+    ...(access.admission ? { admission: access.admission } : {}),
     endpoint: new AuthorityDecisionEndpoint(service),
   });
   try {
@@ -282,6 +291,7 @@ export async function startAuthorityRuntime(
       if (closed) return;
       closed = true;
       await server.close();
+      service.close();
       replay.close();
       decisions.close();
     },

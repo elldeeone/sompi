@@ -128,6 +128,7 @@ export function createSompiPurchaseRuntime(
     journal = new PurchaseJournal(config.journalDatabase, {
       now,
       operatorManifestIdentity: config.operatorManifest.identity,
+      admission: config.admission,
     });
     authorityReplay = new SqliteAuthorityReplayStore(
       config.authority.clientReplayDatabase,

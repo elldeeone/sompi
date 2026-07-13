@@ -23,9 +23,11 @@ const EXPECTED_TOOLS = [
   "network_status",
   "payment_status",
   "purchase",
+  "purchase_admission_status",
   "purchase_recover",
   "purchase_status",
   "send_payment",
+  "treasury_operation_cancel",
   "treasury_operation_recover",
   "treasury_operation_status",
   "vault_deposit",
@@ -420,6 +422,12 @@ function fakeRuntime(options: { purchase?: PurchaseModule } = {}): SompiPurchase
       integrityCheck() {
         return true;
       },
+      admissionStatus() {
+        return {
+          prevalidationPurchases: { used: 0, budget: 128, saturated: false },
+          evidenceBytes: { used: 0, reserved: 0, budget: 67_108_864, saturated: false },
+        };
+      },
       recoverableEffects() {
         return [];
       },
@@ -442,6 +450,9 @@ function fakeTreasuryOperations(
       return fakeTreasuryOperationView(operationKey, "wallet_send");
     },
     async recover(operationKey: string) {
+      return fakeTreasuryOperationView(operationKey, "wallet_send");
+    },
+    async cancel(operationKey: string) {
       return fakeTreasuryOperationView(operationKey, "wallet_send");
     },
     spentLastHour() {
@@ -478,6 +489,7 @@ function fakeTreasuryOperationView(
     retryCount: 0,
     recoveryRequired: false,
     safeToRetry: false,
+    cancellationRequested: false,
   };
 }
 

@@ -16,6 +16,8 @@ export interface TreasuryOperationRecord {
   readonly requestedAmountAtomic: string | "max";
   readonly keepFloatAtomic?: string;
   readonly feeCeilingAtomic: string;
+  readonly retryLimit: number;
+  readonly cancellationRequested: boolean;
   readonly resolvedAmountAtomic?: string;
   readonly feeAtomic?: string;
   readonly transactionId?: string;
@@ -37,7 +39,16 @@ export interface TreasuryOperationIntent {
   readonly requestedAmountAtomic: string | "max";
   readonly keepFloatAtomic?: string;
   readonly feeCeilingAtomic: string;
+  readonly retryLimit: number;
   readonly policyDigest: string;
+}
+
+export interface TreasuryOperationValidationInput {
+  readonly operationKey: string;
+  readonly kind: TreasuryOperationKind;
+  readonly destination: string;
+  readonly requestedAmountAtomic: string | "max";
+  readonly keepFloatAtomic?: string;
 }
 
 export interface PreparedTreasuryOperationMaterial {
@@ -73,6 +84,15 @@ export interface TreasuryOperationJournal {
     operationKey: string,
     prepared: PreparedTreasuryOperation
   ): TreasuryOperationRecord;
+  recordTreasuryPreparationRetry(
+    operationKey: string,
+    reasonCode: string
+  ): TreasuryOperationRecord;
+  failTreasuryOperationPreparation(
+    operationKey: string,
+    reasonCode: string
+  ): TreasuryOperationRecord;
+  cancelTreasuryOperation(operationKey: string): TreasuryOperationRecord;
   readPreparedTreasuryOperation(operationKey: string): Buffer;
   readObservedTreasuryOperationDetail(
     operationKey: string

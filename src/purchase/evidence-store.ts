@@ -173,6 +173,25 @@ export class EvidenceStore {
     return this.referenceFor(digest, bytes.byteLength);
   }
 
+  /** Removes only an unreferenced pre-admission orphan after journal rollback. */
+  removeUnreferenced(digest: Sha256Digest): void {
+    this.assertDirectoryUnchanged();
+    const filename = this.pathFor(storageRefForDigest(digest));
+    try {
+      const stat = secureEvidenceStat(filename);
+      if (evidenceDigest(fs.readFileSync(filename)) !== digest) {
+        throw new EvidenceStoreError("orphan evidence failed its content address");
+      }
+      if (stat.nlink !== 1n) throw new EvidenceStoreError("orphan evidence has unexpected links");
+      fs.unlinkSync(filename);
+      fsyncDirectory(this.directory);
+    } catch (error) {
+      if (isErrno(error, "ENOENT")) return;
+      if (error instanceof EvidenceStoreError) throw error;
+      throw new EvidenceStoreError("could not remove an unreferenced evidence orphan", { cause: error });
+    }
+  }
+
   private referenceFor(digest: Sha256Digest, byteLength: number): StoredEvidence {
     return {
       digest,

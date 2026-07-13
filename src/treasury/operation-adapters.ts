@@ -12,7 +12,9 @@ import type {
   TreasuryOperationKind,
   TreasuryOperationRecord,
   TreasuryOperationObservationStatus,
+  TreasuryOperationValidationInput,
 } from "./operation-journal.js";
+import { Address } from "../kaspa-wasm.js";
 import { meets, type ChainEvidenceModule } from "../chain-evidence/module.js";
 import type { ChainEvidenceRecord, ExpectedChainOutput, FinalityFloor } from "../chain-evidence/types.js";
 
@@ -25,9 +27,36 @@ export interface TreasuryOperationProbe {
   readonly detail: Readonly<Record<string, unknown>>;
 }
 
+export type TreasuryPreparationErrorCode =
+  | "invalid_destination"
+  | "invalid_transaction_shape"
+  | "transient_unavailable";
+
+/** Typed adapter classification. Unknown errors remain fenced for recovery. */
+export class TreasuryPreparationError extends Error {
+  readonly phase: "validation" | "preparation";
+  readonly effect: "none" | "possible";
+  readonly code: TreasuryPreparationErrorCode;
+
+  constructor(
+    code: TreasuryPreparationErrorCode,
+    phase: "validation" | "preparation",
+    message: string,
+    effect: "none" | "possible" = "none",
+  ) {
+    super(message);
+    this.name = "TreasuryPreparationError";
+    this.code = code;
+    this.phase = phase;
+    this.effect = effect;
+  }
+}
+
 /** Real seam: wallet and consensus-vault adapters both implement it. */
 export interface TreasuryOperationAdapter {
   readonly kind: TreasuryOperationKind;
+  /** Must be side-effect-free and run before durable intent admission. */
+  validateRequest?(input: TreasuryOperationValidationInput): void;
   prepare(
     intent: TreasuryOperationRecord,
     authorize: (destination: string, amountAtomic: bigint) => void
@@ -144,6 +173,17 @@ export class WalletTreasuryOperationAdapter implements TreasuryOperationAdapter 
     }
   }
 
+  validateRequest(input: TreasuryOperationValidationInput): void {
+    validateDestination(input.destination);
+    if (input.requestedAmountAtomic === "max") {
+      throw new TreasuryPreparationError(
+        "invalid_transaction_shape",
+        "validation",
+        "wallet Treasury operation requires an exact amount",
+      );
+    }
+  }
+
   async prepare(
     intent: TreasuryOperationRecord,
     authorize: (destination: string, amountAtomic: bigint) => void
@@ -223,6 +263,17 @@ export class VaultSendTreasuryOperationAdapter implements TreasuryOperationAdapt
   ) {
     if (!vault || !wallet || wallet.networkId !== "testnet-10") {
       throw new Error("vault Treasury operation adapter requires testnet-10");
+    }
+  }
+
+  validateRequest(input: TreasuryOperationValidationInput): void {
+    validateDestination(input.destination);
+    if (input.requestedAmountAtomic === "max") {
+      throw new TreasuryPreparationError(
+        "invalid_transaction_shape",
+        "validation",
+        "vault Treasury operation requires an exact amount",
+      );
     }
   }
 
@@ -322,6 +373,10 @@ export class VaultDepositTreasuryOperationAdapter implements TreasuryOperationAd
     }
   }
 
+  validateRequest(input: TreasuryOperationValidationInput): void {
+    validateDestination(input.destination);
+  }
+
   async prepare(
     intent: TreasuryOperationRecord,
     _authorize: (destination: string, amountAtomic: bigint) => void
@@ -410,6 +465,29 @@ export class VaultDepositTreasuryOperationAdapter implements TreasuryOperationAd
 }
 
 type EvidenceEnvelope = WalletEnvelope | VaultEnvelope | VaultDepositEnvelope;
+
+function validateDestination(destination: string): void {
+  let address: Address | undefined;
+  try {
+    address = new Address(destination);
+    if (address.toString() !== destination) {
+      throw new TreasuryPreparationError(
+        "invalid_destination",
+        "validation",
+        "Treasury destination is not a canonical testnet-10 address",
+      );
+    }
+  } catch (error) {
+    if (error instanceof TreasuryPreparationError) throw error;
+    throw new TreasuryPreparationError(
+      "invalid_destination",
+      "validation",
+      "Treasury destination is not a valid testnet-10 address",
+    );
+  } finally {
+    address?.free();
+  }
+}
 
 async function observeEnvelopeChainEvidence(
   module: ChainEvidenceModule,

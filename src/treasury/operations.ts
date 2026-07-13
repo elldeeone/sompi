@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import type { PolicyEngine } from "../policy.js";
-import type { TreasuryOperationAdapter } from "./operation-adapters.js";
+import {
+  TreasuryPreparationError,
+  type TreasuryOperationAdapter,
+} from "./operation-adapters.js";
 import {
   type TreasuryOperationJournal,
   type TreasuryOperationKind,
@@ -35,6 +38,7 @@ export interface TreasuryOperationView {
   readonly retryCount: number;
   readonly recoveryRequired: boolean;
   readonly safeToRetry: boolean;
+  readonly cancellationRequested: boolean;
 }
 
 export interface TreasuryOperationModuleOptions {
@@ -42,6 +46,8 @@ export interface TreasuryOperationModuleOptions {
   readonly policy: Pick<PolicyEngine, "authorize" | "policy">;
   readonly adapters: readonly TreasuryOperationAdapter[];
   readonly feeCeilingAtomic: string;
+  /** Manifest projection in production; default is only for hermetic fixtures. */
+  readonly directTreasuryRetries?: number;
 }
 
 export class TreasuryOperationError extends Error {
@@ -63,6 +69,7 @@ export class TreasuryOperationModule {
   private readonly policy: Pick<PolicyEngine, "authorize" | "policy">;
   private readonly adapters: ReadonlyMap<TreasuryOperationKind, TreasuryOperationAdapter>;
   private readonly feeCeilingAtomic: string;
+  private readonly directTreasuryRetries: number;
 
   constructor(options: TreasuryOperationModuleOptions) {
     if (!options?.journal || !options.policy) {
@@ -85,6 +92,9 @@ export class TreasuryOperationModule {
       );
     }
     this.feeCeilingAtomic = requireAtomic(options.feeCeilingAtomic, "Treasury fee ceiling");
+    this.directTreasuryRetries = requireRetryLimit(
+      options.directTreasuryRetries ?? 3
+    );
     this.journal = options.journal;
     this.policy = options.policy;
     this.adapters = adapters;
@@ -93,6 +103,11 @@ export class TreasuryOperationModule {
 
   async execute(request: Readonly<TreasuryOperationRequest>): Promise<TreasuryOperationView> {
     const normalized = normalizeRequest(request);
+    const adapter = this.requireAdapter(normalized.kind);
+    adapter.validateRequest?.({
+      ...normalized,
+      requestedAmountAtomic: normalized.amountAtomic,
+    });
     const policy = this.installCurrentPolicy();
     const record = this.journal.claimTreasuryOperationIntent({
       ...normalized,
@@ -100,6 +115,7 @@ export class TreasuryOperationModule {
       requestedAmountAtomic: normalized.amountAtomic,
       keepFloatAtomic: normalized.keepFloatAtomic,
       feeCeilingAtomic: this.feeCeilingAtomic,
+      retryLimit: this.directTreasuryRetries,
       policyDigest: policy.digest,
     });
     return this.drive(record.operationKey);
@@ -112,6 +128,12 @@ export class TreasuryOperationModule {
   async recover(operationKey: string): Promise<TreasuryOperationView> {
     this.installCurrentPolicy();
     return this.drive(requireOperationKey(operationKey));
+  }
+
+  async cancel(operationKey: string): Promise<TreasuryOperationView> {
+    return view(
+      this.journal.cancelTreasuryOperation(requireOperationKey(operationKey))
+    );
   }
 
   spentLastHour(): bigint {
@@ -138,10 +160,44 @@ export class TreasuryOperationModule {
       return view(record);
     }
 
+    if (record.cancellationRequested && record.state === "prepared") {
+      return view(record);
+    }
+
     if (record.state === "intent") {
-      const prepared = await adapter.prepare(record, (destination, amount) => {
-        this.authorize(operationKey, destination, amount);
-      });
+      if (record.retryCount >= record.retryLimit) {
+        throw new TreasuryOperationError(
+          "direct Treasury preparation retry limit was reached; recover or replace the operation"
+        );
+      }
+      let prepared;
+      try {
+        prepared = await adapter.prepare(record, (destination, amount) => {
+          this.authorize(operationKey, destination, amount);
+        });
+      } catch (error) {
+        if (isTerminalPreEffectFailure(error)) {
+          return view(
+            this.journal.failTreasuryOperationPreparation(
+              operationKey,
+              error.code,
+            )
+          );
+        }
+        if (isTransientPreparationFailure(error)) {
+          const updated = this.journal.recordTreasuryPreparationRetry(
+            operationKey,
+            "transient_preparation_failure",
+          );
+          if (updated.retryCount >= updated.retryLimit) {
+            throw new TreasuryOperationError(
+              "direct Treasury preparation retry limit was reached; recover or replace the operation",
+              { cause: error }
+            );
+          }
+        }
+        throw error;
+      }
       if (!record.policyDigest) {
         throw new TreasuryOperationError("Treasury operation has no durable policy snapshot");
       }
@@ -170,7 +226,7 @@ export class TreasuryOperationModule {
         );
         return view(this.journal.completeTreasuryOperation(operationKey));
       }
-      if (record.state !== "prepared") return view(record);
+      if (record.state !== "prepared" || record.cancellationRequested) return view(record);
     }
 
     if (record.state !== "prepared") return view(record);
@@ -330,14 +386,21 @@ function requireOperationKey(value: string): string {
 }
 
 function view(record: TreasuryOperationRecord): TreasuryOperationView {
-  const recoveryRequired = record.state === "submission_planned" || record.state === "submitted";
-  const safeToRetry = record.state === "prepared";
+  const recoveryRequired =
+    record.cancellationRequested ||
+    record.state === "submission_planned" ||
+    record.state === "submitted";
+  const safeToRetry =
+    record.state === "prepared" ||
+    (record.state === "intent" && record.retryCount < record.retryLimit);
   const summary = record.state === "completed"
     ? `Treasury operation ${record.operationKey} completed with transaction ${record.transactionId}.`
     : recoveryRequired
       ? `Treasury operation ${record.operationKey} has an ambiguous or not-yet-observed submission; reconcile it before retrying.`
-      : record.state === "prepared"
+    : record.state === "prepared"
         ? `Treasury operation ${record.operationKey} is durably prepared and safe to submit once.`
+        : record.state === "failed_terminal"
+          ? `Treasury operation ${record.operationKey} failed before any external effect.`
         : `Treasury operation ${record.operationKey} is ${record.state}.`;
   return Object.freeze({
     operationKey: record.operationKey,
@@ -353,7 +416,8 @@ function view(record: TreasuryOperationRecord): TreasuryOperationView {
     ...(record.transactionId ? { transactionId: record.transactionId } : {}),
     retryCount: record.retryCount,
     recoveryRequired,
-    safeToRetry,
+    safeToRetry: record.cancellationRequested ? false : safeToRetry,
+    cancellationRequested: record.cancellationRequested,
   });
 }
 
@@ -367,4 +431,31 @@ function requireAtomic(value: string, label: string, allowZero = false): string 
     throw new TreasuryOperationError(`${label} is invalid`);
   }
   return value;
+}
+
+function requireRetryLimit(value: number): number {
+  if (!Number.isSafeInteger(value) || value <= 0 || value > 128) {
+    throw new TreasuryOperationError("direct Treasury retry budget is invalid");
+  }
+  return value;
+}
+
+function isTerminalPreEffectFailure(
+  error: unknown,
+): error is TreasuryPreparationError {
+  return (
+    error instanceof TreasuryPreparationError &&
+    error.phase === "preparation" &&
+    error.effect === "none" &&
+    (error.code === "invalid_destination" || error.code === "invalid_transaction_shape")
+  );
+}
+
+function isTransientPreparationFailure(error: unknown): boolean {
+  return (
+    error instanceof TreasuryPreparationError &&
+    error.phase === "preparation" &&
+    error.effect === "none" &&
+    error.code === "transient_unavailable"
+  );
 }
