@@ -111,6 +111,26 @@ test("vault creation is durable, restartable, and never overwrites an interrupte
   }
 });
 
+test("vault creation rejects bytes that are not real x-only recovery public keys before writing state", () => {
+  for (const [name, ownerPublicKey] of [
+    ["zero", "00".repeat(32)],
+    ["out of range", "ff".repeat(32)],
+  ] as const) {
+    const root = temporaryDirectory(`sompi-vault-invalid-${name.replaceAll(" ", "-")}-`);
+    try {
+      const vault = new VaultManager(root, "testnet-10");
+      assert.throws(
+        () => vault.create(500_000_000n, ownerPublicKey, 300n),
+        /x-only public key is invalid/
+      );
+      assert.equal(fs.existsSync(path.join(root, "vault", "agent-key")), false);
+      assert.equal(fs.existsSync(path.join(root, "vault", "config.json")), false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
 test("vault config rejects malformed, noncanonical, mismatched, and unsupported state", () => {
   const root = temporaryDirectory("sompi-vault-config-");
   try {

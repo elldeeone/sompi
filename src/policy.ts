@@ -1,10 +1,7 @@
-import * as fs from "node:fs";
-
 /**
- * Spending policy enforced below the agent. The agent (LLM) can call
- * send_payment, but every send passes through this gate. The policy file
- * lives outside the MCP tool surface, so a prompt-injected agent cannot
- * loosen its own limits.
+ * Immutable spending policy enforced below the Agent. Operator Provisioning
+ * validates and installs the source manifest; this module receives one typed
+ * projection for its complete process lifetime.
  */
 export interface Policy {
   /** Hard cap per transaction, in sompi. */
@@ -18,60 +15,34 @@ export interface Policy {
   requireApprovalAboveSompi: bigint;
 }
 
-interface PolicyFileShape {
-  maxSompiPerTx?: string | number;
-  maxSompiPerHour?: string | number;
-  allowlist?: string[];
-  requireApprovalAboveSompi?: string | number;
-}
-
-const DEFAULT_POLICY: Policy = {
-  // 1 KAS per tx, 5 KAS per hour: deliberately conservative defaults
-  // suitable for testnet experimentation.
-  maxSompiPerTx: 100_000_000n,
-  maxSompiPerHour: 500_000_000n,
-  allowlist: [],
-  requireApprovalAboveSompi: 0n,
-};
-
 export class PolicyEngine {
-  private readonly policyPath?: string;
-  private cachedPolicy: Policy;
-  private cachedMtimeMs = -1;
-  private loadError?: string;
+  private readonly configuredPolicy: Readonly<Policy>;
 
-  constructor(_dataDir: string, policyPath?: string) {
-    this.policyPath = policyPath;
-    this.cachedPolicy = loadPolicy(policyPath);
-    if (policyPath) this.cachedMtimeMs = fs.statSync(policyPath).mtimeMs;
+  constructor(policy: Readonly<Policy>) {
+    if (
+      typeof policy?.maxSompiPerTx !== "bigint" ||
+      typeof policy?.maxSompiPerHour !== "bigint" ||
+      typeof policy?.requireApprovalAboveSompi !== "bigint" ||
+      !Array.isArray(policy?.allowlist) ||
+      policy.allowlist.some((entry) => typeof entry !== "string") ||
+      new Set(policy.allowlist).size !== policy.allowlist.length ||
+      policy.maxSompiPerTx <= 0n ||
+      policy.maxSompiPerHour <= 0n ||
+      policy.maxSompiPerTx > policy.maxSompiPerHour ||
+      policy.requireApprovalAboveSompi < 0n
+    ) {
+      throw new PolicyViolation("immutable operator policy is invalid");
+    }
+    this.configuredPolicy = Object.freeze({
+      maxSompiPerTx: policy.maxSompiPerTx,
+      maxSompiPerHour: policy.maxSompiPerHour,
+      allowlist: Object.freeze([...policy.allowlist]) as unknown as string[],
+      requireApprovalAboveSompi: policy.requireApprovalAboveSompi,
+    });
   }
 
-  /**
-   * The active policy, hot-reloaded: edits to the policy file take effect on
-   * the next call, no restart needed. A malformed file fails closed — sends
-   * are denied until it parses again.
-   */
-  get policy(): Policy {
-    if (this.policyPath) {
-      try {
-        const mtimeMs = fs.statSync(this.policyPath).mtimeMs;
-        if (mtimeMs !== this.cachedMtimeMs) {
-          this.cachedPolicy = loadPolicy(this.policyPath);
-          this.cachedMtimeMs = mtimeMs;
-          this.loadError = undefined;
-          console.error(`sompi: policy reloaded from ${this.policyPath}`);
-        }
-      } catch (e) {
-        this.loadError = e instanceof Error ? e.message : String(e);
-      }
-    }
-    if (this.loadError) {
-      throw new PolicyViolation(
-        `policy file ${this.policyPath} is unreadable or malformed (${this.loadError}); ` +
-          `all sends are denied until it is fixed`
-      );
-    }
-    return this.cachedPolicy;
+  get policy(): Readonly<Policy> {
+    return this.configuredPolicy;
   }
 
   /**
@@ -94,7 +65,7 @@ export class PolicyEngine {
       throw new PolicyViolation(
         `amount ${displayAmount(amountSompi)} exceeds the approval threshold of ${displayAmount(p.requireApprovalAboveSompi)}. ` +
           `Relay this to your human operator and wait for them to either perform the payment themselves or ` +
-          `adjust the policy — do not edit the policy file or work around this tool yourself`
+          `adjust the Operator Manifest — do not work around this tool yourself`
       );
     }
     if (p.allowlist.length > 0 && !p.allowlist.includes(destination)) {
@@ -131,7 +102,7 @@ export class PolicyEngine {
  * policy belongs to the human operator.
  */
 const OPERATOR_BOUNDARY =
-  ". This limit was set deliberately by your human operator. Do not edit the policy file, restart processes, " +
+  ". This limit was set deliberately by your human operator. Do not replace the Operator Manifest, restart processes, " +
   "or bypass these tools with direct scripts to get around it — report this message to your operator and let " +
   "them decide";
 
@@ -140,25 +111,6 @@ export class PolicyViolation extends Error {
     super(`policy violation: ${reason}`);
     this.name = "PolicyViolation";
   }
-}
-
-function loadPolicy(policyPath?: string): Policy {
-  if (!policyPath) return { ...DEFAULT_POLICY };
-  const raw: PolicyFileShape = JSON.parse(fs.readFileSync(policyPath, "utf8"));
-  return {
-    maxSompiPerTx: toBigInt(raw.maxSompiPerTx, DEFAULT_POLICY.maxSompiPerTx),
-    maxSompiPerHour: toBigInt(raw.maxSompiPerHour, DEFAULT_POLICY.maxSompiPerHour),
-    allowlist: raw.allowlist ?? [],
-    requireApprovalAboveSompi: toBigInt(
-      raw.requireApprovalAboveSompi,
-      DEFAULT_POLICY.requireApprovalAboveSompi
-    ),
-  };
-}
-
-function toBigInt(v: string | number | undefined, fallback: bigint): bigint {
-  if (v === undefined) return fallback;
-  return BigInt(v);
 }
 
 function displayAmount(sompi: bigint): string {

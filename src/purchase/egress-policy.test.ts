@@ -52,20 +52,20 @@ test("request fingerprint binds canonical media type as well as exact body bytes
   assert.notEqual(json.requestFingerprint, text.requestFingerprint);
 });
 
-test("HTTP is denied by default and may be enabled only with an explicit port rule", async () => {
+test("HTTP is unconditionally denied even with an explicit port rule", async () => {
   const dns = fakeResolver({ "merchant.example": [v4("8.8.8.8")] });
   await assert.rejects(
     policyFor(dns.resolve).validateRequest({ url: "http://merchant.example/", method: "GET" }),
     errorCode("protocol_denied")
   );
 
-  const enabled = policyFor(dns.resolve, {
-    allowedProtocols: ["https:", "http:"],
+  const explicitlyAllowlisted = policyFor(dns.resolve, {
     allowRules: [{ hostname: "merchant.example", ports: [80, 443] }],
   });
-  const hop = await enabled.validateRequest({ url: "http://merchant.example/", method: "GET" });
-  assert.equal(hop.port, 80);
-  assert.equal(hop.protocol, "http:");
+  await assert.rejects(
+    explicitlyAllowlisted.validateRequest({ url: "http://merchant.example/", method: "GET" }),
+    errorCode("protocol_denied")
+  );
 });
 
 test("credentials, wildcard hosts, unlisted hosts, subdomains, and ports fail closed", async () => {
@@ -284,7 +284,6 @@ test("resolver and clock failures fail closed without live DNS", async () => {
 
 interface TestPolicyOverrides {
   allowRules?: readonly { hostname: string; ports: readonly number[] }[];
-  allowedProtocols?: readonly ("https:" | "http:")[];
   limits?: Partial<{
     maxRedirects: number;
     maxResolvedAddresses: number;
@@ -299,7 +298,6 @@ function policyFor(resolver: EgressResolver, overrides: TestPolicyOverrides = {}
   return new EgressPolicy({
     allowRules: overrides.allowRules ?? [{ hostname: "merchant.example", ports: [443] }],
     resolver,
-    allowedProtocols: overrides.allowedProtocols,
     limits: overrides.limits,
     now: overrides.now,
   });

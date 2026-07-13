@@ -25,6 +25,8 @@ export const RpcClient = kaspa.RpcClient;
 export type RpcClient = import("../vendor/kaspa-wasm/kaspa.js").RpcClient;
 export const Transaction = kaspa.Transaction;
 export type Transaction = import("../vendor/kaspa-wasm/kaspa.js").Transaction;
+export const XOnlyPublicKey = kaspa.XOnlyPublicKey;
+export type XOnlyPublicKey = import("../vendor/kaspa-wasm/kaspa.js").XOnlyPublicKey;
 
 export const SighashType = kaspa.SighashType;
 export const addressFromScriptPublicKey = kaspa.addressFromScriptPublicKey;

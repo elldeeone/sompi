@@ -28,7 +28,6 @@ const EXPECTED_TOOLS = [
   "send_payment",
   "treasury_operation_recover",
   "treasury_operation_status",
-  "vault_create",
   "vault_deposit",
   "vault_send",
   "vault_status",
@@ -43,6 +42,7 @@ test("MCP registration exposes only direct treasury and stable Purchase tools", 
   assert.equal(registrar.tools.has("paid_fetch"), false);
   assert.equal(registrar.tools.has("escrow_status"), false);
   assert.equal(registrar.tools.has("escrow_refund"), false);
+  assert.equal(registrar.tools.has("vault_create"), false);
 });
 
 test("MCP registration fails closed outside testnet-10", () => {

@@ -379,21 +379,15 @@ async function withFixture(
 ): Promise<void> {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-treasury-operation-"));
   fs.chmodSync(directory, 0o700);
-  const policyPath = path.join(directory, "policy.json");
-  fs.writeFileSync(
-    policyPath,
-    JSON.stringify({
-      maxSompiPerTx: limits.maxPerPaymentAtomic ?? "1000",
-      maxSompiPerHour: limits.maxPerHourAtomic ?? "10000",
-      approvalAboveSompi: "0",
-      allowlist: [DESTINATION],
-    }),
-    { mode: 0o600 }
-  );
   const journal = new PurchaseJournal(path.join(directory, "purchase.sqlite"), {
     now: () => NOW,
   });
-  const policy = new PolicyEngine(directory, policyPath);
+  const policy = new PolicyEngine({
+    maxSompiPerTx: BigInt(limits.maxPerPaymentAtomic ?? "1000"),
+    maxSompiPerHour: BigInt(limits.maxPerHourAtomic ?? "10000"),
+    requireApprovalAboveSompi: 0n,
+    allowlist: [DESTINATION],
+  });
   const wallet = new FakeAdapter("wallet_send", "1");
   const vault = new FakeAdapter("vault_send", "2");
   const deposit = new FakeAdapter("vault_deposit", "3");

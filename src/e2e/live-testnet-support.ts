@@ -1234,9 +1234,15 @@ function treasuryModule(input: {
   readonly wallet: KaspaWallet;
   readonly vault: VaultManager;
 }): TreasuryOperationModule {
+  const raw = JSON.parse(fs.readFileSync(input.policyPath, "utf8")) as Record<string, unknown>;
   return new TreasuryOperationModule({
     journal: input.journal,
-    policy: new PolicyEngine(path.dirname(input.policyPath), input.policyPath),
+    policy: new PolicyEngine({
+      maxSompiPerTx: BigInt(String(raw.maxSompiPerTx)),
+      maxSompiPerHour: BigInt(String(raw.maxSompiPerHour)),
+      allowlist: Array.isArray(raw.allowlist) ? raw.allowlist.map(String) : [],
+      requireApprovalAboveSompi: BigInt(String(raw.requireApprovalAboveSompi ?? "0")),
+    }),
     adapters: [
       new WalletTreasuryOperationAdapter(input.wallet),
       new VaultSendTreasuryOperationAdapter(input.vault, input.wallet),

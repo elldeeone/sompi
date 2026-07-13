@@ -13,6 +13,8 @@ import {
   createPurchaseId,
   requestFingerprint,
 } from "../purchase/identity.js";
+import { publishOperatorManifestForTests } from "../operator/manifest.js";
+import { VaultManager, generateOwnerKey, vaultStaticConfigurationDigest } from "../vault.js";
 import {
   purchaseRuntimeConfigFromEnv,
   type SompiPurchaseRuntimeConfig,
@@ -21,8 +23,8 @@ import { createSompiPurchaseRuntime } from "./purchase-runtime.js";
 
 const NOW = 1_800_000_000_000;
 
-test("composition uses one dynamic clock for the journal and hot-reloads operator policy", async () => {
-  const fixture = await runtimeFixture({ policy: true });
+test("composition uses one dynamic clock and one immutable operator policy", async () => {
+  const fixture = await runtimeFixture();
   let now = NOW;
   const runtime = createSompiPurchaseRuntime(fixture.config, {
     now: () => now,
@@ -59,12 +61,11 @@ test("composition uses one dynamic clock for the journal and hot-reloads operato
     assert.equal(second.createdAtMs, now);
 
     assert.equal(runtime.policy.policy.maxSompiPerTx, 100n);
-    assert.ok(fixture.policyPath);
-    writePolicy(fixture.policyPath, "250", "1000");
-    const changed = (fs.statSync(fixture.policyPath).mtimeMs + 10_000) / 1_000;
-    fs.utimesSync(fixture.policyPath, changed, changed);
-    assert.equal(runtime.policy.policy.maxSompiPerTx, 250n);
-    assert.equal(runtime.policy.policy.maxSompiPerHour, 1000n);
+    assert.throws(() => {
+      (fixture.config.policy as { maxSompiPerTx: bigint }).maxSompiPerTx = 250n;
+    }, TypeError);
+    assert.equal(runtime.policy.policy.maxSompiPerTx, 100n);
+    assert.equal(runtime.policy.policy.maxSompiPerHour, 500n);
   } finally {
     await runtime.close();
     fixture.dispose();
@@ -179,13 +180,10 @@ test("partial construction closes the journal and a failed disconnect cannot ski
 interface RuntimeFixture {
   readonly root: string;
   readonly config: SompiPurchaseRuntimeConfig;
-  readonly policyPath?: string;
   dispose(): void;
 }
 
-async function runtimeFixture(
-  options: { readonly policy?: boolean } = {}
-): Promise<RuntimeFixture> {
+async function runtimeFixture(): Promise<RuntimeFixture> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-purchase-runtime-"));
   const authorityDirectory = path.join(root, "authority");
   const authorityPaths = authorityRuntimePaths({ rootDirectory: authorityDirectory });
@@ -193,11 +191,66 @@ async function runtimeFixture(
     issuer: "urn:sompi:authority:local",
     kid: "authority-signing-key-1",
   });
-  const policyPath = options.policy ? path.join(root, "policy.json") : undefined;
-  if (policyPath) writePolicy(policyPath, "100", "500");
+  const dataDirectory = path.join(root, "data");
+  const vault = new VaultManager(dataDirectory, "testnet-10");
+  const vaultConfig = vault.create(500_000_000n, generateOwnerKey().publicKey, 36_000n);
+  const configDigest = vaultStaticConfigurationDigest(vaultConfig);
+  const manifestPath = path.join(root, "operator", "manifest.json");
+  publishOperatorManifestForTests(manifestPath, {
+    schema: "sompi-operator-manifest-v1",
+    revision: 1,
+    networkId: "testnet-10",
+    x402Network: "kaspa:testnet-10",
+    dataDirectory,
+    vault: {
+      template: vaultConfig.template,
+      ownerPublic: vaultConfig.ownerPublic,
+      agentPublic: vaultConfig.agentPublic,
+      address: vaultConfig.address,
+      configDigest,
+      maxOutflowSompi: vaultConfig.maxOutflowSompi,
+      windowSizeDaa: vaultConfig.windowSizeDaa,
+    },
+    treasury: {
+      maxSompiPerTx: "100",
+      maxSompiPerHour: "500",
+      allowlist: [],
+      requireApprovalAboveSompi: "0",
+      additionalCostCeilingAtomic: "25000000",
+      operationFeeCeilingAtomic: "25000000",
+    },
+    merchant: {
+      allowRules: [{ hostname: "merchant.example", ports: [443] }],
+      merchantReceiptIssuer: "receipt:merchant",
+      paymentReceiptIssuer: "receipt:payment",
+    },
+    chainEvidence: {
+      operatorNodeUrl: "ws://10.0.3.26:17210/",
+      witnessBaseUrl: "https://api-tn10.kaspa.org/",
+      depthConfirmationDaa: "10",
+      finalityFloors: {
+        settlement: "depth-confirmed",
+        directTreasury: "accepted",
+        vault: "accepted",
+        staging: "accepted",
+        recoveryRelease: "depth-confirmed",
+      },
+    },
+    admission: {
+      authorityPreauthSockets: 32,
+      authorityPrompts: 4,
+      prevalidationPurchases: 128,
+      evidenceBytes: 67_108_864,
+      directTreasuryRetries: 3,
+    },
+  });
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+  const gid = typeof process.getgid === "function" ? process.getgid() : 0;
   const config = purchaseRuntimeConfigFromEnv(
     {
-      SOMPI_DATA_DIR: path.join(root, "data"),
+      SOMPI_OPERATOR_MANIFEST: manifestPath,
+      SOMPI_OPERATOR_UID: String(uid),
+      SOMPI_RUNTIME_GID: String(gid),
       SOMPI_AUTHORITY_ROOT_DIR: authorityDirectory,
       SOMPI_AUTHORITY_SOCKET_UID: String(
         Math.min((typeof process.getuid === "function" ? process.getuid() : 1000) + 1, 0x7fffffff)
@@ -205,36 +258,17 @@ async function runtimeFixture(
       SOMPI_AUTHORITY_SOCKET_GID: String(
         typeof process.getgid === "function" ? process.getgid() : 1000
       ),
-      SOMPI_AP2_MERCHANT_RECEIPT_ISSUER: "receipt:merchant",
-      SOMPI_AP2_PAYMENT_RECEIPT_ISSUER: "receipt:payment",
-      SOMPI_EGRESS_ALLOW: JSON.stringify([
-        { hostname: "merchant.example", ports: [443] },
-      ]),
-      ...(policyPath ? { SOMPI_POLICY: policyPath } : {}),
     },
-    root
+    root,
+    { allowSameUserOperatorManifestForTests: true }
   );
   return {
     root,
     config,
-    ...(policyPath ? { policyPath } : {}),
     dispose() {
       fs.rmSync(root, { recursive: true, force: true });
     },
   };
-}
-
-function writePolicy(filename: string, perPayment: string, perHour: string): void {
-  fs.writeFileSync(
-    filename,
-    `${JSON.stringify({
-      maxSompiPerTx: perPayment,
-      maxSompiPerHour: perHour,
-      allowlist: [],
-      requireApprovalAboveSompi: "0",
-    })}\n`,
-    { mode: 0o600 }
-  );
 }
 
 async function publicResolver(): Promise<readonly [{ address: string; family: 4 }]> {

@@ -45,6 +45,49 @@ test("journal creates a secure, verified schema and survives restart", () => {
   });
 });
 
+test("Journal binds one immutable Operator Manifest identity before durable work", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-journal-operator-manifest-"));
+  fs.chmodSync(directory, 0o700);
+  const filename = path.join(directory, "purchase.sqlite");
+  const firstIdentity = {
+    revision: 1,
+    digest: `sha256:${Buffer.alloc(32, 1).toString("base64url")}`,
+  };
+  const secondIdentity = {
+    revision: 2,
+    digest: `sha256:${Buffer.alloc(32, 2).toString("base64url")}`,
+  };
+  try {
+    const first = new PurchaseJournal(filename, {
+      operatorManifestIdentity: firstIdentity,
+    });
+    assert.deepEqual(first.operatorManifestIdentity(), firstIdentity);
+    first.close();
+
+    const same = new PurchaseJournal(filename, {
+      operatorManifestIdentity: firstIdentity,
+    });
+    assert.deepEqual(same.operatorManifestIdentity(), firstIdentity);
+    same.close();
+
+    assert.throws(
+      () => new PurchaseJournal(filename, { operatorManifestIdentity: secondIdentity }),
+      /different Operator Manifest/
+    );
+
+    const unboundPath = path.join(directory, "unbound.sqlite");
+    const unbound = new PurchaseJournal(unboundPath);
+    unbound.createPurchase(purchaseInput(91));
+    unbound.close();
+    assert.throws(
+      () => new PurchaseJournal(unboundPath, { operatorManifestIdentity: firstIdentity }),
+      /cannot bind an existing development Journal/
+    );
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("Purchase identity is idempotent, runtime-validated, and cannot bypass the lifecycle", () => {
   withJournal(({ journal }) => {
     const input = purchaseInput(2);

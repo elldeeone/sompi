@@ -40,8 +40,6 @@ export interface EgressLimits {
 export interface EgressPolicyOptions {
   allowRules: readonly EgressAllowRule[];
   resolver: EgressResolver;
-  /** Defaults to HTTPS only. */
-  allowedProtocols?: readonly EgressProtocol[];
   limits?: Partial<EgressLimits>;
   now?: () => number;
 }
@@ -140,11 +138,7 @@ export class EgressPolicy {
     }
     this.rules = Object.freeze(options.allowRules.map(normalizeRule));
     this.resolver = options.resolver;
-    const configuredProtocols = options.allowedProtocols ?? ["https:"];
-    if (configuredProtocols.length === 0 || configuredProtocols.some((value) => value !== "https:" && value !== "http:")) {
-      throw configurationError("allowed protocols must contain http and/or https");
-    }
-    this.protocols = new Set(configuredProtocols);
+    this.protocols = new Set(["https:"]);
     this.limits = normalizeLimits(options.limits);
     this.now = options.now ?? Date.now;
     readClock(this.now);

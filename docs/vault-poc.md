@@ -73,13 +73,14 @@ fallback payment rail.
 Generate the owner key on a trusted operator machine:
 
 ```bash
-sompi-mcp gen-owner-key
+sompi-operator owner-key
 ```
 
-Retain the private value offline. Supply only the public key and desired cap to
-`vault_create`, fund Sompi's receive address with testnet KAS, then call
-`vault_deposit` with a stable operation key. `vault_status` exposes the public
-configuration and current on-chain state.
+Retain the private value offline. Supply only the public key and desired cap in
+the Operator Manifest provisioning spec, then complete the reviewed
+`preview`/`provision`/`install` ceremony before MCP starts. Fund Sompi's receive
+address with testnet KAS, then call `vault_deposit` with a stable operation key.
+`vault_status` exposes the public configuration and current on-chain state.
 
 Owner recovery is deliberately not an MCP tool. Run the packaged recovery
 utility on the trusted machine using a mode-`0600` owner-key file; never pass

@@ -164,7 +164,9 @@ ownership, plus its normal policy, Merchant, egress, wallet, and RPC settings:
 sudo -u sompi-mcp env \
   HOME=/var/lib/sompi-mcp \
   SOMPI_NETWORK=testnet-10 \
-  SOMPI_DATA_DIR=/var/lib/sompi-mcp/testnet-10 \
+  SOMPI_OPERATOR_MANIFEST=/etc/sompi/operator-manifest.json \
+  SOMPI_OPERATOR_UID=0 \
+  SOMPI_RUNTIME_GID="$IPC_GID" \
   SOMPI_AUTHORITY_CLIENT_DIR=/var/lib/sompi-mcp-authority-client \
   SOMPI_AUTHORITY_RUNTIME_DIR=/run/sompi-authority \
   SOMPI_AUTHORITY_SOCKET=/run/sompi-authority/authority.sock \
@@ -173,16 +175,11 @@ sudo -u sompi-mcp env \
   SOMPI_AUTHORITY_ISSUER=urn:sompi:authority:local \
   SOMPI_AUTHORITY_IPC_KEY_ID=authority-ipc-key-1 \
   SOMPI_AUTHORITY_INSTRUMENT_ID=kaspa:testnet-10:vault-treasury \
-  SOMPI_AP2_MERCHANT_RECEIPT_ISSUER=urn:merchant:receipt \
-  SOMPI_AP2_PAYMENT_RECEIPT_ISSUER=urn:payment:receipt \
-  SOMPI_EGRESS_ALLOW='[{"hostname":"merchant.example","ports":[443]}]' \
-  SOMPI_POLICY=/etc/sompi/policy.json \
-  SOMPI_NODE_URL=wss://your-testnet-10-node.example/ws \
   /opt/sompi/node_modules/.bin/sompi-mcp
 ```
 
-The two receipt issuers must be distinct and must match separate trusted keys.
-The first release fails closed on every network except testnet-10.
+The manifest's two receipt issuers must be distinct and must match separate
+trusted keys. The first release fails closed on every network except testnet-10.
 
 ## Hermetic release proof
 

@@ -274,54 +274,6 @@ export function registerSompiTools(
   );
 
   register(
-    "vault_create",
-    {
-      description:
-        "Create the testnet covenant-vault configuration from an operator-owned recovery public key and rolling cap.",
-      inputSchema: {
-        maxOutflowKas: POSITIVE_KAS.optional().describe("Consensus cap per rolling window, in KAS"),
-        maxOutflowSompi: POSITIVE_ATOMIC.optional().describe("Exact cap in sompi"),
-        windowSizeDaa: POSITIVE_ATOMIC.optional().describe("Window in DAA units; default 36000"),
-        ownerPublicKey: z.string().regex(/^[0-9a-fA-F]{64}$/).optional(),
-      },
-    },
-    "VAULT_CREATE_FAILED",
-    async ({ maxOutflowKas, maxOutflowSompi, windowSizeDaa, ownerPublicKey }: {
-      maxOutflowKas?: string;
-      maxOutflowSompi?: string;
-      windowSizeDaa?: string;
-      ownerPublicKey?: string;
-    }) => {
-      if (!ownerPublicKey || (maxOutflowKas === undefined && maxOutflowSompi === undefined)) {
-        return {
-          summary: "The operator's recovery public key and a rolling-window cap are required.",
-          status: "needs_input",
-          userAction:
-            "Ask the operator to run `sompi-mcp gen-owner-key`, retain the private key, and provide only its public key plus the desired cap.",
-          safeToShare: "The owner public key and cap are not secrets. Never provide the owner private key.",
-        };
-      }
-      if (vault.configured) {
-        throw new McpPublicError("VAULT_ALREADY_EXISTS", "A vault is already configured; inspect vault_status instead of replacing it.");
-      }
-      const cap = exactAmount(maxOutflowSompi, maxOutflowKas);
-      const created = vault.create(
-        cap,
-        ownerPublicKey,
-        windowSizeDaa === undefined ? undefined : BigInt(windowSizeDaa)
-      );
-      return {
-        summary: `Created a vault with a ${kasDisplay(cap)} rolling-window cap. It needs a covenant deposit before use.`,
-        status: "created_needs_deposit",
-        ...publicVaultConfig(created),
-        maxOutflowKas: kasValue(cap),
-        maxOutflowDisplay: kasDisplay(cap),
-        nextStep: "Fund Sompi's wallet, then call vault_deposit with a stable operationKey.",
-      };
-    }
-  );
-
-  register(
     "vault_deposit",
     {
       description:
@@ -738,7 +690,7 @@ async function paymentReadiness(
 function paymentStatusNextStep(blocker?: string): string {
   if (!blocker) return "none";
   if (blocker.includes("not been configured")) {
-    return "Ask the operator for a recovery public key and rolling cap, then call vault_create.";
+    return "Ask the operator to provision the vault outside the MCP session with sompi-operator.";
   }
   if (blocker.includes("not been funded") || blocker.includes("no spendable balance")) {
     return "Fund Sompi's wallet, then call vault_deposit with a stable operationKey.";
@@ -785,7 +737,7 @@ async function vaultStatus(runtime: SompiPurchaseRuntime) {
       summary: "The covenant vault has not been configured.",
       status: "needs_setup",
       configured: false,
-      nextStep: "Ask the operator for a recovery public key and rolling cap, then call vault_create.",
+      nextStep: "Ask the operator to provision the vault outside the MCP session with sompi-operator.",
     };
   }
   const config = runtime.vault.config();
@@ -1077,7 +1029,7 @@ function requireConfiguredVault(configured: boolean): void {
   if (!configured) {
     throw new McpPublicError(
       "VAULT_NOT_CONFIGURED",
-      "The vault is not configured. Ask the operator for a recovery public key and cap, then call vault_create."
+      "The vault is not configured. Ask the operator to provision it outside the MCP session with sompi-operator."
     );
   }
 }

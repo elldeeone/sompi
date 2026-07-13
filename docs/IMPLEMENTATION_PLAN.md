@@ -118,21 +118,21 @@ Gate:
 Purpose: remove recovery authority, policy, transport, and evidence trust from
 the Agent-facing data path before those facts drive more runtime work.
 
-- [ ] Implement a strict, canonical, versioned Operator Manifest with digest
+- [x] Implement a strict, canonical, versioned Operator Manifest with digest
   and monotonic revision.
-- [ ] Implement secure operator-owned installation and descriptor-stable
+- [x] Implement secure operator-owned installation and descriptor-stable
   runtime reads with exact ownership/mode/link/ancestor checks.
-- [ ] Add short-lived `sompi-operator` preview/install/provision/status flows.
-- [ ] Validate owner and generated Agent values as real secp256k1 x-only public
+- [x] Add short-lived `sompi-operator` preview/install/provision/status flows.
+- [x] Validate owner and generated Agent values as real secp256k1 x-only public
   keys; bind Agent public key, template, derived address, and exact vault-config
   digest before runtime ownership transfer or funding.
-- [ ] Project immutable Treasury policy, vault bootstrap, HTTPS Merchant egress,
+- [x] Project immutable Treasury policy, vault bootstrap, HTTPS Merchant egress,
   Chain Evidence sources/floors, and Admission Lease budgets.
-- [ ] Bind manifest identity into vault configuration, policy snapshots,
+- [x] Bind manifest identity into vault configuration, policy snapshots,
   Purchases, Treasury operations, and Chain Evidence.
-- [ ] Remove MCP `vault_create`, MCP owner-key generation, `SOMPI_POLICY`,
+- [x] Remove MCP `vault_create`, MCP owner-key generation, `SOMPI_POLICY`,
   policy hot reload, production HTTP opt-in, and all runtime fallbacks.
-- [ ] Reject funded-vault static-parameter drift and require explicit owner
+- [x] Reject funded-vault static-parameter drift and require explicit owner
   recovery/recreation.
 
 Gate:

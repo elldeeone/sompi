@@ -11,6 +11,7 @@ const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
 const expectedBins = Object.freeze({
   "sompi-authority": "dist/authority-main.js",
   "sompi-mcp": "dist/index.js",
+  "sompi-operator": "dist/operator-main.js",
   "sompi-vault-recover": "scripts/vault-recover.js",
   "sompi-verify-authority-isolation": "scripts/verify-authority-isolation.js",
 });
@@ -34,7 +35,7 @@ const roots = [
   "dist",
   "docs",
   "package.json",
-  "policy.example.json",
+  "operator.example.json",
   "scripts/package.json",
   "scripts/prepare-package.mjs",
   "scripts/require-source-tree.mjs",
@@ -52,6 +53,7 @@ const roots = [
 const executableFiles = new Set([
   "dist/authority-main.js",
   "dist/index.js",
+  "dist/operator-main.js",
   "scripts/prepare-package.mjs",
   "scripts/require-source-tree.mjs",
   "scripts/run-local-e2e.mjs",
@@ -74,6 +76,7 @@ for (const rule of requiredFileRules) {
 const requiredFiles = [
   "dist/authority-main.js",
   "dist/index.js",
+  "dist/operator-main.js",
   "dist/e2e-main.js",
   "dist/conformance/ap2-v0.2.js",
   "dist/conformance/kaspa-x402-alpha6.js",

@@ -12,8 +12,9 @@ Purchase module, clean Kaspa-x402 alpha.6 exact path, isolated interactive AP2
 Authority, demo Merchant, crash recovery, local vertical proof, and live
 Testnet-10 evidence. The completed deep security scan then found 21 medium/low
 issues concentrated in chain evidence/finality, operator provisioning, and
-unbounded operation lifecycles. Those three deep Modules must now land before
-the original phase gates can be considered final.
+unbounded operation lifecycles. Phase 2A is committed and Phase 2B Operator
+Provisioning is now implemented and verified locally; the other two deep
+Modules must land before the original phase gates can be considered final.
 
 ## Git orientation at codification
 
@@ -58,6 +59,28 @@ Do not assume these facts remain current. Re-run Git orientation before Phase
 - Complete deletion of Sompi x402 v1 at cutover; no compatibility layer.
 
 ## Completed milestones
+
+Phase 2A is complete in `ca8e152`: the canonical scan is preserved, the
+post-scan architecture and threat model are authoritative, and ADR-0011 through
+ADR-0013 record the selected module boundaries.
+
+Phase 2B is complete in the working milestone awaiting its intentional commit:
+
+1. `sompi-operator` owns preview, sealed candidate provisioning, digest-approved
+   installation, offline owner-key generation, and installed status;
+2. the canonical manifest binds vault keys/template/address/configuration,
+   immutable policy, HTTPS Merchant egress, receipt issuers, Chain Evidence
+   sources/floors, and Admission Lease budgets;
+3. production requires distinct operator/runtime principals, safe ownership,
+   fixed modes, one link, safe ancestors, and descriptor-stable reads;
+4. the Purchase Journal is a clean v5 epoch bound to one immutable manifest
+   identity before durable work; schemas v1-v4 are rejected untouched;
+5. MCP vault creation, MCP owner-key generation, policy file/hot reload,
+   cleartext Merchant configuration, and manifest-fact environment fallbacks
+   are deleted;
+6. all four provisioning PoCs fail closed, 347 unit tests pass with one
+   privileged ownership skip, offline smoke passes, and the packed artifact
+   verifier passes with the new operator executable.
 
 Phase 0 is complete:
 
@@ -118,10 +141,10 @@ performed.
 
 ## Next action
 
-Commit the completed **Phase 2A** authoritative post-scan architecture, then
-execute **Phase 2B: trusted Operator Provisioning**. It establishes the manifest
-identity, OS-principal model, vault provenance, HTTPS policy, evidence sources,
-finality floors, and Admission Lease budgets consumed by the remaining fixes.
+Commit the completed **Phase 2B** Operator Provisioning milestone, then execute
+**Phase 2C: Chain Evidence and finality**. It centralizes transaction identity,
+retained history, two-witness acceptance, continuation semantics, negative
+evidence, and operation-specific Finality Floors.
 
 ## Known external uncertainties
 

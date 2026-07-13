@@ -91,23 +91,22 @@ install -d -o sompi-mcp -g sompi-mcp -m 0700 "$NEW_DATA_DIR"
 printf '%s\n' "$NEW_DATA_DIR"
 ```
 
-Record the printed path in the reset log. Do not use a symlink. Update the MCP
-launcher to set `SOMPI_DATA_DIR` to this exact new path while leaving the old
-path untouched.
+Record the printed path in the reset log. Do not use a symlink. Create and
+install a fresh Operator Manifest whose `dataDirectory` is this exact new path.
 
 ## Initialize and validate the new runtime
 
-1. Start the same reviewed Sompi release against the new data directory with
-   `SOMPI_NETWORK=testnet-10`, the same operator-owned policy/trust configuration,
-   and a synced UTXO-indexed testnet-10 node.
+1. Provision the same reviewed Sompi release with a fresh Operator Manifest,
+   a synced UTXO-indexed testnet-10 node, and the independent HTTPS witness.
 2. Start the existing Trusted Authority through its normal isolated-user
    ceremony and rerun the isolation verifier before Agent access.
 3. Run `payment_status`, `network_status`, and `get_address`. Confirm the new
    wallet address, empty/new journal, intended policy limits, authority identity,
    and testnet-10 network.
-4. Generate a fresh offline owner key when creating a fresh vault. Give Sompi
-   only its public key, then use `vault_create` and a durable `vault_deposit`
-   with a new stable `operationKey`.
+4. Generate a fresh offline owner key with `sompi-operator owner-key`; retain
+   the private half offline. The `provision`/`install` ceremony creates the
+   Agent key and vault configuration before MCP starts. Fund it only through a
+   durable `vault_deposit` with a new stable `operationKey`.
 5. Fund only with testnet KAS and verify every deposit/send to completion before
    beginning a Purchase.
 6. Use a new reset-cycle namespace for request and operation keys so operator

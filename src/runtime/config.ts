@@ -5,8 +5,15 @@ import * as path from "node:path";
 
 import type {
   EgressAllowRule,
-  EgressProtocol,
 } from "../purchase/egress-policy.js";
+import type { Policy } from "../policy.js";
+import {
+  loadOperatorManifest,
+  operatorManifestIdentity,
+  operatorPolicy,
+  type LoadedOperatorManifest,
+  type OperatorFinalityFloor,
+} from "../operator/manifest.js";
 import {
   authorityClientRuntimePaths,
   type AuthorityClientRuntimePaths,
@@ -14,8 +21,6 @@ import {
 
 const TESTNET = "testnet-10" as const;
 const X402_TESTNET = "kaspa:testnet-10" as const;
-const DEFAULT_ADDITIONAL_COST_CEILING = "25000000";
-const DEFAULT_TREASURY_OPERATION_FEE_CEILING = "25000000";
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
 const IPC_KEY_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/;
 const UINT64_MAX = (1n << 64n) - 1n;
@@ -39,15 +44,29 @@ export interface SompiPurchaseRuntimeConfig {
   readonly dataDirectory: string;
   readonly journalDatabase: string;
   readonly stagingKeyDirectory: string;
-  readonly nodeUrl?: string;
-  readonly policyPath?: string;
+  readonly operatorManifest: LoadedOperatorManifest;
+  readonly nodeUrl: string;
+  readonly witnessBaseUrl: string;
+  readonly depthConfirmationDaa: string;
+  readonly finalityFloors: Readonly<{
+    settlement: OperatorFinalityFloor;
+    directTreasury: OperatorFinalityFloor;
+    vault: OperatorFinalityFloor;
+    staging: OperatorFinalityFloor;
+    recoveryRelease: OperatorFinalityFloor;
+  }>;
+  readonly admission: LoadedOperatorManifest["manifest"]["admission"];
+  readonly policy: Readonly<Policy>;
   readonly authority: SompiAuthorityClientConfig;
   readonly merchantReceiptIssuer: string;
   readonly paymentReceiptIssuer: string;
   readonly additionalCostCeilingAtomic: string;
   readonly treasuryOperationFeeCeilingAtomic: string;
   readonly egressAllowRules: readonly EgressAllowRule[];
-  readonly egressProtocols: readonly EgressProtocol[];
+}
+
+export interface PurchaseRuntimeConfigFromEnvOptions {
+  readonly allowSameUserOperatorManifestForTests?: boolean;
 }
 
 export class SompiRuntimeConfigError extends Error {
@@ -60,7 +79,8 @@ export class SompiRuntimeConfigError extends Error {
 /** Strict environment boundary for the initial AP2 + exact testnet profile. */
 export function purchaseRuntimeConfigFromEnv(
   env: NodeJS.ProcessEnv = process.env,
-  homeDirectory: string = os.homedir()
+  homeDirectory: string = os.homedir(),
+  options: PurchaseRuntimeConfigFromEnvOptions = {}
 ): SompiPurchaseRuntimeConfig {
   const configuredNetwork = env.SOMPI_NETWORK ?? TESTNET;
   if (configuredNetwork !== TESTNET) {
@@ -69,12 +89,24 @@ export function purchaseRuntimeConfigFromEnv(
     );
   }
 
-  // Parse every environment value before creating or changing operator state.
-  const home = configuredPath(homeDirectory, "home directory");
-  const dataDirectory = configuredPath(
-    env.SOMPI_DATA_DIR ?? path.join(home, ".sompi", TESTNET),
-    "Sompi data directory"
+  rejectRemovedOperatorEnvironment(env);
+  const manifestPath = configuredPath(
+    requiredEnv(env, "SOMPI_OPERATOR_MANIFEST"),
+    "Operator Manifest path"
   );
+  const operatorUserId = requiredNumericId(env, "SOMPI_OPERATOR_UID", "operator user ID");
+  const runtimeGroupId = requiredNumericId(env, "SOMPI_RUNTIME_GID", "runtime group ID");
+  const operatorManifest = loadOperatorManifest(manifestPath, {
+    expectedOperatorUserId: operatorUserId,
+    runtimeGroupId,
+    ...(options.allowSameUserOperatorManifestForTests
+      ? { allowSameUserForTests: true }
+      : {}),
+  });
+
+  // Parse every deployment locator before creating or changing runtime state.
+  const home = configuredPath(homeDirectory, "home directory");
+  const dataDirectory = operatorManifest.manifest.dataDirectory;
   const authorityRoot = configuredPath(
     env.SOMPI_AUTHORITY_ROOT_DIR ?? path.join(home, ".sompi", "authority"),
     "authority root directory"
@@ -129,31 +161,14 @@ export function purchaseRuntimeConfigFromEnv(
     env.SOMPI_AUTHORITY_INSTRUMENT_ID ?? "kaspa:testnet-10:vault-treasury",
     "authority instrument ID"
   );
-  const merchantReceiptIssuer = identity(
-    requiredEnv(env, "SOMPI_AP2_MERCHANT_RECEIPT_ISSUER"),
-    "Merchant Receipt issuer"
-  );
-  const paymentReceiptIssuer = identity(
-    requiredEnv(env, "SOMPI_AP2_PAYMENT_RECEIPT_ISSUER"),
-    "Payment Receipt issuer"
-  );
-  requireDistinctReceiptIssuers(merchantReceiptIssuer, paymentReceiptIssuer);
-  const additionalCostCeilingAtomic = atomic(
-    env.SOMPI_PURCHASE_ADDITIONAL_COST_CEILING ??
-      DEFAULT_ADDITIONAL_COST_CEILING,
-    "Purchase additional-cost ceiling"
-  );
-  const treasuryOperationFeeCeilingAtomic = positiveAtomic(
-    env.SOMPI_TREASURY_OPERATION_FEE_CEILING ??
-      DEFAULT_TREASURY_OPERATION_FEE_CEILING,
-    "direct Treasury operation fee ceiling"
-  );
-  const egressAllowRules = parseAllowRules(
-    requiredEnv(env, "SOMPI_EGRESS_ALLOW")
-  );
-  const egressProtocols = parseProtocols(env.SOMPI_EGRESS_PROTOCOLS);
-  const nodeUrl = optionalUrl(env.SOMPI_NODE_URL, "Kaspa node URL");
-  const policyPath = optionalPath(env.SOMPI_POLICY, "Treasury policy file");
+  const merchantReceiptIssuer = operatorManifest.manifest.merchant.merchantReceiptIssuer;
+  const paymentReceiptIssuer = operatorManifest.manifest.merchant.paymentReceiptIssuer;
+  const additionalCostCeilingAtomic =
+    operatorManifest.manifest.treasury.additionalCostCeilingAtomic;
+  const treasuryOperationFeeCeilingAtomic =
+    operatorManifest.manifest.treasury.operationFeeCeilingAtomic;
+  const egressAllowRules = operatorManifest.manifest.merchant.allowRules;
+  const nodeUrl = operatorManifest.manifest.chainEvidence.operatorNodeUrl;
 
   secureRuntimeDirectory(dataDirectory);
   return Object.freeze({
@@ -162,8 +177,13 @@ export function purchaseRuntimeConfigFromEnv(
     dataDirectory,
     journalDatabase: path.join(dataDirectory, "purchase.sqlite"),
     stagingKeyDirectory: path.join(dataDirectory, "staging-keys"),
-    ...(nodeUrl ? { nodeUrl } : {}),
-    ...(policyPath ? { policyPath } : {}),
+    operatorManifest,
+    nodeUrl,
+    witnessBaseUrl: operatorManifest.manifest.chainEvidence.witnessBaseUrl,
+    depthConfirmationDaa: operatorManifest.manifest.chainEvidence.depthConfirmationDaa,
+    finalityFloors: operatorManifest.manifest.chainEvidence.finalityFloors,
+    admission: operatorManifest.manifest.admission,
+    policy: operatorPolicy(operatorManifest.manifest),
     authority: Object.freeze({
       paths: authorityPaths,
       socketAccess: Object.freeze({
@@ -183,7 +203,6 @@ export function purchaseRuntimeConfigFromEnv(
     additionalCostCeilingAtomic,
     treasuryOperationFeeCeilingAtomic,
     egressAllowRules,
-    egressProtocols,
   });
 }
 
@@ -202,15 +221,21 @@ export function assertSompiPurchaseRuntimeConfig(
       "dataDirectory",
       "journalDatabase",
       "stagingKeyDirectory",
+      "operatorManifest",
+      "nodeUrl",
+      "witnessBaseUrl",
+      "depthConfirmationDaa",
+      "finalityFloors",
+      "admission",
+      "policy",
       "authority",
       "merchantReceiptIssuer",
       "paymentReceiptIssuer",
       "additionalCostCeilingAtomic",
       "treasuryOperationFeeCeilingAtomic",
       "egressAllowRules",
-      "egressProtocols",
     ],
-    new Set(["nodeUrl", "policyPath"]),
+    new Set(),
     "Purchase runtime configuration"
   );
   if (value.networkId !== TESTNET || value.x402Network !== X402_TESTNET) {
@@ -231,6 +256,28 @@ export function assertSompiPurchaseRuntimeConfig(
     throw new SompiRuntimeConfigError(
       "Purchase runtime state paths are not bound to the Sompi data directory"
     );
+  }
+  if (!isRecord(value.operatorManifest)) {
+    throw new SompiRuntimeConfigError("Operator Manifest configuration is invalid");
+  }
+  exactKeys(
+    value.operatorManifest,
+    ["manifest", "identity", "filename"],
+    new Set(),
+    "Operator Manifest configuration"
+  );
+  if (!isRecord(value.operatorManifest.manifest) || !isRecord(value.operatorManifest.identity)) {
+    throw new SompiRuntimeConfigError("Operator Manifest configuration is invalid");
+  }
+  const expectedIdentity = operatorManifestIdentity(value.operatorManifest.manifest as any);
+  if (
+    value.operatorManifest.identity.revision !== expectedIdentity.revision ||
+    value.operatorManifest.identity.digest !== expectedIdentity.digest ||
+    value.operatorManifest.manifest.dataDirectory !== dataDirectory ||
+    absoluteConfiguredPath(value.operatorManifest.filename, "Operator Manifest path") !==
+      value.operatorManifest.filename
+  ) {
+    throw new SompiRuntimeConfigError("Operator Manifest identity or runtime binding is invalid");
   }
   if (!isRecord(value.authority)) {
     throw new SompiRuntimeConfigError("authority client configuration is invalid");
@@ -299,15 +346,30 @@ export function assertSompiPurchaseRuntimeConfig(
   if (JSON.stringify(rules) !== JSON.stringify(value.egressAllowRules)) {
     throw new SompiRuntimeConfigError("egress allow rules are not canonical");
   }
-  const protocols = normalizeProtocols(value.egressProtocols);
-  if (JSON.stringify(protocols) !== JSON.stringify(value.egressProtocols)) {
-    throw new SompiRuntimeConfigError("egress protocols are not canonical");
+  const manifest = value.operatorManifest.manifest as any;
+  if (
+    value.nodeUrl !== manifest.chainEvidence.operatorNodeUrl ||
+    value.witnessBaseUrl !== manifest.chainEvidence.witnessBaseUrl ||
+    value.depthConfirmationDaa !== manifest.chainEvidence.depthConfirmationDaa ||
+    JSON.stringify(value.finalityFloors) !== JSON.stringify(manifest.chainEvidence.finalityFloors) ||
+    JSON.stringify(value.admission) !== JSON.stringify(manifest.admission) ||
+    JSON.stringify(value.egressAllowRules) !== JSON.stringify(manifest.merchant.allowRules) ||
+    value.merchantReceiptIssuer !== manifest.merchant.merchantReceiptIssuer ||
+    value.paymentReceiptIssuer !== manifest.merchant.paymentReceiptIssuer ||
+    value.additionalCostCeilingAtomic !== manifest.treasury.additionalCostCeilingAtomic ||
+    value.treasuryOperationFeeCeilingAtomic !== manifest.treasury.operationFeeCeilingAtomic
+  ) {
+    throw new SompiRuntimeConfigError("runtime configuration is not an exact Operator Manifest projection");
   }
-  if (value.nodeUrl !== undefined) {
-    optionalUrl(requireString(value.nodeUrl, "Kaspa node URL"), "Kaspa node URL");
-  }
-  if (value.policyPath !== undefined) {
-    absoluteConfiguredPath(value.policyPath, "Treasury policy file");
+  const policy = operatorPolicy(manifest);
+  if (
+    !isRecord(value.policy) ||
+    value.policy.maxSompiPerTx !== policy.maxSompiPerTx ||
+    value.policy.maxSompiPerHour !== policy.maxSompiPerHour ||
+    value.policy.requireApprovalAboveSompi !== policy.requireApprovalAboveSompi ||
+    JSON.stringify(value.policy.allowlist) !== JSON.stringify(policy.allowlist)
+  ) {
+    throw new SompiRuntimeConfigError("runtime policy is not an exact Operator Manifest projection");
   }
 }
 
@@ -370,19 +432,6 @@ export function secureRuntimeDirectory(directory: string): string {
   }
 }
 
-function parseAllowRules(value: string): readonly EgressAllowRule[] {
-  let candidate: unknown;
-  try {
-    candidate = JSON.parse(value);
-  } catch (cause) {
-    throw new SompiRuntimeConfigError(
-      "SOMPI_EGRESS_ALLOW must be a JSON array of exact hostname and port rules",
-      { cause }
-    );
-  }
-  return normalizeAllowRules(candidate);
-}
-
 function normalizeAllowRules(candidate: unknown): readonly EgressAllowRule[] {
   if (!Array.isArray(candidate) || candidate.length === 0 || candidate.length > 128) {
     throw new SompiRuntimeConfigError(
@@ -416,35 +465,6 @@ function normalizeAllowRules(candidate: unknown): readonly EgressAllowRule[] {
     return Object.freeze({ hostname, ports: Object.freeze(ports) });
   });
   return Object.freeze(rules);
-}
-
-function parseProtocols(value: string | undefined): readonly EgressProtocol[] {
-  if (value === undefined) return Object.freeze(["https:"] as const);
-  let candidate: unknown;
-  try {
-    candidate = JSON.parse(value);
-  } catch (cause) {
-    throw new SompiRuntimeConfigError(
-      "SOMPI_EGRESS_PROTOCOLS must be a JSON array",
-      { cause }
-    );
-  }
-  return normalizeProtocols(candidate);
-}
-
-function normalizeProtocols(candidate: unknown): readonly EgressProtocol[] {
-  if (
-    !Array.isArray(candidate) ||
-    candidate.length === 0 ||
-    candidate.length > 2 ||
-    candidate.some((item) => item !== "https:" && item !== "http:") ||
-    new Set(candidate).size !== candidate.length
-  ) {
-    throw new SompiRuntimeConfigError(
-      "SOMPI_EGRESS_PROTOCOLS may contain only unique https: and http: entries"
-    );
-  }
-  return Object.freeze([...(candidate as EgressProtocol[])]);
 }
 
 function requiredEnv(env: NodeJS.ProcessEnv, name: string): string {
@@ -487,36 +507,6 @@ function positiveAtomic(value: string, label: string): string {
   const canonical = atomic(value, label);
   if (canonical === "0") throw new SompiRuntimeConfigError(`${label} must be positive`);
   return canonical;
-}
-
-function optionalUrl(value: string | undefined, label: string): string | undefined {
-  if (value === undefined) return undefined;
-  if (
-    value.length === 0 ||
-    value.length > 2048 ||
-    value.trim() !== value ||
-    /[\u0000-\u001f\u007f]/.test(value)
-  ) {
-    throw new SompiRuntimeConfigError(`${label} is invalid`);
-  }
-  let parsed: URL;
-  try {
-    parsed = new URL(value);
-  } catch (cause) {
-    throw new SompiRuntimeConfigError(`${label} is invalid`, { cause });
-  }
-  if (
-    !["ws:", "wss:"].includes(parsed.protocol) ||
-    parsed.username ||
-    parsed.password ||
-    parsed.hash ||
-    parsed.search
-  ) {
-    throw new SompiRuntimeConfigError(
-      `${label} must be an uncredentialed ws or wss URL without query or fragment`
-    );
-  }
-  return parsed.href;
 }
 
 function optionalPath(
@@ -648,6 +638,38 @@ function optionalNumericId(value: string | undefined, label: string): number | u
     throw new SompiRuntimeConfigError(`${label} is invalid`);
   }
   return numericId(Number(value), label);
+}
+
+function requiredNumericId(
+  env: NodeJS.ProcessEnv,
+  name: string,
+  label: string
+): number {
+  const value = optionalNumericId(env[name], label);
+  if (value === undefined) {
+    throw new SompiRuntimeConfigError(`${name} is required for the Purchase runtime`);
+  }
+  return value;
+}
+
+function rejectRemovedOperatorEnvironment(env: NodeJS.ProcessEnv): void {
+  const removed = [
+    "SOMPI_DATA_DIR",
+    "SOMPI_POLICY",
+    "SOMPI_NODE_URL",
+    "SOMPI_EGRESS_ALLOW",
+    "SOMPI_EGRESS_PROTOCOLS",
+    "SOMPI_PURCHASE_ADDITIONAL_COST_CEILING",
+    "SOMPI_TREASURY_OPERATION_FEE_CEILING",
+    "SOMPI_AP2_MERCHANT_RECEIPT_ISSUER",
+    "SOMPI_AP2_PAYMENT_RECEIPT_ISSUER",
+  ];
+  const configured = removed.filter((name) => env[name] !== undefined);
+  if (configured.length > 0) {
+    throw new SompiRuntimeConfigError(
+      `${configured.join(", ")} were removed; install these facts through sompi-operator`
+    );
+  }
 }
 
 function numericId(value: unknown, label: string): number {

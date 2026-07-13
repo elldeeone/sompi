@@ -121,7 +121,7 @@ export class KaspaWallet {
     }
     throw new Error(
       `no healthy public node found for ${this.networkId} (last: ${lastVerdict}); ` +
-        `set SOMPI_NODE_URL to a trusted synced node`
+        `ask the operator to install a healthy node URL in the Operator Manifest`
     );
   }
 

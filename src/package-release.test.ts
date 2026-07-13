@@ -20,6 +20,7 @@ test("package manifest exposes only supported executables and no import side eff
   assert.deepEqual(manifest.bin, {
     "sompi-authority": "dist/authority-main.js",
     "sompi-mcp": "dist/index.js",
+    "sompi-operator": "dist/operator-main.js",
     "sompi-vault-recover": "scripts/vault-recover.js",
     "sompi-verify-authority-isolation": "scripts/verify-authority-isolation.js",
   });

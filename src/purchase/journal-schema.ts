@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 
 export const JOURNAL_APPLICATION_ID = 0x534f4d50; // SOMP
-export const JOURNAL_SCHEMA_VERSION = 4;
+export const JOURNAL_SCHEMA_VERSION = 5;
 
 export const JOURNAL_SCHEMA_V1_SQL = `
   CREATE TABLE schema_migrations (
@@ -702,9 +702,27 @@ export const JOURNAL_SCHEMA_V4_MIGRATION_SQL = `
     BEGIN SELECT RAISE(ABORT, 'treasury staging recovery accounting is immutable'); END;
 `;
 
+/** Clean-cutover schema epoch for immutable Operator Manifest provenance. */
+export const JOURNAL_SCHEMA_V5_MIGRATION_SQL = `
+  CREATE TABLE operator_manifest_binding (
+    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+    revision INTEGER NOT NULL CHECK (revision >= 1),
+    digest TEXT NOT NULL CHECK (length(digest) = 50 AND digest GLOB 'sha256:*'),
+    bound_at_ms INTEGER NOT NULL
+  ) STRICT;
+
+  CREATE TRIGGER immutable_operator_manifest_binding_update
+    BEFORE UPDATE ON operator_manifest_binding
+    BEGIN SELECT RAISE(ABORT, 'Operator Manifest binding is immutable'); END;
+  CREATE TRIGGER immutable_operator_manifest_binding_delete
+    BEFORE DELETE ON operator_manifest_binding
+    BEGIN SELECT RAISE(ABORT, 'Operator Manifest binding is immutable'); END;
+`;
+
 export const JOURNAL_SCHEMA_V2_SQL = `${JOURNAL_SCHEMA_V1_SQL}\n${JOURNAL_SCHEMA_V2_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V3_SQL = `${JOURNAL_SCHEMA_V2_SQL}\n${JOURNAL_SCHEMA_V3_MIGRATION_SQL}`;
-export const JOURNAL_SCHEMA_SQL = `${JOURNAL_SCHEMA_V3_SQL}\n${JOURNAL_SCHEMA_V4_MIGRATION_SQL}`;
+export const JOURNAL_SCHEMA_V4_SQL = `${JOURNAL_SCHEMA_V3_SQL}\n${JOURNAL_SCHEMA_V4_MIGRATION_SQL}`;
+export const JOURNAL_SCHEMA_SQL = `${JOURNAL_SCHEMA_V4_SQL}\n${JOURNAL_SCHEMA_V5_MIGRATION_SQL}`;
 
 export const JOURNAL_SCHEMA_V1_CHECKSUM = sha256Text(JOURNAL_SCHEMA_V1_SQL);
 export const JOURNAL_SCHEMA_V2_CHECKSUM = sha256Text(JOURNAL_SCHEMA_V2_SQL);

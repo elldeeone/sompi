@@ -22,7 +22,6 @@ import {
   WalletTreasuryOperationAdapter,
 } from "./treasury/operation-adapters.js";
 import { TreasuryOperationModule } from "./treasury/operations.js";
-import { generateOwnerKey } from "./vault.js";
 import { generateWalletKey } from "./wallet.js";
 
 const TESTNET = "testnet-10" as const;
@@ -34,9 +33,6 @@ switch (command.kind) {
     break;
   case "generate-wallet-key":
     generateWalletKeyCommand(command.network);
-    break;
-  case "generate-owner-key":
-    generateOwnerKeyCommand();
     break;
   case "start":
     void main();
@@ -67,15 +63,6 @@ function generateWalletKeyCommand(network = process.env.SOMPI_NETWORK ?? TESTNET
   console.log(
     "\nFund the address, then provide SOMPI_PRIVATE_KEY only through the MCP server environment."
   );
-  process.exit(0);
-}
-
-function generateOwnerKeyCommand(): never {
-  const key = generateOwnerKey();
-  console.log("Vault owner recovery keypair — generated locally; never share the private line:");
-  console.log(`private: ${key.privateKey}`);
-  console.log(`public:  ${key.publicKey}`);
-  console.log("\nProvide Sompi only the public line and your chosen cap; retain the private line offline.");
   process.exit(0);
 }
 

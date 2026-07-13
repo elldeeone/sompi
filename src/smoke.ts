@@ -210,44 +210,29 @@ function policyVector(
   check: (name: string, condition: boolean, detail?: string) => void,
   directory: string
 ): void {
-  fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const policyPath = path.join(directory, "policy.json");
-  fs.writeFileSync(
-    policyPath,
-    JSON.stringify({ maxSompiPerTx: "100", maxSompiPerHour: "1000" }),
-    { mode: 0o600 }
-  );
-  const policy = new PolicyEngine(directory, policyPath);
+  const configured = {
+    maxSompiPerTx: 100n,
+    maxSompiPerHour: 1_000n,
+    allowlist: [] as string[],
+    requireApprovalAboveSompi: 0n,
+  };
+  const policy = new PolicyEngine(configured);
   let denied = false;
   try {
     policy.authorize("kaspatest:qpolicy", 200n);
   } catch (error) {
     denied = error instanceof PolicyViolation;
   }
-  fs.writeFileSync(
-    policyPath,
-    JSON.stringify({ maxSompiPerTx: "500", maxSompiPerHour: "1000" }),
-    { mode: 0o600 }
-  );
-  fs.utimesSync(policyPath, new Date(), new Date(Date.now() + 5));
-  let reloaded = true;
+  configured.maxSompiPerTx = 500n;
+  let remainedImmutable = false;
   try {
     policy.authorize("kaspatest:qpolicy", 200n);
-  } catch {
-    reloaded = false;
-  }
-  fs.writeFileSync(policyPath, "{not json", { mode: 0o600 });
-  fs.utimesSync(policyPath, new Date(), new Date(Date.now() + 10));
-  let malformedDenied = false;
-  try {
-    policy.authorize("kaspatest:qpolicy", 1n);
   } catch (error) {
-    malformedDenied =
-      error instanceof PolicyViolation && error.message.includes("malformed");
+    remainedImmutable = error instanceof PolicyViolation;
   }
   check(
-    "operator policy hot reloads and malformed replacement fails closed",
-    denied && reloaded && malformedDenied
+    "operator policy is immutable for the process lifetime",
+    denied && remainedImmutable && policy.policy.maxSompiPerTx === 100n
   );
 }
 

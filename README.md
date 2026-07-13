@@ -133,7 +133,9 @@ by that runbook. A typical executable is:
       "command": "/opt/sompi/node_modules/.bin/sompi-mcp",
       "env": {
         "SOMPI_NETWORK": "testnet-10",
-        "SOMPI_DATA_DIR": "/var/lib/sompi-mcp/testnet-10",
+        "SOMPI_OPERATOR_MANIFEST": "/etc/sompi/operator-manifest.json",
+        "SOMPI_OPERATOR_UID": "0",
+        "SOMPI_RUNTIME_GID": "1001",
         "SOMPI_AUTHORITY_CLIENT_DIR": "/var/lib/sompi-mcp-authority-client",
         "SOMPI_AUTHORITY_RUNTIME_DIR": "/run/sompi-authority",
         "SOMPI_AUTHORITY_SOCKET": "/run/sompi-authority/authority.sock"
@@ -143,9 +145,10 @@ by that runbook. A typical executable is:
 }
 ```
 
-The required authority UID/GID, receipt issuers, egress allowlist, policy, and
-node values are omitted from this short example; the runtime fails closed when
-they are absent.
+The immutable manifest owns the runtime path, policy, Merchant allowlist,
+receipt issuers, node/witness profile, finality floors, and admission budgets.
+The authority identifiers are omitted from this short example; startup fails
+closed when any required deployment locator is absent.
 
 ## MCP tools
 
@@ -158,7 +161,7 @@ they are absent.
 | `get_address`, `get_balance` | Receive-address and balance reads |
 | `await_payment`, `verify_payment` | Observe incoming testnet payments |
 | `send_payment` | Durable policy-gated hot-wallet send with a stable operation key |
-| `vault_create`, `vault_status` | Configure/read the operator-recoverable consensus vault |
+| `vault_status` | Read the operator-provisioned consensus vault |
 | `vault_deposit` | Durable initial funding or top-up of the vault |
 | `vault_send` | Durable consensus-capped vault withdrawal |
 | `treasury_operation_status` | Read one direct Treasury Movement |
@@ -176,41 +179,29 @@ funds in a stateful Kaspa covenant vault. The Agent key can spend only within a
 rolling-window consensus cap. An offline operator key can recover the vault
 without Agent cooperation.
 
-Generate the operator key on the operator machine:
+Generate the operator key outside the MCP session:
 
 ```bash
-sompi-mcp gen-owner-key
+sompi-operator owner-key
 ```
 
-Retain the private line offline. Give Sompi only the public line and desired
-cap, then use `vault_create` followed by a durable `vault_deposit`. The owner
-private key is never an MCP argument.
+Retain the private line offline. Put only the public line and desired cap in an
+operator provisioning spec. Review it with `sompi-operator preview`, create a
+sealed candidate with `provision`, and activate that exact digest with
+`install`. The owner private key is never an MCP argument or runtime file.
 
-The software policy is an additional, stricter layer shared by Purchases and
-direct Treasury Movements:
-
-```json
-{
-  "maxSompiPerTx": "100000000",
-  "maxSompiPerHour": "500000000",
-  "allowlist": ["kaspatest:qq..."],
-  "requireApprovalAboveSompi": "0"
-}
-```
-
-Point `SOMPI_POLICY` at the operator-owned file. The MCP surface can read but
-cannot loosen it.
+The software policy remains an additional, stricter layer shared by Purchases
+and direct Treasury Movements, but is now an immutable projection of the
+Operator Manifest. See `operator.example.json` and the operator runbook.
 
 ## Required runtime configuration
 
 | Variable | Purpose |
 |---|---|
 | `SOMPI_NETWORK` | Must be `testnet-10` in the initial release |
-| `SOMPI_DATA_DIR` | MCP-owned journal, wallet, vault, and staging state |
-| `SOMPI_NODE_URL` | Optional explicit testnet-10 wRPC endpoint |
-| `SOMPI_POLICY` | Operator-owned spending policy file |
-| `SOMPI_EGRESS_ALLOW` | Required JSON host/port allowlist for Merchant access |
-| `SOMPI_EGRESS_PROTOCOLS` | Optional protocol list; secure defaults apply |
+| `SOMPI_OPERATOR_MANIFEST` | Operator-owned canonical manifest path |
+| `SOMPI_OPERATOR_UID` | Expected distinct manifest owner UID |
+| `SOMPI_RUNTIME_GID` | Fixed read-only manifest group GID |
 | `SOMPI_AUTHORITY_CLIENT_DIR` | MCP-owned IPC MAC copy and public trust store |
 | `SOMPI_AUTHORITY_RUNTIME_DIR` | Shared socket directory |
 | `SOMPI_AUTHORITY_SOCKET` | Authority Unix socket path |
@@ -219,9 +210,6 @@ cannot loosen it.
 | `SOMPI_AUTHORITY_ISSUER` | Authority issuer expected by both processes |
 | `SOMPI_AUTHORITY_IPC_KEY_ID` | IPC MAC key identifier expected by both processes |
 | `SOMPI_AUTHORITY_INSTRUMENT_ID` | Experimental native-KAS AP2 instrument identifier |
-| `SOMPI_AP2_MERCHANT_RECEIPT_ISSUER` | Trusted Merchant receipt issuer |
-| `SOMPI_AP2_PAYMENT_RECEIPT_ISSUER` | Separate trusted payment receipt issuer |
-| `SOMPI_PURCHASE_ADDITIONAL_COST_CEILING` | Maximum separately authorized fee/additional-cost bound |
 
 The authority executable additionally accepts its private/client/runtime paths,
 signing `kid`, and socket GID as described in its runbook.

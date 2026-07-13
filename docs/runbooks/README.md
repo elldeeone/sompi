@@ -5,6 +5,8 @@ exact profile on Kaspa testnet-10.
 
 - [`AUTHORITY.md`](AUTHORITY.md): separate OS users, credential ownership,
   startup, verification, backup, and key rotation.
+- [`OPERATOR_PROVISIONING.md`](OPERATOR_PROVISIONING.md): immutable manifest,
+  vault bootstrap, OS ownership, digest approval, and static-drift recovery.
 - [`JOURNAL.md`](JOURNAL.md): consistent backup, restore validation, and
   corruption response for all MCP-side durable state.
 - [`RECONCILIATION.md`](RECONCILIATION.md): safe recovery of interrupted

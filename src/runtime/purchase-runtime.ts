@@ -49,7 +49,7 @@ import {
 import { PurchaseJournal } from "../purchase/journal.js";
 import type { PurchaseModule } from "../purchase/types.js";
 import { VaultTreasuryModule } from "../treasury/vault-treasury.js";
-import { VaultManager } from "../vault.js";
+import { VaultManager, vaultStaticConfigurationDigest } from "../vault.js";
 import { KaspaWallet } from "../wallet.js";
 import {
   assertSompiPurchaseRuntimeConfig,
@@ -108,20 +108,23 @@ export function createSompiPurchaseRuntime(
   const egress = new EgressPolicy({
     allowRules: config.egressAllowRules,
     resolver: dependencies.resolver ?? systemResolver,
-    allowedProtocols: config.egressProtocols,
     now,
   });
-  const policy = new PolicyEngine(config.dataDirectory, config.policyPath);
+  const policy = new PolicyEngine(config.policy);
+  const vault = new VaultManager(config.dataDirectory, config.networkId);
+  assertManifestVault(vault, config);
   const wallet = new KaspaWallet({
     networkId: config.networkId,
     dataDir: config.dataDirectory,
-    ...(config.nodeUrl ? { nodeUrl: config.nodeUrl } : {}),
+    nodeUrl: config.nodeUrl,
   });
-  const vault = new VaultManager(config.dataDirectory, config.networkId);
   let journal: PurchaseJournal | undefined;
   let authorityReplay: SqliteAuthorityReplayStore | undefined;
   try {
-    journal = new PurchaseJournal(config.journalDatabase, { now });
+    journal = new PurchaseJournal(config.journalDatabase, {
+      now,
+      operatorManifestIdentity: config.operatorManifest.identity,
+    });
     authorityReplay = new SqliteAuthorityReplayStore(
       config.authority.clientReplayDatabase,
       { now }
@@ -276,6 +279,28 @@ export function createSompiPurchaseRuntime(
       );
     }
     throw error;
+  }
+}
+
+function assertManifestVault(
+  vault: VaultManager,
+  config: SompiPurchaseRuntimeConfig
+): void {
+  if (!vault.configured) {
+    throw new Error("Operator Manifest vault has not been provisioned");
+  }
+  const actual = vault.config();
+  const expected = config.operatorManifest.manifest.vault;
+  if (
+    actual.template !== expected.template ||
+    actual.ownerPublic !== expected.ownerPublic ||
+    actual.agentPublic !== expected.agentPublic ||
+    actual.maxOutflowSompi !== expected.maxOutflowSompi ||
+    actual.windowSizeDaa !== expected.windowSizeDaa ||
+    vault.initialAddress() !== expected.address ||
+    vaultStaticConfigurationDigest(actual) !== expected.configDigest
+  ) {
+    throw new Error("provisioned vault does not match the Operator Manifest");
   }
 }
 

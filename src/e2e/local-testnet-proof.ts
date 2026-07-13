@@ -317,7 +317,12 @@ export async function runLocalTestnetProof(
     const transport = new DemoPinnedTransport(merchant, EXPECTED_PURCHASE_ID);
 
     const journalFilename = path.join(directory, "purchase", "journal.sqlite");
-    const policy = new PolicyEngine(directory);
+    const policy = new PolicyEngine({
+      maxSompiPerTx: 100_000_000n,
+      maxSompiPerHour: 500_000_000n,
+      allowlist: [],
+      requireApprovalAboveSompi: 0n,
+    });
     let faultInjected = false;
     let journal = new PurchaseJournal(journalFilename, {
       now: clock,

@@ -21,6 +21,7 @@ for (const required of [
   "package/README.md",
   "package/dist/index.js",
   "package/dist/authority-main.js",
+  "package/dist/operator-main.js",
   "package/dist/e2e-main.js",
   "package/scripts/run-local-e2e.mjs",
   "package/scripts/run-protocol-conformance.mjs",
@@ -80,6 +81,7 @@ if (
   JSON.stringify({
     "sompi-authority": "dist/authority-main.js",
     "sompi-mcp": "dist/index.js",
+    "sompi-operator": "dist/operator-main.js",
     "sompi-vault-recover": "scripts/vault-recover.js",
     "sompi-verify-authority-isolation": "scripts/verify-authority-isolation.js",
   })
@@ -104,6 +106,7 @@ function executable(name) {
   return new Set([
     "package/dist/authority-main.js",
     "package/dist/index.js",
+    "package/dist/operator-main.js",
     "package/scripts/prepare-package.mjs",
     "package/scripts/require-source-tree.mjs",
     "package/scripts/run-local-e2e.mjs",

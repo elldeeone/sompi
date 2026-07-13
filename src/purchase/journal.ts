@@ -16,18 +16,9 @@ import {
 } from "./identity.js";
 import {
   expectedSchemaFingerprint,
-  expectedV1SchemaFingerprint,
-  expectedV2SchemaFingerprint,
-  expectedV3SchemaFingerprint,
   JOURNAL_APPLICATION_ID,
   JOURNAL_SCHEMA_CHECKSUM,
   JOURNAL_SCHEMA_SQL,
-  JOURNAL_SCHEMA_V1_CHECKSUM,
-  JOURNAL_SCHEMA_V2_CHECKSUM,
-  JOURNAL_SCHEMA_V2_MIGRATION_SQL,
-  JOURNAL_SCHEMA_V3_CHECKSUM,
-  JOURNAL_SCHEMA_V3_MIGRATION_SQL,
-  JOURNAL_SCHEMA_V4_MIGRATION_SQL,
   JOURNAL_SCHEMA_VERSION,
   schemaFingerprint,
 } from "./journal-schema.js";
@@ -126,6 +117,7 @@ export interface PurchaseJournalOptions {
   evidenceDirectory?: string;
   preparedMaterialDirectory?: string;
   faultInjector?: (point: JournalFaultPoint) => void;
+  operatorManifestIdentity?: Readonly<{ revision: number; digest: string }>;
 }
 
 export interface CreatePurchaseInput {
@@ -666,6 +658,7 @@ export class PurchaseJournal {
       this.configure(options.busyTimeoutMs ?? 5_000);
       validateDatabaseFiles(databasePath);
       this.migrate();
+      this.bindOperatorManifest(options.operatorManifestIdentity);
       const evidenceDirectory =
         options.evidenceDirectory ?? (filename === ":memory:" ? undefined : `${filename}.evidence`);
       this.evidenceStore = evidenceDirectory ? new EvidenceStore(evidenceDirectory) : undefined;
@@ -688,6 +681,13 @@ export class PurchaseJournal {
 
   schemaVersion(): number {
     return this.db.pragma("user_version", { simple: true }) as number;
+  }
+
+  operatorManifestIdentity(): Readonly<{ revision: number; digest: string }> | undefined {
+    const row = this.db
+      .prepare("SELECT revision, digest FROM operator_manifest_binding WHERE singleton = 1")
+      .get() as { revision: number; digest: string } | undefined;
+    return row ? Object.freeze({ revision: row.revision, digest: row.digest }) : undefined;
   }
 
   integrityCheck(): true {
@@ -3885,101 +3885,62 @@ export class PurchaseJournal {
     this.db.pragma("wal_autocheckpoint = 1000");
   }
 
+  private bindOperatorManifest(
+    identity: Readonly<{ revision: number; digest: string }> | undefined
+  ): void {
+    if (identity === undefined) return;
+    if (
+      !Number.isSafeInteger(identity.revision) ||
+      identity.revision < 1 ||
+      !/^sha256:[A-Za-z0-9_-]{43}$/.test(identity.digest)
+    ) {
+      throw new JournalInvariantError("Operator Manifest identity is invalid");
+    }
+    const existing = this.operatorManifestIdentity();
+    if (existing) {
+      if (
+        existing.revision !== identity.revision ||
+        existing.digest !== identity.digest
+      ) {
+        throw new JournalInvariantError(
+          "Purchase Journal is bound to a different Operator Manifest"
+        );
+      }
+      return;
+    }
+    const facts = this.db
+      .prepare(
+        `SELECT
+           (SELECT COUNT(*) FROM purchases) +
+           (SELECT COUNT(*) FROM treasury_operations) AS count`
+      )
+      .get() as { count: number };
+    if (facts.count !== 0) {
+      throw new JournalInvariantError(
+        "cannot bind an existing development Journal to an Operator Manifest"
+      );
+    }
+    this.db
+      .prepare(
+        `INSERT INTO operator_manifest_binding
+           (singleton, revision, digest, bound_at_ms)
+         VALUES (1, ?, ?, ?)`
+      )
+      .run(identity.revision, identity.digest, this.timestamp());
+  }
+
   private migrate(): void {
     const version = this.schemaVersion();
     const applicationId = this.db.pragma("application_id", { simple: true }) as number;
-    if (version > JOURNAL_SCHEMA_VERSION) {
+    if (version !== 0 && version !== JOURNAL_SCHEMA_VERSION) {
       throw new JournalInvariantError(
-        `Purchase Journal schema ${version} is newer than supported schema ${JOURNAL_SCHEMA_VERSION}`
+        `clean cutover refuses Purchase Journal schema ${version}; recreate it at schema ${JOURNAL_SCHEMA_VERSION}`
       );
     }
     if (version === JOURNAL_SCHEMA_VERSION) {
       if (applicationId !== JOURNAL_APPLICATION_ID) {
         throw new JournalInvariantError("Purchase Journal application identity is invalid");
       }
-      return;
-    }
-    if (version === 1) {
-      if (applicationId !== JOURNAL_APPLICATION_ID) {
-        throw new JournalInvariantError("Purchase Journal application identity is invalid");
-      }
-      const migration = this.db
-        .prepare("SELECT checksum FROM schema_migrations WHERE version = 1")
-        .get() as { checksum: string } | undefined;
-      if (migration?.checksum !== JOURNAL_SCHEMA_V1_CHECKSUM) {
-        throw new JournalInvariantError("Purchase Journal v1 migration checksum is invalid");
-      }
-      if (schemaFingerprint(this.db) !== expectedV1SchemaFingerprint()) {
-        throw new JournalInvariantError("Purchase Journal v1 schema fingerprint is invalid");
-      }
-      const v1Facts = this.db
-        .prepare(
-          `SELECT
-             (SELECT COUNT(*) FROM purchases) +
-             (SELECT COUNT(*) FROM evidence_artifacts) +
-             (SELECT COUNT(*) FROM policy_snapshots) +
-             (SELECT COUNT(*) FROM treasury_reservations) +
-             (SELECT COUNT(*) FROM payment_attempts) +
-             (SELECT COUNT(*) FROM effects) AS count`
-        )
-        .get() as { count: number };
-      if (v1Facts.count !== 0) {
-        throw new JournalInvariantError(
-          "clean cutover refuses non-empty v1 development state; reset the journal before using v2"
-        );
-      }
-      const migrateV2 = this.db.transaction(() => {
-        this.db.exec(JOURNAL_SCHEMA_V2_MIGRATION_SQL);
-        this.db
-          .prepare("INSERT INTO schema_migrations (version, checksum, applied_at_ms) VALUES (?, ?, ?)")
-          .run(2, JOURNAL_SCHEMA_V2_CHECKSUM, this.timestamp());
-        this.db.pragma("user_version = 2");
-      });
-      migrateV2.immediate();
-    }
-    if (this.schemaVersion() === 2) {
-      if (applicationId !== JOURNAL_APPLICATION_ID) {
-        throw new JournalInvariantError("Purchase Journal application identity is invalid");
-      }
-      const migration = this.db
-        .prepare("SELECT checksum FROM schema_migrations WHERE version = 2")
-        .get() as { checksum: string } | undefined;
-      if (migration?.checksum !== JOURNAL_SCHEMA_V2_CHECKSUM) {
-        throw new JournalInvariantError("Purchase Journal v2 migration checksum is invalid");
-      }
-      if (schemaFingerprint(this.db) !== expectedV2SchemaFingerprint()) {
-        throw new JournalInvariantError("Purchase Journal v2 schema fingerprint is invalid");
-      }
-      const migrateV3 = this.db.transaction(() => {
-        this.db.exec(JOURNAL_SCHEMA_V3_MIGRATION_SQL);
-        this.db
-          .prepare("INSERT INTO schema_migrations (version, checksum, applied_at_ms) VALUES (?, ?, ?)")
-          .run(3, JOURNAL_SCHEMA_V3_CHECKSUM, this.timestamp());
-        this.db.pragma("user_version = 3");
-      });
-      migrateV3.immediate();
-    }
-    if (this.schemaVersion() === 3) {
-      if (applicationId !== JOURNAL_APPLICATION_ID) {
-        throw new JournalInvariantError("Purchase Journal application identity is invalid");
-      }
-      const migration = this.db
-        .prepare("SELECT checksum FROM schema_migrations WHERE version = 3")
-        .get() as { checksum: string } | undefined;
-      if (migration?.checksum !== JOURNAL_SCHEMA_V3_CHECKSUM) {
-        throw new JournalInvariantError("Purchase Journal v3 migration checksum is invalid");
-      }
-      if (schemaFingerprint(this.db) !== expectedV3SchemaFingerprint()) {
-        throw new JournalInvariantError("Purchase Journal v3 schema fingerprint is invalid");
-      }
-      const migrateV4 = this.db.transaction(() => {
-        this.db.exec(JOURNAL_SCHEMA_V4_MIGRATION_SQL);
-        this.db
-          .prepare("INSERT INTO schema_migrations (version, checksum, applied_at_ms) VALUES (?, ?, ?)")
-          .run(JOURNAL_SCHEMA_VERSION, JOURNAL_SCHEMA_CHECKSUM, this.timestamp());
-        this.db.pragma(`user_version = ${JOURNAL_SCHEMA_VERSION}`);
-      });
-      migrateV4.immediate();
       return;
     }
     if (version !== 0 || applicationId !== 0) {

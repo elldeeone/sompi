@@ -22,6 +22,7 @@
   "bin": {
     "sompi-authority": "dist/authority-main.js",
     "sompi-mcp": "dist/index.js",
+    "sompi-operator": "dist/operator-main.js",
     "sompi-vault-recover": "scripts/vault-recover.js",
     "sompi-verify-authority-isolation": "scripts/verify-authority-isolation.js"
   },
@@ -34,7 +35,7 @@
     "!dist/**/*.test.js",
     "!dist/e2e/live-testnet-*.js",
     "docs",
-    "policy.example.json",
+    "operator.example.json",
     "scripts/package.json",
     "scripts/prepare-package.mjs",
     "scripts/require-source-tree.mjs",

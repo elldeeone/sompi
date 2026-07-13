@@ -3,6 +3,7 @@ import {
   CovenantBinding,
   Hash,
   Keypair,
+  XOnlyPublicKey,
   PrivateKey,
   SighashType,
   Transaction,
@@ -36,6 +37,31 @@ export interface VaultConfig {
   address: string;
   covenantId?: string;
   currentOutpoint?: { txid: string; index: number };
+}
+
+/** Stable digest of manifest-owned vault facts; excludes rolling/on-chain state. */
+export function vaultStaticConfigurationDigest(config: VaultConfig): string {
+  assertCurrentConfig(config, "testnet-10");
+  const bytes = Buffer.from(JSON.stringify({
+    template: config.template,
+    agentPublic: config.agentPublic,
+    ownerPublic: config.ownerPublic,
+    maxOutflowSompi: config.maxOutflowSompi,
+    windowSizeDaa: config.windowSizeDaa,
+    initialAddress: deriveVaultAddress(
+      config.agentPublic,
+      config.ownerPublic,
+      BigInt(config.maxOutflowSompi),
+      BigInt(config.windowSizeDaa),
+      { windowStartDaa: 0n, spentInWindowSompi: 0n },
+      "testnet-10"
+    ),
+  }), "utf8");
+  try {
+    return `sha256:${createHash("sha256").update(bytes).digest("base64url")}`;
+  } finally {
+    bytes.fill(0);
+  }
 }
 
 export interface PreparedVaultSpend {
@@ -243,10 +269,11 @@ export class VaultManager {
     if (!/^[0-9a-f]{64}$/.test(ownerPublic)) {
       throw new Error(
         "ownerPublicKey must be a 32-byte x-only public key in hex (64 hex chars). " +
-          "Ask your human operator to run `npx @elldeeone/sompi gen-owner-key` on THEIR machine and " +
+          "Ask your human operator to run `sompi-operator owner-key` outside the MCP session and " +
           "give you the `public:` line; the private half must stay with them."
       );
     }
+    assertXOnlyPublicKey(ownerPublic, "ownerPublicKey");
     if (maxOutflowSompi <= 0n) throw new Error("Vault spending cap must be positive.");
     if (windowSizeDaa <= 0n) throw new Error("windowSizeDaa must be positive");
 
@@ -1521,6 +1548,8 @@ function assertCurrentConfig(config: unknown, networkId: string): asserts config
   ) {
     throw new Error("vault config public keys are invalid or noncanonical");
   }
+  assertXOnlyPublicKey(record.agentPublic, "vault Agent public key");
+  assertXOnlyPublicKey(record.ownerPublic, "vault owner public key");
   const maxOutflowSompi = canonicalUint64(record.maxOutflowSompi, "maximum outflow");
   const windowSizeDaa = canonicalUint64(record.windowSizeDaa, "window size");
   const windowStartDaa = canonicalUint64(record.windowStartDaa, "window start");
@@ -1571,6 +1600,18 @@ function assertCurrentConfig(config: unknown, networkId: string): asserts config
   );
   if (record.address !== derivedAddress) {
     throw new Error("vault config address does not match its covenant state");
+  }
+}
+
+function assertXOnlyPublicKey(value: string, label: string): void {
+  let key: XOnlyPublicKey | undefined;
+  try {
+    key = new XOnlyPublicKey(value);
+    if (key.toString() !== value) throw new Error("noncanonical x-only public key");
+  } catch (cause) {
+    throw new Error(`${label} x-only public key is invalid`, { cause });
+  } finally {
+    key?.free();
   }
 }
 
