@@ -216,6 +216,7 @@ function makeAuthorizationRequest(): PurchaseAuthorizationRequest {
     requestDigest: evidenceDigest("authorization-request"),
     nonceDigest: evidenceDigest("authorization-nonce"),
     additionalCostCeilingAtomic: "10",
+    effectiveFinalityFloor: "accepted",
     createdAtMs: now(),
     expiresAtMs: Date.parse(makeTerms().expiresAt),
   };

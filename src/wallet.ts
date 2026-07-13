@@ -47,16 +47,6 @@ export interface PreparedWalletSend {
   }[];
 }
 
-export type WalletSendObservation =
-  | {
-      readonly status: "observed";
-      readonly transactionId: string;
-      readonly destinationOutpoint: { readonly txid: string; readonly index: number };
-      readonly amountSompi: bigint;
-    }
-  | { readonly status: "not_submitted" }
-  | { readonly status: "pending" };
-
 export class KaspaWallet {
   readonly networkId: string;
   readonly address: string;
@@ -301,100 +291,6 @@ export class KaspaWallet {
   }
 
   /**
-   * Reconciles a prepared send without broadcasting. `not_submitted` is
-   * returned only when the transaction is absent from the pool and every
-   * exact source outpoint remains unspent; only that proof permits retry.
-   */
-  async observePreparedSend(
-    prepared: PreparedWalletSend,
-    observationStartHash?: string
-  ): Promise<WalletSendObservation> {
-    const transaction = requirePreparedWalletTransaction(prepared, this.networkId);
-    transaction.free();
-    const rpc = await this.client();
-    const destination = await rpc.getUtxosByAddresses([prepared.destination]);
-    const destinationMatches = (destination.entries as any[]).filter((entry) => {
-      const outpoint = entry?.outpoint ?? entry?.entry?.outpoint;
-      return (
-        String(outpoint?.transactionId ?? "") === prepared.transactionId &&
-        Number(outpoint?.index) === prepared.destinationOutpoint.index &&
-        BigInt(entry?.amount ?? entry?.entry?.amount ?? -1) === prepared.amountSompi
-      );
-    });
-    if (destinationMatches.length > 1) {
-      throw new Error("Kaspa UTXO index returned duplicate prepared wallet outputs");
-    }
-    if (destinationMatches.length === 1) {
-      return Object.freeze({
-        status: "observed" as const,
-        transactionId: prepared.transactionId,
-        destinationOutpoint: prepared.destinationOutpoint,
-        amountSompi: prepared.amountSompi,
-      });
-    }
-
-    try {
-      const mempool = await rpc.getMempoolEntry({
-        transactionId: prepared.transactionId,
-        includeOrphanPool: false,
-        filterTransactionPool: false,
-      });
-      if (mempool.mempoolEntry.isOrphan) return Object.freeze({ status: "pending" as const });
-      return Object.freeze({
-        status: "observed" as const,
-        transactionId: prepared.transactionId,
-        destinationOutpoint: prepared.destinationOutpoint,
-        amountSompi: prepared.amountSompi,
-      });
-    } catch (error) {
-      if (!isMempoolNotFound(error)) throw error;
-    }
-
-    if (observationStartHash !== undefined) {
-      if (!/^[a-f0-9]{64}$/.test(observationStartHash)) {
-        throw new Error("wallet observation start hash is invalid");
-      }
-      try {
-        const chain = await rpc.getVirtualChainFromBlock({
-          startHash: observationStartHash,
-          includeAcceptedTransactionIds: true,
-        });
-        if (
-          chain.acceptedTransactionIds.some((accepted) =>
-            accepted.acceptedTransactionIds.some((id) => String(id) === prepared.transactionId)
-          )
-        ) {
-          return Object.freeze({
-            status: "observed" as const,
-            transactionId: prepared.transactionId,
-            destinationOutpoint: prepared.destinationOutpoint,
-            amountSompi: prepared.amountSompi,
-          });
-        }
-      } catch {
-        // A pruned/unknown start hash removes our historical proof source. We
-        // may still prove non-submission from intact source outpoints below,
-        // but missing inputs remain ambiguous rather than being retried.
-      }
-    }
-
-    const source = await rpc.getUtxosByAddresses([prepared.sourceAddress]);
-    const live = new Map(
-      (source.entries as any[]).map((entry) => {
-        const outpoint = entry?.outpoint ?? entry?.entry?.outpoint;
-        return [
-          `${String(outpoint?.transactionId ?? "")}:${Number(outpoint?.index)}`,
-          BigInt(entry?.amount ?? entry?.entry?.amount ?? -1),
-        ] as const;
-      })
-    );
-    const allInputsUnspent = prepared.sourceInputs.every(
-      (input) => live.get(`${input.txid}:${input.index}`) === input.amountSompi
-    );
-    return Object.freeze({ status: allInputsUnspent ? "not_submitted" as const : "pending" as const });
-  }
-
-  /**
    * Wait until `address` receives at least `minAmountSompi` in new UTXOs,
    * or `timeoutMs` elapses. Resolves with the matched amount.
    */
@@ -563,11 +459,6 @@ function requirePreparedWalletTransaction(
     transaction.free();
     throw error;
   }
-}
-
-function isMempoolNotFound(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /not found|missing|unknown transaction|mempool.*exist/i.test(message);
 }
 
 /** Generate a wallet keypair locally (operator-controlled). Returns the private

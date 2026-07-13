@@ -39,6 +39,9 @@ import {
   VaultSendTreasuryOperationAdapter,
   WalletTreasuryOperationAdapter,
 } from "../treasury/operation-adapters.js";
+import { ChainEvidenceModule } from "../chain-evidence/module.js";
+import { JournalChainEvidenceStore } from "../chain-evidence/journal-store.js";
+import { HttpsAcceptedChainWitness, WrpcOperatorChainObserver } from "../chain-evidence/sources.js";
 import { VaultManager, generateOwnerKey } from "../vault.js";
 import { KaspaWallet } from "../wallet.js";
 
@@ -51,6 +54,10 @@ export const LIVE_PRICE_ATOMIC = "20000000" as const;
 export const LIVE_ADDITIVE_THRESHOLD_ATOMIC = "10000000" as const;
 export const LIVE_ADDITIONAL_COST_CEILING_ATOMIC = "30000000" as const;
 export const LIVE_TREASURY_FEE_CEILING_ATOMIC = "10000000" as const;
+const LIVE_OPERATOR_MANIFEST_IDENTITY = Object.freeze({
+  revision: 1,
+  digest: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+});
 
 const HASH32 = /^[a-f0-9]{64}$/;
 const HEX = /^(?:[a-f0-9]{2})+$/;
@@ -360,7 +367,7 @@ export function initializeLiveProof(
     }
   } else {
     for (const filename of [layout.bootstrapJournalPath, layout.purchaseJournalPath]) {
-      const journal = new PurchaseJournal(filename);
+      const journal = new PurchaseJournal(filename, { operatorManifestIdentity: LIVE_OPERATOR_MANIFEST_IDENTITY });
       journal.close();
     }
   }
@@ -440,8 +447,8 @@ export async function bootstrapLiveProof(input: {
     throw new Error("live proof journal continuity is missing; refusing to create a replacement operation");
   }
 
-  const bootstrapJournal = new PurchaseJournal(layout.bootstrapJournalPath);
-  const purchaseJournal = new PurchaseJournal(layout.purchaseJournalPath);
+  const bootstrapJournal = new PurchaseJournal(layout.bootstrapJournalPath, { operatorManifestIdentity: LIVE_OPERATOR_MANIFEST_IDENTITY });
+  const purchaseJournal = new PurchaseJournal(layout.purchaseJournalPath, { operatorManifestIdentity: LIVE_OPERATOR_MANIFEST_IDENTITY });
   const purchaseHasDownstreamState = Boolean(
     purchaseJournal.findTreasuryOperation(config.operationKeys.borrowInventory) ||
     purchaseJournal.findTreasuryOperation(config.operationKeys.vaultDeposit) ||
@@ -1235,6 +1242,11 @@ function treasuryModule(input: {
   readonly vault: VaultManager;
 }): TreasuryOperationModule {
   const raw = JSON.parse(fs.readFileSync(input.policyPath, "utf8")) as Record<string, unknown>;
+  const chainEvidence = new ChainEvidenceModule(
+    new WrpcOperatorChainObserver({ rpc: input.wallet, depthConfirmationDaa: 10 }),
+    new HttpsAcceptedChainWitness({ baseUrl: "https://api-tn10.kaspa.org/", depthConfirmationDaa: 10 }),
+    new JournalChainEvidenceStore(input.journal)
+  );
   return new TreasuryOperationModule({
     journal: input.journal,
     policy: new PolicyEngine({
@@ -1244,9 +1256,9 @@ function treasuryModule(input: {
       requireApprovalAboveSompi: BigInt(String(raw.requireApprovalAboveSompi ?? "0")),
     }),
     adapters: [
-      new WalletTreasuryOperationAdapter(input.wallet),
-      new VaultSendTreasuryOperationAdapter(input.vault, input.wallet),
-      new VaultDepositTreasuryOperationAdapter(input.vault, input.wallet),
+      new WalletTreasuryOperationAdapter(input.wallet, chainEvidence, "accepted"),
+      new VaultSendTreasuryOperationAdapter(input.vault, input.wallet, chainEvidence, "accepted"),
+      new VaultDepositTreasuryOperationAdapter(input.vault, input.wallet, chainEvidence, "accepted"),
     ],
     feeCeilingAtomic: LIVE_TREASURY_FEE_CEILING_ATOMIC,
   });

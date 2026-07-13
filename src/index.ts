@@ -75,9 +75,9 @@ async function main(): Promise<void> {
       journal: runtime.journal,
       policy: runtime.policy,
       adapters: [
-        new WalletTreasuryOperationAdapter(runtime.wallet),
-        new VaultSendTreasuryOperationAdapter(runtime.vault, runtime.wallet),
-        new VaultDepositTreasuryOperationAdapter(runtime.vault, runtime.wallet),
+        new WalletTreasuryOperationAdapter(runtime.wallet, runtime.chainEvidence, config.finalityFloors.directTreasury),
+        new VaultSendTreasuryOperationAdapter(runtime.vault, runtime.wallet, runtime.chainEvidence, config.finalityFloors.vault),
+        new VaultDepositTreasuryOperationAdapter(runtime.vault, runtime.wallet, runtime.chainEvidence, config.finalityFloors.vault),
       ],
       feeCeilingAtomic: config.treasuryOperationFeeCeilingAtomic,
     });

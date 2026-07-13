@@ -200,6 +200,7 @@ function displayFacts(facts: AuthorityApprovalFacts, recoveryRetry: boolean): Au
     checkoutDigest: facts.checkoutDigest,
     termsExpiresAt: facts.termsExpiresAt,
     additionalCostCeilingAtomic: facts.additionalCostCeilingAtomic,
+    effectiveFinalityFloor: facts.effectiveFinalityFloor,
     recoveryRetry,
   });
 }

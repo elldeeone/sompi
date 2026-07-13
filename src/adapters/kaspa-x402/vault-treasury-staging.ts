@@ -23,6 +23,12 @@ import type {
   VaultManager,
 } from "../../vault.js";
 import type { KaspaWallet } from "../../wallet.js";
+import { meets } from "../../chain-evidence/module.js";
+import type {
+  ChainEvidenceRecord,
+  ChainEvidenceRequest,
+  FinalityFloor,
+} from "../../chain-evidence/types.js";
 import { serializeScriptPublicKey } from "./address-codec.js";
 import type { DurableTreasuryStagingSeam } from "./exact-payment-module.js";
 import { SOMPI_EXACT_FEE_POLICY } from "./exact-transaction-builder.js";
@@ -146,6 +152,8 @@ export interface TreasuryStagingObservationEvidenceFacts
   readonly continuationOutpoint: string;
   readonly continuationAmountAtomic: string;
   readonly observedAtDaa: string;
+  readonly chainEvidenceDigest: Sha256Digest;
+  readonly chainEvidenceLevel: "accepted" | "depth-confirmed" | "consensus-final";
   readonly fundingSource: typeof FUNDING_SOURCE;
 }
 
@@ -186,6 +194,21 @@ export interface VaultTreasuryStagingOptions {
   readonly vault: VaultManager;
   readonly wallet: KaspaWallet;
   readonly keyStore: StagingKeyStore;
+  readonly chainEvidence: StagingChainEvidence;
+  readonly finalityFloor: FinalityFloor;
+}
+
+export interface StagingChainEvidence {
+  observe(
+    request: Readonly<ChainEvidenceRequest>
+  ): Promise<
+    Readonly<
+      Pick<
+        ChainEvidenceRecord,
+        "status" | "level" | "detailDigest" | "acceptingBlockDaaScore" | "observedAtMs"
+      >
+    >
+  >;
 }
 
 export class VaultTreasuryStagingError extends Error {
@@ -200,9 +223,11 @@ export class VaultTreasuryStaging implements DurableTreasuryStagingSeam {
   private readonly vault: VaultManager;
   private readonly wallet: KaspaWallet;
   private readonly keyStore: StagingKeyStore;
+  private readonly chainEvidence: StagingChainEvidence;
+  private readonly finalityFloor: FinalityFloor;
 
   constructor(options: VaultTreasuryStagingOptions) {
-    if (!options?.vault || !options.wallet || !options.keyStore) {
+    if (!options?.vault || !options.wallet || !options.keyStore || typeof options.chainEvidence?.observe !== "function") {
       throw new VaultTreasuryStagingError(
         "vault, wallet, and staging key store are required"
       );
@@ -210,6 +235,8 @@ export class VaultTreasuryStaging implements DurableTreasuryStagingSeam {
     this.vault = options.vault;
     this.wallet = options.wallet;
     this.keyStore = options.keyStore;
+    this.chainEvidence = options.chainEvidence;
+    this.finalityFloor = options.finalityFloor;
   }
 
   async prepare(input: Readonly<PrepareInput>): Promise<PreparedTreasuryStaging> {
@@ -266,7 +293,7 @@ export class VaultTreasuryStaging implements DurableTreasuryStagingSeam {
     // An observed immutable transaction is recovery, not permission to submit
     // another transaction. This is also safe after an accepted-but-lost RPC
     // response when the outputs have already entered the UTXO set.
-    const existing = await this.vault.observePreparedSend(this.wallet, prepared);
+    const existing = await this.acceptedObservation(decoded, prepared, input.signal);
     if (existing) {
       return {
         status: "staged",
@@ -281,7 +308,7 @@ export class VaultTreasuryStaging implements DurableTreasuryStagingSeam {
         "vault staging submission returned a different transaction identity"
       );
     }
-    const observed = await this.vault.observePreparedSend(this.wallet, prepared);
+    const observed = await this.acceptedObservation(decoded, prepared, input.signal);
     if (!observed) {
       return {
         status: "submitted",
@@ -300,7 +327,7 @@ export class VaultTreasuryStaging implements DurableTreasuryStagingSeam {
   ): Promise<TreasuryStagingRecoveryObservation> {
     const decoded = decodeForContext(input.context);
     const prepared = preparedVaultSpendFromEnvelope(decoded);
-    const observed = await this.vault.observePreparedSend(this.wallet, prepared);
+    const observed = await this.acceptedObservation(decoded, prepared, new AbortController().signal);
     if (!observed) {
       return Object.freeze({
         status: "pending" as const,
@@ -321,6 +348,43 @@ export class VaultTreasuryStaging implements DurableTreasuryStagingSeam {
     return Object.freeze({
       status: "staged" as const,
       staging: this.commitAndEvidence(decoded, prepared, observed),
+    });
+  }
+
+  private async acceptedObservation(
+    decoded: VaultTreasuryStagingEnvelope,
+    prepared: PreparedVaultSpend,
+    signal: AbortSignal
+  ): Promise<ObservedVaultSpend | undefined> {
+    const outputs = transactionOutputs(prepared.transaction);
+    const evidence = await this.chainEvidence.observe({
+      operationId: `staging:${decoded.binding.paymentIdentifier}`,
+      operation: "staging",
+      network: "kaspa:testnet-10",
+      transactionId: prepared.transactionId,
+      expectedOutputs: [
+        { index: 0, amountAtomic: prepared.amountSompi.toString(), scriptPublicKey: outputs[0], address: prepared.destination },
+        { index: 1, amountAtomic: prepared.continuationAmountSompi.toString(), scriptPublicKey: outputs[1], address: prepared.continuationAddress, covenantId: prepared.covenantId },
+      ],
+      watchedAddresses: [prepared.destination, prepared.continuationAddress],
+      mechanism: "native-covenant",
+      protocolFinality: "accepted",
+      operatorFloor: this.finalityFloor,
+      signal,
+    });
+    if (evidence.status !== "present" || !evidence.level || !meets(evidence.level, this.finalityFloor)) return undefined;
+    return Object.freeze({
+      transactionId: prepared.transactionId,
+      destinationOutpoint: prepared.destinationOutpoint,
+      continuationOutpoint: prepared.continuationOutpoint,
+      amountSompi: prepared.amountSompi,
+      continuationAmountSompi: prepared.continuationAmountSompi,
+      observedAtDaa: BigInt(evidence.acceptingBlockDaaScore!),
+      chainEvidenceDigest: evidence.detailDigest,
+      chainEvidenceLevel: evidence.level as
+        | "accepted"
+        | "depth-confirmed"
+        | "consensus-final",
     });
   }
 
@@ -879,6 +943,8 @@ export function decodeTreasuryStagingObservationEvidence(
     );
   }
   assertKeys(value, [
+    "chainEvidenceDigest",
+    "chainEvidenceLevel",
     "continuationAmountAtomic",
     "continuationOutpoint",
     "envelopeDigest",
@@ -919,6 +985,12 @@ export function decodeTreasuryStagingObservationEvidence(
     );
   }
   requireDigest(value.envelopeDigest, "observed staging envelope digest");
+  requireDigest(value.chainEvidenceDigest, "observed staging Chain Evidence digest");
+  if (!["accepted", "depth-confirmed", "consensus-final"].includes(String(value.chainEvidenceLevel))) {
+    throw new VaultTreasuryStagingError(
+      "Treasury staging observation finality is not accepted Chain Evidence"
+    );
+  }
   const stagingAmountAtomic = atomic(
     value.stagingAmountAtomic,
     "observed staging amount",
@@ -976,6 +1048,11 @@ export function decodeTreasuryStagingObservationEvidence(
     continuationOutpoint,
     continuationAmountAtomic,
     observedAtDaa,
+    chainEvidenceDigest: value.chainEvidenceDigest as Sha256Digest,
+    chainEvidenceLevel: value.chainEvidenceLevel as
+      | "accepted"
+      | "depth-confirmed"
+      | "consensus-final",
     fundingSource: FUNDING_SOURCE,
   });
 }
@@ -1164,6 +1241,8 @@ function stagingObservationEvidence(
     continuationOutpoint: `${observed.continuationOutpoint.txid}:${observed.continuationOutpoint.index}`,
     continuationAmountAtomic: observed.continuationAmountSompi.toString(),
     observedAtDaa: observed.observedAtDaa.toString(),
+    chainEvidenceDigest: observed.chainEvidenceDigest,
+    chainEvidenceLevel: observed.chainEvidenceLevel,
     fundingSource: FUNDING_SOURCE,
   });
   const bytes = Buffer.from(stableStringify(facts), "utf8");
@@ -1186,6 +1265,8 @@ function stagingObservationEvidence(
             stagingOutpoint: facts.stagingOutpoint,
             continuationOutpoint: facts.continuationOutpoint,
             observedAtDaa: facts.observedAtDaa,
+            chainEvidenceDigest: facts.chainEvidenceDigest,
+            chainEvidenceLevel: facts.chainEvidenceLevel,
           }),
           "utf8"
         )
@@ -1324,4 +1405,28 @@ function abortError(signal: AbortSignal): Error {
   return signal.reason instanceof Error
     ? signal.reason
     : new VaultTreasuryStagingError("vault staging submission was aborted");
+}
+
+function transactionOutputs(transaction: string): readonly string[] {
+  let document: Record<string, unknown>;
+  try {
+    document = requireRecord(JSON.parse(transaction), "staging transaction");
+  } catch (cause) {
+    throw new VaultTreasuryStagingError("staging transaction JSON is invalid", { cause });
+  }
+  const outputs = document.outputs;
+  if (!Array.isArray(outputs)) throw new VaultTreasuryStagingError("staging transaction outputs are invalid");
+  return outputs.map((value) => {
+    const output = requireRecord(value, "staging transaction output");
+    if (typeof output.scriptPublicKey === "string" && /^0000[a-f0-9]+$/.test(output.scriptPublicKey)) {
+      return output.scriptPublicKey;
+    }
+    const script = requireRecord(output.scriptPublicKey, "staging output script");
+    const version = Number(script.version);
+    const body = String(script.script).toLowerCase();
+    if (!Number.isSafeInteger(version) || version < 0 || version > 0xffff || !/^[a-f0-9]+$/.test(body)) {
+      throw new VaultTreasuryStagingError("staging output script is invalid");
+    }
+    return `${version.toString(16).padStart(4, "0")}${body}`;
+  });
 }

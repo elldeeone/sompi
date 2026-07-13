@@ -523,6 +523,7 @@ export interface PurchaseCoordinatorOptions {
   entropy?: (bytes: number) => Uint8Array;
   workerId?: string;
   effectLeaseTtlMs?: number;
+  effectiveFinalityFloor?: "accepted" | "depth-confirmed";
 }
 
 export class PurchaseCoordinatorError extends Error {
@@ -541,6 +542,7 @@ export class PurchaseCoordinator implements PurchaseModule {
   private readonly entropy: (bytes: number) => Uint8Array;
   private readonly workerId: string;
   private readonly effectLeaseTtlMs: number;
+  private readonly effectiveFinalityFloor: "accepted" | "depth-confirmed";
 
   constructor(
     private readonly journal: PurchaseJournal,
@@ -558,6 +560,7 @@ export class PurchaseCoordinator implements PurchaseModule {
     this.entropy = options.entropy ?? randomBytes;
     this.workerId = options.workerId ?? `coordinator-${process.pid}-${randomBytes(8).toString("hex")}`;
     this.effectLeaseTtlMs = options.effectLeaseTtlMs ?? PURCHASE_COORDINATION_TTL_MS;
+    this.effectiveFinalityFloor = options.effectiveFinalityFloor ?? "accepted";
     if (!Number.isSafeInteger(this.effectLeaseTtlMs) || this.effectLeaseTtlMs <= 0) {
       throw new PurchaseCoordinatorError("effect lease TTL must be a positive safe integer", "invalid_configuration");
     }
@@ -759,6 +762,7 @@ export class PurchaseCoordinator implements PurchaseModule {
       requestMediaType,
       requestBodyDigest,
       additionalCostCeilingAtomic: quote.additionalCostCeilingAtomic,
+      effectiveFinalityFloor: this.effectiveFinalityFloor,
       expiresAtMs: terms.expiresAtMs,
     };
     const bytes = Buffer.from(JSON.stringify(envelopeWithoutDigest), "utf8");
@@ -776,6 +780,7 @@ export class PurchaseCoordinator implements PurchaseModule {
       requestMediaType,
       requestBodyDigest,
       additionalCostCeilingAtomic: quote.additionalCostCeilingAtomic,
+      effectiveFinalityFloor: this.effectiveFinalityFloor,
       expiresAtMs: terms.expiresAtMs,
     });
     return true;
@@ -2319,6 +2324,7 @@ export class PurchaseCoordinator implements PurchaseModule {
       parsed.requestMediaType !== record.requestMediaType ||
       parsed.requestBodyDigest !== record.requestBodyDigest ||
       parsed.additionalCostCeilingAtomic !== record.additionalCostCeilingAtomic ||
+      parsed.effectiveFinalityFloor !== record.effectiveFinalityFloor ||
       evidenceDigest(Buffer.from(parsed.nonce, "base64url")) !== record.nonceDigest
     ) {
       throw new PurchaseCoordinatorError("authorization request artifact is inconsistent", "authorization_invariant");
@@ -2333,6 +2339,7 @@ export class PurchaseCoordinator implements PurchaseModule {
       requestDigest: record.requestDigest,
       nonceDigest: record.nonceDigest,
       additionalCostCeilingAtomic: record.additionalCostCeilingAtomic,
+      effectiveFinalityFloor: record.effectiveFinalityFloor,
       createdAtMs: record.createdAtMs,
       expiresAtMs: record.expiresAtMs,
     };
@@ -2490,6 +2497,7 @@ interface ParsedAuthorizationEnvelope {
   requestMediaType: string;
   requestBodyDigest: string;
   additionalCostCeilingAtomic: string;
+  effectiveFinalityFloor: string;
 }
 
 function parseAuthorizationEnvelope(bytes: Uint8Array): ParsedAuthorizationEnvelope {
@@ -2515,6 +2523,7 @@ function parseAuthorizationEnvelope(bytes: Uint8Array): ParsedAuthorizationEnvel
     "requestMediaType",
     "requestBodyDigest",
     "additionalCostCeilingAtomic",
+    "effectiveFinalityFloor",
   ]) {
     if (typeof value[key] !== "string") {
       throw new PurchaseCoordinatorError("authorization request artifact is malformed", "authorization_invariant");

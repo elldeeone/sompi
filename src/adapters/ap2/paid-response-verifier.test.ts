@@ -332,6 +332,7 @@ async function makeFixture(): Promise<Fixture> {
     requestDigest: evidenceDigest("authority-request"),
     nonceDigest: evidenceDigest("authority-nonce"),
     additionalCostCeilingAtomic: checkout.additionalCostCeilingAtomic,
+    effectiveFinalityFloor: "accepted" as const,
     createdAtMs: FIXED_NOW * 1_000,
     expiresAtMs: Date.parse(checkout.terms.expiresAt),
   };
@@ -363,6 +364,7 @@ async function makeFixture(): Promise<Fixture> {
         requestDigest: authorizationRequest.requestDigest,
         nonceDigest: authorizationRequest.nonceDigest,
         additionalCostCeilingAtomic: checkout.additionalCostCeilingAtomic,
+        effectiveFinalityFloor: "accepted",
       },
     },
     paymentIdentifier,

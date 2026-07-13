@@ -67,6 +67,8 @@ export interface AuthorityApprovalFacts {
   readonly purchaseAuthorizationFactsDigest: Sha256Digest;
   /** Maximum non-price treasury outflow, including KIP-10 top-up and transaction fees. */
   readonly additionalCostCeilingAtomic: string;
+  /** Stronger of Merchant protocol finality and the operator floor. */
+  readonly effectiveFinalityFloor: "accepted" | "depth-confirmed";
 }
 
 /** Exact Merchant-signed Checkout bytes needed for independent AP2 verification. */
@@ -968,6 +970,7 @@ function canonicalFacts(candidate: AuthorityApprovalFacts): AuthorityApprovalFac
     "purchaseAuthorizationNonceDigest",
     "purchaseAuthorizationFactsDigest",
     "additionalCostCeilingAtomic",
+    "effectiveFinalityFloor",
   ];
   requireExactKeys(record, keys);
   const merchantOrigin = requireCanonicalOrigin(requireString(record.merchantOrigin));
@@ -1025,8 +1028,14 @@ function canonicalFacts(candidate: AuthorityApprovalFacts): AuthorityApprovalFac
     additionalCostCeilingAtomic: requireNonNegativeAtomic(
       requireString(record.additionalCostCeilingAtomic)
     ),
+    effectiveFinalityFloor: requireFinalityFloor(record.effectiveFinalityFloor),
   };
   return Object.freeze(base);
+}
+
+function requireFinalityFloor(value: unknown): "accepted" | "depth-confirmed" {
+  if (value !== "accepted" && value !== "depth-confirmed") throw new AuthorityProtocolError("malformed_message");
+  return value;
 }
 
 function canonicalResponse(

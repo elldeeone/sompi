@@ -40,6 +40,7 @@ import type {
   TreasuryOperationRecord,
   TreasuryOperationState,
 } from "../treasury/operation-journal.js";
+import type { ChainEvidenceRecord } from "../chain-evidence/types.js";
 
 const PAYMENT_ATTEMPT_STATES = ["planned", "prepared", "submitted", "observed", "failed"] as const;
 const EFFECT_STATES = [
@@ -176,6 +177,7 @@ export interface RecordAuthorizationRequestInput {
   requestMediaType: string;
   requestBodyDigest: Sha256Digest;
   additionalCostCeilingAtomic: string;
+  effectiveFinalityFloor: "accepted" | "depth-confirmed";
   expiresAtMs: number;
 }
 
@@ -690,6 +692,48 @@ export class PurchaseJournal {
     return row ? Object.freeze({ revision: row.revision, digest: row.digest }) : undefined;
   }
 
+  recordChainEvidence(record: Readonly<ChainEvidenceRecord>): ChainEvidenceRecord {
+    validateChainEvidenceRecord(record);
+    const manifest = this.operatorManifestIdentity();
+    if (!manifest) throw new JournalInvariantError("Chain Evidence requires an Operator Manifest binding");
+    const existing = this.db.prepare("SELECT * FROM chain_evidence WHERE detail_digest = ?").get(record.detailDigest) as ChainEvidenceRow | undefined;
+    if (existing) {
+      const decoded = chainEvidenceFromRow(existing);
+      if (JSON.stringify(decoded) !== JSON.stringify(record)) throw new JournalInvariantError("Chain Evidence digest collision");
+      return decoded;
+    }
+    this.db.prepare(
+      `INSERT INTO chain_evidence (
+         detail_digest, profile, operation_id, operation, transaction_id, status,
+         level, view, mechanism, protocol_finality, operator_floor, effective_floor,
+         primary_profile, witness_profile, block_hash, accepting_block_hash,
+         accepting_block_daa_score, virtual_daa_score, outputs_digest, observed_at_ms,
+         manifest_revision, manifest_digest
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      record.detailDigest, record.profile, record.operationId, record.operation,
+      record.transactionId, record.status, record.level ?? null, record.view ?? null,
+      record.mechanism, record.protocolFinality, record.operatorFloor, record.effectiveFloor,
+      record.primaryProfile, record.witnessProfile, record.blockHash ?? null,
+      record.acceptingBlockHash ?? null, record.acceptingBlockDaaScore ?? null,
+      record.virtualDaaScore ?? null, record.outputsDigest, record.observedAtMs,
+      manifest.revision, manifest.digest
+    );
+    return Object.freeze({ ...record });
+  }
+
+  findAcceptedChainEvidence(transactionId: string): ChainEvidenceRecord | undefined {
+    if (!/^[a-f0-9]{64}$/.test(transactionId)) throw new JournalInvariantError("Chain Evidence transaction ID is invalid");
+    const row = this.db.prepare(
+      `SELECT * FROM chain_evidence
+       WHERE transaction_id = ? AND status = 'present'
+         AND level IN ('accepted', 'depth-confirmed', 'consensus-final')
+       ORDER BY CASE level WHEN 'consensus-final' THEN 3 WHEN 'depth-confirmed' THEN 2 ELSE 1 END DESC,
+                observed_at_ms DESC LIMIT 1`
+    ).get(transactionId) as ChainEvidenceRow | undefined;
+    return row ? chainEvidenceFromRow(row) : undefined;
+  }
+
   integrityCheck(): true {
     const result = this.db.pragma("integrity_check") as Array<{ integrity_check: string }>;
     if (result.length !== 1 || result[0].integrity_check !== "ok") {
@@ -966,8 +1010,9 @@ export class PurchaseJournal {
         .prepare(
           `INSERT INTO authorization_requests
              (purchase_id, checkout_digest, request_digest, nonce_digest, request_media_type,
-              request_body_digest, additional_cost_ceiling_atomic, expires_at_ms, created_at_ms)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+              request_body_digest, additional_cost_ceiling_atomic, effective_finality_floor,
+              expires_at_ms, created_at_ms)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           purchaseId,
@@ -977,6 +1022,7 @@ export class PurchaseJournal {
           input.requestMediaType,
           input.requestBodyDigest,
           input.additionalCostCeilingAtomic,
+          input.effectiveFinalityFloor,
           input.expiresAtMs,
           now
         );
@@ -2780,25 +2826,18 @@ export class PurchaseJournal {
           );
         }
       } else if (input.status === "exact_payment_won") {
-        if (!plan.exactTransactionId || input.winningTransactionId !== plan.exactTransactionId) {
+        if (!plan.exactTransactionId || input.winningTransactionId !== plan.exactTransactionId || !input.winningFinality) {
           throw new JournalInvariantError("staging recovery observed a different exact winner");
         }
-        this.insertEffectObservation(
-          effect.id,
-          "observed",
-          input.evidenceDigest,
-          input.evidenceDigest,
-          lease,
-          now
-        );
-        this.updateEffectState(
-          effect,
-          "observed",
-          "exact_payment_won_staging_race",
-          input.evidenceDigest,
-          now,
-          { resultDigest: input.evidenceDigest }
-        );
+        if (paymentFinalityMeets(input.winningFinality, plan.requiredFinality)) {
+          this.insertEffectObservation(effect.id, "observed", input.evidenceDigest, input.evidenceDigest, lease, now);
+          this.updateEffectState(effect, "observed", "exact_payment_won_staging_race", input.evidenceDigest, now, { resultDigest: input.evidenceDigest });
+        } else if (["executing", "submitted", "ambiguous"].includes(effect.state)) {
+          this.insertEffectObservation(effect.id, "pending", undefined, input.evidenceDigest, lease, now);
+          if (effect.state !== "ambiguous") {
+            this.updateEffectState(effect, "ambiguous", "exact_payment_waiting_for_finality", input.evidenceDigest, now);
+          }
+        }
       } else if (input.status === "recovery_won") {
         if (
           input.winningTransactionId !== plan.recoveryTransactionId ||
@@ -2830,7 +2869,7 @@ export class PurchaseJournal {
           }
         }
       } else if (input.status === "conflict") {
-        if (effect.state !== "failed_terminal") {
+        if (effect.state !== "ambiguous") {
           this.insertEffectObservation(
             effect.id,
             "conflict",
@@ -2841,11 +2880,10 @@ export class PurchaseJournal {
           );
           this.updateEffectState(
             effect,
-            "failed_terminal",
-            "staging_recovery_conflict",
+            "ambiguous",
+            "staging_recovery_requires_reobservation",
             input.evidenceDigest,
-            now,
-            { errorCode: "staging_recovery_conflict" }
+            now
           );
         }
       } else if (
@@ -4926,6 +4964,7 @@ export class PurchaseJournal {
       requestDigest: request.requestDigest,
       nonceDigest: request.nonceDigest,
       additionalCostCeilingAtomic: request.additionalCostCeilingAtomic,
+      effectiveFinalityFloor: request.effectiveFinalityFloor,
       createdAtMs: request.createdAtMs,
       expiresAtMs: request.expiresAtMs,
     });
@@ -5699,6 +5738,29 @@ interface PurchaseRow {
   updated_at_ms: number;
 }
 
+interface ChainEvidenceRow {
+  detail_digest: string;
+  profile: string;
+  operation_id: string;
+  operation: ChainEvidenceRecord["operation"];
+  transaction_id: string;
+  status: ChainEvidenceRecord["status"];
+  level: ChainEvidenceRecord["level"] | null;
+  view: ChainEvidenceRecord["view"] | null;
+  mechanism: ChainEvidenceRecord["mechanism"];
+  protocol_finality: ChainEvidenceRecord["protocolFinality"];
+  operator_floor: ChainEvidenceRecord["operatorFloor"];
+  effective_floor: ChainEvidenceRecord["effectiveFloor"];
+  primary_profile: string;
+  witness_profile: string;
+  block_hash: string | null;
+  accepting_block_hash: string | null;
+  accepting_block_daa_score: string | null;
+  virtual_daa_score: string | null;
+  outputs_digest: string;
+  observed_at_ms: number;
+}
+
 interface TreasuryOperationRow {
   operation_key: string;
   request_digest: string;
@@ -5761,6 +5823,7 @@ interface AuthorizationRequestRow {
   request_media_type: string;
   request_body_digest: string;
   additional_cost_ceiling_atomic: string;
+  effective_finality_floor: "accepted" | "depth-confirmed";
   expires_at_ms: number;
   created_at_ms: number;
 }
@@ -6209,6 +6272,7 @@ function authorizationRequestFromRow(row: AuthorizationRequestRow): Authorizatio
     requestMediaType: row.request_media_type,
     requestBodyDigest: row.request_body_digest as Sha256Digest,
     additionalCostCeilingAtomic: row.additional_cost_ceiling_atomic,
+    effectiveFinalityFloor: row.effective_finality_floor,
     expiresAtMs: row.expires_at_ms,
     createdAtMs: row.created_at_ms,
   };
@@ -6645,6 +6709,9 @@ function validateAuthorizationRequestInput(input: RecordAuthorizationRequestInpu
   }
   assertDigest(input.requestBodyDigest, "authorization request body digest");
   decimalBigInt(input.additionalCostCeilingAtomic, "authorization additional-cost ceiling", true);
+  if (input.effectiveFinalityFloor !== "accepted" && input.effectiveFinalityFloor !== "depth-confirmed") {
+    throw new JournalInvariantError("authorization effective finality floor is invalid");
+  }
   if (!Number.isSafeInteger(input.expiresAtMs) || input.expiresAtMs < 0) {
     throw new JournalInvariantError("authorization request expiry is invalid");
   }
@@ -7565,6 +7632,52 @@ function validateDatabaseFiles(pathInfo: PreparedJournalDatabasePath | undefined
       { cause: error }
     );
   }
+}
+
+function validateChainEvidenceRecord(record: Readonly<ChainEvidenceRecord>): void {
+  if (
+    record.profile !== "urn:sompi:chain-evidence:testnet-10:1" ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(record.operationId) ||
+    !/^[a-f0-9]{64}$/.test(record.transactionId) ||
+    !/^sha256:[A-Za-z0-9_-]{43}$/.test(record.outputsDigest) ||
+    !/^sha256:[A-Za-z0-9_-]{43}$/.test(record.detailDigest) ||
+    !Number.isSafeInteger(record.observedAtMs) || record.observedAtMs <= 0
+  ) throw new JournalInvariantError("Chain Evidence record is invalid");
+  const present = record.status === "present";
+  if (present !== (record.level !== undefined && record.view !== undefined)) {
+    throw new JournalInvariantError("Chain Evidence presence fields are inconsistent");
+  }
+  const accepted = record.level === "accepted" || record.level === "depth-confirmed" || record.level === "consensus-final";
+  if (accepted !== Boolean(record.blockHash && record.acceptingBlockHash && record.acceptingBlockDaaScore && record.virtualDaaScore)) {
+    throw new JournalInvariantError("accepted Chain Evidence has incomplete anchors");
+  }
+}
+
+function chainEvidenceFromRow(row: ChainEvidenceRow): ChainEvidenceRecord {
+  const record: ChainEvidenceRecord = {
+    profile: "urn:sompi:chain-evidence:testnet-10:1",
+    operationId: row.operation_id,
+    operation: row.operation,
+    transactionId: row.transaction_id,
+    status: row.status,
+    ...(row.level ? { level: row.level } : {}),
+    ...(row.view ? { view: row.view } : {}),
+    mechanism: row.mechanism,
+    protocolFinality: row.protocol_finality,
+    operatorFloor: row.operator_floor,
+    effectiveFloor: row.effective_floor,
+    primaryProfile: row.primary_profile,
+    witnessProfile: row.witness_profile,
+    ...(row.block_hash ? { blockHash: row.block_hash } : {}),
+    ...(row.accepting_block_hash ? { acceptingBlockHash: row.accepting_block_hash } : {}),
+    ...(row.accepting_block_daa_score ? { acceptingBlockDaaScore: row.accepting_block_daa_score } : {}),
+    ...(row.virtual_daa_score ? { virtualDaaScore: row.virtual_daa_score } : {}),
+    outputsDigest: row.outputs_digest,
+    detailDigest: row.detail_digest,
+    observedAtMs: row.observed_at_ms,
+  };
+  validateChainEvidenceRecord(record);
+  return Object.freeze(record);
 }
 
 function opaqueId(prefix: string): string {

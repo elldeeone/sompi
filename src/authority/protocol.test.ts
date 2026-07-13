@@ -49,10 +49,10 @@ test("request envelopes are canonical, deterministic, authenticated, and replay 
   assert.equal(first.wire, second.wire);
   assert.equal(first.requestDigest, second.requestDigest);
   assert.equal(first.factsDigest, authorityFactsDigest(request.facts));
-  assert.equal(first.requestDigest, "sha256:jvMW6AG52_eWhr5_slJx_1xJqvlZQ4Uy4Ut6RHQ_m3M");
-  assert.equal(first.factsDigest, "sha256:dyaq3_n3MPMMfFQ5KSMwNCUU9CTJ2HAtn4NxQU6iDVE");
+  assert.equal(first.requestDigest, "sha256:TZQlatCXSA8G7Ffrp7rgBzxNeu-mbW2rvblWWjhi7p0");
+  assert.equal(first.factsDigest, "sha256:F89JoQoECvLr7luvif13c9nT-kNTSoER3rBJKpchvps");
   assert.equal(first.nonceDigest, "sha256:rPcvkLHhzeSiKxzypYz1ZjonDwweFIQ-VUjqZcc6cZo");
-  assert.equal(JSON.parse(first.wire).mac, "XYC4aRupfWpWSvo5RezFBsOIGif5T7vnPM3ip5Szcs8");
+  assert.equal(JSON.parse(first.wire).mac, "IINkgkQqtRrHua791HispL1jVn5UueRIq8Vnq7ce4HQ");
   assert.deepEqual(Buffer.from(KEY), keyBefore, "caller-owned MAC key must not be zeroed or mutated");
   assert(Object.isFrozen(first));
   assert(Object.isFrozen(first.message));
@@ -701,6 +701,7 @@ function makeFacts(): AuthorityApprovalFacts {
     purchaseAuthorizationNonceDigest: evidenceDigest("purchase-authorization-nonce"),
     purchaseAuthorizationFactsDigest: evidenceDigest("purchase-authorization-facts"),
     additionalCostCeilingAtomic: "100",
+    effectiveFinalityFloor: "accepted",
   };
 }
 

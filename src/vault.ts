@@ -91,13 +91,10 @@ export interface ObservedVaultSpend {
   continuationOutpoint: { txid: string; index: 1 };
   amountSompi: bigint;
   continuationAmountSompi: bigint;
-  observedAtDaa?: bigint;
+  observedAtDaa: bigint;
+  chainEvidenceDigest: string;
+  chainEvidenceLevel: "accepted" | "depth-confirmed" | "consensus-final";
 }
-
-export type VaultSendReconciliation =
-  | { readonly status: "observed"; readonly observation: ObservedVaultSpend }
-  | { readonly status: "not_submitted" }
-  | { readonly status: "pending" };
 
 export interface PreparedVaultDeposit {
   readonly transaction: string;
@@ -127,13 +124,10 @@ export interface ObservedVaultDeposit {
   readonly vaultOutpoint: { readonly txid: string; readonly index: 0 };
   readonly vaultAmountSompi: bigint;
   readonly covenantId: string;
-  readonly observedAtDaa?: bigint;
+  readonly observedAtDaa: bigint;
+  readonly chainEvidenceDigest: string;
+  readonly chainEvidenceLevel: "accepted" | "depth-confirmed" | "consensus-final";
 }
-
-export type VaultDepositReconciliation =
-  | { readonly status: "observed"; readonly observation: ObservedVaultDeposit }
-  | { readonly status: "not_submitted" }
-  | { readonly status: "pending" };
 
 export interface VaultSpendResult {
   txid: string;
@@ -474,90 +468,6 @@ export class VaultManager {
     }
   }
 
-  async observePreparedDeposit(
-    wallet: KaspaWallet,
-    prepared: PreparedVaultDeposit
-  ): Promise<ObservedVaultDeposit | undefined> {
-    const transaction = requireBoundPreparedDeposit(prepared, this.networkId);
-    transaction.free();
-    const rpc = await wallet.client();
-    const { entries } = await rpc.getUtxosByAddresses([prepared.vaultAddress]);
-    const matches = normalizeEntries(entries).filter((entry) =>
-      entry.txid === prepared.transactionId &&
-      entry.index === 0 &&
-      entry.amount === prepared.vaultAmountSompi &&
-      entry.covenantId === prepared.covenantId &&
-      scriptPublicKeyMatchesAddress(entry.scriptPublicKey, prepared.vaultAddress, this.networkId)
-    );
-    if (matches.length > 1) throw new Error("prepared vault deposit has duplicate on-chain output");
-    if (matches.length === 0) return undefined;
-    return Object.freeze({
-      transactionId: prepared.transactionId,
-      vaultOutpoint: prepared.vaultOutpoint,
-      vaultAmountSompi: prepared.vaultAmountSompi,
-      covenantId: prepared.covenantId,
-      observedAtDaa: matches[0].blockDaaScore,
-    });
-  }
-
-  async reconcilePreparedDeposit(
-    wallet: KaspaWallet,
-    prepared: PreparedVaultDeposit,
-    observationStartHash?: string
-  ): Promise<VaultDepositReconciliation> {
-    const observed = await this.observePreparedDeposit(wallet, prepared);
-    if (observed) return Object.freeze({ status: "observed" as const, observation: observed });
-    const rpc = await wallet.client();
-    try {
-      const mempool = await rpc.getMempoolEntry({
-        transactionId: prepared.transactionId,
-        includeOrphanPool: false,
-        filterTransactionPool: false,
-      });
-      if (mempool.mempoolEntry) return Object.freeze({ status: "pending" as const });
-    } catch (error) {
-      if (!isMempoolNotFound(error)) throw error;
-    }
-    if (observationStartHash !== undefined) {
-      if (!/^[a-f0-9]{64}$/.test(observationStartHash)) {
-        throw new Error("vault deposit observation start hash is invalid");
-      }
-      try {
-        const chain = await rpc.getVirtualChainFromBlock({
-          startHash: observationStartHash,
-          includeAcceptedTransactionIds: true,
-        });
-        if (
-          chain.acceptedTransactionIds.some((accepted) =>
-            accepted.acceptedTransactionIds.some((id) => String(id) === prepared.transactionId)
-          )
-        ) {
-          return Object.freeze({
-            status: "observed" as const,
-            observation: Object.freeze({
-              transactionId: prepared.transactionId,
-              vaultOutpoint: prepared.vaultOutpoint,
-              vaultAmountSompi: prepared.vaultAmountSompi,
-              covenantId: prepared.covenantId,
-            }),
-          });
-        }
-      } catch {
-        // Historical proof may be pruned. Exact intact inputs can still prove
-        // non-submission; otherwise ambiguity remains locked.
-      }
-    }
-    const addresses = [...new Set(prepared.sourceInputs.map((input) => input.address))];
-    const { entries } = await rpc.getUtxosByAddresses(addresses);
-    const live = new Map(
-      normalizeEntries(entries).map((entry) => [`${entry.txid}:${entry.index}`, entry.amount] as const)
-    );
-    const intact = prepared.sourceInputs.every(
-      (input) => live.get(`${input.txid}:${input.index}`) === input.amountSompi
-    );
-    return Object.freeze({ status: intact ? "not_submitted" as const : "pending" as const });
-  }
-
   commitObservedDeposit(
     prepared: PreparedVaultDeposit,
     observed: ObservedVaultDeposit
@@ -569,7 +479,8 @@ export class VaultManager {
       observed.vaultOutpoint.txid !== prepared.transactionId ||
       observed.vaultOutpoint.index !== 0 ||
       observed.vaultAmountSompi !== prepared.vaultAmountSompi ||
-      observed.covenantId !== prepared.covenantId
+      observed.covenantId !== prepared.covenantId ||
+      !validAcceptedChainEvidence(observed)
     ) {
       throw new Error("vault deposit observation does not match exact prepared transaction");
     }
@@ -676,154 +587,6 @@ export class VaultManager {
     }
   }
 
-  async observePreparedSend(
-    wallet: KaspaWallet,
-    prepared: PreparedVaultSpend
-  ): Promise<ObservedVaultSpend | undefined> {
-    assertPreparedVaultSpend(prepared);
-    const transaction = requireBoundPreparedTransaction(prepared, this.networkId);
-    transaction.free();
-    const rpc = await wallet.client();
-    const { entries } = await rpc.getUtxosByAddresses([
-      prepared.destination,
-      prepared.continuationAddress,
-    ]);
-    const normalized = normalizeEntries(entries);
-    const destination = normalized.filter(
-      (entry) =>
-        entry.txid === prepared.destinationOutpoint.txid &&
-        entry.index === prepared.destinationOutpoint.index &&
-        entry.amount === prepared.amountSompi &&
-        !entry.covenantId &&
-        scriptPublicKeyMatchesAddress(entry.scriptPublicKey, prepared.destination, this.networkId)
-    );
-    const continuation = normalized.filter(
-      (entry) =>
-        entry.txid === prepared.continuationOutpoint.txid &&
-        entry.index === prepared.continuationOutpoint.index &&
-        entry.amount === prepared.continuationAmountSompi &&
-        entry.covenantId === prepared.covenantId &&
-        scriptPublicKeyMatchesAddress(
-          entry.scriptPublicKey,
-          prepared.continuationAddress,
-          this.networkId
-        )
-    );
-    if (destination.length === 0 && continuation.length === 0) return undefined;
-    if (destination.length !== 1 || continuation.length !== 1) {
-      throw new Error("prepared vault send has a partial, duplicate, or conflicting on-chain observation");
-    }
-    const observedAtDaa = maxBigInt(
-      destination[0].blockDaaScore,
-      continuation[0].blockDaaScore
-    );
-    return Object.freeze({
-      transactionId: prepared.transactionId,
-      destinationOutpoint: prepared.destinationOutpoint,
-      continuationOutpoint: prepared.continuationOutpoint,
-      amountSompi: prepared.amountSompi,
-      continuationAmountSompi: prepared.continuationAmountSompi,
-      observedAtDaa,
-    });
-  }
-
-  /**
-   * Read-only reconciliation for an interrupted prepared send. A retry is
-   * allowed only when the transaction is absent from the pool and every exact
-   * source outpoint in the signed artifact remains unspent.
-   */
-  async reconcilePreparedSend(
-    wallet: KaspaWallet,
-    prepared: PreparedVaultSpend,
-    observationStartHash?: string
-  ): Promise<VaultSendReconciliation> {
-    const observed = await this.observePreparedSend(wallet, prepared);
-    if (observed) {
-      return Object.freeze({ status: "observed" as const, observation: observed });
-    }
-    const rpc = await wallet.client();
-    try {
-      const mempool = await rpc.getMempoolEntry({
-        transactionId: prepared.transactionId,
-        includeOrphanPool: false,
-        filterTransactionPool: false,
-      });
-      // Presence proves a submission may have happened, but local vault state
-      // advances only after both exact outputs reach the UTXO index.
-      if (mempool.mempoolEntry) return Object.freeze({ status: "pending" as const });
-    } catch (error) {
-      if (!isMempoolNotFound(error)) throw error;
-    }
-
-    if (observationStartHash !== undefined) {
-      if (!/^[a-f0-9]{64}$/.test(observationStartHash)) {
-        throw new Error("vault observation start hash is invalid");
-      }
-      try {
-        const chain = await rpc.getVirtualChainFromBlock({
-          startHash: observationStartHash,
-          includeAcceptedTransactionIds: true,
-        });
-        if (
-          chain.acceptedTransactionIds.some((accepted) =>
-            accepted.acceptedTransactionIds.some((id) => String(id) === prepared.transactionId)
-          )
-        ) {
-          return Object.freeze({
-            status: "observed" as const,
-            observation: Object.freeze({
-              transactionId: prepared.transactionId,
-              destinationOutpoint: prepared.destinationOutpoint,
-              continuationOutpoint: prepared.continuationOutpoint,
-              amountSompi: prepared.amountSompi,
-              continuationAmountSompi: prepared.continuationAmountSompi,
-            }),
-          });
-        }
-      } catch {
-        // Historical observation may be pruned. Intact exact inputs can still
-        // prove non-submission; otherwise recovery stays pending.
-      }
-    }
-
-    const transaction = requireBoundPreparedTransaction(prepared, this.networkId);
-    try {
-      const inputs = transaction.inputs.map((input) => {
-        const utxo = input.utxo;
-        if (!utxo) throw new Error("prepared vault input is missing recovery UTXO data");
-        const address = addressFromScriptPublicKey(utxo.scriptPublicKey, this.networkId);
-        try {
-          const sourceAddress = address?.toString();
-          if (!sourceAddress) throw new Error("prepared vault input address cannot be derived");
-          return Object.freeze({
-            sourceAddress,
-            txid: String(input.previousOutpoint.transactionId),
-            index: input.previousOutpoint.index,
-            amount: BigInt(utxo.amount),
-          });
-        } finally {
-          address?.free();
-        }
-      });
-      const addresses = [...new Set(inputs.map((input) => input.sourceAddress))];
-      const { entries } = await rpc.getUtxosByAddresses(addresses);
-      const live = new Map(
-        normalizeEntries(entries).map((entry) => [
-          `${entry.txid}:${entry.index}`,
-          entry.amount,
-        ] as const)
-      );
-      const allInputsUnspent = inputs.every(
-        (input) => live.get(`${input.txid}:${input.index}`) === input.amount
-      );
-      return Object.freeze({
-        status: allInputsUnspent ? "not_submitted" as const : "pending" as const,
-      });
-    } finally {
-      transaction.free();
-    }
-  }
-
   commitObservedSend(
     prepared: PreparedVaultSpend,
     observed: ObservedVaultSpend
@@ -836,7 +599,8 @@ export class VaultManager {
       observed.continuationOutpoint.txid !== prepared.continuationOutpoint.txid ||
       observed.continuationOutpoint.index !== 1 ||
       observed.amountSompi !== prepared.amountSompi ||
-      observed.continuationAmountSompi !== prepared.continuationAmountSompi
+      observed.continuationAmountSompi !== prepared.continuationAmountSompi ||
+      !validAcceptedChainEvidence(observed)
     ) {
       throw new Error("vault observation does not match the exact prepared staging transaction");
     }
@@ -1728,11 +1492,6 @@ function maxBigInt(a: bigint, b: bigint): bigint {
   return a > b ? a : b;
 }
 
-function isMempoolNotFound(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /not found|missing|unknown transaction|mempool.*exist/i.test(message);
-}
-
 function requirePreparedTransaction(transactionJson: string, expectedTxid: string): Transaction {
   if (typeof transactionJson !== "string" || transactionJson.length === 0 || transactionJson.length > 2_000_000) {
     throw new Error("prepared vault transaction artifact is empty or oversized");
@@ -1992,21 +1751,20 @@ function vaultConfigMatchesDepositUpdate(
   return true;
 }
 
-function scriptPublicKeyMatchesAddress(
-  scriptPublicKey: unknown,
-  expectedAddress: string,
-  networkId: string
+function validAcceptedChainEvidence(
+  observed: Pick<
+    ObservedVaultSpend | ObservedVaultDeposit,
+    "observedAtDaa" | "chainEvidenceDigest" | "chainEvidenceLevel"
+  >
 ): boolean {
-  try {
-    const address = addressFromScriptPublicKey(scriptPublicKey as any, networkId);
-    try {
-      return address?.toString() === expectedAddress;
-    } finally {
-      address?.free();
-    }
-  } catch {
-    return false;
-  }
+  return (
+    observed.observedAtDaa >= 0n &&
+    observed.observedAtDaa <= UINT64_MAX &&
+    /^sha256:[A-Za-z0-9_-]{43}$/.test(observed.chainEvidenceDigest) &&
+    ["accepted", "depth-confirmed", "consensus-final"].includes(
+      observed.chainEvidenceLevel
+    )
+  );
 }
 
 export function generateOwnerKey(): { privateKey: string; publicKey: string } {

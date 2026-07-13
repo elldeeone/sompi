@@ -90,6 +90,7 @@ test("the human display is exactly the independently signed Purchase decision", 
       checkoutDigest: facts.checkoutDigest,
       termsExpiresAt: facts.termsExpiresAt,
       additionalCostCeilingAtomic: facts.additionalCostCeilingAtomic,
+      effectiveFinalityFloor: "accepted",
       recoveryRetry: false,
     });
     assert.equal(
@@ -251,6 +252,7 @@ async function authoritySystem(approve: boolean) {
     requestDigest: evidenceDigest("purchase-authorization-request"),
     nonceDigest: evidenceDigest("purchase-authorization-nonce"),
     additionalCostCeilingAtomic: checkout.additionalCostCeilingAtomic,
+    effectiveFinalityFloor: "accepted",
     createdAtMs: nowMs,
     expiresAtMs: checkout.expiresAtSec * 1_000,
   };

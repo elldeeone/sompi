@@ -427,6 +427,7 @@ function canonicalFacts(facts: AuthorityApprovalFacts): AuthorityApprovalFacts {
     purchaseAuthorizationNonceDigest: facts.purchaseAuthorizationNonceDigest,
     purchaseAuthorizationFactsDigest: facts.purchaseAuthorizationFactsDigest,
     additionalCostCeilingAtomic: facts.additionalCostCeilingAtomic,
+    effectiveFinalityFloor: facts.effectiveFinalityFloor,
   });
 }
 

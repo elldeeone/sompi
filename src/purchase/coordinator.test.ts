@@ -1178,6 +1178,7 @@ async function verifiedAuthorityResult(
       purchaseAuthorizationNonceDigest: purchaseFacts.nonceDigest,
       purchaseAuthorizationFactsDigest: evidenceDigest(JSON.stringify(purchaseFacts)),
       additionalCostCeilingAtomic: purchaseFacts.additionalCostCeilingAtomic,
+      effectiveFinalityFloor: purchaseFacts.effectiveFinalityFloor,
     },
     checkoutEvidence: {
       artifact: `checkout:${request.purchaseId}`,

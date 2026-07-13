@@ -31,10 +31,7 @@ import {
   type StagingRecoveryRaceRequest,
 } from "./abandoned-staging-recovery.js";
 import { Kip10ExactTransactionBuilder } from "./exact-transaction-builder.js";
-import {
-  RpcStagingRecoveryRaceSource,
-  RpcStagingRecoveryTransactionSubmitter,
-} from "./staging-recovery-rpc.js";
+import { RpcStagingRecoveryTransactionSubmitter } from "./staging-recovery-rpc.js";
 import { StagingKeyStore } from "./staging-key-store.js";
 
 const NOW = Date.parse("2030-01-01T00:00:00.000Z");
@@ -502,112 +499,6 @@ test("prepared envelope and observed candidate tampering are rejected before eff
   });
 });
 
-test("RPC observer checks staging and both candidate identities before declaring safety", async () => {
-  await withFixture(async (fixture) => {
-    const prepared = await fixture.prepare();
-    const envelope = decode(prepared);
-    const request = raceRequest(envelope);
-    const calls: string[] = [];
-    const rpc = fakeRpc({
-      entries: [utxoEntry(
-        envelope.staging.outpoint,
-        envelope.staging.amountAtomic,
-        envelope.staging.scriptPublicKey,
-        envelope.staging.blockDaaScore
-      )],
-      getMempoolEntry: async ({ transactionId }: { transactionId: string }) => {
-        calls.push(transactionId);
-        throw new Error("transaction not found in mempool");
-      },
-    });
-    const source = new RpcStagingRecoveryRaceSource({ rpc: { client: async () => rpc as never }, now: () => NOW });
-    const evidence = await source.observeRace(request);
-    assert.equal(evidence.staging.status, "unspent");
-    assert.equal(evidence.exactPayment?.status, "absent");
-    assert.equal(evidence.recovery.status, "absent");
-    assert.deepEqual(calls.sort(), [
-      envelope.exactPayment!.transactionId,
-      envelope.recovery.transactionId,
-    ].sort());
-  });
-});
-
-test("RPC observer in no-exact mode proves only the recovery candidate absent", async () => {
-  await withFixture(async (fixture) => {
-    const prepared = await fixture.prepare({
-      exactPayment: { mode: "no_exact_candidate" },
-    });
-    const envelope = decode(prepared);
-    const calls: string[] = [];
-    const rpc = fakeRpc({
-      entries: [utxoEntry(
-        envelope.staging.outpoint,
-        envelope.staging.amountAtomic,
-        envelope.staging.scriptPublicKey,
-        envelope.staging.blockDaaScore
-      )],
-      getMempoolEntry: async ({ transactionId }: { transactionId: string }) => {
-        calls.push(transactionId);
-        throw new Error("transaction not found in mempool");
-      },
-    });
-    const source = new RpcStagingRecoveryRaceSource({
-      rpc: { client: async () => rpc as never },
-      now: () => NOW,
-    });
-    const evidence = await source.observeRace(raceRequest(envelope));
-    assert.equal(evidence.staging.status, "unspent");
-    assert.equal(evidence.exactPayment, null);
-    assert.equal(evidence.recovery.status, "absent");
-    assert.deepEqual(calls, [envelope.recovery.transactionId]);
-  });
-});
-
-test("RPC observer identifies the recovery UTXO and rejects duplicate or changed output evidence", async () => {
-  await withFixture(async (fixture) => {
-    const prepared = await fixture.prepare();
-    const envelope = decode(prepared);
-    const request = raceRequest(envelope);
-    const recoveryUtxo = utxoEntry(
-      envelope.recovery.outputOutpoint,
-      envelope.recovery.outputAmountAtomic,
-      envelope.recovery.outputScriptPublicKey,
-      "900"
-    );
-    const source = (entries: unknown[]) => new RpcStagingRecoveryRaceSource({
-      rpc: {
-        client: async () => fakeRpc({
-          entries,
-          getMempoolEntry: async () => {
-            throw new Error("transaction not found");
-          },
-        }) as never,
-      },
-      now: () => NOW,
-    });
-    const won = await source([recoveryUtxo]).observeRace(request);
-    assert.equal(won.staging.status, "spent");
-    assert.equal(
-      won.staging.status === "spent" ? won.staging.spendingTransactionId : undefined,
-      envelope.recovery.transactionId
-    );
-    assert.equal(won.recovery.status, "observed");
-    assert.equal(won.exactPayment?.status, "absent");
-
-    const duplicate = await source([recoveryUtxo, structuredClone(recoveryUtxo)]).observeRace(request);
-    assert.equal(duplicate.recovery.status, "partial");
-    const changed = await source([
-      utxoEntry(
-        envelope.recovery.outputOutpoint,
-        "29999999",
-        envelope.recovery.outputScriptPublicKey,
-        "900"
-      ),
-    ]).observeRace(request);
-    assert.equal(changed.recovery.status, "partial");
-  });
-});
-
 test("RPC submitter rehydrates canonical bytes and cross-checks the node transaction ID", async () => {
   await withFixture(async (fixture) => {
     const prepared = await fixture.prepare();
@@ -855,49 +746,6 @@ function spent(
 
 function decode(prepared: Awaited<ReturnType<Fixture["prepare"]>>): Readonly<AbandonedStagingRecoveryEnvelope> {
   return decodeAbandonedStagingRecoveryEnvelope(prepared.preparedBytes);
-}
-
-function raceRequest(envelope: Readonly<AbandonedStagingRecoveryEnvelope>): StagingRecoveryRaceRequest {
-  return {
-    network: "kaspa:testnet-10",
-    staging: {
-      outpoint: envelope.staging.outpoint,
-      address: envelope.staging.address,
-      amountAtomic: envelope.staging.amountAtomic,
-      scriptPublicKey: envelope.staging.scriptPublicKey,
-      blockDaaScore: envelope.staging.blockDaaScore,
-    },
-    exactPayment:
-      envelope.exactPayment === null ? null : { ...envelope.exactPayment },
-    recovery: {
-      transactionId: envelope.recovery.transactionId,
-      transactionArtifactDigest: envelope.recovery.transactionArtifactDigest,
-      inputOutpoint: envelope.staging.outpoint,
-      outputOutpoint: envelope.recovery.outputOutpoint,
-      outputIndex: envelope.recovery.outputIndex,
-      outputAddress: envelope.recovery.outputAddress,
-      outputAmountAtomic: envelope.recovery.outputAmountAtomic,
-      outputScriptPublicKey: envelope.recovery.outputScriptPublicKey,
-    },
-    deadlineAtMs: NOW + 1_000,
-    signal: new AbortController().signal,
-  };
-}
-
-function utxoEntry(
-  outpoint: string,
-  amountAtomic: string,
-  scriptPublicKey: string,
-  blockDaaScore: string
-): Record<string, unknown> {
-  const [transactionId, index] = outpoint.split(":");
-  return {
-    outpoint: { transactionId, index: Number(index) },
-    amount: BigInt(amountAtomic),
-    scriptPublicKey: { version: 0, script: scriptPublicKey.slice(4) },
-    blockDaaScore: BigInt(blockDaaScore),
-    isCoinbase: false,
-  };
 }
 
 function fakeRpc(options: {

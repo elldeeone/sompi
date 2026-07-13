@@ -13,6 +13,8 @@ import type {
   TreasuryOperationRecord,
   TreasuryOperationObservationStatus,
 } from "./operation-journal.js";
+import { meets, type ChainEvidenceModule } from "../chain-evidence/module.js";
+import type { ChainEvidenceRecord, ExpectedChainOutput, FinalityFloor } from "../chain-evidence/types.js";
 
 const PROFILE = "urn:sompi:treasury-operation:prepared:1" as const;
 const OBSERVATION_PROFILE = "urn:sompi:treasury-operation:observation:1" as const;
@@ -132,7 +134,11 @@ interface VaultDepositEnvelope {
 export class WalletTreasuryOperationAdapter implements TreasuryOperationAdapter {
   readonly kind = "wallet_send" as const;
 
-  constructor(private readonly wallet: KaspaWallet) {
+  constructor(
+    private readonly wallet: KaspaWallet,
+    private readonly chainEvidence: ChainEvidenceModule,
+    private readonly finalityFloor: FinalityFloor
+  ) {
     if (!wallet || wallet.networkId !== "testnet-10") {
       throw new Error("wallet Treasury operation adapter requires testnet-10");
     }
@@ -178,10 +184,7 @@ export class WalletTreasuryOperationAdapter implements TreasuryOperationAdapter 
     preparedBytes: Uint8Array
   ): Promise<TreasuryOperationProbe> {
     const envelope = decodeWallet(preparedBytes, intent);
-    const observation = await this.wallet.observePreparedSend(
-      walletPrepared(envelope),
-      envelope.observationStartHash
-    );
+    const observation = await observeEnvelopeChainEvidence(this.chainEvidence, intent, envelope, this.finalityFloor);
     return Object.freeze({
       status: observation.status,
       detail: Object.freeze({
@@ -192,6 +195,7 @@ export class WalletTreasuryOperationAdapter implements TreasuryOperationAdapter 
         transactionId: envelope.prepared.transactionId,
         destinationOutpoint: `${envelope.prepared.transactionId}:${envelope.prepared.destinationOutpoint.index}`,
         amountAtomic: envelope.prepared.amountAtomic,
+        ...(observation.evidence ? { chainEvidenceDigest: observation.evidence.detailDigest, chainEvidenceLevel: observation.evidence.level } : {}),
       }),
     });
   }
@@ -213,7 +217,9 @@ export class VaultSendTreasuryOperationAdapter implements TreasuryOperationAdapt
 
   constructor(
     private readonly vault: VaultManager,
-    private readonly wallet: KaspaWallet
+    private readonly wallet: KaspaWallet,
+    private readonly chainEvidence: ChainEvidenceModule,
+    private readonly finalityFloor: FinalityFloor
   ) {
     if (!vault || !wallet || wallet.networkId !== "testnet-10") {
       throw new Error("vault Treasury operation adapter requires testnet-10");
@@ -260,11 +266,7 @@ export class VaultSendTreasuryOperationAdapter implements TreasuryOperationAdapt
     preparedBytes: Uint8Array
   ): Promise<TreasuryOperationProbe> {
     const envelope = decodeVault(preparedBytes, intent);
-    const observation = await this.vault.reconcilePreparedSend(
-      this.wallet,
-      vaultPrepared(envelope),
-      envelope.observationStartHash
-    );
+    const observation = await observeEnvelopeChainEvidence(this.chainEvidence, intent, envelope, this.finalityFloor);
     return Object.freeze({
       status: observation.status,
       detail: Object.freeze({
@@ -277,9 +279,7 @@ export class VaultSendTreasuryOperationAdapter implements TreasuryOperationAdapt
         continuationOutpoint: `${envelope.prepared.transactionId}:1`,
         amountAtomic: envelope.prepared.amountAtomic,
         continuationAmountAtomic: envelope.prepared.continuationAmountAtomic,
-        ...(observation.status === "observed" && observation.observation.observedAtDaa !== undefined
-          ? { observedAtDaa: observation.observation.observedAtDaa.toString() }
-          : {}),
+        ...(observation.evidence ? { chainEvidenceDigest: observation.evidence.detailDigest, chainEvidenceLevel: observation.evidence.level, observedAtDaa: observation.evidence.acceptingBlockDaaScore } : {}),
       }),
     });
   }
@@ -298,9 +298,12 @@ export class VaultSendTreasuryOperationAdapter implements TreasuryOperationAdapt
       continuationOutpoint: prepared.continuationOutpoint,
       amountSompi: prepared.amountSompi,
       continuationAmountSompi: prepared.continuationAmountSompi,
-      ...(typeof observedDetail.observedAtDaa === "string"
-        ? { observedAtDaa: BigInt(observedDetail.observedAtDaa) }
-        : {}),
+      observedAtDaa: BigInt(observedDetail.observedAtDaa as string),
+      chainEvidenceDigest: observedDetail.chainEvidenceDigest as string,
+      chainEvidenceLevel: observedDetail.chainEvidenceLevel as
+        | "accepted"
+        | "depth-confirmed"
+        | "consensus-final",
     });
   }
 }
@@ -310,7 +313,9 @@ export class VaultDepositTreasuryOperationAdapter implements TreasuryOperationAd
 
   constructor(
     private readonly vault: VaultManager,
-    private readonly wallet: KaspaWallet
+    private readonly wallet: KaspaWallet,
+    private readonly chainEvidence: ChainEvidenceModule,
+    private readonly finalityFloor: FinalityFloor
   ) {
     if (!vault || !wallet || wallet.networkId !== "testnet-10") {
       throw new Error("vault deposit Treasury operation adapter requires testnet-10");
@@ -363,11 +368,7 @@ export class VaultDepositTreasuryOperationAdapter implements TreasuryOperationAd
     preparedBytes: Uint8Array
   ): Promise<TreasuryOperationProbe> {
     const envelope = decodeVaultDeposit(preparedBytes, intent);
-    const observation = await this.vault.reconcilePreparedDeposit(
-      this.wallet,
-      vaultPreparedDeposit(envelope),
-      envelope.observationStartHash
-    );
+    const observation = await observeEnvelopeChainEvidence(this.chainEvidence, intent, envelope, this.finalityFloor);
     return Object.freeze({
       status: observation.status,
       detail: Object.freeze({
@@ -380,9 +381,7 @@ export class VaultDepositTreasuryOperationAdapter implements TreasuryOperationAd
         depositedAtomic: envelope.prepared.depositedAtomic,
         vaultAmountAtomic: envelope.prepared.vaultAmountAtomic,
         covenantId: envelope.prepared.covenantId,
-        ...(observation.status === "observed" && observation.observation.observedAtDaa !== undefined
-          ? { observedAtDaa: observation.observation.observedAtDaa.toString() }
-          : {}),
+        ...(observation.evidence ? { chainEvidenceDigest: observation.evidence.detailDigest, chainEvidenceLevel: observation.evidence.level, observedAtDaa: observation.evidence.acceptingBlockDaaScore } : {}),
       }),
     });
   }
@@ -400,11 +399,112 @@ export class VaultDepositTreasuryOperationAdapter implements TreasuryOperationAd
       vaultOutpoint: prepared.vaultOutpoint,
       vaultAmountSompi: prepared.vaultAmountSompi,
       covenantId: prepared.covenantId,
-      ...(typeof observedDetail.observedAtDaa === "string"
-        ? { observedAtDaa: BigInt(observedDetail.observedAtDaa) }
-        : {}),
+      observedAtDaa: BigInt(observedDetail.observedAtDaa as string),
+      chainEvidenceDigest: observedDetail.chainEvidenceDigest as string,
+      chainEvidenceLevel: observedDetail.chainEvidenceLevel as
+        | "accepted"
+        | "depth-confirmed"
+        | "consensus-final",
     });
   }
+}
+
+type EvidenceEnvelope = WalletEnvelope | VaultEnvelope | VaultDepositEnvelope;
+
+async function observeEnvelopeChainEvidence(
+  module: ChainEvidenceModule,
+  intent: TreasuryOperationRecord,
+  envelope: EvidenceEnvelope,
+  floor: FinalityFloor
+): Promise<{ readonly status: TreasuryOperationObservationStatus; readonly evidence?: ChainEvidenceRecord }> {
+  const expectedOutputs = envelopeExpectedOutputs(envelope);
+  const evidence = await module.observe({
+    operationId: `treasury:${intent.operationKey}`,
+    operation: envelope.kind === "wallet_send" ? "direct-treasury" : "vault",
+    network: "kaspa:testnet-10",
+    transactionId: envelope.prepared.transactionId,
+    expectedOutputs,
+    expectedInputs: envelopeExpectedInputs(envelope),
+    watchedAddresses: envelopeWatchedAddresses(envelope),
+    mechanism: envelope.kind === "wallet_send" ? "ordinary" : "native-covenant",
+    protocolFinality: "accepted",
+    operatorFloor: floor,
+    signal: new AbortController().signal,
+  });
+  if (evidence.status === "present" && evidence.level && meets(evidence.level, floor)) {
+    return Object.freeze({ status: "observed" as const, evidence });
+  }
+  if (evidence.status === "absent") return Object.freeze({ status: "not_submitted" as const, evidence });
+  return Object.freeze({ status: "pending" as const, evidence });
+}
+
+function envelopeExpectedOutputs(envelope: EvidenceEnvelope): readonly ExpectedChainOutput[] {
+  const scripts = transactionOutputScripts(envelope.prepared.transaction);
+  if (envelope.kind === "wallet_send") return Object.freeze([Object.freeze({
+    index: envelope.prepared.destinationOutpoint.index,
+    amountAtomic: envelope.prepared.amountAtomic,
+    scriptPublicKey: scripts[envelope.prepared.destinationOutpoint.index],
+    address: envelope.prepared.destination,
+  })]);
+  if (envelope.kind === "vault_send") return Object.freeze([
+    Object.freeze({ index: 0, amountAtomic: envelope.prepared.amountAtomic, scriptPublicKey: scripts[0], address: envelope.prepared.destination }),
+    Object.freeze({ index: 1, amountAtomic: envelope.prepared.continuationAmountAtomic, scriptPublicKey: scripts[1], address: envelope.prepared.continuationAddress, covenantId: envelope.prepared.covenantId }),
+  ]);
+  return Object.freeze([Object.freeze({
+    index: 0,
+    amountAtomic: envelope.prepared.vaultAmountAtomic,
+    scriptPublicKey: scripts[0],
+    address: envelope.prepared.vaultAddress,
+    covenantId: envelope.prepared.covenantId,
+  })]);
+}
+
+function envelopeExpectedInputs(envelope: EvidenceEnvelope): readonly { transactionId: string; index: number }[] {
+  if (envelope.kind === "wallet_send") return envelope.prepared.sourceInputs.map((input) => Object.freeze({ transactionId: input.txid, index: input.index }));
+  if (envelope.kind === "vault_deposit") return envelope.prepared.sourceInputs.map((input) => Object.freeze({ transactionId: input.txid, index: input.index }));
+  const document = parsedTransaction(envelope.prepared.transaction);
+  return requireArray(document.inputs, "vault send inputs").map((value) => {
+    const input = requireRecord(value, "vault send input");
+    const previous = requireRecord(input.previousOutpoint, "vault send previous outpoint");
+    return Object.freeze({ transactionId: String(previous.transactionId).toLowerCase(), index: Number(previous.index) });
+  });
+}
+
+function envelopeWatchedAddresses(envelope: EvidenceEnvelope): readonly string[] {
+  if (envelope.kind === "wallet_send") return Object.freeze([envelope.prepared.sourceAddress, envelope.prepared.destination]);
+  if (envelope.kind === "vault_send") return Object.freeze([envelope.prepared.destination, envelope.prepared.continuationAddress]);
+  return Object.freeze([...new Set([...envelope.prepared.sourceInputs.map((input) => input.address), envelope.prepared.vaultAddress])]);
+}
+
+function transactionOutputScripts(transaction: string): readonly string[] {
+  const document = parsedTransaction(transaction);
+  return requireArray(document.outputs, "prepared transaction outputs").map((value) => {
+    const output = requireRecord(value, "prepared transaction output");
+    if (typeof output.scriptPublicKey === "string" && /^0000[a-f0-9]+$/.test(output.scriptPublicKey)) {
+      return output.scriptPublicKey;
+    }
+    const script = requireRecord(output.scriptPublicKey, "prepared output script");
+    const version = Number(script.version);
+    if (!Number.isSafeInteger(version) || version < 0 || version > 0xffff || !/^[a-f0-9]+$/.test(String(script.script))) {
+      throw new Error("prepared output script is invalid");
+    }
+    return `${version.toString(16).padStart(4, "0")}${String(script.script).toLowerCase()}`;
+  });
+}
+
+function parsedTransaction(transaction: string): Record<string, unknown> {
+  try { return requireRecord(JSON.parse(transaction), "prepared transaction"); }
+  catch (cause) { throw new Error("prepared transaction JSON is invalid", { cause }); }
+}
+
+function requireRecord(value: unknown, label: string): Record<string, any> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} is invalid`);
+  return value as Record<string, any>;
+}
+
+function requireArray(value: unknown, label: string): unknown[] {
+  if (!Array.isArray(value)) throw new Error(`${label} is invalid`);
+  return value;
 }
 
 async function chainStartHash(wallet: KaspaWallet): Promise<string> {
@@ -697,7 +797,14 @@ function requireObservedDetail(
     detail.kind !== intent.kind ||
     detail.status !== "observed" ||
     detail.operationKey !== intent.operationKey ||
-    detail.transactionId !== transactionId
+    detail.transactionId !== transactionId ||
+    typeof detail.observedAtDaa !== "string" ||
+    !/^(?:0|[1-9][0-9]*)$/.test(detail.observedAtDaa) ||
+    typeof detail.chainEvidenceDigest !== "string" ||
+    !/^sha256:[A-Za-z0-9_-]{43}$/.test(detail.chainEvidenceDigest) ||
+    !["accepted", "depth-confirmed", "consensus-final"].includes(
+      detail.chainEvidenceLevel as string
+    )
   ) {
     throw new Error("Durable Treasury observation changed its operation binding");
   }

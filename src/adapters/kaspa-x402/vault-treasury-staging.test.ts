@@ -110,6 +110,8 @@ test("restart submits exact prepared bytes, observes both outputs, and commits i
       vault: fixture.vault,
       wallet: fixture.wallet,
       keyStore: fixture.keyStore,
+      chainEvidence: fixture.chainEvidence,
+      finalityFloor: "accepted",
     });
     const submitted = await restarted.submit({
       context,
@@ -210,6 +212,7 @@ interface Fixture {
   vault: VaultManager;
   wallet: KaspaWallet;
   keyStore: StagingKeyStore;
+  chainEvidence: any;
   fundingTxid: string;
   prepareInput(additionalCostCeilingAtomic: string): any;
   context(input: any, prepared: any): any;
@@ -307,7 +310,17 @@ async function withFixture(action: (fixture: Fixture) => Promise<void>): Promise
     now: () => NOW,
     generatePrivateKey: () => FIXED_STAGING_PRIVATE_KEY,
   });
-  const staging = new VaultTreasuryStaging({ vault, wallet, keyStore });
+  const chainEvidence = {
+    async observe(request: any) {
+      if (!visible) return { status: "absent" as const, detailDigest: evidenceDigest("absent"), observedAtMs: NOW };
+      return {
+        status: "present" as const, level: "accepted" as const, view: "current" as const,
+        detailDigest: evidenceDigest(`accepted:${request.transactionId}`),
+        acceptingBlockDaaScore: "9", observedAtMs: NOW,
+      };
+    },
+  };
+  const staging = new VaultTreasuryStaging({ vault, wallet, keyStore, chainEvidence, finalityFloor: "accepted" });
   const checkoutDigest = evidenceDigest("checkout");
   const requestFingerprint = evidenceDigest("request");
   const authorizationEvidenceDigest = evidenceDigest("authorization");
@@ -403,6 +416,7 @@ async function withFixture(action: (fixture: Fixture) => Promise<void>): Promise
       vault,
       wallet,
       keyStore,
+      chainEvidence,
       fundingTxid,
       prepareInput,
       context(input, prepared) {

@@ -120,6 +120,7 @@ async function verifiedRequest(): Promise<{
     purchaseAuthorizationNonceDigest: evidenceDigest("authorization-nonce"),
     purchaseAuthorizationFactsDigest: evidenceDigest("authorization-facts"),
     additionalCostCeilingAtomic: checkout.additionalCostCeilingAtomic,
+    effectiveFinalityFloor: "accepted",
   };
   const sealed = sealAuthorityApprovalRequest({
     kind: "approval_request",

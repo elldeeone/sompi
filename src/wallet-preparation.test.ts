@@ -11,7 +11,7 @@ import {
 } from "./kaspa-wasm.js";
 import { KaspaWallet, generateWalletKey } from "./wallet.js";
 
-test("wallet send prepares once, enforces pre-sign fee ceiling, and observes spent outputs from chain history", async () => {
+test("wallet send prepares once and enforces the pre-sign fee ceiling", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-wallet-prepared-"));
   fs.chmodSync(directory, 0o700);
   const wallet = new KaspaWallet({ networkId: "testnet-10", dataDir: directory });
@@ -27,7 +27,6 @@ test("wallet send prepares once, enforces pre-sign fee ceiling, and observes spe
     }]],
     [destination, []],
   ]);
-  const accepted = new Set<string>();
   const transactions: Transaction[] = [];
   (wallet as any).client = async () => ({
     getUtxosByAddresses: async (addresses: string[]) => ({
@@ -38,7 +37,6 @@ test("wallet send prepares once, enforces pre-sign fee ceiling, and observes spe
       const submitted = new Transaction(transaction);
       transactions.push(submitted);
       const transactionId = String(submitted.finalize());
-      accepted.add(transactionId);
       entriesByAddress.set(wallet.address, []);
       for (let index = 0; index < submitted.outputs.length; index++) {
         const output = submitted.outputs[index];
@@ -62,15 +60,6 @@ test("wallet send prepares once, enforces pre-sign fee ceiling, and observes spe
       }
       return { transactionId };
     },
-    getMempoolEntry: async () => {
-      throw new Error("transaction not found");
-    },
-    getVirtualChainFromBlock: async () => ({
-      acceptedTransactionIds: [...accepted].map((transactionId) => ({
-        acceptingBlockHash: "aa".repeat(32),
-        acceptedTransactionIds: [transactionId],
-      })),
-    }),
   });
 
   try {
@@ -83,21 +72,8 @@ test("wallet send prepares once, enforces pre-sign fee ceiling, and observes spe
     const privateKey = fs.readFileSync(path.join(directory, "wallet-key"), "utf8").trim();
     assert.equal(prepared.transaction.includes(privateKey), false);
     assert.equal(
-      (await wallet.observePreparedSend(prepared, "bb".repeat(32))).status,
-      "not_submitted"
-    );
-    await wallet.submitPreparedSend(prepared);
-    assert.equal(
-      (await wallet.observePreparedSend(prepared, "bb".repeat(32))).status,
-      "observed"
-    );
-
-    // The recipient can spend its output before a crashed caller records the
-    // first observation. Accepted-chain history still proves this exact tx.
-    entriesByAddress.set(destination, []);
-    assert.equal(
-      (await wallet.observePreparedSend(prepared, "bb".repeat(32))).status,
-      "observed"
+      (await wallet.submitPreparedSend(prepared)).transactionId,
+      prepared.transactionId
     );
   } finally {
     for (const transaction of transactions) transaction.free();

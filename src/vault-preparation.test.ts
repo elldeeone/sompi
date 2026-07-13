@@ -45,7 +45,6 @@ test("vault staging is prepared, submitted, observed, and committed at separate 
     )
   );
   let submitted: Transaction | undefined;
-  let hideSubmittedOutputs = false;
   (wallet as any).client = async () => ({
     getUtxosByAddresses: async (addresses: string[]) => {
       if (addresses.length === 1 && addresses[0] === funded.address) {
@@ -62,7 +61,7 @@ test("vault staging is prepared, submitted, observed, and committed at separate 
           ],
         };
       }
-      if (!submitted || hideSubmittedOutputs) return { entries: [] };
+      if (!submitted) return { entries: [] };
       const txid = String(submitted.finalize());
       return {
         entries: [
@@ -115,14 +114,22 @@ test("vault staging is prepared, submitted, observed, and committed at separate 
     assert.equal(prepared.continuationOutpoint.txid, prepared.transactionId);
     assert.equal(prepared.amountSompi, 70_000_000n);
     assert.equal(prepared.transaction.includes(agentPrivate), false);
-    assert.equal(await vault.observePreparedSend(wallet, prepared), undefined);
-
     assert.equal((await vault.submitPreparedSend(wallet, prepared)).transactionId, prepared.transactionId);
     assert.equal(vault.config().currentOutpoint?.txid, fundingTxid);
-    const observed = await vault.observePreparedSend(wallet, prepared);
-    assert.ok(observed);
-    assert.equal(observed.destinationOutpoint.txid, prepared.transactionId);
-    assert.equal(observed.continuationOutpoint.index, 1);
+    const observed = {
+      transactionId: prepared.transactionId,
+      destinationOutpoint: prepared.destinationOutpoint,
+      continuationOutpoint: prepared.continuationOutpoint,
+      amountSompi: prepared.amountSompi,
+      continuationAmountSompi: prepared.continuationAmountSompi,
+      observedAtDaa: 9n,
+      chainEvidenceDigest: `sha256:${"A".repeat(43)}`,
+      chainEvidenceLevel: "accepted" as const,
+    };
+    assert.throws(
+      () => vault.commitObservedSend(prepared, { ...observed, chainEvidenceLevel: "provisional" as never }),
+      /observation does not match/
+    );
 
     const committed = vault.commitObservedSend(prepared, observed);
     assert.equal(committed.currentOutpoint?.txid, prepared.transactionId);
@@ -130,13 +137,6 @@ test("vault staging is prepared, submitted, observed, and committed at separate 
     assert.notEqual(committed.address, vault.initialAddress());
     assert.equal(vault.initialAddress(), created.address);
     assert.equal(vault.commitObservedSend(prepared, observed).address, committed.address);
-
-    hideSubmittedOutputs = true;
-    assert.equal(
-      (await vault.reconcilePreparedSend(wallet, prepared, "dd".repeat(32))).status,
-      "observed",
-      "accepted-chain history must recover after outputs are spent"
-    );
 
     fs.writeFileSync(configPath, JSON.stringify(before, null, 2), { mode: 0o600 });
     const stale = { ...prepared, baseConfigDigest: "sha256:" + "A".repeat(43) };

@@ -822,6 +822,7 @@ function authorizationRequestSetup(journal: PurchaseJournal, seed: number): {
       requestMediaType: "",
       requestBodyDigest: evidenceDigest(body),
       additionalCostCeilingAtomic: "10",
+      effectiveFinalityFloor: "accepted",
       expiresAtMs: Date.parse("2099-01-01T00:00:00.000Z"),
     },
   };
@@ -858,6 +859,7 @@ function authorizationDecisionSetup(journal: PurchaseJournal, seed: number): {
         requestDigest: storedRequest.requestDigest,
         nonceDigest: storedRequest.nonceDigest,
         additionalCostCeilingAtomic: storedRequest.additionalCostCeilingAtomic,
+        effectiveFinalityFloor: storedRequest.effectiveFinalityFloor,
         createdAtMs: storedRequest.createdAtMs,
         expiresAtMs: storedRequest.expiresAtMs,
       }),

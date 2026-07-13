@@ -488,6 +488,7 @@ async function createFixture(
     requestMediaType: "",
     requestBodyDigest,
     additionalCostCeilingAtomic: checkout.additionalCostCeilingAtomic,
+    effectiveFinalityFloor: "accepted",
     expiresAtMs,
   });
 
@@ -510,6 +511,7 @@ async function createFixture(
     requestDigest,
     nonceDigest,
     additionalCostCeilingAtomic: checkout.additionalCostCeilingAtomic,
+    effectiveFinalityFloor: "accepted" as const,
     createdAtMs: journal.requireAuthorizationRequest(checkout.purchaseId).createdAtMs,
     expiresAtMs,
   };
@@ -663,6 +665,7 @@ async function postExpiryPaidResponse(
     nonceDigest: authorizationRecord.nonceDigest,
     additionalCostCeilingAtomic:
       authorizationRecord.additionalCostCeilingAtomic,
+    effectiveFinalityFloor: authorizationRecord.effectiveFinalityFloor,
     createdAtMs: authorizationRecord.createdAtMs,
     expiresAtMs: authorizationRecord.expiresAtMs,
   };

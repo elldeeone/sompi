@@ -471,6 +471,7 @@ function authorizedPurchase(
     requestMediaType: "",
     requestBodyDigest,
     additionalCostCeilingAtomic: "10",
+    effectiveFinalityFloor: "accepted",
     expiresAtMs,
   });
   const authEvidence = verifiedEvidence(journal, id, `auth-${seed}`, "purchase-authorization");
@@ -489,6 +490,7 @@ function authorizedPurchase(
       requestDigest,
       nonceDigest,
       additionalCostCeilingAtomic: "10",
+      effectiveFinalityFloor: "accepted",
       createdAtMs: journal.requireAuthorizationRequest(id).createdAtMs,
       expiresAtMs,
     }),

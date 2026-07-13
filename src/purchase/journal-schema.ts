@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 
 export const JOURNAL_APPLICATION_ID = 0x534f4d50; // SOMP
-export const JOURNAL_SCHEMA_VERSION = 5;
+export const JOURNAL_SCHEMA_VERSION = 6;
 
 export const JOURNAL_SCHEMA_V1_SQL = `
   CREATE TABLE schema_migrations (
@@ -708,7 +708,8 @@ export const JOURNAL_SCHEMA_V5_MIGRATION_SQL = `
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     revision INTEGER NOT NULL CHECK (revision >= 1),
     digest TEXT NOT NULL CHECK (length(digest) = 50 AND digest GLOB 'sha256:*'),
-    bound_at_ms INTEGER NOT NULL
+    bound_at_ms INTEGER NOT NULL,
+    UNIQUE (revision, digest)
   ) STRICT;
 
   CREATE TRIGGER immutable_operator_manifest_binding_update
@@ -719,10 +720,56 @@ export const JOURNAL_SCHEMA_V5_MIGRATION_SQL = `
     BEGIN SELECT RAISE(ABORT, 'Operator Manifest binding is immutable'); END;
 `;
 
+/** Clean-cutover epoch for durable, source-separated Chain Evidence. */
+export const JOURNAL_SCHEMA_V6_MIGRATION_SQL = `
+  ALTER TABLE authorization_requests
+    ADD COLUMN effective_finality_floor TEXT NOT NULL DEFAULT 'accepted'
+    CHECK (effective_finality_floor IN ('accepted', 'depth-confirmed'));
+
+  CREATE TABLE chain_evidence (
+    detail_digest TEXT PRIMARY KEY CHECK (length(detail_digest) = 50 AND detail_digest GLOB 'sha256:*'),
+    profile TEXT NOT NULL,
+    operation_id TEXT NOT NULL,
+    operation TEXT NOT NULL CHECK (operation IN ('settlement', 'direct-treasury', 'vault', 'staging', 'recovery-release')),
+    transaction_id TEXT NOT NULL CHECK (length(transaction_id) = 64),
+    status TEXT NOT NULL CHECK (status IN ('present', 'absent', 'unknown', 'unavailable')),
+    level TEXT CHECK (level IN ('provisional', 'accepted', 'depth-confirmed', 'consensus-final')),
+    view TEXT CHECK (view IN ('current', 'historical')),
+    mechanism TEXT NOT NULL CHECK (mechanism IN ('ordinary', 'native-covenant', 'kip10-script-template')),
+    protocol_finality TEXT NOT NULL CHECK (protocol_finality IN ('mempool', 'accepted', 'confirmed')),
+    operator_floor TEXT NOT NULL CHECK (operator_floor IN ('accepted', 'depth-confirmed')),
+    effective_floor TEXT NOT NULL CHECK (effective_floor IN ('accepted', 'depth-confirmed')),
+    primary_profile TEXT NOT NULL,
+    witness_profile TEXT NOT NULL,
+    block_hash TEXT,
+    accepting_block_hash TEXT,
+    accepting_block_daa_score TEXT,
+    virtual_daa_score TEXT,
+    outputs_digest TEXT NOT NULL CHECK (length(outputs_digest) = 50 AND outputs_digest GLOB 'sha256:*'),
+    observed_at_ms INTEGER NOT NULL,
+    manifest_revision INTEGER NOT NULL,
+    manifest_digest TEXT NOT NULL,
+    FOREIGN KEY (manifest_revision, manifest_digest)
+      REFERENCES operator_manifest_binding(revision, digest) ON DELETE RESTRICT,
+    CHECK ((status = 'present') = (level IS NOT NULL AND view IS NOT NULL)),
+    CHECK ((level IN ('accepted', 'depth-confirmed', 'consensus-final')) = (block_hash IS NOT NULL AND accepting_block_hash IS NOT NULL AND accepting_block_daa_score IS NOT NULL AND virtual_daa_score IS NOT NULL))
+  ) STRICT;
+
+  CREATE INDEX accepted_chain_evidence
+    ON chain_evidence(transaction_id, level, observed_at_ms)
+    WHERE status = 'present' AND level IN ('accepted', 'depth-confirmed', 'consensus-final');
+
+  CREATE TRIGGER immutable_chain_evidence_update BEFORE UPDATE ON chain_evidence
+    BEGIN SELECT RAISE(ABORT, 'Chain Evidence is immutable'); END;
+  CREATE TRIGGER immutable_chain_evidence_delete BEFORE DELETE ON chain_evidence
+    BEGIN SELECT RAISE(ABORT, 'Chain Evidence is immutable'); END;
+`;
+
 export const JOURNAL_SCHEMA_V2_SQL = `${JOURNAL_SCHEMA_V1_SQL}\n${JOURNAL_SCHEMA_V2_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V3_SQL = `${JOURNAL_SCHEMA_V2_SQL}\n${JOURNAL_SCHEMA_V3_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V4_SQL = `${JOURNAL_SCHEMA_V3_SQL}\n${JOURNAL_SCHEMA_V4_MIGRATION_SQL}`;
-export const JOURNAL_SCHEMA_SQL = `${JOURNAL_SCHEMA_V4_SQL}\n${JOURNAL_SCHEMA_V5_MIGRATION_SQL}`;
+export const JOURNAL_SCHEMA_V5_SQL = `${JOURNAL_SCHEMA_V4_SQL}\n${JOURNAL_SCHEMA_V5_MIGRATION_SQL}`;
+export const JOURNAL_SCHEMA_SQL = `${JOURNAL_SCHEMA_V5_SQL}\n${JOURNAL_SCHEMA_V6_MIGRATION_SQL}`;
 
 export const JOURNAL_SCHEMA_V1_CHECKSUM = sha256Text(JOURNAL_SCHEMA_V1_SQL);
 export const JOURNAL_SCHEMA_V2_CHECKSUM = sha256Text(JOURNAL_SCHEMA_V2_SQL);

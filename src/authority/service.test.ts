@@ -185,6 +185,7 @@ function makeFacts(): AuthorityApprovalFacts {
     purchaseAuthorizationNonceDigest: evidenceDigest("purchase-authorization-nonce"),
     purchaseAuthorizationFactsDigest: evidenceDigest("purchase-authorization-facts"),
     additionalCostCeilingAtomic: "100",
+    effectiveFinalityFloor: "accepted",
   };
 }
 

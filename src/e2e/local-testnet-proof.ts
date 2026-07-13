@@ -74,6 +74,7 @@ import type {
   PinnedHttpTransportRequest,
   PinnedHttpTransportResponse,
 } from "../http/pinned-transport.js";
+import type { ChainEvidenceModule } from "../chain-evidence/module.js";
 import {
   Keypair,
   PrivateKey,
@@ -637,6 +638,8 @@ function composeCoordinator(input: {
     vault: input.vault,
     wallet: input.wallet,
     keyStore,
+    chainEvidence: localWalletChainEvidence(input.wallet, input.clock),
+    finalityFloor: "accepted",
   });
   const canonicalStaging = createJournalTreasuryStagingMetadataSource(input.journal);
   const observedStaging = new JournalTreasuryStagingObservationSource(
@@ -731,6 +734,7 @@ async function invokePurchase(input: {
     wallet: input.wallet,
     vault: input.vault,
     policy: input.policy,
+    chainEvidence: Object.freeze({}) as ChainEvidenceModule,
     async close() {
       // The proof owns and closes these resources after the MCP session.
     },
@@ -775,6 +779,31 @@ async function invokePurchase(input: {
     await client.close().catch(() => undefined);
     await server.close().catch(() => undefined);
   }
+}
+
+function localWalletChainEvidence(wallet: KaspaWallet, now: () => number) {
+  return {
+    async observe(request: any) {
+      const rpc = await wallet.client();
+      const response = await rpc.getUtxosByAddresses([...request.watchedAddresses]);
+      const entries = response.entries as any[];
+      const scores: bigint[] = [];
+      const present = request.expectedOutputs.every((expected: any) => {
+        const match = entries.find((entry) => {
+          const outpoint = entry?.outpoint ?? entry?.entry?.outpoint;
+          return String(outpoint?.transactionId) === request.transactionId &&
+            Number(outpoint?.index) === expected.index &&
+            BigInt(entry?.amount ?? entry?.entry?.amount ?? -1) === BigInt(expected.amountAtomic);
+        });
+        if (match) scores.push(BigInt(match?.blockDaaScore ?? match?.entry?.blockDaaScore ?? 0));
+        return Boolean(match);
+      });
+      if (!present) return { status: "absent" as const, detailDigest: evidenceDigest(`local-absent:${request.transactionId}`), observedAtMs: now() };
+      const score = scores.reduce((max, value) => value > max ? value : max, 0n);
+      if (score <= 0n) return { status: "present" as const, level: "provisional" as const, view: "current" as const, detailDigest: evidenceDigest(`local-provisional:${request.transactionId}`), observedAtMs: now() };
+      return { status: "present" as const, level: "accepted" as const, view: "current" as const, detailDigest: evidenceDigest(`local-accepted:${request.transactionId}`), acceptingBlockDaaScore: score.toString(), observedAtMs: now() };
+    },
+  };
 }
 
 function parseMcpPurchaseResult(result: unknown): {

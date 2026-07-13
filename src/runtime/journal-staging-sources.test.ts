@@ -426,6 +426,7 @@ async function withStagingJournal(
       requestDigest,
       nonceDigest,
       additionalCostCeilingAtomic: ADDITIONAL_COST_CEILING,
+      effectiveFinalityFloor: "accepted" as const,
       createdAtMs: NOW,
       expiresAtMs,
     };
@@ -436,6 +437,7 @@ async function withStagingJournal(
       requestMediaType: "",
       requestBodyDigest: requestBody.digest,
       additionalCostCeilingAtomic: ADDITIONAL_COST_CEILING,
+      effectiveFinalityFloor: "accepted",
       expiresAtMs,
     });
     const authorizationEvidence = storeVerifiedEvidence(journal, purchaseId, {
@@ -488,7 +490,17 @@ async function withStagingJournal(
       now: () => NOW,
       generatePrivateKey: () => FIXED_STAGING_PRIVATE_KEY,
     });
-    const staging = new VaultTreasuryStaging({ vault, wallet, keyStore });
+    const staging = new VaultTreasuryStaging({
+      vault, wallet, keyStore,
+      chainEvidence: {
+        observe: async (request: any) => ({
+          status: "present", level: "accepted", view: "current",
+          detailDigest: evidenceDigest(`chain:${request.transactionId}`),
+          acceptingBlockDaaScore: "9", observedAtMs: NOW,
+        }),
+      },
+      finalityFloor: "accepted",
+    });
     const execution = {
       purchaseId,
       terms,

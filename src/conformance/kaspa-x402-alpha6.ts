@@ -176,6 +176,7 @@ function makeAdapterFixture(vector: ExactHttpVector) {
     requestDigest,
     nonceDigest,
     additionalCostCeilingAtomic: "10000000",
+    effectiveFinalityFloor: "accepted" as const,
     createdAtMs: NOW,
     expiresAtMs: Date.parse(terms.expiresAt),
   };
@@ -197,6 +198,7 @@ function makeAdapterFixture(vector: ExactHttpVector) {
     requestDigest,
     nonceDigest,
     additionalCostCeilingAtomic: "10000000",
+    effectiveFinalityFloor: "accepted" as const,
   };
   const execution = {
     purchaseId,

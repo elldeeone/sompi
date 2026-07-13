@@ -40,6 +40,7 @@ export interface KaspaStagingRecoveryModuleOptions {
   readonly recovery: AbandonedStagingRecovery;
   readonly metadata: TreasuryStagingMetadataSource;
   readonly observedStaging: JournalObservedStagingSource;
+  readonly finalityFloor: "accepted" | "depth-confirmed";
 }
 
 /**
@@ -92,7 +93,7 @@ export class KaspaStagingRecoveryModule
         throw new Error(`${label} differs across staging recovery facts`);
       }
     }
-    const requirement = exactRequirement(input);
+    const requirement = exactRequirement(input, this.options.finalityFloor);
     const selection: ImmutableExactPaymentSelection = input.exactPayment
       ? {
           mode: "exact_candidate",
@@ -225,9 +226,10 @@ function validatePreparationContext(
   }
 }
 
-function exactRequirement(input: Readonly<StagingRecoveryPreparationContext>): {
-  requiredFinality: "mempool" | "accepted" | "confirmed";
-} {
+function exactRequirement(
+  input: Readonly<StagingRecoveryPreparationContext>,
+  floor: "accepted" | "depth-confirmed"
+): { requiredFinality: "accepted" | "confirmed" } {
   const header = strictAscii(input.paymentRequirements, "PAYMENT-REQUIRED");
   const parsed = parsePaymentRequiredHeaderValue(header, {
     supportedNetworks: [NETWORK],
@@ -248,7 +250,12 @@ function exactRequirement(input: Readonly<StagingRecoveryPreparationContext>): {
   ) {
     throw new Error("staging recovery payment requirements differ from Checkout Terms");
   }
-  return { requiredFinality };
+  return {
+    requiredFinality:
+      floor === "depth-confirmed" || requiredFinality === "confirmed"
+        ? "confirmed"
+        : "accepted",
+  };
 }
 
 function exactCandidate(

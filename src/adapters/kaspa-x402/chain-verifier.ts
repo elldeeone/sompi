@@ -23,11 +23,10 @@ import {
 import {
   Transaction,
   payToScriptHashSignatureScript,
-  type RpcClient,
 } from "../../kaspa-wasm.js";
 import { requestFingerprint } from "../../purchase/identity.js";
 import type { Sha256Digest } from "../../purchase/types.js";
-import { KaspaTestnet10AddressCodec, serializeScriptPublicKey } from "./address-codec.js";
+import { KaspaTestnet10AddressCodec } from "./address-codec.js";
 import {
   minimumRequiredExactFeeSompi,
   SOMPI_EXACT_FEE_POLICY,
@@ -41,7 +40,6 @@ import type {
 } from "./exact-payment-module.js";
 
 const NETWORK = "kaspa:testnet-10" as const;
-const SDK_NETWORK = "testnet-10";
 const ASSET = "KAS" as const;
 const EXACT_SCHEME = "exact" as const;
 const EXACT_BINDING = "kaspa-exact-v1" as const;
@@ -530,178 +528,6 @@ export class KaspaExactChainVerifier
   }
 }
 
-export interface RpcChainObservationSourceOptions {
-  /** KaspaWallet satisfies this interface without exposing signing methods. */
-  rpc: { client(): Promise<RpcClient> };
-  confirmedDaaDepth?: bigint | number;
-  now?: () => number;
-}
-
-/**
- * Read-only testnet-10 observation adapter backed by Kaspa wRPC. It checks the
- * UTXO index first, then the transaction pool, and never broadcasts.
- */
-export class RpcChainObservationSource implements ChainObservationSource {
-  private readonly rpcProvider: { client(): Promise<RpcClient> };
-  private readonly confirmedDaaDepth: bigint;
-  private readonly now: () => number;
-
-  constructor(options: RpcChainObservationSourceOptions) {
-    if (typeof options?.rpc?.client !== "function") {
-      throw error("source_failure", "Kaspa RPC client provider is required");
-    }
-    this.rpcProvider = options.rpc;
-    this.confirmedDaaDepth = nonNegativeBigInt(
-      options.confirmedDaaDepth ?? 10,
-      "confirmed DAA depth"
-    );
-    this.now = options.now ?? Date.now;
-    readClock(this.now);
-  }
-
-  async observeExactOutput(request: Readonly<ChainObservationRequest>): Promise<ChainObservation> {
-    validateObservationRequest(request, readClock(this.now));
-    return boundedCall(
-      "Kaspa RPC chain observation",
-      request.deadlineAtMs,
-      this.now,
-      request.signal,
-      (signal) => this.observeWithinDeadline({ ...request, signal })
-    );
-  }
-
-  private async observeWithinDeadline(
-    request: Readonly<ChainObservationRequest>
-  ): Promise<ChainObservation> {
-    request.signal.throwIfAborted();
-    const rpc = await raceSignal(this.rpcProvider.client(), request.signal);
-    request.signal.throwIfAborted();
-    const info = await raceSignal(rpc.getServerInfo(), request.signal);
-    if (
-      !info.isSynced ||
-      !info.hasUtxoIndex ||
-      ![SDK_NETWORK, NETWORK].includes(info.networkId as typeof SDK_NETWORK | typeof NETWORK)
-    ) {
-      throw error(
-        "source_failure",
-        "Kaspa RPC node is unsynced, lacks the UTXO index, or is not testnet-10"
-      );
-    }
-
-    const utxos = await raceSignal(
-      rpc.getUtxosByAddresses([request.merchantAddress]),
-      request.signal
-    );
-    const matches = (utxos.entries as unknown[]).filter((entry) => {
-      const outpoint = rpcOutpoint(entry);
-      return outpoint?.transactionId === request.transactionId && outpoint.index === request.outputIndex;
-    });
-    if (matches.length > 1) {
-      throw error("source_failure", "Kaspa RPC returned a duplicate exact output outpoint");
-    }
-    if (matches.length === 1) {
-      const entry = requireRecord(matches[0], "Kaspa UTXO entry");
-      const blockDaaScore = rpcBigInt(
-        entry.blockDaaScore ?? requireRecord(entry.entry, "Kaspa UTXO entry").blockDaaScore,
-        "Kaspa UTXO DAA score"
-      );
-      const amount = rpcBigInt(
-        entry.amount ?? requireRecord(entry.entry, "Kaspa UTXO entry").amount,
-        "Kaspa UTXO amount"
-      );
-      const script = rpcScriptPublicKey(
-        entry.scriptPublicKey ?? requireRecord(entry.entry, "Kaspa UTXO entry").scriptPublicKey
-      );
-      const virtualDaaScore = BigInt(info.virtualDaaScore);
-      const depth = virtualDaaScore >= blockDaaScore ? virtualDaaScore - blockDaaScore : 0n;
-      const finality: KaspaChainFinality =
-        blockDaaScore === 0n
-          ? "mempool"
-          : depth >= this.confirmedDaaDepth
-            ? "confirmed"
-            : "accepted";
-      return Object.freeze({
-        status: "observed" as const,
-        network: NETWORK,
-        transactionId: request.transactionId,
-        outpoint: request.outpoint,
-        amountAtomic: amount.toString(),
-        scriptPublicKey: script,
-        finality,
-        observedAtMs: readClock(this.now),
-        detailDigest: digestCanonical({
-          source: "kaspa-wrpc-utxo",
-          transactionId: request.transactionId,
-          outpoint: request.outpoint,
-          amountAtomic: amount.toString(),
-          scriptPublicKey: script,
-          blockDaaScore: blockDaaScore.toString(),
-          virtualDaaScore: virtualDaaScore.toString(),
-          finality,
-        }),
-      });
-    }
-
-    let mempool: Awaited<ReturnType<RpcClient["getMempoolEntry"]>>;
-    try {
-      mempool = await raceSignal(
-        rpc.getMempoolEntry({
-          transactionId: request.transactionId,
-          includeOrphanPool: false,
-          filterTransactionPool: false,
-        }),
-        request.signal
-      );
-    } catch (cause) {
-      if (request.signal.aborted) throw abortError(request.signal);
-      if (isMempoolNotFound(cause)) {
-        return Object.freeze({
-          status: "pending" as const,
-          detailDigest: digestCanonical({
-            source: "kaspa-wrpc",
-            status: "not-in-utxo-index-or-mempool",
-            transactionId: request.transactionId,
-            outpoint: request.outpoint,
-          }),
-        });
-      }
-      throw error("source_failure", "Kaspa mempool observation failed", { cause });
-    }
-    if (mempool.mempoolEntry.isOrphan) {
-      throw error("chain_mismatch", "exact transaction is only present in the orphan pool");
-    }
-    const transaction = mempool.mempoolEntry.transaction;
-    const observedTransactionId = rpcTransactionId(transaction);
-    if (observedTransactionId !== request.transactionId) {
-      throw error("chain_mismatch", "Kaspa mempool returned a different transaction identity");
-    }
-    const output = transaction.outputs[request.outputIndex];
-    if (!output) {
-      throw error("chain_mismatch", "Kaspa mempool transaction has no Merchant output index");
-    }
-    const amount = rpcBigInt(output.value, "Kaspa mempool output amount");
-    const script = rpcScriptPublicKey(output.scriptPublicKey);
-    return Object.freeze({
-      status: "observed" as const,
-      network: NETWORK,
-      transactionId: observedTransactionId,
-      outpoint: request.outpoint,
-      amountAtomic: amount.toString(),
-      scriptPublicKey: script,
-      finality: "mempool" as const,
-      observedAtMs: readClock(this.now),
-      detailDigest: digestCanonical({
-        source: "kaspa-wrpc-mempool",
-        transactionId: observedTransactionId,
-        outpoint: request.outpoint,
-        amountAtomic: amount.toString(),
-        scriptPublicKey: script,
-        finality: "mempool",
-      }),
-    });
-  }
-}
-
 function parseExactPayment(
   context: ExactSettlementVerificationInput["context"],
   paymentRequired: PaymentRequired,
@@ -1122,25 +948,6 @@ function validateChainObservation(
   }
 }
 
-function validateObservationRequest(request: ChainObservationRequest, nowMs: number): void {
-  if (
-    request.network !== NETWORK ||
-    requireHash(request.transactionId, "chain observation transaction ID") !== request.transactionId ||
-    request.outpoint !== `${request.transactionId}:${uint32(request.outputIndex, "chain observation output index")}` ||
-    request.outputIndex !== 1 ||
-    uint64(request.expectedAmountAtomic, "chain observation expected amount", { positive: true }) <= 0n ||
-    canonicalScript(request.expectedScriptPublicKey, "chain observation expected script") !==
-      request.expectedScriptPublicKey ||
-    requireFinality(request.minimumFinality, "chain observation minimum finality") !==
-      request.minimumFinality
-  ) {
-    throw error("chain_mismatch", "chain observation request is outside the pinned exact profile");
-  }
-  if (!Number.isSafeInteger(request.deadlineAtMs) || request.deadlineAtMs <= nowMs) {
-    throw error("deadline_exceeded", "chain observation deadline has expired");
-  }
-}
-
 function validateInput(
   value: unknown,
   expected: {
@@ -1337,67 +1144,6 @@ async function raceSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<
   });
 }
 
-function rpcOutpoint(value: unknown): { transactionId: string; index: number } | undefined {
-  const record = requireRecord(value, "Kaspa UTXO entry");
-  const nested = isRecord(record.entry) ? record.entry : undefined;
-  const outpoint = record.outpoint ?? nested?.outpoint;
-  if (!outpoint || typeof outpoint !== "object") return undefined;
-  const candidate = outpoint as { transactionId?: unknown; index?: unknown };
-  if (typeof candidate.transactionId !== "string" || !Number.isSafeInteger(candidate.index)) {
-    return undefined;
-  }
-  return { transactionId: candidate.transactionId.toLowerCase(), index: candidate.index as number };
-}
-
-function rpcScriptPublicKey(value: unknown): string {
-  if (!value || typeof value !== "object") {
-    throw error("source_failure", "Kaspa RPC script public key is missing");
-  }
-  const script = value as { version?: unknown; script?: unknown };
-  if (!Number.isInteger(script.version) || typeof script.script !== "string") {
-    throw error("source_failure", "Kaspa RPC script public key is malformed");
-  }
-  try {
-    return serializeScriptPublicKey(script.version as number, script.script).toLowerCase();
-  } catch (cause) {
-    throw error("source_failure", "Kaspa RPC script public key is outside the pinned profile", {
-      cause,
-    });
-  }
-}
-
-function rpcTransactionId(transaction: unknown): string {
-  const record = requireRecord(transaction, "Kaspa mempool transaction");
-  const verbose = isRecord(record.verboseData) ? record.verboseData : undefined;
-  if (typeof verbose?.transactionId === "string") {
-    return requireHash(verbose.transactionId.toLowerCase(), "Kaspa mempool transaction ID");
-  }
-  let hydrated: Transaction | undefined;
-  try {
-    hydrated = new Transaction(transaction as never);
-    return requireHash(String(hydrated.finalize()).toLowerCase(), "Kaspa mempool transaction ID");
-  } catch (cause) {
-    throw error("source_failure", "Kaspa RPC transaction identity cannot be derived", { cause });
-  } finally {
-    hydrated?.free();
-  }
-}
-
-function rpcBigInt(value: unknown, label: string): bigint {
-  try {
-    const parsed = typeof value === "bigint" ? value : BigInt(value as string | number);
-    if (parsed < 0n || parsed > UINT64_MAX) throw new Error("outside uint64");
-    return parsed;
-  } catch (cause) {
-    throw error("source_failure", `${label} is invalid`, { cause });
-  }
-}
-
-function isMempoolNotFound(value: unknown): boolean {
-  const message = value instanceof Error ? value.message : String(value);
-  return /not found|not in (?:the )?mempool|does not exist|missing transaction/i.test(message);
-}
-
 function parseJsonRecord(value: string, label: string): Record<string, unknown> {
   let parsed: unknown;
   try {
@@ -1577,16 +1323,6 @@ function readClock(now: () => number): number {
     throw error("source_failure", "chain verifier clock returned an invalid timestamp");
   }
   return value;
-}
-
-function nonNegativeBigInt(value: bigint | number, label: string): bigint {
-  try {
-    const parsed = BigInt(value);
-    if (parsed < 0n || parsed > UINT64_MAX) throw new Error("outside uint64");
-    return parsed;
-  } catch (cause) {
-    throw error("source_failure", `${label} is invalid`, { cause });
-  }
 }
 
 function abortError(signal: AbortSignal): Error {

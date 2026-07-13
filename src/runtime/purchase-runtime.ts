@@ -23,15 +23,18 @@ import {
   AbandonedStagingRecovery,
   Kip10ExactTransactionBuilder,
   KaspaStagingRecoveryModule,
-  RpcStagingRecoveryRaceSource,
   RpcStagingRecoveryTransactionSubmitter,
   StagingKeyStore,
 } from "../adapters/kaspa-x402/index.js";
 import {
   KaspaExactChainVerifier,
-  RpcChainObservationSource,
   type MerchantPaymentResponseLookup,
 } from "../adapters/kaspa-x402/chain-verifier.js";
+import { ChainEvidenceModule } from "../chain-evidence/module.js";
+import { ChainEvidenceExactOutputSource } from "../chain-evidence/exact-output-source.js";
+import { JournalChainEvidenceStore } from "../chain-evidence/journal-store.js";
+import { HttpsAcceptedChainWitness, WrpcOperatorChainObserver } from "../chain-evidence/sources.js";
+import { ChainEvidenceStagingRecoveryRaceSource } from "../chain-evidence/staging-recovery-source.js";
 import { VaultExactAttemptFundingBridge } from "../adapters/kaspa-x402/exact-attempt-funding-bridge.js";
 import { VaultTreasuryStaging } from "../adapters/kaspa-x402/vault-treasury-staging.js";
 import { NodePinnedHttpTransport } from "../http/node-pinned-transport.js";
@@ -69,6 +72,7 @@ export interface SompiPurchaseRuntime {
   readonly wallet: KaspaWallet;
   readonly vault: VaultManager;
   readonly policy: PolicyEngine;
+  readonly chainEvidence: ChainEvidenceModule;
   close(): Promise<void>;
 }
 
@@ -131,6 +135,12 @@ export function createSompiPurchaseRuntime(
     );
     const runtimeJournal = journal;
     const runtimeAuthorityReplay = authorityReplay;
+    const chainEvidence = new ChainEvidenceModule(
+      new WrpcOperatorChainObserver({ rpc: wallet, depthConfirmationDaa: config.depthConfirmationDaa, now }),
+      new HttpsAcceptedChainWitness({ baseUrl: config.witnessBaseUrl, depthConfirmationDaa: config.depthConfirmationDaa, now }),
+      new JournalChainEvidenceStore(journal),
+      now
+    );
     const checkout = new SompiCheckoutTermsModule({
       transport,
       merchantCheckout: new Ap2MerchantCheckoutVerifier({
@@ -177,7 +187,10 @@ export function createSompiPurchaseRuntime(
       directory: config.stagingKeyDirectory,
       now,
     });
-    const staging = new VaultTreasuryStaging({ vault, wallet, keyStore });
+    const staging = new VaultTreasuryStaging({
+      vault, wallet, keyStore, chainEvidence,
+      finalityFloor: config.finalityFloors.staging,
+    });
     const canonicalStaging = createJournalTreasuryStagingMetadataSource(journal);
     const observedStaging = new JournalTreasuryStagingObservationSource(
       journal,
@@ -194,7 +207,7 @@ export function createSompiPurchaseRuntime(
         observedStaging,
         now
       ),
-      chain: new RpcChainObservationSource({ rpc: wallet, now }),
+      chain: new ChainEvidenceExactOutputSource(chainEvidence, config.finalityFloors.settlement),
       merchantResponses:
         dependencies.merchantResponses ?? new AbsentMerchantPaymentResponseLookup(),
       addressCodec: new KaspaTestnet10AddressCodec(),
@@ -235,12 +248,17 @@ export function createSompiPurchaseRuntime(
       recovery: new AbandonedStagingRecovery({
         keyStore,
         recoveryAddress: wallet.address,
-        observer: new RpcStagingRecoveryRaceSource({ rpc: wallet, now }),
+        observer: new ChainEvidenceStagingRecoveryRaceSource(
+          chainEvidence,
+          wallet,
+          config.finalityFloors.recoveryRelease
+        ),
         submitter: new RpcStagingRecoveryTransactionSubmitter({ rpc: wallet, now }),
         now,
       }),
       metadata: canonicalStaging,
       observedStaging,
+      finalityFloor: config.finalityFloors.recoveryRelease,
     });
     const purchase = new PurchaseCoordinator(
       journal,
@@ -252,7 +270,7 @@ export function createSompiPurchaseRuntime(
       payment,
       stagingRecovery,
       new PendingFulfilmentModule(),
-      { now }
+      { now, effectiveFinalityFloor: config.finalityFloors.settlement }
     );
     let closePromise: Promise<void> | undefined;
     return Object.freeze({
@@ -261,6 +279,7 @@ export function createSompiPurchaseRuntime(
       wallet,
       vault,
       policy,
+      chainEvidence,
       close() {
         closePromise ??= closeRuntimeResources(
           wallet,

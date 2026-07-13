@@ -191,6 +191,7 @@ function authorityFacts(request: PurchaseAuthorizationRequest) {
     purchaseAuthorizationNonceDigest: canonical.nonceDigest,
     purchaseAuthorizationFactsDigest: authorizationFactsDigest(request),
     additionalCostCeilingAtomic: canonical.additionalCostCeilingAtomic,
+    effectiveFinalityFloor: canonical.effectiveFinalityFloor,
   });
 }
 

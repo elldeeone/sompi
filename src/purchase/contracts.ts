@@ -43,6 +43,7 @@ export interface PurchaseAuthorizationRequest {
   requestDigest: Sha256Digest;
   nonceDigest: Sha256Digest;
   additionalCostCeilingAtomic: string;
+  effectiveFinalityFloor: "accepted" | "depth-confirmed";
   createdAtMs: number;
   expiresAtMs: number;
 }
@@ -65,6 +66,7 @@ export interface CanonicalAuthorizationFacts {
   requestDigest: Sha256Digest;
   nonceDigest: Sha256Digest;
   additionalCostCeilingAtomic: string;
+  effectiveFinalityFloor: "accepted" | "depth-confirmed";
 }
 
 export interface PurchaseAuthorizationDecision {
@@ -231,7 +233,15 @@ export function authorizationFacts(request: PurchaseAuthorizationRequest): Canon
       request.additionalCostCeilingAtomic,
       "authorization additional-cost ceiling"
     ),
+    effectiveFinalityFloor: requireFinalityFloor(request.effectiveFinalityFloor),
   };
+}
+
+function requireFinalityFloor(value: unknown): "accepted" | "depth-confirmed" {
+  if (value !== "accepted" && value !== "depth-confirmed") {
+    throw new PurchaseContractError("authorization effective finality floor is invalid");
+  }
+  return value;
 }
 
 export function authorizationFactsDigest(request: PurchaseAuthorizationRequest): Sha256Digest {
@@ -337,6 +347,7 @@ function validateAuthorizationFacts(candidate: CanonicalAuthorizationFacts): Can
       candidate.additionalCostCeilingAtomic,
       "authorization fact additional-cost ceiling"
     ),
+    effectiveFinalityFloor: requireFinalityFloor(candidate.effectiveFinalityFloor),
   };
 }
 

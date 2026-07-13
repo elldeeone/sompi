@@ -53,13 +53,17 @@ import {
   KaspaX402PaymentRequirementsVerifier,
   KaspaX402ServerStorePaymentResponseLookup,
   Kip10ExactTransactionBuilder,
-  RpcChainObservationSource,
-  RpcStagingRecoveryRaceSource,
   RpcStagingRecoveryTransactionSubmitter,
   StagingKeyStore,
   VaultExactAttemptFundingBridge,
   VaultTreasuryStaging,
 } from "../adapters/kaspa-x402/index.js";
+import { ChainEvidenceModule } from "../chain-evidence/module.js";
+import { ChainEvidenceExactOutputSource } from "../chain-evidence/exact-output-source.js";
+import type { ChainObservationSource } from "../adapters/kaspa-x402/chain-verifier.js";
+import { JournalChainEvidenceStore } from "../chain-evidence/journal-store.js";
+import { HttpsAcceptedChainWitness, WrpcOperatorChainObserver } from "../chain-evidence/sources.js";
+import { ChainEvidenceStagingRecoveryRaceSource } from "../chain-evidence/staging-recovery-source.js";
 import {
   AuthorityDecisionEndpoint,
   AuthorityUnixDecisionClient,
@@ -457,7 +461,7 @@ function isSameOrDescendant(candidate: string, root: string): boolean {
 interface LiveComposition {
   readonly coordinator: PurchaseCoordinator;
   readonly observedStaging: JournalTreasuryStagingObservationSource;
-  readonly clientChain: RpcChainObservationSource;
+  readonly clientChain: ChainObservationSource;
 }
 
 function composeLiveCoordinator(input: {
@@ -512,10 +516,18 @@ function composeLiveCoordinator(input: {
     directory: input.initialized.layout.stagingKeyDirectory,
     now,
   });
+  const chainEvidence = new ChainEvidenceModule(
+    new WrpcOperatorChainObserver({ rpc: input.initialized.treasuryWallet, depthConfirmationDaa: 10, now }),
+    new HttpsAcceptedChainWitness({ baseUrl: "https://api-tn10.kaspa.org/", depthConfirmationDaa: 10, now }),
+    new JournalChainEvidenceStore(input.journal),
+    now
+  );
   const staging = new VaultTreasuryStaging({
     vault: input.initialized.vault,
     wallet: input.initialized.treasuryWallet,
     keyStore,
+    chainEvidence,
+    finalityFloor: "accepted",
   });
   const canonicalStaging = createJournalTreasuryStagingMetadataSource(input.journal);
   const observedStaging = new JournalTreasuryStagingObservationSource(
@@ -527,11 +539,7 @@ function composeLiveCoordinator(input: {
     observedStagingSource: observedStaging,
     builder: new Kip10ExactTransactionBuilder({ keyStore, now }),
   });
-  const clientChain = new RpcChainObservationSource({
-    rpc: input.initialized.observerWallet,
-    confirmedDaaDepth: 10,
-    now,
-  });
+  const clientChain = new ChainEvidenceExactOutputSource(chainEvidence, "accepted");
   const chainVerifier = new KaspaExactChainVerifier({
     stagingMetadata: new JournalChainTreasuryMetadataSource(
       canonicalStaging,
@@ -570,10 +578,7 @@ function composeLiveCoordinator(input: {
     recovery: new AbandonedStagingRecovery({
       keyStore,
       recoveryAddress: input.initialized.treasuryWallet.address,
-      observer: new RpcStagingRecoveryRaceSource({
-        rpc: input.initialized.observerWallet,
-        now,
-      }),
+      observer: new ChainEvidenceStagingRecoveryRaceSource(chainEvidence, input.initialized.observerWallet, "accepted"),
       submitter: new RpcStagingRecoveryTransactionSubmitter({
         rpc: input.initialized.treasuryWallet,
         now,
@@ -582,6 +587,7 @@ function composeLiveCoordinator(input: {
     }),
     metadata: canonicalStaging,
     observedStaging,
+    finalityFloor: "accepted",
   });
   const coordinator = new PurchaseCoordinator(
     input.journal,
@@ -1254,7 +1260,7 @@ async function createReport(input: {
   readonly transport: LiveDemoPinnedTransport;
   readonly verifierState: MerchantVerifierState;
   readonly observedStaging: JournalTreasuryStagingObservationSource;
-  readonly clientChain: RpcChainObservationSource;
+  readonly clientChain: ChainObservationSource;
   readonly merchantStore: SqliteExactServerStateStore;
   readonly paymentIdentifier: string;
 }): Promise<LiveTestnetProofReport> {

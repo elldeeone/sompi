@@ -28,7 +28,6 @@ import {
   KaspaExactChainVerifier,
   KaspaExactChainVerifierError,
   KaspaX402ServerStorePaymentResponseLookup,
-  RpcChainObservationSource,
   type ChainObservation,
   type ChainObservationRequest,
 } from "./chain-verifier.js";
@@ -347,97 +346,6 @@ test("alpha.6 Merchant-store lookup returns only the response durably bound to t
     (value: unknown) =>
       value instanceof KaspaExactChainVerifierError && value.code === "payment_replay"
   );
-});
-
-test("RPC chain source observes exact UTXO finality without exposing a broadcast path", async () => {
-  const fixture = await makeFixture();
-  let submitCalls = 0;
-  const rpc = {
-    getServerInfo: async () => ({
-      isSynced: true,
-      hasUtxoIndex: true,
-      networkId: "testnet-10",
-      virtualDaaScore: 200n,
-    }),
-    getUtxosByAddresses: async (addresses: string[]) => {
-      assert.deepEqual(addresses, [MERCHANT_ADDRESS]);
-      return {
-        entries: [{
-          outpoint: { transactionId: fixture.transactionId, index: 1 },
-          amount: BigInt(AMOUNT),
-          scriptPublicKey: {
-            version: 0,
-            script: fixture.merchantScript.slice(4),
-          },
-          blockDaaScore: 100n,
-        }],
-      };
-    },
-    getMempoolEntry: async () => { throw new Error("not expected"); },
-    submitTransaction: async () => {
-      submitCalls += 1;
-      throw new Error("broadcast forbidden");
-    },
-  };
-  const source = new RpcChainObservationSource({
-    rpc: { client: async () => rpc as any },
-    confirmedDaaDepth: 10,
-    now: () => NOW,
-  });
-  const result = await source.observeExactOutput(fixture.chainRequest("confirmed"));
-  assert.equal(result.status, "observed");
-  if (result.status !== "observed") throw new Error("expected observation");
-  assert.equal(result.finality, "confirmed");
-  assert.equal(result.amountAtomic, AMOUNT);
-  assert.equal(result.scriptPublicKey, fixture.merchantScript);
-  assert.equal(submitCalls, 0);
-  assert.equal("submitTransaction" in source, false);
-});
-
-test("RPC chain source falls back to a non-orphan mempool transaction and treats a true miss as pending", async () => {
-  const fixture = await makeFixture();
-  const safe = JSON.parse(
-    fixture.paymentPayload.payload.type === "exact-transaction"
-      ? fixture.paymentPayload.payload.transaction
-      : "null"
-  ) as { outputs: Array<{ value: string; scriptPublicKey: string }> };
-  const mempoolTransaction = {
-    verboseData: { transactionId: fixture.transactionId },
-    outputs: safe.outputs.map((output) => ({
-      value: BigInt(output.value),
-      scriptPublicKey: { version: 0, script: output.scriptPublicKey.slice(4) },
-    })),
-  };
-  let notFound = false;
-  const rpc = {
-    getServerInfo: async () => ({
-      isSynced: true,
-      hasUtxoIndex: true,
-      networkId: "testnet-10",
-      virtualDaaScore: 200n,
-    }),
-    getUtxosByAddresses: async () => ({ entries: [] }),
-    getMempoolEntry: async (request: any) => {
-      assert.deepEqual(request, {
-        transactionId: fixture.transactionId,
-        includeOrphanPool: false,
-        filterTransactionPool: false,
-      });
-      if (notFound) throw new Error("transaction not found in mempool");
-      return { mempoolEntry: { isOrphan: false, transaction: mempoolTransaction } };
-    },
-  };
-  const source = new RpcChainObservationSource({
-    rpc: { client: async () => rpc as any },
-    now: () => NOW,
-  });
-  const observed = await source.observeExactOutput(fixture.chainRequest("mempool"));
-  assert.equal(observed.status, "observed");
-  if (observed.status !== "observed") throw new Error("expected observation");
-  assert.equal(observed.finality, "mempool");
-  notFound = true;
-  const pending = await source.observeExactOutput(fixture.chainRequest("mempool"));
-  assert.equal(pending.status, "pending");
 });
 
 interface FixtureOptions {

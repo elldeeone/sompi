@@ -61,12 +61,21 @@ test("initial fragmented deposit and singleton top-up use prepare/submit/observe
       240_000_000n - 80_000_000n - prepared.feeSompi
     );
     assert.equal(vault.config().covenantId, undefined);
-    assert.equal(await vault.observePreparedDeposit(wallet, prepared), undefined);
-
     await vault.submitPreparedDeposit(wallet, prepared);
     assert.equal(vault.config().covenantId, undefined, "RPC acceptance must not advance config");
-    const observed = await vault.observePreparedDeposit(wallet, prepared);
-    assert.ok(observed);
+    const observed = {
+      transactionId: prepared.transactionId,
+      vaultOutpoint: prepared.vaultOutpoint,
+      vaultAmountSompi: prepared.vaultAmountSompi,
+      covenantId: prepared.covenantId,
+      observedAtDaa: 9n,
+      chainEvidenceDigest: `sha256:${"B".repeat(43)}`,
+      chainEvidenceLevel: "accepted" as const,
+    };
+    assert.throws(
+      () => vault.commitObservedDeposit(prepared, { ...observed, chainEvidenceLevel: "provisional" as never }),
+      /observation does not match/
+    );
     const funded = vault.commitObservedDeposit(prepared, observed);
     assert.equal(funded.covenantId, prepared.covenantId);
     assert.deepEqual(funded.currentOutpoint, { txid: prepared.transactionId, index: 0 });
@@ -109,8 +118,15 @@ test("initial fragmented deposit and singleton top-up use prepare/submit/observe
     assert.equal(topup.configUpdate.spentInWindowSompi, "0");
     assert.ok(topup.vaultAmountSompi > topup.depositedSompi);
     await vault.submitPreparedDeposit(wallet, topup);
-    const topupObserved = await vault.observePreparedDeposit(wallet, topup);
-    assert.ok(topupObserved);
+    const topupObserved = {
+      transactionId: topup.transactionId,
+      vaultOutpoint: topup.vaultOutpoint,
+      vaultAmountSompi: topup.vaultAmountSompi,
+      covenantId: topup.covenantId,
+      observedAtDaa: 1_000n,
+      chainEvidenceDigest: `sha256:${"C".repeat(43)}`,
+      chainEvidenceLevel: "depth-confirmed" as const,
+    };
     const topped = vault.commitObservedDeposit(topup, topupObserved);
     assert.deepEqual(topped.currentOutpoint, { txid: topup.transactionId, index: 0 });
     assert.equal(topped.spentInWindowSompi, "0");
