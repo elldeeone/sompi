@@ -12,19 +12,20 @@ Purchase module, clean Kaspa-x402 alpha.6 exact path, isolated interactive AP2
 Authority, demo Merchant, crash recovery, local vertical proof, and live
 Testnet-10 evidence. The completed deep security scan then found 21 medium/low
 issues concentrated in chain evidence/finality, operator provisioning, and
-unbounded operation lifecycles. Phase 2A is committed and Phase 2B Operator
-Provisioning is now implemented and verified locally; the other two deep
-Modules must land before the original phase gates can be considered final.
+unbounded operation lifecycles. Phases 2A through 2C are now committed and
+verified; bounded operational lifecycles in Phase 2D remain before the original
+phase gates can be considered final.
 
 ## Git orientation at codification
 
 - Repository: `https://github.com/elldeeone/sompi`
 - Normalized local `main`: `1bbfa0c` (`Document AP2 and Kaspa-x402 architecture`)
 - Active implementation branch: `ap2-kaspa-purchase-core`
-- Current branch/HEAD/upstream: `ap2-kaspa-purchase-core` at
-  `4ebb82d4f82bac46ae3addd112c4752f29630a8a`, exactly synced.
-- Latest implementation milestone: `4ebb82d` (`Add interactive human-present
-  authority proof`).
+- Current branch/HEAD/upstream before this state closeout:
+  `ap2-kaspa-purchase-core` at `4c6fc8f90eccabbedec0a6067f05b8a70fbd99d8`,
+  two commits ahead of `origin/ap2-kaspa-purchase-core`.
+- Latest implementation milestone: `4c6fc8f` (`Centralize trusted chain
+  evidence`).
 - Untouched post-scan baseline: `npm test` passed with 339 tests, one privileged
   ownership test skipped, and complete offline smoke.
 - Sealed deep scan: 21 findings, 8 medium and 13 low, no high/critical.
@@ -64,7 +65,7 @@ Phase 2A is complete in `ca8e152`: the canonical scan is preserved, the
 post-scan architecture and threat model are authoritative, and ADR-0011 through
 ADR-0013 record the selected module boundaries.
 
-Phase 2B is complete in the working milestone awaiting its intentional commit:
+Phase 2B is complete in `1292cb4`:
 
 1. `sompi-operator` owns preview, sealed candidate provisioning, digest-approved
    installation, offline owner-key generation, and installed status;
@@ -73,14 +74,39 @@ Phase 2B is complete in the working milestone awaiting its intentional commit:
    sources/floors, and Admission Lease budgets;
 3. production requires distinct operator/runtime principals, safe ownership,
    fixed modes, one link, safe ancestors, and descriptor-stable reads;
-4. the Purchase Journal is a clean v5 epoch bound to one immutable manifest
-   identity before durable work; schemas v1-v4 are rejected untouched;
+4. the Purchase Journal introduced a clean v5 epoch bound to one immutable
+   manifest identity before durable work; schemas v1-v4 are rejected untouched;
 5. MCP vault creation, MCP owner-key generation, policy file/hot reload,
    cleartext Merchant configuration, and manifest-fact environment fallbacks
    are deleted;
-6. all four provisioning PoCs fail closed, 347 unit tests pass with one
+6. all four provisioning PoCs fail closed, 347 runnable tests pass with one
    privileged ownership skip, offline smoke passes, and the packed artifact
    verifier passes with the new operator executable.
+
+Phase 2C is complete in `4c6fc8f`:
+
+1. one typed Chain Evidence module owns provisional, accepted,
+   depth-confirmed, historical, absent, unknown, and unavailable Testnet-10
+   evidence, with consensus-final reserved as a distinct non-local level;
+2. Journal v6 stores immutable, Operator-Manifest-bound evidence and retains
+   accepted anchors after outputs are spent or the node prunes history;
+3. exact Settlement, direct wallet operations, vault deposit/send and
+   continuation, Purchase staging, staging-race recovery, and capacity release
+   now consume the central evidence seam; obsolete single-RPC observers and
+   low-level provisional vault/wallet observation APIs are deleted;
+4. Merchant protocol finality and the stronger effective Operator Manifest
+   floor are separate durable facts, and the effective floor is displayed and
+   signed by the AP2 Authority evidence path;
+5. accepted evidence requires exact transaction/input/output agreement between
+   the operator wRPC node and the independent HTTPS accepted-history witness;
+   generic errors, pruning, redirects, source disagreement, and partial views
+   fail closed, while absence needs two corroborated observations separated by
+   the propagation interval;
+6. all thirteen original chain/finality PoCs fail against the cutover; `npm
+   test` passes 353 runnable tests with one privileged ownership skip and the
+   complete offline smoke; the 171-entry packed artifact verifies; and a
+   read-only live check produced depth-confirmed evidence from
+   `ws://10.0.3.26:17210/` plus `https://api-tn10.kaspa.org/`.
 
 Phase 0 is complete:
 
@@ -141,10 +167,9 @@ performed.
 
 ## Next action
 
-Commit the completed **Phase 2B** Operator Provisioning milestone, then execute
-**Phase 2C: Chain Evidence and finality**. It centralizes transaction identity,
-retained history, two-witness acceptance, continuation semantics, negative
-evidence, and operation-specific Finality Floors.
+Execute **Phase 2D: bounded operational lifecycles**. It adds Admission Leases,
+budgets, cancellation, expiry, restart recovery, and saturation status at the
+Trusted Authority, Purchase/Journal, and direct-Treasury ownership boundaries.
 
 ## Known external uncertainties
 
@@ -162,6 +187,10 @@ These are contained by the design and do not block the hardening cutover:
 - The private Testnet-10 Chain Evidence profile uses the operator node at
   `10.0.3.26` plus an independent HTTPS accepted-chain witness. This is suitable
   for the initial proof, not a public/mainnet cryptographic inclusion claim.
+- A transaction older than the operator node's retained acceptance window
+  cannot be newly corroborated from that node. This fails closed; transactions
+  first observed while corroboration is available remain recoverable from the
+  immutable Journal evidence.
 
 ## Current blockers
 

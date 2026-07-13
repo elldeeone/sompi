@@ -1,6 +1,6 @@
 # Sompi AP2 + Kaspa-x402 implementation plan
 
-Status: **In progress — Phases 0 through 2 complete; post-scan hardening in progress**
+Status: **In progress — Phases 0 through 2C complete; post-scan hardening in progress**
 
 Architecture: [`docs/architecture/SOMPI_ARCHITECTURE.md`](architecture/SOMPI_ARCHITECTURE.md)
 
@@ -148,23 +148,23 @@ Gate:
 Purpose: make one deep module own transaction identity, evidence levels,
 history, negative evidence, continuation semantics, and Finality Floors.
 
-- [ ] Define typed provisional, accepted, depth-confirmed, consensus-final,
+- [x] Define typed provisional, accepted, depth-confirmed, consensus-final,
   historical, absent, unknown, and unavailable evidence.
-- [ ] Keep protocol finality, operator depth policy, and Kaspa consensus
+- [x] Keep protocol finality, operator depth policy, and Kaspa consensus
   finality as separate durable fields.
-- [ ] Persist Merchant protocol finality and Sompi's effective operator floor
+- [x] Persist Merchant protocol finality and Sompi's effective operator floor
   separately; display/sign the effective floor in Authority/AP2 evidence.
-- [ ] Implement distinct native covenant-binding and KIP-10 script-template
+- [x] Implement distinct native covenant-binding and KIP-10 script-template
   continuation evidence variants plus valid vault owner termination.
-- [ ] Persist accepted transaction/spend/continuation evidence before terminal
+- [x] Persist accepted transaction/spend/continuation evidence before terminal
   Purchase, wallet, vault, staging, recovery, or capacity-release transitions.
-- [ ] Treat RPC errors, pruning, missing current UTXOs, and contradictory
+- [x] Treat RPC errors, pruning, missing current UTXOs, and contradictory
   sources as unknown/unavailable rather than absence.
-- [ ] Enforce operation-specific operator floors; Merchant requirements may
+- [x] Enforce operation-specific operator floors; Merchant requirements may
   strengthen but never lower them; mempool never terminalizes state.
-- [ ] Route exact Settlement, wallet send, vault deposit/send/continuation,
+- [x] Route exact Settlement, wallet send, vault deposit/send/continuation,
   staging, recovery-winner selection, and policy release through the module.
-- [ ] Implement the private Testnet-10 two-witness adapter (operator wRPC plus
+- [x] Implement the private Testnet-10 two-witness adapter (operator wRPC plus
   independent HTTPS accepted-chain evidence) and durable history profile
   without changing Kaspa-x402.
 
