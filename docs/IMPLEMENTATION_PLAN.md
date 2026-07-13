@@ -182,17 +182,17 @@ Purpose: prevent retained sockets, prompts, evidence, Purchases, or Treasury
 preparations from exhausting the system or surviving without a safe terminal
 path.
 
-- [ ] Add pre-authentication socket and authenticated-prompt Admission Leases
+- [x] Add pre-authentication socket and authenticated-prompt Admission Leases
   inside the Trusted Authority.
-- [ ] Add pre-validation Purchase-count and Evidence Attachment byte Admission
+- [x] Add pre-validation Purchase-count and Evidence Attachment byte Admission
   Leases inside the Purchase module/Journal.
-- [ ] Add bounded direct-Treasury preparation retries and exclusive-slot lease
+- [x] Add bounded direct-Treasury preparation retries and exclusive-slot lease
   recovery inside the Treasury module.
-- [ ] Install conservative budgets through the Operator Manifest and expose
+- [x] Install conservative budgets through the Operator Manifest and expose
   stable secret-free saturation status.
-- [ ] Define cancellation, timeout, restart expiry, operator recovery, and
+- [x] Define cancellation, timeout, restart expiry, operator recovery, and
   observability at each owning module.
-- [ ] Preserve leases/reservations and enter Reconciliation after any possible
+- [x] Preserve leases/reservations and enter Reconciliation after any possible
   external effect.
 
 Gate:

@@ -4,26 +4,30 @@ Last updated: **2026-07-13**
 
 ## Plain-English status
 
-**The first human-present AP2 + Kaspa-x402 exact vertical exists and passed live
-Testnet-10 proof, but the post-scan hardening cutover is now the active gate.**
+**Phase 2D bounded operational lifecycles are complete and ready for review.**
+The first human-present AP2 + Kaspa-x402 exact vertical remains testnet-only;
+the post-scan hardening gates now pass through the bounded Authority,
+Purchase/Journal, Evidence, and direct-Treasury lifecycles.
 
 Phases 0 through 6 were implemented through `4ebb82d`, including the stable
 Purchase module, clean Kaspa-x402 alpha.6 exact path, isolated interactive AP2
 Authority, demo Merchant, crash recovery, local vertical proof, and live
 Testnet-10 evidence. The completed deep security scan then found 21 medium/low
 issues concentrated in chain evidence/finality, operator provisioning, and
-unbounded operation lifecycles. Phases 2A through 2C are now committed and
-verified; bounded operational lifecycles in Phase 2D remain before the original
-phase gates can be considered final.
+unbounded operation lifecycles. Phases 2A through 2D are now committed and
+verified; the branch is ready for review and Phase 3 has not started.
 
 ## Git orientation at codification
 
 - Repository: `https://github.com/elldeeone/sompi`
 - Normalized local `main`: `1bbfa0c` (`Document AP2 and Kaspa-x402 architecture`)
 - Active implementation branch: `ap2-kaspa-purchase-core`
-- Current branch/HEAD/upstream before this state closeout:
-  `ap2-kaspa-purchase-core` at `4c6fc8f90eccabbedec0a6067f05b8a70fbd99d8`,
-  two commits ahead of `origin/ap2-kaspa-purchase-core`.
+- Historical branch/HEAD before the Phase 2D execution:
+  `ap2-kaspa-purchase-core` at the required
+  `17cce287fb0006aee9dd5f36697b58d770054e2f`.
+- Phase 2D implementation commit: `856131a` (`Bound Phase 2D operational
+  lifecycles`). The delegated review worktree is intentionally detached at
+  the final local closeout commit; no remote branch was changed.
 - Latest implementation milestone: `4c6fc8f` (`Centralize trusted chain
   evidence`).
 - Untouched post-scan baseline: `npm test` passed with 339 tests, one privileged
@@ -32,8 +36,9 @@ phase gates can be considered final.
 - Canonical scan results and selected hardening proposals are preserved under
   `security/audits/2026-07-11-sompi-deep-scan/`.
 
-Do not assume these facts remain current. Re-run Git orientation before Phase
-0, preserve unrelated changes, and update this section with the verified base.
+The original checkout at `/home/luke/projects/sompi` remained clean at the
+required starting ref. The delegated worktree was the only implementation
+surface.
 
 ## Authoritative reading order
 
@@ -108,6 +113,44 @@ Phase 2C is complete in `4c6fc8f`:
    read-only live check produced depth-confirmed evidence from
    `ws://10.0.3.26:17210/` plus `https://api-tn10.kaspa.org/`.
 
+Phase 2D is complete in local implementation milestones `856131a`, `5cc8785`,
+and `fec8df4`, plus the closeout commit:
+
+1. Trusted Authority pre-authentication sockets are admitted before parser
+   state and bounded at the manifest's 32-socket budget; a non-renewable frame
+   deadline, overload rejection, signal propagation, and exactly-once release
+   cover handoff, malformed input, timeout, disconnect, and shutdown.
+2. Authenticated human decisions are bounded at the manifest's four-prompt
+   budget, retain one visible terminal ceremony, and cancel queued/active work
+   on disconnect, expiry, heartbeat loss, shutdown, and late answers.
+3. Purchase count and immutable Evidence bytes use Journal-owned SQLite
+   Admission Lease history and atomic counters. Unique blobs consume bytes,
+   identical blobs deduplicate, durable link/publication faults reconcile on
+   restart, valid evidence is never deleted for quota, and secret-free MCP
+   saturation status is exposed.
+4. Direct Treasury validation runs before durable claim. Typed permanent
+   pre-effect failures terminalize and release policy capacity, transient
+   preparation failures use the durable manifest retry bound, and prepared,
+   submitted, or ambiguous work remains fenced for Reconciliation. Wallet send,
+   vault send, and vault deposit share the same policy-capacity protections.
+5. The clean-cutover Journal schema is epoch 8; v1 through v7 are rejected
+   untouched. No central scheduler, AP2/x402 wire change, Kaspa-x402 change,
+   or sibling-repository change was introduced.
+6. Verification completed with 370 unit tests (369 pass, 0 fail, 1 documented
+   root-only skip), 13 offline smoke checks, 201 focused lifecycle/config/E2E
+   tests (201 pass), deterministic local E2E receipted state, and a 172-entry
+   packed artifact accepted by the package verifier.
+
+The four lifecycle PoC dispositions are recorded in the Phase 2D fix report:
+the fixed pre-auth PoC observed only 32 retained sockets, the fixed prompt PoC
+was bounded at four admitted prompts, and the fixed storage PoC retained no
+Purchase or evidence bytes for denied egress. The original direct-Treasury
+PoC's pre-2B PolicyEngine constructor no longer crosses the clean-cutover API;
+the exact 17cce baseline was reproduced separately (permanent preparation left
+an `intent` row and 110 units of capacity, blocking the next operation), while
+the fixed current seam has direct regression coverage for terminalization,
+retry bounds, restart, cancellation, and slot reuse.
+
 Phase 0 is complete:
 
 1. the accepted specification was committed as `1bbfa0c`;
@@ -158,18 +201,16 @@ Phases 3 through 6 have an implemented pre-hardening vertical:
    and AP2 receipts;
 5. local crash/replay proofs and live Testnet-10 Purchase evidence passed.
 
-The deep scan reopened their security acceptance gates. They are not considered
-final until Phases 2A through 2D remove the validated weaknesses and the full
-vertical is rerun.
+The deep scan acceptance gates were reopened and are now satisfied through
+Phase 2D. The full local vertical, offline smoke, focused suites, and package
+verification were rerun after the bounded-lifecycle cutover.
 
 No remote push, package publish, deployment, or sibling-repository change was
 performed.
 
 ## Next action
 
-Execute **Phase 2D: bounded operational lifecycles**. It adds Admission Leases,
-budgets, cancellation, expiry, restart recovery, and saturation status at the
-Trusted Authority, Purchase/Journal, and direct-Treasury ownership boundaries.
+Review the Phase 2D local commits. Do not start Phase 3 in this closeout.
 
 ## Known external uncertainties
 
@@ -194,6 +235,9 @@ These are contained by the design and do not block the hardening cutover:
 
 ## Current blockers
 
-None for the documentation or implementation milestones. Live funded reruns
-will require a fresh Testnet-10 Treasury wallet only after all offline and
-read-only gates pass. No sibling Kaspa-x402 change is required.
+No implementation blocker remains. A fresh funded Testnet-10 Treasury wallet
+would be required for a future live funded rerun, but no such rerun was in
+scope. The legacy direct-Treasury PoC harness is stale against the clean 2B
+PolicyEngine API; the current-boundary regression and exact baseline
+reproduction are the authoritative evidence. No sibling Kaspa-x402 change is
+required.

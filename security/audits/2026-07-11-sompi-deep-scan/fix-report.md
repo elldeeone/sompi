@@ -160,4 +160,82 @@ not accepted or absent. This is the intended fail-closed boundary; evidence
 retained when first accepted remains available after pruning.
 
 Residual risk is now the separate bounded-lifecycle workstream. The remaining
-eight findings are not marked fixed by this milestone.
+four validated findings are not marked fixed by this milestone.
+
+### Milestone 3: bounded operational lifecycles
+
+Status: **verified**
+
+Implemented ADR-0013 narrowly with one shared Admission Lease vocabulary and
+separate enforcement at each owning boundary. Trusted Authority pre-auth
+sockets are admitted before parser state and bounded at the manifest's
+`authorityPreauthSockets: 32` budget with a non-renewable frame deadline.
+Authenticated human decisions are bounded at
+`authorityPrompts: 4`, keep one visible terminal ceremony, and carry one
+abort lifetime through transport, service, decision provider, prompt queue,
+and active readline work. The Authority never exposes credentials or
+availability policy to `sompi-mcp`.
+
+Purchase and Evidence admission is Journal-owned and transactional. The
+manifest's `prevalidationPurchases: 128` and `evidenceBytes: 67108864`
+projections are persisted in Journal schema epoch 8. Unique content-addressed
+blobs consume byte capacity, identical blobs deduplicate, publication/link
+faults reconcile deterministically on restart, valid evidence is immutable, and
+MCP exposes only bounded secret-free saturation status. Known-denied egress is
+rejected before durable Purchase or evidence state.
+
+Direct Treasury validation runs before durable claim. Typed permanent
+pre-effect failures enter `failed_terminal` and release policy capacity;
+typed transient preparation failures use the manifest's exact
+`directTreasuryRetries: 3` bound with durable retry accounting. Once prepared
+bytes, submission, or an external effect may exist, cancellation and errors
+remain fenced for Reconciliation. Wallet send, vault send, and vault deposit
+share the same policy-capacity accounting.
+
+Findings closed by this milestone:
+
+- `authority-preauth-socket-exhaustion`
+- `authority-prompt-queue-dos`
+- `prevalidation-purchase-storage-exhaustion`
+- `direct-treasury-preparation-lockout`
+
+Ordered verification:
+
+1. Focused Authority, Purchase/Journal/Evidence, Treasury, Operator
+   Manifest/config, crash/fault-boundary, local E2E, and MCP transport tests
+   passed: 201 passed, 0 failed, 0 skipped.
+2. The complete suite passed: 370 tests, 369 passed, 0 failed, and one
+   documented root-only ownership test skipped. Offline smoke passed all 13
+   checks. The deterministic local E2E finished in `receipted` state without
+   claiming live-network conformance.
+3. Baseline reproduction before edits recorded 128 retained partial Authority
+   sockets, a renewable drip-fed socket, 128 queued prompt promises with no
+   settlement after 50 ms, and three denied requests retaining one, two, and
+   three MiB of Purchase/evidence state. The exact 17cce direct-Treasury seam
+   reproduction left a permanent preparation failure in `intent`, retained
+   110 units of policy capacity, and blocked the next operation.
+4. Against the fixed build, the pre-auth PoC stopped at its vulnerable
+   assertion with 32 retained sockets rather than 128; the prompt PoC stopped
+   with 124 over-cap promises settled by bounded rejection rather than an
+   unbounded queue; and the storage PoC observed `purchase=absent files=0
+   bytes=0` for each of three denied requests. Each behavior also has direct
+   regression coverage. The original direct-Treasury PoC was run against a
+   built fixed archive and stops at its stale pre-2B `PolicyEngine` constructor;
+   the current-boundary regression and exact-baseline reproduction above are
+   the authoritative closure evidence rather than a hash/API guard.
+5. `npm pack --json` followed by
+   `node scripts/verify-packed-artifact.mjs elldeeone-sompi-0.8.0.tgz` passed
+   for 172 entries, and the generated archive was removed afterward.
+6. Final security-oriented review covered lease release and double-release
+   paths, cancellation/signing races, quota drift and orphan cleanup, unsafe
+   Treasury terminalization, secret-free projections, dead compatibility paths,
+   and AP2/x402 ownership boundaries. Journal schemas v1 through v7 are
+   rejected untouched; schema 8 is the only current epoch.
+7. The durable repository report and the temporary mirror were both updated:
+   `/tmp/codex-security-scans-u5YlLn/sompi/4ebb82d4f82bac46ae3addd112c4752f29630a8a_20260711T145619Z_75jg_ull/artifacts/fix_report.md`.
+
+All 21 scan findings are now accounted for: 4 Operator Provisioning, 13 Chain
+Evidence/finality, and 4 bounded lifecycle findings. No AP2 or Kaspa-x402 wire
+format, sibling repository, deployment, or remote branch was changed. The
+remaining risks are the intentionally testnet-only profile, evolving external
+standards, and the stale legacy direct-Treasury PoC harness described above.

@@ -25,12 +25,30 @@ test("accepted Chain Evidence is immutable, manifest-bound, and retained after r
     observedAtMs: 1_800_000_000_000,
   };
   try {
-    const journal = new PurchaseJournal(filename, { operatorManifestIdentity: identity });
+    const journal = new PurchaseJournal(filename, {
+      operatorManifestIdentity: identity,
+      admission: {
+        authorityPreauthSockets: 32,
+        authorityPrompts: 4,
+        prevalidationPurchases: 128,
+        evidenceBytes: 67_108_864,
+        directTreasuryRetries: 3,
+      },
+    });
     const store = new JournalChainEvidenceStore(journal);
     assert.deepEqual(store.record(record), record);
     assert.deepEqual(store.record(record), record);
     journal.close();
-    const restarted = new PurchaseJournal(filename, { operatorManifestIdentity: identity });
+    const restarted = new PurchaseJournal(filename, {
+      operatorManifestIdentity: identity,
+      admission: {
+        authorityPreauthSockets: 32,
+        authorityPrompts: 4,
+        prevalidationPurchases: 128,
+        evidenceBytes: 67_108_864,
+        directTreasuryRetries: 3,
+      },
+    });
     assert.deepEqual(new JournalChainEvidenceStore(restarted).findAccepted(record.transactionId), record);
     restarted.close();
   } finally {

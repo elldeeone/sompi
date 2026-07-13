@@ -171,6 +171,14 @@ const LIVE_FUNDING_OPERATION_ORDER = Object.freeze([
   "vaultDeposit",
 ] as const satisfies readonly LiveFundingOperation[]);
 
+const LIVE_ADMISSION = Object.freeze({
+  authorityPreauthSockets: 32,
+  authorityPrompts: 4,
+  prevalidationPurchases: 128,
+  evidenceBytes: 67_108_864,
+  directTreasuryRetries: 3,
+});
+
 export interface LiveProofLayout {
   readonly root: string;
   readonly configPath: string;
@@ -367,7 +375,10 @@ export function initializeLiveProof(
     }
   } else {
     for (const filename of [layout.bootstrapJournalPath, layout.purchaseJournalPath]) {
-      const journal = new PurchaseJournal(filename, { operatorManifestIdentity: LIVE_OPERATOR_MANIFEST_IDENTITY });
+      const journal = new PurchaseJournal(filename, {
+        operatorManifestIdentity: LIVE_OPERATOR_MANIFEST_IDENTITY,
+        admission: LIVE_ADMISSION,
+      });
       journal.close();
     }
   }
@@ -447,8 +458,14 @@ export async function bootstrapLiveProof(input: {
     throw new Error("live proof journal continuity is missing; refusing to create a replacement operation");
   }
 
-  const bootstrapJournal = new PurchaseJournal(layout.bootstrapJournalPath, { operatorManifestIdentity: LIVE_OPERATOR_MANIFEST_IDENTITY });
-  const purchaseJournal = new PurchaseJournal(layout.purchaseJournalPath, { operatorManifestIdentity: LIVE_OPERATOR_MANIFEST_IDENTITY });
+  const bootstrapJournal = new PurchaseJournal(layout.bootstrapJournalPath, {
+    operatorManifestIdentity: LIVE_OPERATOR_MANIFEST_IDENTITY,
+    admission: LIVE_ADMISSION,
+  });
+  const purchaseJournal = new PurchaseJournal(layout.purchaseJournalPath, {
+    operatorManifestIdentity: LIVE_OPERATOR_MANIFEST_IDENTITY,
+    admission: LIVE_ADMISSION,
+  });
   const purchaseHasDownstreamState = Boolean(
     purchaseJournal.findTreasuryOperation(config.operationKeys.borrowInventory) ||
     purchaseJournal.findTreasuryOperation(config.operationKeys.vaultDeposit) ||
