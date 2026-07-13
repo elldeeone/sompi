@@ -92,6 +92,7 @@ export interface TreasuryOperationJournal {
     operationKey: string,
     reasonCode: string
   ): TreasuryOperationRecord;
+  requestTreasuryOperationCancellation(operationKey: string): TreasuryOperationRecord;
   cancelTreasuryOperation(operationKey: string): TreasuryOperationRecord;
   readPreparedTreasuryOperation(operationKey: string): Buffer;
   readObservedTreasuryOperationDetail(

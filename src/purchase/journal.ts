@@ -1681,6 +1681,32 @@ export class PurchaseJournal {
     return cancelled.immediate();
   }
 
+  requestTreasuryOperationCancellation(operationKey: string): TreasuryOperationRecord {
+    assertTreasuryOperationKey(operationKey);
+    const cancelled = this.db.transaction(() => {
+      const latest = this.requireTreasuryOperation(operationKey);
+      if (latest.state === "completed" || latest.state === "failed_terminal" || latest.cancellationRequested) {
+        return latest;
+      }
+      const now = this.timestamp();
+      const updated = this.db.prepare(
+        `UPDATE treasury_operations
+            SET cancellation_requested = 1, updated_at_ms = ?
+          WHERE operation_key = ? AND cancellation_requested = 0`
+      ).run(now, operationKey);
+      if (updated.changes !== 1) throw new JournalInvariantError("concurrent direct Treasury cancellation");
+      this.insertTreasuryOperationTransition(
+        operationKey,
+        latest.state,
+        latest.state,
+        "cancellation_requested",
+        now,
+      );
+      return this.requireTreasuryOperation(operationKey);
+    });
+    return cancelled.immediate();
+  }
+
   readPreparedTreasuryOperation(operationKey: string): Buffer {
     const operation = this.requireTreasuryOperation(operationKey);
     if (

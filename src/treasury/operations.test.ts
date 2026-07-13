@@ -427,6 +427,36 @@ test("retry exhaustion is exact and cancellation never frees prepared or submitt
   });
 });
 
+test("cancellation during preparation fences returned signed material without submission", async () => {
+  await withFixture(async ({ module, journal, wallet }) => {
+    let releasePreparation!: () => void;
+    wallet.prepareGate = new Promise<void>((resolve) => {
+      releasePreparation = resolve;
+    });
+    const execution = module.execute({
+      operationKey: "direct:cancel-during-preparation",
+      kind: "wallet_send",
+      destination: DESTINATION,
+      amountAtomic: "100",
+    });
+    for (let attempt = 0; attempt < 100 && wallet.prepareCalls === 0; attempt += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(wallet.prepareCalls, 1);
+    const requested = await module.cancel("direct:cancel-during-preparation");
+    assert.equal(requested.state, "intent");
+    assert.equal(requested.cancellationRequested, true);
+    releasePreparation();
+    const prepared = await execution;
+    assert.equal(prepared.state, "prepared");
+    assert.equal(prepared.cancellationRequested, true);
+    assert.equal(prepared.safeToRetry, false);
+    assert.equal(wallet.submitCalls, 0);
+    assert.equal(journal.treasuryPolicyCapacityUsed(), 110n);
+    assert.equal((await module.recover("direct:cancel-during-preparation")).state, "prepared");
+  });
+});
+
 class FakeAdapter implements TreasuryOperationAdapter {
   readonly transactionId: string;
   prepareCalls = 0;
@@ -434,6 +464,7 @@ class FakeAdapter implements TreasuryOperationAdapter {
   observeCalls = 0;
   commitCalls = 0;
   prepareErrors = 0;
+  prepareGate?: Promise<void>;
   readonly typedPrepareErrors: TreasuryPreparationError[] = [];
   validationError?: TreasuryPreparationError;
   submitErrors = 0;
@@ -457,6 +488,7 @@ class FakeAdapter implements TreasuryOperationAdapter {
     authorize: (destination: string, amountAtomic: bigint) => void
   ): Promise<PreparedTreasuryOperationMaterial> {
     this.prepareCalls += 1;
+    if (this.prepareGate) await this.prepareGate;
     const typedError = this.typedPrepareErrors.shift();
     if (typedError) throw typedError;
     if (this.prepareErrors-- > 0) throw new Error("injected prepare crash");

@@ -70,6 +70,7 @@ export class TreasuryOperationModule {
   private readonly adapters: ReadonlyMap<TreasuryOperationKind, TreasuryOperationAdapter>;
   private readonly feeCeilingAtomic: string;
   private readonly directTreasuryRetries: number;
+  private readonly preparing = new Set<string>();
 
   constructor(options: TreasuryOperationModuleOptions) {
     if (!options?.journal || !options.policy) {
@@ -131,8 +132,13 @@ export class TreasuryOperationModule {
   }
 
   async cancel(operationKey: string): Promise<TreasuryOperationView> {
+    const normalizedKey = requireOperationKey(operationKey);
+    const current = this.journal.requireTreasuryOperation(normalizedKey);
+    if (current.state === "intent" && this.preparing.has(normalizedKey)) {
+      return view(this.journal.requestTreasuryOperationCancellation(normalizedKey));
+    }
     return view(
-      this.journal.cancelTreasuryOperation(requireOperationKey(operationKey))
+      this.journal.cancelTreasuryOperation(normalizedKey)
     );
   }
 
@@ -160,7 +166,7 @@ export class TreasuryOperationModule {
       return view(record);
     }
 
-    if (record.cancellationRequested && record.state === "prepared") {
+    if (record.cancellationRequested && (record.state === "intent" || record.state === "prepared")) {
       return view(record);
     }
 
@@ -171,32 +177,47 @@ export class TreasuryOperationModule {
         );
       }
       let prepared;
+      this.preparing.add(operationKey);
       try {
-        prepared = await adapter.prepare(record, (destination, amount) => {
-          this.authorize(operationKey, destination, amount);
-        });
-      } catch (error) {
-        if (isTerminalPreEffectFailure(error)) {
-          return view(
-            this.journal.failTreasuryOperationPreparation(
-              operationKey,
-              error.code,
-            )
-          );
-        }
-        if (isTransientPreparationFailure(error)) {
-          const updated = this.journal.recordTreasuryPreparationRetry(
-            operationKey,
-            "transient_preparation_failure",
-          );
-          if (updated.retryCount >= updated.retryLimit) {
-            throw new TreasuryOperationError(
-              "direct Treasury preparation retry limit was reached; recover or replace the operation",
-              { cause: error }
+        try {
+          prepared = await adapter.prepare(record, (destination, amount) => {
+            this.authorize(operationKey, destination, amount);
+          });
+        } catch (error) {
+          if (isTerminalPreEffectFailure(error)) {
+            return view(
+              this.journal.failTreasuryOperationPreparation(
+                operationKey,
+                error.code,
+              )
             );
           }
+          if (isTransientPreparationFailure(error)) {
+            const updated = this.journal.recordTreasuryPreparationRetry(
+              operationKey,
+              "transient_preparation_failure",
+            );
+            if (updated.cancellationRequested) {
+              return view(
+                this.journal.failTreasuryOperationPreparation(
+                  operationKey,
+                  "cancelled_before_effect",
+                )
+              );
+            }
+            if (updated.retryCount >= updated.retryLimit) {
+              throw new TreasuryOperationError(
+                "direct Treasury preparation retry limit was reached; recover or replace the operation",
+                { cause: error }
+              );
+            }
+          }
+          throw error;
         }
+      } catch (error) {
         throw error;
+      } finally {
+        this.preparing.delete(operationKey);
       }
       if (!record.policyDigest) {
         throw new TreasuryOperationError("Treasury operation has no durable policy snapshot");
@@ -205,6 +226,7 @@ export class TreasuryOperationModule {
         ...prepared,
         policyDigest: record.policyDigest,
       });
+      if (record.cancellationRequested) return view(record);
     }
 
     if (record.state === "observed") {
