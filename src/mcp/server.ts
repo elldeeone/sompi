@@ -54,6 +54,11 @@ export interface McpToolResult {
   readonly isError?: boolean;
 }
 
+/** The only request-lifetime fact forwarded from the MCP SDK into Sompi tools. */
+export interface McpRequestExtra {
+  readonly signal: AbortSignal;
+}
+
 export interface McpToolRegistrar {
   registerTool(
     name: string,
@@ -61,7 +66,7 @@ export interface McpToolRegistrar {
       readonly description: string;
       readonly inputSchema?: Readonly<Record<string, z.ZodTypeAny>>;
     },
-    handler: (args: any) => Promise<McpToolResult>
+    handler: (args: any, extra?: McpRequestExtra) => Promise<McpToolResult>
   ): unknown;
 }
 
@@ -116,9 +121,11 @@ export function registerSompiTools(
       inputSchema?: Record<string, z.ZodTypeAny>;
     },
     operation: string,
-    handler: (args: any) => Promise<unknown>
+    handler: (args: any, extra: McpRequestExtra) => Promise<unknown>
   ): void => {
-    registrar.registerTool(name, config, (args) => guarded(operation, () => handler(args)));
+    registrar.registerTool(name, config, (args, extra) =>
+      guarded(operation, () => handler(args, extra ?? { signal: new AbortController().signal }))
+    );
   };
 
   register(
@@ -170,14 +177,14 @@ export function registerSompiTools(
       },
     },
     "WALLET_SEND_FAILED",
-    async ({ operationKey, to, amountSompi, amountKas }: AmountInput & { operationKey: string; to: string }) => {
+    async ({ operationKey, to, amountSompi, amountKas }: AmountInput & { operationKey: string; to: string }, extra) => {
       const amount = exactAmount(amountSompi, amountKas);
       const result = await requireTreasuryOperations(treasuryOperations).execute({
         operationKey,
         kind: "wallet_send",
         destination: to,
         amountAtomic: amount.toString(),
-      });
+      }, extra.signal);
       return publicTreasuryOperation(result);
     }
   );
@@ -293,7 +300,7 @@ export function registerSompiTools(
       amountSompi?: string;
       keepFloatKas?: string;
       keepFloatSompi?: string;
-    }) => {
+    }, extra) => {
       requireConfiguredVault(vault.configured);
       if (
         (amountKas !== undefined || amountSompi !== undefined) &&
@@ -318,7 +325,7 @@ export function registerSompiTools(
         destination: vault.config().address,
         amountAtomic: amount,
         ...(keepFloat === undefined ? {} : { keepFloatAtomic: keepFloat }),
-      });
+      }, extra.signal);
       return publicTreasuryOperation(result);
     }
   );
@@ -346,7 +353,7 @@ export function registerSompiTools(
       },
     },
     "VAULT_SEND_FAILED",
-    async ({ operationKey, to, amountKas, amountSompi }: AmountInput & { operationKey: string; to: string }) => {
+    async ({ operationKey, to, amountKas, amountSompi }: AmountInput & { operationKey: string; to: string }, extra) => {
       requireConfiguredVault(vault.configured);
       if (amountKas !== undefined && amountSompi !== undefined) {
         throw new McpPublicError("INVALID_AMOUNT", "Provide exactly one of amountKas or amountSompi.");
@@ -363,7 +370,7 @@ export function registerSompiTools(
         kind: "vault_send",
         destination: to,
         amountAtomic: amount,
-      });
+      }, extra.signal);
       return publicTreasuryOperation(result);
     }
   );
@@ -387,8 +394,8 @@ export function registerSompiTools(
       inputSchema: { operationKey: TREASURY_OPERATION_KEY },
     },
     "TREASURY_OPERATION_RECOVERY_FAILED",
-    async ({ operationKey }: { operationKey: string }) =>
-      publicTreasuryOperation(await requireTreasuryOperations(treasuryOperations).recover(operationKey))
+    async ({ operationKey }: { operationKey: string }, extra) =>
+      publicTreasuryOperation(await requireTreasuryOperations(treasuryOperations).recover(operationKey, extra.signal))
   );
 
   register(
@@ -399,7 +406,7 @@ export function registerSompiTools(
       inputSchema: { operationKey: TREASURY_OPERATION_KEY },
     },
     "TREASURY_OPERATION_CANCEL_FAILED",
-    async ({ operationKey }: { operationKey: string }) =>
+    async ({ operationKey }: { operationKey: string }, extra) =>
       publicTreasuryOperation(await requireTreasuryOperations(treasuryOperations).cancel(operationKey))
   );
 

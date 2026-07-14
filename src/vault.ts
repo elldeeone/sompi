@@ -39,6 +39,26 @@ export interface VaultConfig {
   currentOutpoint?: { txid: string; index: number };
 }
 
+export type VaultPreparationErrorCode =
+  | "invalid_input"
+  | "not_funded"
+  | "insufficient_funds"
+  | "invalid_runtime_state"
+  | "invalid_transaction_shape"
+  | "fee_exceeds_ceiling"
+  | "rpc_unavailable";
+
+/** Structured no-effect failures at the vault/Treasury adapter seam. */
+export class VaultPreparationError extends Error {
+  readonly code: VaultPreparationErrorCode;
+
+  constructor(code: VaultPreparationErrorCode, message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "VaultPreparationError";
+    this.code = code;
+  }
+}
+
 /** Stable digest of manifest-owned vault facts; excludes rolling/on-chain state. */
 export function vaultStaticConfigurationDigest(config: VaultConfig): string {
   assertCurrentConfig(config, "testnet-10");
@@ -358,10 +378,10 @@ export class VaultManager {
     keepFloatSompi: bigint = 0n,
     feeCeilingSompi?: bigint
   ): Promise<PreparedVaultDeposit> {
-    if (amountSompi !== "max" && amountSompi <= 0n) throw new Error("Vault deposit amount must be positive.");
-    if (keepFloatSompi < 0n) throw new Error("keepFloatSompi must be non-negative");
+    if (amountSompi !== "max" && amountSompi <= 0n) throw new VaultPreparationError("invalid_input", "vault deposit amount is invalid");
+    if (keepFloatSompi < 0n) throw new VaultPreparationError("invalid_input", "vault deposit keep-float is invalid");
     if (feeCeilingSompi !== undefined && feeCeilingSompi < 0n) {
-      throw new Error("Vault deposit fee ceiling must be non-negative.");
+      throw new VaultPreparationError("invalid_input", "vault deposit fee ceiling is invalid");
     }
     const config = this.config();
     const result = config.covenantId
@@ -507,12 +527,12 @@ export class VaultManager {
     authorize?: (amountSompi: bigint) => void,
     feeCeilingSompi?: bigint
   ): Promise<PreparedVaultSpend> {
-    if (amount !== "max" && amount <= 0n) throw new Error("Prepared vault send amount must be positive.");
+    if (amount !== "max" && amount <= 0n) throw new VaultPreparationError("invalid_input", "vault send amount is invalid");
     if (feeCeilingSompi !== undefined && feeCeilingSompi < 0n) {
-      throw new Error("Prepared vault send fee ceiling must be non-negative.");
+      throw new VaultPreparationError("invalid_input", "vault send fee ceiling is invalid");
     }
     const config = this.config();
-    if (!config.covenantId) throw new Error("vault has not been covenant-funded yet");
+    if (!config.covenantId) throw new VaultPreparationError("not_funded", "vault has not been covenant-funded");
     const result = await this.withAgentPrivateKey(config, (signingKey) =>
       spendVault({
         wallet,
@@ -1200,7 +1220,7 @@ async function selectCurrentVaultUtxo(wallet: KaspaWallet, config: VaultSpendCon
   if (config.currentOutpoint) {
     matches = matches.filter((entry) => entry.txid === config.currentOutpoint?.txid && entry.index === config.currentOutpoint?.index);
   }
-  if (!matches.length) throw new Error(`vault ${config.address} has no current spendable UTXO`);
+  if (!matches.length) throw new VaultPreparationError("insufficient_funds", `vault ${config.address} has no current spendable UTXO`);
   if (requireCovenant && matches.length !== 1) {
     throw new Error(`vault singleton invariant violated: found ${matches.length} current covenant UTXOs`);
   }
@@ -1213,7 +1233,7 @@ async function listWalletUtxos(wallet: KaspaWallet): Promise<NormalizedUtxo[]> {
   const normalized = normalizeEntries(entries)
     .filter((entry) => !entry.covenantId)
     .sort((a, b) => (a.amount > b.amount ? -1 : 1));
-  if (!normalized.length) throw new Error(`no spendable wallet UTXOs for ${wallet.address}; fund the wallet first`);
+  if (!normalized.length) throw new VaultPreparationError("insufficient_funds", "wallet has no spendable UTXOs");
   return normalized;
 }
 
@@ -1226,7 +1246,7 @@ async function selectWalletUtxos(wallet: KaspaWallet, amountHint: bigint): Promi
     total += entry.amount;
     if (total >= amountHint) return selected;
   }
-  throw new Error(`Regular wallet balance ${displayAmount(total)} cannot cover required amount ${displayAmount(amountHint)}.`);
+  throw new VaultPreparationError("insufficient_funds", "wallet balance cannot cover the requested vault deposit");
 }
 
 function sumUtxoAmounts(utxos: NormalizedUtxo[]): bigint {

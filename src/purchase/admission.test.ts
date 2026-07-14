@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
+import Database from "better-sqlite3";
 
 import { createPurchaseId, evidenceDigest, requestFingerprint } from "./identity.js";
 import {
@@ -135,6 +136,104 @@ test("evidence fault at publication/link boundary leaves no quota drift or orpha
       restarted.close();
       fs.rmSync(directory, { recursive: true, force: true });
     }
+  }
+});
+
+test("Purchase plus mandatory request evidence admits before either durable object", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-compound-admission-"));
+  fs.chmodSync(directory, 0o700);
+  const filename = path.join(directory, "purchase.sqlite");
+  const journal = new PurchaseJournal(filename, {
+    ...options(),
+    admission: { ...ADMISSION, prevalidationPurchases: 1, evidenceBytes: 1 },
+  });
+  try {
+    assert.throws(
+      () => journal.createPurchaseWithEvidence({
+        purchase: input(40),
+        evidence: {
+          bytes: Buffer.from("too-large"),
+          mediaType: "application/octet-stream",
+          profile: "test:request-body:1",
+          kind: "purchase-request-body",
+        },
+      }),
+      EvidenceAdmissionError,
+    );
+    assert.equal(journal.findPurchase(input(40).id), undefined);
+    assert.equal(journal.findEvidence(evidenceDigest("too-large")), undefined);
+    assert.deepEqual(journal.admissionStatus(), {
+      prevalidationPurchases: { used: 0, budget: 1, saturated: false },
+      evidenceBytes: { used: 0, reserved: 0, budget: 1, saturated: false },
+    });
+
+    const committed = journal.createPurchaseWithEvidence({
+      purchase: input(41),
+      evidence: {
+        bytes: Buffer.from("x"),
+        mediaType: "application/octet-stream",
+        profile: "test:request-body:1",
+        kind: "purchase-request-body",
+      },
+    });
+    assert.equal(journal.requirePurchase(committed.id).id, committed.id);
+    assert.equal(journal.requireEvidenceAttachment(
+      committed.id,
+      evidenceDigest("x"),
+      "purchase-request-body",
+    ).byteLength, 1);
+  } finally {
+    journal.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("unexpired foreign admission remains live and expired recovery is idempotent", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-admission-owner-"));
+  fs.chmodSync(directory, 0o700);
+  const filename = path.join(directory, "purchase.sqlite");
+  let now = NOW;
+  const base = new PurchaseJournal(filename, options({ now: () => now }));
+  const purchase = base.createPurchase(input(50));
+  const digest = evidenceDigest("foreign-live");
+  base.close();
+  const db = new Database(filename);
+  db.prepare(
+    `INSERT INTO admission_leases
+       (lease_id, owner, resource, purchase_id, digest, storage_ref, quantity,
+        state, deadline_at_ms, created_at_ms, updated_at_ms)
+     VALUES (?, ?, 'evidence_bytes', ?, ?, ?, ?, 'active', ?, ?, ?)`
+  ).run(
+    "evidence:foreign-live",
+    "foreign-process:1",
+    purchase.id,
+    digest,
+    `evidence/${digest.slice("sha256:".length)}`,
+    1,
+    NOW + 60_000,
+    NOW,
+    NOW,
+  );
+  db.prepare(
+    `UPDATE journal_admission_budget SET reserved_evidence_bytes = 1 WHERE singleton = 1`
+  ).run();
+  db.close();
+  let live = new PurchaseJournal(filename, options({ now: () => now }));
+  try {
+    assert.equal(live.admissionStatus()?.evidenceBytes.reserved, 1);
+  } finally {
+    live.close();
+  }
+  now += 60_001;
+  live = new PurchaseJournal(filename, options({ now: () => now }));
+  try {
+    assert.equal(live.admissionStatus()?.evidenceBytes.reserved, 0);
+    live.close();
+    live = new PurchaseJournal(filename, options({ now: () => now }));
+    assert.equal(live.admissionStatus()?.evidenceBytes.reserved, 0);
+  } finally {
+    live.close();
+    fs.rmSync(directory, { recursive: true, force: true });
   }
 });
 

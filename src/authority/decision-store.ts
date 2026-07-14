@@ -63,6 +63,8 @@ export type StoredAuthorityDecision = Readonly<{
 export interface AuthorityDecisionStore {
   find(requestDigest: Sha256Digest): StoredAuthorityDecision | undefined;
   persist(decision: StoredAuthorityDecision): StoredAuthorityDecision;
+  /** Removes a decision that was persisted after its transport lifetime ended. */
+  discard?(requestDigest: Sha256Digest): void;
 }
 
 export interface SqliteAuthorityDecisionStoreOptions {
@@ -156,6 +158,16 @@ export class SqliteAuthorityDecisionStore implements AuthorityDecisionStore {
     } catch (error) {
       if (error instanceof AuthorityDecisionStoreError) throw error;
       throw new AuthorityDecisionStoreError("authority decision persistence failed");
+    }
+  }
+
+  discard(requestDigest: Sha256Digest): void {
+    validateDigest(requestDigest);
+    try {
+      this.db.prepare("DELETE FROM authority_decisions WHERE request_digest = ?").run(requestDigest);
+    } catch (error) {
+      if (error instanceof AuthorityDecisionStoreError) throw error;
+      throw new AuthorityDecisionStoreError("authority decision discard failed");
     }
   }
 

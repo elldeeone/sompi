@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
+import Database from "better-sqlite3";
 
 import { createPurchaseId, evidenceDigest, requestFingerprint } from "../purchase/identity.js";
 import { SqliteAuthorityDecisionStore } from "./decision-store.js";
@@ -17,7 +18,11 @@ import {
   type AuthorityApprovalRequest,
 } from "./protocol.js";
 import { SqliteAuthorityReplayStore } from "./replay-store.js";
-import { AuthorityService, AuthorityServiceError } from "./service.js";
+import {
+  AuthorityService,
+  AuthorityServiceError,
+  type AuthorityHumanDecision,
+} from "./service.js";
 
 const NOW = Date.parse("2032-01-01T00:00:00.000Z");
 const KEY_ID = "authority-ipc:test:1";
@@ -191,12 +196,67 @@ test("authority decision cancellation aborts human work, releases admission, and
   }
 });
 
-function makeRequest(): AuthorityApprovalRequest {
+test("prompt saturation occurs before replay retention and late answers are discarded", async () => {
+  const fixture = authorityFixture();
+  const replayPath = path.join(fixture.directory, "replay.sqlite");
+  const replay = new SqliteAuthorityReplayStore(replayPath, { now: () => NOW });
+  const decisions = new SqliteAuthorityDecisionStore(path.join(fixture.directory, "decisions.sqlite"));
+  let started!: () => void;
+  let answer!: (decision: AuthorityHumanDecision) => void;
+  const decisionStarted = new Promise<void>((resolve) => { started = resolve; });
+  const service = new AuthorityService({
+    replayStore: replay,
+    decisionStore: decisions,
+    authenticationProvider: fixture.keyProvider,
+    admission: { authorityPrompts: 1 },
+    now: () => NOW,
+    humanDecision: {
+      decide: async () => {
+        started();
+        return await new Promise<AuthorityHumanDecision>((resolve) => { answer = resolve; });
+      },
+    },
+  });
+  const first = sealAuthorityApprovalRequest(makeRequest(1), authentication());
+  const transport = new AbortController();
+  const pending = service.handleDecision(first.wire, transport.signal);
+  await decisionStarted;
+  const saturated = await Promise.allSettled(
+    [2, 3, 4, 5, 6, 7].map((seed) =>
+      service.handleDecision(sealAuthorityApprovalRequest(makeRequest(seed), authentication()).wire)
+    )
+  );
+  assert.equal(saturated.filter((result) => result.status === "rejected").length, 6);
+  const db = new Database(replayPath, { readonly: true });
+  try {
+    assert.equal((db.prepare("SELECT COUNT(*) AS count FROM replay_messages").get() as { count: number }).count, 1);
+    assert.equal((db.prepare("SELECT COUNT(*) AS count FROM replay_tokens").get() as { count: number }).count, 2);
+  } finally {
+    db.close();
+  }
+  transport.abort();
+  answer({
+    decision: "approved",
+    authorityId: "authority:late",
+    signedEvidence: Buffer.from("late-answer", "utf8"),
+  });
+  await assert.rejects(
+    pending,
+    (error: unknown) => error instanceof AuthorityServiceError && error.code === "unavailable",
+  );
+  assert.equal(decisions.find(first.requestDigest), undefined);
+  assert.equal(service.admissionStatus().activePrompts, 0);
+  replay.close();
+  decisions.close();
+  fixture.cleanup();
+});
+
+function makeRequest(seed = 1): AuthorityApprovalRequest {
   const facts = makeFacts();
   return {
     kind: "approval_request",
-    requestId: createAuthorityRequestId(new Uint8Array(16).fill(1)),
-    nonce: createAuthorityNonce(new Uint8Array(32).fill(3)),
+    requestId: createAuthorityRequestId(new Uint8Array(16).fill(seed)),
+    nonce: createAuthorityNonce(new Uint8Array(32).fill(seed + 2)),
     issuedAtMs: NOW - 100,
     expiresAtMs: NOW + 2 * 60_000,
     facts,

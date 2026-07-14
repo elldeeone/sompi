@@ -50,7 +50,11 @@ export class AuthorityUnixDecisionServer {
       ...(options.socketGroupId === undefined
         ? {}
         : { socketGroupId: options.socketGroupId }),
-      handle: (wire) => options.endpoint.handle(wire),
+      ...(options.admission ? { admission: options.admission } : {}),
+      ...(options.preauthFrameDeadlineMs === undefined
+        ? {}
+        : { preauthFrameDeadlineMs: options.preauthFrameDeadlineMs }),
+      handle: (wire, signal) => options.endpoint.handle(wire, signal),
     });
   }
 

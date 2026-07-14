@@ -6,6 +6,9 @@ import Database from "better-sqlite3";
 
 import {
   AUTHORITY_MAX_REPLAY_RESULT_BYTES,
+  AUTHORITY_MAX_REPLAY_MESSAGE_ROWS,
+  AUTHORITY_MAX_REPLAY_RESULT_STORAGE_BYTES,
+  AUTHORITY_MAX_REPLAY_TOKEN_ROWS,
   type AuthorityReplayAcquireInput,
   type AuthorityReplayAcquireResult,
   type AuthorityReplayCompleteInput,
@@ -119,6 +122,7 @@ export class SqliteAuthorityReplayStore implements AuthorityReplayStore {
     validateAcquireInput(input);
     const acquire = this.db.transaction((): AuthorityReplayAcquireResult => {
       this.db.prepare("DELETE FROM replay_messages WHERE expires_at_ms <= ?").run(input.nowMs);
+      this.db.prepare("DELETE FROM replay_tokens WHERE expires_at_ms <= ?").run(input.nowMs);
 
       const tokenRows = selectTokenRows(this.db, input.tokenDigests);
       if (tokenRows.length > 0) {
@@ -184,6 +188,23 @@ export class SqliteAuthorityReplayStore implements AuthorityReplayStore {
         .prepare("SELECT 1 AS present FROM replay_messages WHERE scope = ? AND message_digest = ?")
         .get(input.scope, input.messageDigest) as { present: number } | undefined;
       if (orphan) throw new AuthorityReplayStoreError("authority replay tokens are inconsistent");
+
+      const rowCount = this.db
+        .prepare("SELECT COUNT(*) AS count FROM replay_messages")
+        .get() as { count: number };
+      const tokenCount = this.db
+        .prepare("SELECT COUNT(*) AS count FROM replay_tokens")
+        .get() as { count: number };
+      const resultBytes = this.db
+        .prepare("SELECT COALESCE(SUM(length(result)), 0) AS bytes FROM replay_messages")
+        .get() as { bytes: number };
+      if (
+        rowCount.count >= AUTHORITY_MAX_REPLAY_MESSAGE_ROWS ||
+        tokenCount.count + input.tokenDigests.length > AUTHORITY_MAX_REPLAY_TOKEN_ROWS ||
+        resultBytes.bytes > AUTHORITY_MAX_REPLAY_RESULT_STORAGE_BYTES
+      ) {
+        throw new AuthorityReplayStoreError("authority replay budget is saturated");
+      }
 
       const acquisitionId = newAcquisitionId();
       this.db

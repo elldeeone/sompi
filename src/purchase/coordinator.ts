@@ -572,16 +572,24 @@ export class PurchaseCoordinator implements PurchaseModule {
     // Journal creates immutable Purchase or request-body evidence state.
     const initialEgress = await this.createEgressSession(canonicalIntent);
     const fingerprint = requestFingerprint(canonicalIntent.resource);
-    const purchase = this.journal.createPurchase({
-      id: createPurchaseId(this.entropy(16)),
-      requestKey: canonicalIntent.requestKey,
-      resourceUrl: canonicalIntent.resource.url,
-      method: canonicalIntent.resource.method,
-      resourceFingerprint: fingerprint,
-      expectedMerchantId: canonicalIntent.expectedMerchant?.id,
-      expectedMerchantOrigin: canonicalIntent.expectedMerchant?.origin,
+    const purchase = this.journal.createPurchaseWithEvidence({
+      purchase: {
+        id: createPurchaseId(this.entropy(16)),
+        requestKey: canonicalIntent.requestKey,
+        resourceUrl: canonicalIntent.resource.url,
+        method: canonicalIntent.resource.method,
+        resourceFingerprint: fingerprint,
+        expectedMerchantId: canonicalIntent.expectedMerchant?.id,
+        expectedMerchantOrigin: canonicalIntent.expectedMerchant?.origin,
+      },
+      evidence: {
+        bytes: canonicalIntent.resource.body ?? new Uint8Array(),
+        mediaType: canonicalIntent.resource.mediaType ?? "application/octet-stream",
+        profile: REQUEST_BODY_PROFILE,
+        issuer: "purchase-intent",
+        kind: "purchase-request-body",
+      },
     });
-    this.persistRequestBody(purchase.id, canonicalIntent);
 
     const lease = this.journal.acquireLease(
       `purchase-coordinate:${purchase.id}`,
@@ -2350,17 +2358,6 @@ export class PurchaseCoordinator implements PurchaseModule {
       createdAtMs: record.createdAtMs,
       expiresAtMs: record.expiresAtMs,
     };
-  }
-
-  private persistRequestBody(purchaseId: PurchaseId, intent: PurchaseIntent): void {
-    const body = intent.resource.body ?? new Uint8Array();
-    this.journal.storeEvidence(purchaseId, {
-      bytes: body,
-      mediaType: intent.resource.mediaType ?? "application/octet-stream",
-      profile: REQUEST_BODY_PROFILE,
-      issuer: "purchase-intent",
-      kind: "purchase-request-body",
-    });
   }
 
   private async createEgressSession(intent: PurchaseIntent): Promise<PurchaseEgressSession> {

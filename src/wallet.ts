@@ -47,6 +47,24 @@ export interface PreparedWalletSend {
   }[];
 }
 
+export type WalletPreparationErrorCode =
+  | "invalid_input"
+  | "insufficient_funds"
+  | "invalid_transaction_shape"
+  | "fee_exceeds_ceiling"
+  | "rpc_unavailable";
+
+/** Structured no-effect failures at the wallet/Treasury adapter seam. */
+export class WalletPreparationError extends Error {
+  readonly code: WalletPreparationErrorCode;
+
+  constructor(code: WalletPreparationErrorCode, message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "WalletPreparationError";
+    this.code = code;
+  }
+}
+
 export class KaspaWallet {
   readonly networkId: string;
   readonly address: string;
@@ -187,44 +205,62 @@ export class KaspaWallet {
     amountSompi: bigint,
     feeCeilingSompi?: bigint
   ): Promise<PreparedWalletSend> {
-    if (amountSompi <= 0n) throw new Error("Prepared wallet send amount must be positive.");
+    if (amountSompi <= 0n) throw new WalletPreparationError("invalid_input", "wallet send amount is invalid");
     if (feeCeilingSompi !== undefined && feeCeilingSompi < 0n) {
-      throw new Error("Prepared wallet send fee ceiling must be non-negative.");
+      throw new WalletPreparationError("invalid_input", "wallet send fee ceiling is invalid");
     }
-    const rpc = await this.client();
-    const { entries } = await rpc.getUtxosByAddresses([this.address]);
+    let rpc: RpcClient;
+    let entries: any[];
+    try {
+      rpc = await this.client();
+      ({ entries } = await rpc.getUtxosByAddresses([this.address]));
+    } catch (error) {
+      throw new WalletPreparationError("rpc_unavailable", "wallet node data is unavailable", { cause: error });
+    }
     if (!entries.length) {
-      throw new Error(`no spendable UTXOs for ${this.address}; fund the wallet first`);
+      throw new WalletPreparationError("insufficient_funds", "wallet has no spendable UTXOs");
     }
 
-    const estimate = await rpc.getFeeEstimate();
+    let estimate: any;
+    try {
+      estimate = await rpc.getFeeEstimate();
+    } catch (error) {
+      throw new WalletPreparationError("rpc_unavailable", "wallet fee data is unavailable", { cause: error });
+    }
     const feerate = estimate.estimate?.normalBuckets?.[0]?.feerate ?? estimate.estimate?.priorityBucket?.feerate ?? 1;
 
-    const { transactions, summary } = await createTransactions({
-      entries,
-      outputs: [{ address: destination, amount: amountSompi }],
-      changeAddress: this.address,
-      feeRate: feerate,
-      priorityFee: 0n,
-      networkId: this.networkId,
-    } as any);
+    let transactions: any[];
+    let summary: any;
+    try {
+      ({ transactions, summary } = await createTransactions({
+        entries,
+        outputs: [{ address: destination, amount: amountSompi }],
+        changeAddress: this.address,
+        feeRate: feerate,
+        priorityFee: 0n,
+        networkId: this.networkId,
+      } as any));
+    } catch (error) {
+      throw new WalletPreparationError("invalid_transaction_shape", "wallet transaction cannot be prepared", { cause: error });
+    }
 
     if (transactions.length !== 1) {
       for (const pending of transactions) pending.free();
-      throw new Error(
-        "direct wallet operation requires exactly one prepared transaction; consolidate wallet UTXOs first"
-      );
+      throw new WalletPreparationError("invalid_transaction_shape", "wallet operation requires one prepared transaction");
     }
     const estimatedFee = BigInt(summary.fees ?? 0);
     if (feeCeilingSompi !== undefined && estimatedFee > feeCeilingSompi) {
       for (const pending of transactions) pending.free();
-      throw new Error("wallet fee estimate exceeds the capacity reserved before signing");
+      throw new WalletPreparationError("fee_exceeds_ceiling", "wallet fee estimate exceeds the capacity reserved before signing");
     }
     const pending = transactions[0];
     let transaction: Transaction | undefined;
     try {
       pending.sign([this.privateKey]);
       transaction = pending.transaction;
+      if (!transaction) {
+        throw new WalletPreparationError("invalid_transaction_shape", "wallet signer returned no transaction");
+      }
       const transactionId = String(transaction.finalize());
       if (!/^[a-f0-9]{64}$/.test(transactionId)) {
         throw new Error("prepared wallet transaction identity is invalid");

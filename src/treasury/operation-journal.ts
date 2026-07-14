@@ -19,6 +19,12 @@ export interface TreasuryOperationRecord {
   readonly retryLimit: number;
   readonly cancellationRequested: boolean;
   readonly preparationFenced: boolean;
+  /** Durable single-driver owner, generation, and bounded lease deadline. */
+  readonly driverOwner?: string;
+  readonly driverGeneration: number;
+  readonly driverLeaseExpiresAtMs?: number;
+  /** Effect capability issued by the Journal immediately before submit. */
+  readonly effectCapabilityGeneration?: number;
   readonly resolvedAmountAtomic?: string;
   readonly feeAtomic?: string;
   readonly transactionId?: string;
@@ -30,6 +36,18 @@ export interface TreasuryOperationRecord {
   readonly createdAtMs: number;
   readonly updatedAtMs: number;
   readonly completedAtMs?: number;
+}
+
+export interface TreasuryDriverLease {
+  readonly owner: string;
+  readonly generation: number;
+  readonly expiresAtMs: number;
+}
+
+export interface TreasuryDriverClaim {
+  readonly acquired: boolean;
+  readonly record: TreasuryOperationRecord;
+  readonly lease?: TreasuryDriverLease;
 }
 
 export interface TreasuryOperationIntent {
@@ -81,36 +99,53 @@ export interface TreasuryOperationJournal {
     readonly allowlist: readonly string[];
   }): { readonly digest: string };
   claimTreasuryOperationIntent(input: TreasuryOperationIntent): TreasuryOperationRecord;
+  claimTreasuryOperationDriver(
+    operationKey: string,
+    owner: string,
+    leaseTtlMs: number,
+  ): TreasuryDriverClaim;
+  renewTreasuryOperationDriver(lease: TreasuryDriverLease, operationKey: string): TreasuryOperationRecord;
+  releaseTreasuryOperationDriver(lease: TreasuryDriverLease, operationKey: string): TreasuryOperationRecord;
   recordPreparedTreasuryOperation(
     operationKey: string,
-    prepared: PreparedTreasuryOperation
+    prepared: PreparedTreasuryOperation,
+    driver?: TreasuryDriverLease,
   ): TreasuryOperationRecord;
   recordTreasuryPreparationRetry(
     operationKey: string,
-    reasonCode: string
+    reasonCode: string,
+    driver?: TreasuryDriverLease,
   ): TreasuryOperationRecord;
   failTreasuryOperationPreparation(
     operationKey: string,
-    reasonCode: string
+    reasonCode: string,
+    driver?: TreasuryDriverLease,
   ): TreasuryOperationRecord;
-  fenceTreasuryOperationPreparation(operationKey: string, reasonCode: string): TreasuryOperationRecord;
+  fenceTreasuryOperationPreparation(
+    operationKey: string,
+    reasonCode: string,
+    driver?: TreasuryDriverLease,
+  ): TreasuryOperationRecord;
   requestTreasuryOperationCancellation(operationKey: string): TreasuryOperationRecord;
   cancelTreasuryOperation(operationKey: string): TreasuryOperationRecord;
   readPreparedTreasuryOperation(operationKey: string): Buffer;
   readObservedTreasuryOperationDetail(
     operationKey: string
   ): Readonly<Record<string, unknown>>;
-  planTreasuryOperationSubmission(operationKey: string): boolean;
+  planTreasuryOperationSubmission(operationKey: string, driver?: TreasuryDriverLease): boolean;
+  claimTreasuryOperationEffectCapability(operationKey: string, driver: TreasuryDriverLease): boolean;
   recordTreasuryOperationSubmissionAccepted(
     operationKey: string,
-    transactionId: string
+    transactionId: string,
+    driver?: TreasuryDriverLease,
   ): TreasuryOperationRecord;
   recordTreasuryOperationObservation(
     operationKey: string,
     status: TreasuryOperationObservationStatus,
-    detail: Readonly<Record<string, unknown>>
+    detail: Readonly<Record<string, unknown>>,
+    driver?: TreasuryDriverLease,
   ): TreasuryOperationRecord;
-  completeTreasuryOperation(operationKey: string): TreasuryOperationRecord;
+  completeTreasuryOperation(operationKey: string, driver?: TreasuryDriverLease): TreasuryOperationRecord;
   requireTreasuryOperation(operationKey: string): TreasuryOperationRecord;
   treasuryOperationSpentLastHour(): bigint;
   treasuryPolicyCapacityUsed(): bigint;

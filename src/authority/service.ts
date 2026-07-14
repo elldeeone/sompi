@@ -161,67 +161,76 @@ export class AuthorityService {
   ): Promise<AuthorityServiceDecisionResponse> {
     try {
       return await this.options.authenticationProvider.withAuthentication(async (authentication) => {
-        const request = parseAuthorityApprovalRequest(authenticatedRequestWire, {
-          ...authentication,
-          replayStore: this.options.replayStore,
-          now: this.now,
-        });
-
-        if (request.replay.status === "in_progress") {
+        // Reserve the bounded human-work slot before parsing can acquire any
+        // durable replay rows. A saturated authenticated flood therefore has
+        // no durable replay side effect.
+        if (this.activePrompts >= this.promptCapacity) {
           throw new AuthorityServiceError("busy");
         }
-        if (request.replay.status === "completed") {
-          const persisted = this.requirePersistedDecision(request);
-          const now = this.timestamp();
-          const response = recoverAuthorityApprovalResponse(
-            request,
-            {
-              responseId: createAuthorityResponseId(),
-              respondedAtMs: now,
-              expiresAtMs: responseExpiry(now, request.message.expiresAtMs, this.responseTtlMs),
-            },
-            authentication
-          );
-          assertResponseMatchesDecision(response.message.result, persisted);
-          return decisionResponse(response.wire, persisted);
-        }
+        this.activePrompts += 1;
+        try {
+          const request = parseAuthorityApprovalRequest(authenticatedRequestWire, {
+            ...authentication,
+            replayStore: this.options.replayStore,
+            now: this.now,
+          });
 
-        let persisted = this.options.decisionStore.find(request.requestDigest);
-        if (persisted) {
-          assertDecisionMatchesRequest(persisted, request);
-        } else {
-          if (this.activePrompts >= this.promptCapacity) {
+          if (request.replay.status === "in_progress") {
             throw new AuthorityServiceError("busy");
           }
-          this.activePrompts += 1;
-          try {
+          if (request.replay.status === "completed") {
+            const persisted = this.requirePersistedDecision(request);
+            const now = this.timestamp();
+            const response = recoverAuthorityApprovalResponse(
+              request,
+              {
+                responseId: createAuthorityResponseId(),
+                respondedAtMs: now,
+                expiresAtMs: responseExpiry(now, request.message.expiresAtMs, this.responseTtlMs),
+              },
+              authentication
+            );
+            assertResponseMatchesDecision(response.message.result, persisted);
+            return decisionResponse(response.wire, persisted);
+          }
+
+          let persisted = this.options.decisionStore.find(request.requestDigest);
+          if (persisted) {
+            assertDecisionMatchesRequest(persisted, request);
+          } else {
             const human = await this.collectHumanDecision(request, transportSignal);
+            this.assertTransportActive(request, transportSignal);
             const now = this.timestamp();
             persisted = this.options.decisionStore.persist(
               storedDecisionFromHuman(request, human, now)
             );
-          } finally {
-            this.activePrompts -= 1;
+            if (this.isTransportAborted(transportSignal)) {
+              this.options.decisionStore.discard?.(request.requestDigest);
+              this.assertTransportActive(request, transportSignal);
+            }
+            assertDecisionMatchesRequest(persisted, request);
+            this.options.faultInjector?.("after_decision_persisted");
           }
-          assertDecisionMatchesRequest(persisted, request);
-          this.options.faultInjector?.("after_decision_persisted");
-        }
 
-        const respondedAtMs = this.timestamp();
-        const response = bindAuthorityApprovalResponse(request, {
-          responseId: createAuthorityResponseId(),
-          respondedAtMs,
-          expiresAtMs: responseExpiry(
+          this.assertTransportActive(request, transportSignal);
+          const respondedAtMs = this.timestamp();
+          const response = bindAuthorityApprovalResponse(request, {
+            responseId: createAuthorityResponseId(),
             respondedAtMs,
-            request.message.expiresAtMs,
-            this.responseTtlMs
-          ),
-          result: resultFromStoredDecision(persisted),
-        });
-        return decisionResponse(
-          sealAuthorityApprovalResponse(response, request, authentication).wire,
-          persisted
-        );
+            expiresAtMs: responseExpiry(
+              respondedAtMs,
+              request.message.expiresAtMs,
+              this.responseTtlMs
+            ),
+            result: resultFromStoredDecision(persisted),
+          });
+          this.assertTransportActive(request, transportSignal);
+          const sealed = sealAuthorityApprovalResponse(response, request, authentication).wire;
+          this.assertTransportActive(request, transportSignal);
+          return decisionResponse(sealed, persisted);
+        } finally {
+          this.activePrompts -= 1;
+        }
       });
     } catch (error) {
       if (error instanceof AuthorityServiceError || error instanceof AuthorityProtocolError) {
@@ -276,6 +285,11 @@ export class AuthorityService {
         })
       );
       if (heartbeatError) throw heartbeatError;
+      if (signal.aborted) {
+        throw new AuthorityServiceError(
+          this.timestamp() >= request.message.expiresAtMs ? "stale" : "unavailable"
+        );
+      }
       validateHumanDecision(decision);
       return Object.freeze({
         ...decision,
@@ -324,6 +338,20 @@ export class AuthorityService {
       throw new AuthorityServiceError("unavailable");
     }
     return value;
+  }
+
+  private isTransportAborted(transportSignal?: AbortSignal): boolean {
+    return this.shutdownController.signal.aborted || transportSignal?.aborted === true;
+  }
+
+  private assertTransportActive(
+    request: VerifiedAuthorityApprovalRequest,
+    transportSignal?: AbortSignal,
+  ): void {
+    if (!this.isTransportAborted(transportSignal)) return;
+    throw new AuthorityServiceError(
+      this.timestamp() >= request.message.expiresAtMs ? "stale" : "unavailable"
+    );
   }
 }
 

@@ -7,6 +7,8 @@ import type {
   KaspaWallet,
   PreparedWalletSend,
 } from "../wallet.js";
+import { WalletPreparationError } from "../wallet.js";
+import { VaultPreparationError } from "../vault.js";
 import type {
   PreparedTreasuryOperationMaterial,
   TreasuryOperationKind,
@@ -30,6 +32,9 @@ export interface TreasuryOperationProbe {
 export type TreasuryPreparationErrorCode =
   | "invalid_destination"
   | "invalid_transaction_shape"
+  | "insufficient_funds"
+  | "not_funded"
+  | "invalid_runtime_state"
   | "transient_unavailable";
 
 /** Typed adapter classification. Unknown errors remain fenced for recovery. */
@@ -190,16 +195,30 @@ export class WalletTreasuryOperationAdapter implements TreasuryOperationAdapter 
   ): Promise<PreparedTreasuryOperationMaterial> {
     requireIntent(intent, this.kind);
     if (intent.requestedAmountAtomic === "max") {
-      throw new Error("wallet Treasury operation requires an exact amount");
+      throw new TreasuryPreparationError(
+        "invalid_transaction_shape",
+        "preparation",
+        "wallet Treasury operation requires an exact amount",
+      );
     }
     const amount = BigInt(intent.requestedAmountAtomic);
     authorize(intent.destination, amount);
-    const observationStartHash = await chainStartHash(this.wallet);
-    const prepared = await this.wallet.prepareSend(
-      intent.destination,
-      amount,
-      BigInt(intent.feeCeilingAtomic)
-    );
+    let observationStartHash: string;
+    try {
+      observationStartHash = await chainStartHash(this.wallet);
+    } catch (error) {
+      throw classifyWalletPreparationError(error);
+    }
+    let prepared: PreparedWalletSend;
+    try {
+      prepared = await this.wallet.prepareSend(
+        intent.destination,
+        amount,
+        BigInt(intent.feeCeilingAtomic)
+      );
+    } catch (error) {
+      throw classifyWalletPreparationError(error);
+    }
     const envelope = walletEnvelope(intent, observationStartHash, prepared);
     const bytes = encode(envelope);
     decodeWallet(bytes, intent);
@@ -285,14 +304,24 @@ export class VaultSendTreasuryOperationAdapter implements TreasuryOperationAdapt
     const requested = intent.requestedAmountAtomic === "max"
       ? "max" as const
       : BigInt(intent.requestedAmountAtomic);
-    const observationStartHash = await chainStartHash(this.wallet);
-    const prepared = await this.vault.prepareSend(
-      this.wallet,
-      intent.destination,
-      requested,
-      (resolved) => authorize(intent.destination, resolved),
-      BigInt(intent.feeCeilingAtomic)
-    );
+    let observationStartHash: string;
+    try {
+      observationStartHash = await chainStartHash(this.wallet);
+    } catch (error) {
+      throw classifyWalletPreparationError(error);
+    }
+    let prepared: PreparedVaultSpend;
+    try {
+      prepared = await this.vault.prepareSend(
+        this.wallet,
+        intent.destination,
+        requested,
+        (resolved) => authorize(intent.destination, resolved),
+        BigInt(intent.feeCeilingAtomic)
+      );
+    } catch (error) {
+      throw classifyVaultPreparationError(error);
+    }
     const envelope = vaultEnvelope(intent, observationStartHash, prepared);
     const bytes = encode(envelope);
     decodeVault(bytes, intent);
@@ -382,23 +411,47 @@ export class VaultDepositTreasuryOperationAdapter implements TreasuryOperationAd
     _authorize: (destination: string, amountAtomic: bigint) => void
   ): Promise<PreparedTreasuryOperationMaterial> {
     requireIntent(intent, this.kind);
-    if (!this.vault.configured || this.vault.config().address !== intent.destination) {
-      throw new Error("vault deposit intent is not bound to the current vault configuration");
+    let config;
+    try {
+      config = this.vault.config();
+    } catch (error) {
+      throw classifyVaultPreparationError(error);
+    }
+    if (!this.vault.configured || config.address !== intent.destination) {
+      throw new TreasuryPreparationError(
+        "invalid_runtime_state",
+        "preparation",
+        "vault deposit is not bound to the configured vault",
+      );
     }
     const amount = intent.requestedAmountAtomic === "max"
       ? "max" as const
       : BigInt(intent.requestedAmountAtomic);
     const keepFloat = BigInt(intent.keepFloatAtomic ?? "0");
     if (amount !== "max" && keepFloat !== 0n) {
-      throw new Error("keep-float applies only to a maximum vault deposit");
+      throw new TreasuryPreparationError(
+        "invalid_runtime_state",
+        "preparation",
+        "keep-float applies only to a maximum vault deposit",
+      );
     }
-    const observationStartHash = await chainStartHash(this.wallet);
-    const prepared = await this.vault.prepareDeposit(
-      this.wallet,
-      amount,
-      keepFloat,
-      BigInt(intent.feeCeilingAtomic)
-    );
+    let observationStartHash: string;
+    try {
+      observationStartHash = await chainStartHash(this.wallet);
+    } catch (error) {
+      throw classifyWalletPreparationError(error);
+    }
+    let prepared: PreparedVaultDeposit;
+    try {
+      prepared = await this.vault.prepareDeposit(
+        this.wallet,
+        amount,
+        keepFloat,
+        BigInt(intent.feeCeilingAtomic)
+      );
+    } catch (error) {
+      throw classifyVaultPreparationError(error);
+    }
     const envelope = vaultDepositEnvelope(intent, observationStartHash, prepared);
     const bytes = encode(envelope);
     decodeVaultDeposit(bytes, intent);
@@ -586,11 +639,47 @@ function requireArray(value: unknown, label: string): unknown[] {
 }
 
 async function chainStartHash(wallet: KaspaWallet): Promise<string> {
-  const rpc = await wallet.client();
-  const info = await rpc.getBlockDagInfo();
+  let info: any;
+  try {
+    const rpc = await wallet.client();
+    info = await rpc.getBlockDagInfo();
+  } catch (error) {
+    throw new WalletPreparationError("rpc_unavailable", "Kaspa observation data is unavailable", { cause: error });
+  }
   const sink = String(info.sink).toLowerCase();
-  if (!HASH32.test(sink)) throw new Error("Kaspa node returned an invalid observation start hash");
+  if (!HASH32.test(sink)) {
+    throw new WalletPreparationError("invalid_transaction_shape", "Kaspa observation data is invalid");
+  }
   return sink;
+}
+
+function classifyWalletPreparationError(error: unknown): TreasuryPreparationError {
+  if (error instanceof TreasuryPreparationError) return error;
+  if (error instanceof WalletPreparationError) {
+    const code = error.code === "insufficient_funds"
+      ? "insufficient_funds"
+      : error.code === "invalid_transaction_shape" || error.code === "invalid_input" || error.code === "fee_exceeds_ceiling"
+        ? "invalid_transaction_shape"
+        : "transient_unavailable";
+    return new TreasuryPreparationError(code, "preparation", "wallet preparation failed", "none");
+  }
+  return new TreasuryPreparationError("transient_unavailable", "preparation", "wallet preparation is unavailable", "none");
+}
+
+function classifyVaultPreparationError(error: unknown): TreasuryPreparationError {
+  if (error instanceof TreasuryPreparationError) return error;
+  if (error instanceof WalletPreparationError) return classifyWalletPreparationError(error);
+  if (error instanceof VaultPreparationError) {
+    const code = error.code === "not_funded"
+      ? "not_funded"
+      : error.code === "insufficient_funds"
+        ? "insufficient_funds"
+        : error.code === "invalid_transaction_shape" || error.code === "invalid_input" || error.code === "fee_exceeds_ceiling" || error.code === "invalid_runtime_state"
+          ? "invalid_runtime_state"
+          : "transient_unavailable";
+    return new TreasuryPreparationError(code, "preparation", "vault preparation failed", "none");
+  }
+  return new TreasuryPreparationError("transient_unavailable", "preparation", "vault preparation is unavailable", "none");
 }
 
 function walletEnvelope(

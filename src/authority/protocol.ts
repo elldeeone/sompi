@@ -23,6 +23,10 @@ export const AUTHORITY_NONCE_BYTES = 32;
 export const AUTHORITY_MESSAGE_ID_BYTES = 16;
 export const AUTHORITY_MAX_WIRE_BYTES = 32 * 1024;
 export const AUTHORITY_MAX_REPLAY_RESULT_BYTES = 64 * 1024;
+/** Durable replay high-water bounds; cleanup is eager at every acquisition. */
+export const AUTHORITY_MAX_REPLAY_MESSAGE_ROWS = 4_096;
+export const AUTHORITY_MAX_REPLAY_TOKEN_ROWS = 8_192;
+export const AUTHORITY_MAX_REPLAY_RESULT_STORAGE_BYTES = 256 * 1024 * 1024;
 export const AUTHORITY_MAX_DECISION_EVIDENCE_BYTES = 256 * 1024;
 export const AUTHORITY_MAX_CHECKOUT_EVIDENCE_BYTES = 20 * 1024;
 export const AUTHORITY_REPLAY_LEASE_MS = 15_000;

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 
 export const JOURNAL_APPLICATION_ID = 0x534f4d50; // SOMP
-export const JOURNAL_SCHEMA_VERSION = 8;
+export const JOURNAL_SCHEMA_VERSION = 9;
 
 export const JOURNAL_SCHEMA_V1_SQL = `
   CREATE TABLE schema_migrations (
@@ -813,13 +813,61 @@ export const JOURNAL_SCHEMA_V7_MIGRATION_SQL = `
     BEGIN SELECT RAISE(ABORT, 'Admission Leases are immutable history'); END;
 `;
 
+/** Clean-cutover epoch for Journal-owned Treasury driver generations. */
+export const JOURNAL_SCHEMA_V8_MIGRATION_SQL = `
+  ALTER TABLE treasury_operations
+    ADD COLUMN driver_owner TEXT;
+  ALTER TABLE treasury_operations
+    ADD COLUMN driver_generation INTEGER NOT NULL DEFAULT 0 CHECK (driver_generation >= 0);
+  ALTER TABLE treasury_operations
+    ADD COLUMN driver_lease_expires_at_ms INTEGER;
+  ALTER TABLE treasury_operations
+    ADD COLUMN effect_capability_generation INTEGER;
+
+  CREATE INDEX treasury_operation_driver_lease
+    ON treasury_operations(driver_owner, driver_generation, driver_lease_expires_at_ms);
+
+  CREATE TABLE purchase_admission_intents (
+    admission_id TEXT PRIMARY KEY,
+    purchase_id TEXT NOT NULL UNIQUE,
+    request_key TEXT NOT NULL UNIQUE,
+    resource_url TEXT NOT NULL,
+    method TEXT NOT NULL,
+    resource_fingerprint TEXT NOT NULL,
+    expected_merchant_id TEXT,
+    expected_merchant_origin TEXT,
+    evidence_digest TEXT NOT NULL,
+    evidence_byte_length INTEGER NOT NULL CHECK (evidence_byte_length >= 0),
+    evidence_storage_ref TEXT NOT NULL,
+    evidence_media_type TEXT NOT NULL,
+    evidence_profile TEXT NOT NULL,
+    evidence_issuer TEXT,
+    evidence_kind TEXT NOT NULL,
+    state TEXT NOT NULL CHECK (state IN ('offered', 'staged', 'committed', 'cancelled', 'expired', 'failed_terminal')),
+    owner TEXT NOT NULL,
+    deadline_at_ms INTEGER NOT NULL,
+    outcome TEXT,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    CHECK (state IN ('offered', 'staged') OR outcome IS NOT NULL)
+  ) STRICT;
+
+  CREATE INDEX active_purchase_admission_intents
+    ON purchase_admission_intents(state, deadline_at_ms, evidence_digest);
+
+  CREATE TRIGGER immutable_purchase_admission_intents_delete
+    BEFORE DELETE ON purchase_admission_intents
+    BEGIN SELECT RAISE(ABORT, 'Purchase admission intent history is immutable'); END;
+`;
+
 export const JOURNAL_SCHEMA_V2_SQL = `${JOURNAL_SCHEMA_V1_SQL}\n${JOURNAL_SCHEMA_V2_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V3_SQL = `${JOURNAL_SCHEMA_V2_SQL}\n${JOURNAL_SCHEMA_V3_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V4_SQL = `${JOURNAL_SCHEMA_V3_SQL}\n${JOURNAL_SCHEMA_V4_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V5_SQL = `${JOURNAL_SCHEMA_V4_SQL}\n${JOURNAL_SCHEMA_V5_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V6_SQL = `${JOURNAL_SCHEMA_V5_SQL}\n${JOURNAL_SCHEMA_V6_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V7_SQL = `${JOURNAL_SCHEMA_V6_SQL}\n${JOURNAL_SCHEMA_V7_MIGRATION_SQL}`;
-export const JOURNAL_SCHEMA_SQL = JOURNAL_SCHEMA_V7_SQL;
+export const JOURNAL_SCHEMA_V8_SQL = `${JOURNAL_SCHEMA_V7_SQL}\n${JOURNAL_SCHEMA_V8_MIGRATION_SQL}`;
+export const JOURNAL_SCHEMA_SQL = JOURNAL_SCHEMA_V8_SQL;
 
 export const JOURNAL_SCHEMA_V1_CHECKSUM = sha256Text(JOURNAL_SCHEMA_V1_SQL);
 export const JOURNAL_SCHEMA_V2_CHECKSUM = sha256Text(JOURNAL_SCHEMA_V2_SQL);

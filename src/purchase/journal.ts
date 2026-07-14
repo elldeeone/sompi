@@ -39,6 +39,8 @@ import type {
   TreasuryOperationObservationStatus,
   TreasuryOperationRecord,
   TreasuryOperationState,
+  TreasuryDriverClaim,
+  TreasuryDriverLease,
 } from "../treasury/operation-journal.js";
 import type { ChainEvidenceRecord } from "../chain-evidence/types.js";
 import {
@@ -285,6 +287,11 @@ export interface StoreEvidenceInput {
   issuer?: string;
   kind: string;
   attempt?: number;
+}
+
+export interface CreatePurchaseWithEvidenceInput {
+  purchase: CreatePurchaseInput;
+  evidence: StoreEvidenceInput;
 }
 
 export interface EvidenceArtifactRecord {
@@ -716,7 +723,10 @@ export class PurchaseJournal {
       this.preparedMaterialStore = preparedMaterialDirectory
         ? new EvidenceStore(preparedMaterialDirectory)
         : undefined;
-      if (this.admission) this.reconcileAdmissionLeases();
+      if (this.admission) {
+        this.reconcilePurchaseAdmissionIntents();
+        this.reconcileAdmissionLeases();
+      }
       this.verifyStartup();
     } catch (error) {
       if (this.db.open) this.db.close();
@@ -860,6 +870,149 @@ export class PurchaseJournal {
       return this.requirePurchase(input.id);
     });
     return create.immediate();
+  }
+
+  /**
+   * Offers the Purchase count and mandatory request-body evidence as one
+   * durable admission. The immutable Purchase and evidence link are published
+   * only after the reversible blob staging step succeeds.
+   */
+  createPurchaseWithEvidence(input: CreatePurchaseWithEvidenceInput): PurchaseRecord {
+    validateCreatePurchase(input.purchase);
+    validateEvidenceMetadata(input.evidence);
+    if (!(input.evidence.bytes instanceof Uint8Array)) {
+      throw new JournalInvariantError("evidence bytes must be a Uint8Array");
+    }
+    if (!this.admission) {
+      const purchase = this.createPurchase(input.purchase);
+      try {
+        this.storeEvidence(purchase.id, input.evidence);
+      } catch (error) {
+        throw error;
+      }
+      return purchase;
+    }
+    if (!this.evidenceStore) {
+      throw new JournalInvariantError("an evidence directory is required for immutable evidence storage");
+    }
+
+    const existing = this.findPurchaseByRequestKey(input.purchase.requestKey);
+    if (existing) {
+      assertSamePurchaseIntent(existing, input.purchase);
+      const digest = evidenceDigest(input.evidence.bytes);
+      if (!this.findEvidenceAttachmentForKind(existing.id, digest, input.evidence.kind, input.evidence.attempt)) {
+        this.storeEvidence(existing.id, input.evidence);
+      }
+      return existing;
+    }
+
+    const digest = evidenceDigest(input.evidence.bytes);
+    const admissionId = `purchase-admission:${process.pid}:${randomBytes(12).toString("hex")}`;
+    const owner = `purchase-journal:${process.pid}:${randomBytes(8).toString("hex")}`;
+    const now = this.timestamp();
+    const deadline = now + 60_000;
+    const offer = this.db.transaction(() => {
+      if (this.findPurchaseByRequestKey(input.purchase.requestKey)) {
+        throw new JournalInvariantError("Purchase admission raced another request-key owner");
+      }
+      if (this.findPurchase(input.purchase.id)) {
+        throw new JournalInvariantError(`PurchaseId ${input.purchase.id} already exists`);
+      }
+      const budget = this.db.prepare(
+        `SELECT reserved_purchase_count, reserved_evidence_bytes,
+                committed_evidence_bytes, prevalidation_purchase_limit,
+                evidence_byte_limit
+           FROM journal_admission_budget WHERE singleton = 1`
+      ).get() as {
+        reserved_purchase_count: number;
+        reserved_evidence_bytes: number;
+        committed_evidence_bytes: number;
+        prevalidation_purchase_limit: number;
+        evidence_byte_limit: number;
+      } | undefined;
+      if (!budget) throw new JournalInvariantError("Journal admission budget is missing");
+      const existingArtifact = this.findEvidence(digest);
+      const quantity = existingArtifact ? 0 : input.evidence.bytes.byteLength;
+      if (budget.reserved_purchase_count + 1 > budget.prevalidation_purchase_limit) {
+        throw new PurchaseAdmissionError();
+      }
+      if (
+        budget.reserved_evidence_bytes + budget.committed_evidence_bytes + quantity >
+        budget.evidence_byte_limit
+      ) {
+        throw new EvidenceAdmissionError();
+      }
+      this.db.prepare(
+        `INSERT INTO purchase_admission_intents (
+           admission_id, purchase_id, request_key, resource_url, method,
+           resource_fingerprint, expected_merchant_id, expected_merchant_origin,
+           evidence_digest, evidence_byte_length, evidence_storage_ref,
+           evidence_media_type, evidence_profile, evidence_issuer, evidence_kind, state,
+           owner, deadline_at_ms, created_at_ms, updated_at_ms
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'offered', ?, ?, ?, ?)`
+      ).run(
+        admissionId,
+        input.purchase.id,
+        input.purchase.requestKey,
+        input.purchase.resourceUrl,
+        input.purchase.method,
+        input.purchase.resourceFingerprint,
+        input.purchase.expectedMerchantId ?? null,
+        input.purchase.expectedMerchantOrigin ?? null,
+        digest,
+        input.evidence.bytes.byteLength,
+        storageRefForDigest(digest),
+        input.evidence.mediaType,
+        input.evidence.profile,
+        input.evidence.issuer ?? null,
+        input.evidence.kind,
+        owner,
+        deadline,
+        now,
+        now,
+      );
+      this.db.prepare(
+        `INSERT INTO admission_leases
+           (lease_id, owner, resource, purchase_id, digest, storage_ref,
+            quantity, state, deadline_at_ms, created_at_ms, updated_at_ms)
+         VALUES (?, ?, 'evidence_bytes', NULL, ?, ?, ?, 'active', ?, ?, ?)`
+      ).run(
+        `evidence:${admissionId}`,
+        owner,
+        digest,
+        storageRefForDigest(digest),
+        quantity,
+        deadline,
+        now,
+        now,
+      );
+      this.db.prepare(
+        `UPDATE journal_admission_budget
+            SET reserved_purchase_count = reserved_purchase_count + 1,
+                reserved_evidence_bytes = reserved_evidence_bytes + ?,
+                updated_at_ms = ?
+          WHERE singleton = 1`
+      ).run(quantity, now);
+    });
+    try {
+      offer.immediate();
+      this.evidenceStore.store(input.evidence.bytes);
+      const staged = this.db.transaction(() => {
+        const updated = this.db.prepare(
+          `UPDATE purchase_admission_intents
+              SET state = 'staged', updated_at_ms = ?
+            WHERE admission_id = ? AND state = 'offered' AND owner = ?`
+        ).run(this.timestamp(), admissionId, owner);
+        if (updated.changes !== 1) {
+          throw new JournalInvariantError("Purchase admission staging fence was lost");
+        }
+      });
+      staged.immediate();
+      return this.commitPurchaseAdmissionIntent(admissionId, owner);
+    } catch (error) {
+      this.cancelPurchaseAdmission(admissionId, "failed_terminal");
+      throw error;
+    }
   }
 
   requirePurchase(id: PurchaseId): PurchaseRecord {
@@ -1317,6 +1470,27 @@ export class PurchaseJournal {
     return row ? evidenceFromRow(row) : undefined;
   }
 
+  private findEvidenceAttachmentForKind(
+    purchaseId: PurchaseId,
+    digest: Sha256Digest,
+    kind: string,
+    attempt?: number,
+  ): EvidenceAttachmentRecord | undefined {
+    const attemptClause = attempt === undefined ? "l.attempt IS NULL" : "l.attempt = ?";
+    const parameters = attempt === undefined
+      ? [purchaseId, digest, kind]
+      : [purchaseId, digest, kind, attempt];
+    const row = this.db.prepare(
+      `SELECT l.purchase_id, l.digest, l.kind, l.attempt, l.media_type, l.profile,
+              l.issuer, l.attached_at_ms, a.byte_length, a.storage_ref,
+              a.created_at_ms AS blob_created_at_ms
+         FROM evidence_links l
+         JOIN evidence_artifacts a ON a.digest = l.digest
+        WHERE l.purchase_id = ? AND l.digest = ? AND l.kind = ? AND ${attemptClause}`
+    ).get(...parameters) as EvidenceAttachmentRow | undefined;
+    return row ? evidenceAttachmentFromRow(row) : undefined;
+  }
+
   requireEvidenceAttachment(
     purchaseId: PurchaseId,
     digest: Sha256Digest,
@@ -1491,9 +1665,98 @@ export class PurchaseJournal {
     return claim.immediate();
   }
 
+  claimTreasuryOperationDriver(
+    operationKey: string,
+    owner: string,
+    leaseTtlMs: number,
+  ): TreasuryDriverClaim {
+    assertTreasuryOperationKey(operationKey);
+    if (!/^[A-Za-z0-9._:-]{1,160}$/.test(owner)) {
+      throw new JournalInvariantError("Treasury driver owner is invalid");
+    }
+    if (!Number.isSafeInteger(leaseTtlMs) || leaseTtlMs < 1_000 || leaseTtlMs > 10 * 60_000) {
+      throw new JournalInvariantError("Treasury driver lease duration is invalid");
+    }
+    const claim = this.db.transaction((): TreasuryDriverClaim => {
+      const current = this.requireTreasuryOperation(operationKey);
+      if (current.state === "completed" || current.state === "failed_terminal") {
+        return Object.freeze({ acquired: false, record: current });
+      }
+      const now = this.timestamp();
+      const activeForeignDriver =
+        current.driverOwner !== undefined &&
+        current.driverLeaseExpiresAtMs !== undefined &&
+        current.driverLeaseExpiresAtMs > now &&
+        current.driverOwner !== owner;
+      if (activeForeignDriver) return Object.freeze({ acquired: false, record: current });
+      const sameLiveOwner =
+        current.driverOwner === owner &&
+        current.driverLeaseExpiresAtMs !== undefined &&
+        current.driverLeaseExpiresAtMs > now;
+      const generation = sameLiveOwner
+        ? current.driverGeneration
+        : current.driverGeneration + 1;
+      const expiresAtMs = now + leaseTtlMs;
+      const updated = this.db.prepare(
+        `UPDATE treasury_operations
+            SET driver_owner = ?, driver_generation = ?, driver_lease_expires_at_ms = ?,
+                effect_capability_generation = NULL, updated_at_ms = ?
+          WHERE operation_key = ?
+            AND (driver_owner IS NULL OR driver_lease_expires_at_ms <= ? OR driver_owner = ?)`
+      ).run(owner, generation, expiresAtMs, now, operationKey, now, owner);
+      if (updated.changes !== 1) {
+        return Object.freeze({ acquired: false, record: this.requireTreasuryOperation(operationKey) });
+      }
+      const record = this.requireTreasuryOperation(operationKey);
+      return Object.freeze({
+        acquired: true,
+        record,
+        lease: Object.freeze({ owner, generation, expiresAtMs }),
+      });
+    });
+    return claim.immediate();
+  }
+
+  renewTreasuryOperationDriver(
+    lease: TreasuryDriverLease,
+    operationKey: string,
+  ): TreasuryOperationRecord {
+    assertTreasuryOperationKey(operationKey);
+    const renewed = this.db.transaction(() => {
+      const now = this.timestamp();
+      const expiresAtMs = now + 60_000;
+      const updated = this.db.prepare(
+        `UPDATE treasury_operations
+            SET driver_lease_expires_at_ms = ?, updated_at_ms = ?
+          WHERE operation_key = ? AND driver_owner = ? AND driver_generation = ?
+            AND driver_lease_expires_at_ms > ?`
+      ).run(expiresAtMs, now, operationKey, lease.owner, lease.generation, now);
+      if (updated.changes !== 1) throw new JournalInvariantError("Treasury driver lease is stale");
+      return this.requireTreasuryOperation(operationKey);
+    });
+    return renewed.immediate();
+  }
+
+  releaseTreasuryOperationDriver(
+    lease: TreasuryDriverLease,
+    operationKey: string,
+  ): TreasuryOperationRecord {
+    assertTreasuryOperationKey(operationKey);
+    const released = this.db.transaction(() => {
+      this.db.prepare(
+        `UPDATE treasury_operations
+            SET driver_owner = NULL, driver_lease_expires_at_ms = NULL, updated_at_ms = ?
+          WHERE operation_key = ? AND driver_owner = ? AND driver_generation = ?`
+      ).run(this.timestamp(), operationKey, lease.owner, lease.generation);
+      return this.requireTreasuryOperation(operationKey);
+    });
+    return released.immediate();
+  }
+
   recordPreparedTreasuryOperation(
     operationKey: string,
-    prepared: PreparedTreasuryOperation
+    prepared: PreparedTreasuryOperation,
+    driver?: TreasuryDriverLease,
   ): TreasuryOperationRecord {
     assertTreasuryOperationKey(operationKey);
     validatePreparedTreasuryOperation(prepared);
@@ -1501,6 +1764,12 @@ export class PurchaseJournal {
     const stored = this.storePreparedMaterial(prepared.bytes, digest);
     const record = this.db.transaction(() => {
       const current = this.requireTreasuryOperation(operationKey);
+      if (driver && !driverOwns(current, driver, this.timestamp())) {
+        throw new JournalInvariantError("direct Treasury preparation driver is stale");
+      }
+      if (current.preparationFenced) {
+        throw new JournalInvariantError("fenced Treasury preparation cannot commit prepared material");
+      }
       if (current.state !== "intent") {
         if (
           current.preparedDigest === stored.digest &&
@@ -1546,12 +1815,15 @@ export class PurchaseJournal {
         now,
         operationKey
       );
+      const driverSql = driver
+        ? " AND driver_owner = ? AND driver_generation = ?"
+        : "";
       const updated = this.db.prepare(
         `UPDATE treasury_operations
             SET resolved_amount_atomic = ?, fee_atomic = ?, transaction_id = ?,
                 prepared_digest = ?, prepared_ref = ?, prepared_byte_length = ?,
                 state = 'prepared', updated_at_ms = ?
-          WHERE operation_key = ? AND state = 'intent'`
+          WHERE operation_key = ? AND state = 'intent' AND preparation_fenced = 0${driverSql}`
       ).run(
         prepared.amountAtomic,
         prepared.feeAtomic,
@@ -1561,6 +1833,7 @@ export class PurchaseJournal {
         stored.byteLength,
         now,
         operationKey
+        , ...(driver ? [driver.owner, driver.generation] : [])
       );
       if (updated.changes !== 1) {
         throw new JournalInvariantError("concurrent direct Treasury preparation changed state");
@@ -1581,11 +1854,15 @@ export class PurchaseJournal {
   recordTreasuryPreparationRetry(
     operationKey: string,
     reasonCode: string,
+    driver?: TreasuryDriverLease,
   ): TreasuryOperationRecord {
     assertTreasuryOperationKey(operationKey);
     assertCode(reasonCode, "Treasury preparation retry reason");
     const retry = this.db.transaction(() => {
       const current = this.requireTreasuryOperation(operationKey);
+      if (driver && !driverOwns(current, driver, this.timestamp())) {
+        throw new JournalInvariantError("direct Treasury retry driver is stale");
+      }
       if (current.state !== "intent") {
         throw new JournalInvariantError(
           "only an unprepared direct Treasury operation can record a preparation retry",
@@ -1595,11 +1872,14 @@ export class PurchaseJournal {
         throw new JournalInvariantError("direct Treasury preparation retry limit is exhausted");
       }
       const now = this.timestamp();
+      const driverSql = driver
+        ? " AND driver_owner = ? AND driver_generation = ?"
+        : "";
       const updated = this.db.prepare(
         `UPDATE treasury_operations
             SET retry_count = retry_count + 1, updated_at_ms = ?
-          WHERE operation_key = ? AND state = 'intent' AND retry_count < retry_limit`
-      ).run(now, operationKey);
+          WHERE operation_key = ? AND state = 'intent' AND retry_count < retry_limit${driverSql}`
+      ).run(now, operationKey, ...(driver ? [driver.owner, driver.generation] : []));
       if (updated.changes !== 1) throw new JournalInvariantError("concurrent direct Treasury retry accounting");
       this.insertTreasuryOperationTransition(
         operationKey,
@@ -1616,17 +1896,24 @@ export class PurchaseJournal {
   failTreasuryOperationPreparation(
     operationKey: string,
     reasonCode: string,
+    driver?: TreasuryDriverLease,
   ): TreasuryOperationRecord {
     assertTreasuryOperationKey(operationKey);
     if (
       reasonCode !== "invalid_destination" &&
       reasonCode !== "invalid_transaction_shape" &&
+      reasonCode !== "insufficient_funds" &&
+      reasonCode !== "not_funded" &&
+      reasonCode !== "invalid_runtime_state" &&
       reasonCode !== "cancelled_before_effect"
     ) {
       throw new JournalInvariantError("direct Treasury terminal preparation reason is invalid");
     }
     const failed = this.db.transaction(() => {
       const current = this.requireTreasuryOperation(operationKey);
+      if (driver && !driverOwns(current, driver, this.timestamp())) {
+        throw new JournalInvariantError("direct Treasury terminalization driver is stale");
+      }
       if (current.state === "failed_terminal") return current;
       if (current.state !== "intent") {
         throw new JournalInvariantError(
@@ -1634,11 +1921,14 @@ export class PurchaseJournal {
         );
       }
       const now = this.timestamp();
+      const driverSql = driver
+        ? " AND driver_owner = ? AND driver_generation = ?"
+        : "";
       const updated = this.db.prepare(
         `UPDATE treasury_operations
             SET state = 'failed_terminal', updated_at_ms = ?
-          WHERE operation_key = ? AND state = 'intent'`
-      ).run(now, operationKey);
+          WHERE operation_key = ? AND state = 'intent'${driverSql}`
+      ).run(now, operationKey, ...(driver ? [driver.owner, driver.generation] : []));
       if (updated.changes !== 1) throw new JournalInvariantError("concurrent direct Treasury terminalization");
       this.insertTreasuryOperationTransition(
         operationKey,
@@ -1655,21 +1945,28 @@ export class PurchaseJournal {
   fenceTreasuryOperationPreparation(
     operationKey: string,
     reasonCode: string,
+    driver?: TreasuryDriverLease,
   ): TreasuryOperationRecord {
     assertTreasuryOperationKey(operationKey);
     assertCode(reasonCode, "Treasury preparation fence reason");
     const fenced = this.db.transaction(() => {
       const current = this.requireTreasuryOperation(operationKey);
+      if (driver && !driverOwns(current, driver, this.timestamp())) {
+        throw new JournalInvariantError("direct Treasury fence driver is stale");
+      }
       if (current.preparationFenced) return current;
       if (current.state !== "intent") {
         throw new JournalInvariantError("only an unprepared direct Treasury operation may be fenced");
       }
       const now = this.timestamp();
+      const driverSql = driver
+        ? " AND driver_owner = ? AND driver_generation = ?"
+        : "";
       const updated = this.db.prepare(
         `UPDATE treasury_operations
             SET preparation_fenced = 1, updated_at_ms = ?
-          WHERE operation_key = ? AND state = 'intent' AND preparation_fenced = 0`
-      ).run(now, operationKey);
+          WHERE operation_key = ? AND state = 'intent' AND preparation_fenced = 0${driverSql}`
+      ).run(now, operationKey, ...(driver ? [driver.owner, driver.generation] : []));
       if (updated.changes !== 1) throw new JournalInvariantError("concurrent direct Treasury preparation fence");
       this.insertTreasuryOperationTransition(operationKey, "intent", "intent", reasonCode, now);
       return this.requireTreasuryOperation(operationKey);
@@ -1784,11 +2081,12 @@ export class PurchaseJournal {
     return Object.freeze(parsed as Record<string, unknown>);
   }
 
-  planTreasuryOperationSubmission(operationKey: string): boolean {
+  planTreasuryOperationSubmission(operationKey: string, driver?: TreasuryDriverLease): boolean {
     assertTreasuryOperationKey(operationKey);
     const plan = this.db.transaction(() => {
       const current = this.requireTreasuryOperation(operationKey);
-      if (current.state !== "prepared") return false;
+      if (current.state !== "prepared" || current.cancellationRequested || current.preparationFenced) return false;
+      if (driver && !driverOwns(current, driver, this.timestamp())) return false;
       const policy = this.requireActivePolicy();
       if (policy.digest !== current.policyDigest) {
         throw new PolicyReservationError(
@@ -1809,11 +2107,15 @@ export class PurchaseJournal {
         now,
         operationKey
       );
+      const driverSql = driver
+        ? " AND driver_owner = ? AND driver_generation = ?"
+        : "";
       const updated = this.db.prepare(
         `UPDATE treasury_operations
             SET state = 'submission_planned', updated_at_ms = ?
-          WHERE operation_key = ? AND state = 'prepared'`
-      ).run(now, operationKey);
+          WHERE operation_key = ? AND state = 'prepared'
+            AND cancellation_requested = 0 AND preparation_fenced = 0${driverSql}`
+      ).run(now, operationKey, ...(driver ? [driver.owner, driver.generation] : []));
       if (updated.changes !== 1) return false;
       this.inject("treasury_operation.after_submission_plan");
       this.insertTreasuryOperationTransition(
@@ -1828,20 +2130,52 @@ export class PurchaseJournal {
     return plan.immediate();
   }
 
+  claimTreasuryOperationEffectCapability(
+    operationKey: string,
+    driver: TreasuryDriverLease,
+  ): boolean {
+    assertTreasuryOperationKey(operationKey);
+    const claim = this.db.transaction(() => {
+      const current = this.requireTreasuryOperation(operationKey);
+      if (!driverOwns(current, driver, this.timestamp()) || current.state !== "submission_planned" ||
+          current.cancellationRequested || current.preparationFenced) return false;
+      const updated = this.db.prepare(
+        `UPDATE treasury_operations
+            SET effect_capability_generation = ?, updated_at_ms = ?
+          WHERE operation_key = ? AND state = 'submission_planned'
+            AND cancellation_requested = 0 AND preparation_fenced = 0
+            AND driver_owner = ? AND driver_generation = ?
+            AND effect_capability_generation IS NULL`
+      ).run(driver.generation, this.timestamp(), operationKey, driver.owner, driver.generation);
+      return updated.changes === 1;
+    });
+    return claim.immediate();
+  }
+
   recordTreasuryOperationSubmissionAccepted(
     operationKey: string,
-    transactionId: string
+    transactionId: string,
+    driver?: TreasuryDriverLease,
   ): TreasuryOperationRecord {
     assertTreasuryOperationKey(operationKey);
     assertTransactionId(transactionId);
     const record = this.db.transaction(() => {
       const current = this.requireTreasuryOperation(operationKey);
+      if (driver && !driverOwns(current, driver, this.timestamp())) {
+        throw new JournalInvariantError("direct Treasury submission driver is stale");
+      }
       if (current.transactionId !== transactionId) {
         throw new JournalInvariantError("submitted direct Treasury transaction identity changed");
       }
       if (["submitted", "observed", "completed"].includes(current.state)) return current;
       if (current.state !== "submission_planned") {
         throw new JournalInvariantError("direct Treasury submission was not durably planned");
+      }
+      if (
+        current.cancellationRequested || current.preparationFenced ||
+        (driver !== undefined && current.effectCapabilityGeneration !== driver.generation)
+      ) {
+        throw new JournalInvariantError("direct Treasury submission capability is no longer valid");
       }
       const now = this.timestamp();
       this.db.prepare(
@@ -1863,7 +2197,8 @@ export class PurchaseJournal {
   recordTreasuryOperationObservation(
     operationKey: string,
     status: TreasuryOperationObservationStatus,
-    detail: Readonly<Record<string, unknown>>
+    detail: Readonly<Record<string, unknown>>,
+    driver?: TreasuryDriverLease,
   ): TreasuryOperationRecord {
     assertTreasuryOperationKey(operationKey);
     if (!["observed", "not_submitted", "pending"].includes(status)) {
@@ -1879,6 +2214,9 @@ export class PurchaseJournal {
       if (!["submission_planned", "submitted", "observed"].includes(current.state)) {
         throw new JournalInvariantError("direct Treasury operation is not awaiting observation");
       }
+      if (driver && !driverOwns(current, driver, this.timestamp())) {
+        throw new JournalInvariantError("direct Treasury observation driver is stale");
+      }
       const now = this.timestamp();
       this.db.prepare(
         `INSERT OR IGNORE INTO treasury_operation_observations
@@ -1889,12 +2227,28 @@ export class PurchaseJournal {
       if (status === "pending" || current.state === "observed") {
         return this.requireTreasuryOperation(operationKey);
       }
-      const next: TreasuryOperationState = status === "observed" ? "observed" : "prepared";
+      const cancelledAndProvedNotSubmitted =
+        status === "not_submitted" && current.cancellationRequested;
+      const next: TreasuryOperationState = status === "observed"
+        ? "observed"
+        : cancelledAndProvedNotSubmitted
+          ? "failed_terminal"
+          : "prepared";
+      const driverSql = driver
+        ? " AND driver_owner = ? AND driver_generation = ?"
+        : "";
       const updated = this.db.prepare(
         `UPDATE treasury_operations
             SET state = ?, retry_count = retry_count + ?, updated_at_ms = ?
-          WHERE operation_key = ? AND state = ?`
-      ).run(next, status === "not_submitted" ? 1 : 0, now, operationKey, current.state);
+          WHERE operation_key = ? AND state = ?${driverSql}`
+      ).run(
+        next,
+        status === "not_submitted" && !cancelledAndProvedNotSubmitted ? 1 : 0,
+        now,
+        operationKey,
+        current.state,
+        ...(driver ? [driver.owner, driver.generation] : []),
+      );
       if (updated.changes !== 1) {
         throw new JournalInvariantError("concurrent direct Treasury observation changed state");
       }
@@ -1902,7 +2256,11 @@ export class PurchaseJournal {
         operationKey,
         current.state,
         next,
-        status === "observed" ? "chain_observed" : "exact_inputs_prove_not_submitted",
+        status === "observed"
+          ? "chain_observed"
+          : cancelledAndProvedNotSubmitted
+            ? "cancelled_after_exact_non_submission_proof"
+            : "exact_inputs_prove_not_submitted",
         now
       );
       return this.requireTreasuryOperation(operationKey);
@@ -1910,7 +2268,7 @@ export class PurchaseJournal {
     return record.immediate();
   }
 
-  completeTreasuryOperation(operationKey: string): TreasuryOperationRecord {
+  completeTreasuryOperation(operationKey: string, driver?: TreasuryDriverLease): TreasuryOperationRecord {
     assertTreasuryOperationKey(operationKey);
     const complete = this.db.transaction(() => {
       const current = this.requireTreasuryOperation(operationKey);
@@ -1918,12 +2276,18 @@ export class PurchaseJournal {
       if (current.state !== "observed") {
         throw new JournalInvariantError("unobserved direct Treasury operation cannot complete");
       }
+      if (driver && !driverOwns(current, driver, this.timestamp())) {
+        throw new JournalInvariantError("direct Treasury completion driver is stale");
+      }
+      const driverSql = driver
+        ? " AND driver_owner = ? AND driver_generation = ?"
+        : "";
       const now = this.timestamp();
       this.db.prepare(
         `UPDATE treasury_operations
             SET state = 'completed', updated_at_ms = ?, completed_at_ms = ?
-          WHERE operation_key = ? AND state = 'observed'`
-      ).run(now, now, operationKey);
+          WHERE operation_key = ? AND state = 'observed'${driverSql}`
+      ).run(now, now, operationKey, ...(driver ? [driver.owner, driver.generation] : []));
       this.inject("treasury_operation.after_complete_update");
       this.insertTreasuryOperationTransition(
         operationKey,
@@ -6023,6 +6387,234 @@ export class PurchaseJournal {
     };
   }
 
+  private commitPurchaseAdmissionIntent(admissionId: string, owner: string): PurchaseRecord {
+    if (!this.evidenceStore) {
+      throw new JournalInvariantError("an evidence directory is required for immutable evidence storage");
+    }
+    const pending = this.db.prepare(
+      "SELECT * FROM purchase_admission_intents WHERE admission_id = ?"
+    ).get(admissionId) as PurchaseAdmissionIntentRow | undefined;
+    if (!pending) throw new JournalInvariantError("Purchase admission intent is missing");
+    if (pending.state === "committed") return this.requirePurchase(pending.purchase_id as PurchaseId);
+    if (pending.owner !== owner && pending.deadline_at_ms > this.timestamp()) {
+      throw new JournalInvariantError("Purchase admission intent is owned by another live driver");
+    }
+    const staged = this.evidenceStore.verify(
+      pending.evidence_digest as Sha256Digest,
+      pending.evidence_byte_length,
+    );
+    const commit = this.db.transaction(() => {
+      const current = this.db.prepare(
+        "SELECT * FROM purchase_admission_intents WHERE admission_id = ?"
+      ).get(admissionId) as PurchaseAdmissionIntentRow | undefined;
+      if (!current) throw new JournalInvariantError("Purchase admission intent is missing");
+      if (current.state === "committed") return this.requirePurchase(current.purchase_id as PurchaseId);
+      if (current.owner !== owner && current.deadline_at_ms > this.timestamp()) {
+        throw new JournalInvariantError("Purchase admission intent owner is still live");
+      }
+      const now = this.timestamp();
+      const purchaseInput: CreatePurchaseInput = {
+        id: current.purchase_id as PurchaseId,
+        requestKey: current.request_key as PurchaseRequestKey,
+        resourceUrl: current.resource_url,
+        method: current.method,
+        resourceFingerprint: current.resource_fingerprint as Sha256Digest,
+        ...(current.expected_merchant_id === null ? {} : { expectedMerchantId: current.expected_merchant_id }),
+        ...(current.expected_merchant_origin === null ? {} : { expectedMerchantOrigin: current.expected_merchant_origin }),
+      };
+      const existingPurchase = this.findPurchaseByRequestKey(purchaseInput.requestKey);
+      if (existingPurchase) {
+        assertSamePurchaseIntent(existingPurchase, purchaseInput);
+        if (existingPurchase.id !== purchaseInput.id) {
+          throw new JournalInvariantError("Purchase admission request key is bound to another Purchase");
+        }
+      } else {
+        this.db.prepare(
+          `INSERT INTO purchases (
+             id, request_key, state, resource_url, method, resource_fingerprint,
+             expected_merchant_id, expected_merchant_origin, version, created_at_ms, updated_at_ms
+           ) VALUES (?, ?, 'created', ?, ?, ?, ?, ?, 0, ?, ?)`
+        ).run(
+          purchaseInput.id,
+          purchaseInput.requestKey,
+          purchaseInput.resourceUrl,
+          purchaseInput.method,
+          purchaseInput.resourceFingerprint,
+          purchaseInput.expectedMerchantId ?? null,
+          purchaseInput.expectedMerchantOrigin ?? null,
+          now,
+          now,
+        );
+        this.inject("purchase.after_insert");
+        this.insertPurchaseTransition(
+          purchaseInput.id,
+          undefined,
+          "created",
+          "purchase_created",
+          undefined,
+          now,
+        );
+      }
+
+      const artifact = this.findEvidence(pending.evidence_digest as Sha256Digest);
+      if (artifact) {
+        assertSameEvidenceBlob(artifact, staged.byteLength, staged.storageRef);
+      } else {
+        this.db.prepare(
+          `INSERT INTO evidence_artifacts
+             (digest, media_type, profile, issuer, byte_length, storage_ref, created_at_ms)
+           VALUES (?, 'application/octet-stream', 'urn:sompi:evidence-blob:1', NULL, ?, ?, ?)`
+        ).run(pending.evidence_digest, staged.byteLength, staged.storageRef, now);
+        this.inject("evidence.after_metadata_insert");
+      }
+      this.db.prepare(
+        `INSERT OR IGNORE INTO evidence_links
+           (purchase_id, digest, kind, attempt, media_type, profile, issuer, attached_at_ms)
+         VALUES (?, ?, ?, NULL, ?, ?, ?, ?)`
+      ).run(
+        purchaseInput.id,
+        pending.evidence_digest,
+        pending.evidence_kind,
+        pending.evidence_media_type,
+        pending.evidence_profile,
+        pending.evidence_issuer,
+        now,
+      );
+
+      const evidenceLease = this.db.prepare(
+        `SELECT quantity, state FROM admission_leases
+          WHERE lease_id = ?`
+      ).get(`evidence:${admissionId}`) as { quantity: number; state: string } | undefined;
+      if (!evidenceLease) throw new JournalInvariantError("Purchase evidence admission lease is missing");
+      this.db.prepare(
+        `UPDATE admission_leases SET purchase_id = ?
+          WHERE lease_id = ? AND purchase_id IS NULL AND state = 'active'`
+      ).run(purchaseInput.id, `evidence:${admissionId}`);
+      if (evidenceLease.state === "active") {
+        this.db.prepare(
+          `UPDATE admission_leases SET state = 'completed', outcome = ?, updated_at_ms = ?
+            WHERE lease_id = ? AND state = 'active'`
+        ).run(artifact ? "blob_deduplicated" : "blob_committed", now, `evidence:${admissionId}`);
+        if (evidenceLease.quantity > 0) {
+          this.db.prepare(
+            `UPDATE journal_admission_budget
+                SET reserved_evidence_bytes = reserved_evidence_bytes - ?,
+                    committed_evidence_bytes = committed_evidence_bytes + ?,
+                    updated_at_ms = ?
+              WHERE singleton = 1`
+          ).run(evidenceLease.quantity, artifact ? 0 : evidenceLease.quantity, now);
+        }
+      } else if (evidenceLease.state !== "completed") {
+        throw new JournalInvariantError("Evidence admission lease is not active");
+      }
+      this.db.prepare(
+        `UPDATE journal_admission_budget
+            SET reserved_purchase_count = reserved_purchase_count - 1,
+                updated_at_ms = ?
+          WHERE singleton = 1`
+      ).run(now);
+      const updated = this.db.prepare(
+        `UPDATE purchase_admission_intents
+            SET state = 'committed', outcome = 'purchase_and_evidence_retained', updated_at_ms = ?
+          WHERE admission_id = ? AND state IN ('offered', 'staged')`
+      ).run(now, admissionId);
+      if (updated.changes !== 1) {
+        throw new JournalInvariantError("Purchase admission intent committed more than once");
+      }
+      return this.requirePurchase(purchaseInput.id);
+    });
+    return commit.immediate();
+  }
+
+  private cancelPurchaseAdmission(admissionId: string, outcome: string): void {
+    if (!this.admission) return;
+    const cancel = this.db.transaction(() => {
+      const pending = this.db.prepare(
+        "SELECT * FROM purchase_admission_intents WHERE admission_id = ?"
+      ).get(admissionId) as PurchaseAdmissionIntentRow | undefined;
+      if (!pending || pending.state === "committed" || pending.state === "cancelled") return;
+      const now = this.timestamp();
+      const evidenceLease = this.db.prepare(
+        "SELECT quantity, state, digest FROM admission_leases WHERE lease_id = ?"
+      ).get(`evidence:${admissionId}`) as { quantity: number; state: string; digest: string | null } | undefined;
+      this.db.prepare(
+        `UPDATE purchase_admission_intents
+            SET state = 'cancelled', outcome = ?, updated_at_ms = ?
+          WHERE admission_id = ? AND state IN ('offered', 'staged')`
+      ).run(outcome, now, admissionId);
+      this.db.prepare(
+        `UPDATE journal_admission_budget
+            SET reserved_purchase_count = reserved_purchase_count - 1, updated_at_ms = ?
+          WHERE singleton = 1`
+      ).run(now);
+      if (evidenceLease?.state === "active") {
+        this.db.prepare(
+          `UPDATE admission_leases SET state = 'cancelled', outcome = ?, updated_at_ms = ?
+            WHERE lease_id = ? AND state = 'active'`
+        ).run(outcome, now, `evidence:${admissionId}`);
+        if (evidenceLease.quantity > 0) {
+          this.db.prepare(
+            `UPDATE journal_admission_budget
+                SET reserved_evidence_bytes = reserved_evidence_bytes - ?, updated_at_ms = ?
+              WHERE singleton = 1`
+          ).run(evidenceLease.quantity, now);
+        }
+      }
+      const digest = evidenceLease?.digest as Sha256Digest | null | undefined;
+      if (digest && !this.evidenceHasDurableOwner(digest)) {
+        this.evidenceStore?.removeUnreferenced(digest);
+      }
+    });
+    cancel.immediate();
+  }
+
+  private reconcilePurchaseAdmissionIntents(): void {
+    if (!this.admission || !this.evidenceStore) return;
+    const now = this.timestamp();
+    const pending = this.db.prepare(
+      `SELECT admission_id, owner, evidence_digest, evidence_byte_length, deadline_at_ms, state
+         FROM purchase_admission_intents WHERE state IN ('offered', 'staged')`
+    ).all() as Array<{
+      admission_id: string;
+      owner: string;
+      evidence_digest: string;
+      evidence_byte_length: number;
+      deadline_at_ms: number;
+      state: string;
+    }>;
+    for (const intent of pending) {
+      // An unexpired foreign owner may still be writing. Startup must not
+      // steal or cancel that lease merely because another handle opened.
+      if (intent.deadline_at_ms > now) continue;
+      try {
+        this.evidenceStore.verify(intent.evidence_digest as Sha256Digest, intent.evidence_byte_length);
+        this.commitPurchaseAdmissionIntent(intent.admission_id, intent.owner);
+      } catch {
+        this.cancelPurchaseAdmission(intent.admission_id, "restart_recovery");
+      }
+    }
+  }
+
+  private evidenceHasDurableOwner(digest: Sha256Digest): boolean {
+    const artifact = this.db.prepare(
+      "SELECT 1 FROM evidence_artifacts WHERE digest = ? LIMIT 1"
+    ).get(digest);
+    if (artifact) return true;
+    const link = this.db.prepare(
+      "SELECT 1 FROM evidence_links WHERE digest = ? LIMIT 1"
+    ).get(digest);
+    if (link) return true;
+    const lease = this.db.prepare(
+      `SELECT 1 FROM admission_leases
+        WHERE digest = ? AND state IN ('offered', 'admitted', 'active') LIMIT 1`
+    ).get(digest);
+    if (lease) return true;
+    return Boolean(this.db.prepare(
+      `SELECT 1 FROM purchase_admission_intents
+        WHERE evidence_digest = ? AND state IN ('offered', 'staged') LIMIT 1`
+    ).get(digest));
+  }
+
   private admitPurchaseInternal(input: CreatePurchaseInput, now: number): string | undefined {
     if (!this.admission) return undefined;
     const budget = this.db.prepare(
@@ -6146,16 +6738,12 @@ export class PurchaseJournal {
 
   private cancelEvidenceAdmission(leaseId: string | undefined, outcome: string): void {
     if (!leaseId || !this.admission) return;
-    let storageRef: string | undefined;
-    let digest: Sha256Digest | undefined;
     const cancel = this.db.transaction(() => {
       const lease = this.db.prepare(
         "SELECT quantity, state, storage_ref, digest FROM admission_leases WHERE lease_id = ?"
       ).get(leaseId) as { quantity: number; state: string; storage_ref: string | null; digest: string | null } | undefined;
       if (!lease) return;
       if (lease.state !== "active") return;
-      storageRef = lease.storage_ref ?? undefined;
-      digest = lease.digest as Sha256Digest | undefined;
       const now = this.timestamp();
       this.db.prepare(
         `UPDATE admission_leases
@@ -6169,19 +6757,22 @@ export class PurchaseJournal {
             WHERE singleton = 1`
         ).run(lease.quantity, now);
       }
+      const digest = lease.digest as Sha256Digest | null;
+      if (digest && !this.evidenceHasDurableOwner(digest)) {
+        // Keep the ownership check and unlink under the same SQLite write
+        // transaction. A failed duplicate writer can never remove a sibling
+        // writer's live digest between its check and filesystem cleanup.
+        this.evidenceStore?.removeUnreferenced(digest);
+      }
     });
     cancel.immediate();
-    if (storageRef && digest && !this.findEvidence(digest)) {
-      this.evidenceStore?.removeUnreferenced(digest);
-    }
   }
 
   private reconcileAdmissionLeases(): void {
     if (!this.admission || !this.evidenceStore) return;
-    const remove = new Set<Sha256Digest>();
     const reconcile = this.db.transaction(() => {
       const leases = this.db.prepare(
-        `SELECT lease_id, resource, purchase_id, digest, quantity, state
+        `SELECT lease_id, resource, purchase_id, digest, quantity, state, deadline_at_ms
            FROM admission_leases WHERE state IN ('offered', 'admitted', 'active')`
       ).all() as Array<{
         lease_id: string;
@@ -6190,9 +6781,13 @@ export class PurchaseJournal {
         digest: string | null;
         quantity: number;
         state: string;
+        deadline_at_ms: number;
       }>;
       const now = this.timestamp();
       for (const lease of leases) {
+        // An unexpired foreign owner may still be in the reversible staging
+        // window. Only expired leases are eligible for deterministic takeover.
+        if (lease.deadline_at_ms > now) continue;
         if (lease.resource === "prevalidation_purchase") {
           const purchase = lease.purchase_id
             ? this.db.prepare("SELECT id FROM purchases WHERE id = ?").get(lease.purchase_id)
@@ -6228,32 +6823,33 @@ export class PurchaseJournal {
             `UPDATE admission_leases SET state = 'cancelled', outcome = 'restart_recovered', updated_at_ms = ?
               WHERE lease_id = ? AND state IN ('offered', 'admitted', 'active')`
           ).run(now, lease.lease_id);
-          if (lease.digest && !artifact) remove.add(lease.digest as Sha256Digest);
+          if (lease.digest && !artifact && !this.evidenceHasDurableOwner(lease.digest as Sha256Digest)) {
+            this.evidenceStore?.removeUnreferenced(lease.digest as Sha256Digest);
+          }
         }
       }
       this.db.prepare(
-        `UPDATE journal_admission_budget
+                `UPDATE journal_admission_budget
             SET reserved_purchase_count = (
                   SELECT COUNT(*) FROM admission_leases
                    WHERE resource = 'prevalidation_purchase'
                      AND state NOT IN ('cancelled', 'expired', 'failed_terminal')
+                ) + (
+                  SELECT COUNT(*) FROM purchase_admission_intents
+                   WHERE state IN ('offered', 'staged')
                 ),
                 reserved_evidence_bytes = (
                   SELECT COALESCE(SUM(quantity), 0) FROM admission_leases
                    WHERE resource = 'evidence_bytes' AND state IN ('offered', 'admitted', 'active')
                 ),
                 committed_evidence_bytes = (
-                  SELECT COALESCE(SUM(quantity), 0) FROM admission_leases
-                   WHERE resource = 'evidence_bytes' AND state = 'completed' AND outcome IN ('blob_committed', 'restart_recovered')
+                  SELECT COALESCE(SUM(byte_length), 0) FROM evidence_artifacts
                 ),
                 updated_at_ms = ?
           WHERE singleton = 1`
       ).run(now);
     });
     reconcile.immediate();
-    for (const digest of remove) {
-      if (!this.findEvidence(digest)) this.evidenceStore.removeUnreferenced(digest);
-    }
   }
 
   private inject(point: JournalFaultPoint): void {
@@ -6322,6 +6918,10 @@ interface TreasuryOperationRow {
   retry_limit: number;
   cancellation_requested: number;
   preparation_fenced: number;
+  driver_owner: string | null;
+  driver_generation: number;
+  driver_lease_expires_at_ms: number | null;
+  effect_capability_generation: number | null;
   state: string;
   retry_count: number;
   created_at_ms: number;
@@ -6451,6 +7051,30 @@ interface EvidenceArtifactRow {
   byte_length: number;
   storage_ref: string;
   created_at_ms: number;
+}
+
+interface PurchaseAdmissionIntentRow {
+  admission_id: string;
+  purchase_id: string;
+  request_key: string;
+  resource_url: string;
+  method: string;
+  resource_fingerprint: string;
+  expected_merchant_id: string | null;
+  expected_merchant_origin: string | null;
+  evidence_digest: string;
+  evidence_byte_length: number;
+  evidence_storage_ref: string;
+  evidence_media_type: string;
+  evidence_profile: string;
+  evidence_issuer: string | null;
+  evidence_kind: string;
+  state: string;
+  owner: string;
+  deadline_at_ms: number;
+  outcome: string | null;
+  created_at_ms: number;
+  updated_at_ms: number;
 }
 
 interface PolicySnapshotRow {
@@ -6732,6 +7356,14 @@ function treasuryOperationFromRow(row: TreasuryOperationRow): TreasuryOperationR
     retryLimit: row.retry_limit,
     cancellationRequested: row.cancellation_requested === 1,
     preparationFenced: row.preparation_fenced === 1,
+    ...(row.driver_owner === null ? {} : { driverOwner: row.driver_owner }),
+    driverGeneration: row.driver_generation,
+    ...(row.driver_lease_expires_at_ms === null
+      ? {}
+      : { driverLeaseExpiresAtMs: row.driver_lease_expires_at_ms }),
+    ...(row.effect_capability_generation === null
+      ? {}
+      : { effectCapabilityGeneration: row.effect_capability_generation }),
     ...(row.resolved_amount_atomic === null
       ? {}
       : { resolvedAmountAtomic: row.resolved_amount_atomic }),
@@ -6774,6 +7406,27 @@ function treasuryOperationFromRow(row: TreasuryOperationRow): TreasuryOperationR
   }
   if (!Number.isSafeInteger(operation.retryLimit) || operation.retryLimit <= 0) {
     throw new JournalInvariantError("direct Treasury retry limit is invalid");
+  }
+  if (
+    (operation.driverOwner === undefined) !== (operation.driverLeaseExpiresAtMs === undefined) ||
+    !Number.isSafeInteger(operation.driverGeneration) ||
+    operation.driverGeneration < 0
+  ) {
+    throw new JournalInvariantError("direct Treasury driver lease shape is invalid");
+  }
+  const driverLeaseExpiry = operation.driverLeaseExpiresAtMs;
+  if (
+    operation.driverOwner !== undefined &&
+    (driverLeaseExpiry === undefined || !Number.isSafeInteger(driverLeaseExpiry) || driverLeaseExpiry <= 0)
+  ) {
+    throw new JournalInvariantError("direct Treasury driver lease expiry is invalid");
+  }
+  if (
+    operation.effectCapabilityGeneration !== undefined &&
+    (operation.effectCapabilityGeneration !== operation.driverGeneration ||
+      !["submission_planned", "submitted", "observed", "completed"].includes(operation.state))
+  ) {
+    throw new JournalInvariantError("direct Treasury effect capability is bound to the wrong generation");
   }
   return operation;
 }
@@ -8056,6 +8709,17 @@ function assertTreasuryOperationKey(value: string): void {
   }
 }
 
+function driverOwns(
+  operation: TreasuryOperationRecord,
+  driver: TreasuryDriverLease,
+  now: number,
+): boolean {
+  return operation.driverOwner === driver.owner &&
+    operation.driverGeneration === driver.generation &&
+    operation.driverLeaseExpiresAtMs !== undefined &&
+    operation.driverLeaseExpiresAtMs > now;
+}
+
 function canonicalTreasuryObservationJson(value: unknown): string {
   return JSON.stringify(sortTreasuryJson(value));
 }
@@ -8069,8 +8733,8 @@ function directTreasuryTransitionAllowed(
     (from === "intent" && (to === "intent" || to === "prepared" || to === "failed_terminal")) ||
     (from === "prepared" && to === "submission_planned") ||
     (from === "submission_planned" &&
-      (to === "prepared" || to === "submitted" || to === "observed")) ||
-    (from === "submitted" && (to === "prepared" || to === "observed")) ||
+      (to === "prepared" || to === "submitted" || to === "observed" || to === "failed_terminal")) ||
+    (from === "submitted" && (to === "prepared" || to === "observed" || to === "failed_terminal")) ||
     (from === "observed" && to === "completed")
   );
 }

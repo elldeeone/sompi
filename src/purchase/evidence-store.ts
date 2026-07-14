@@ -187,7 +187,10 @@ export class EvidenceStore {
       fsyncDirectory(this.directory);
     } catch (error) {
       if (isErrno(error, "ENOENT")) return;
-      if (error instanceof EvidenceStoreError) throw error;
+      if (error instanceof EvidenceStoreError) {
+        if (isErrno(error.cause, "ENOENT")) return;
+        throw error;
+      }
       throw new EvidenceStoreError("could not remove an unreferenced evidence orphan", { cause: error });
     }
   }

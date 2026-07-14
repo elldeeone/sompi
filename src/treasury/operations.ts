@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { PolicyEngine } from "../policy.js";
 import {
   TreasuryPreparationError,
@@ -8,12 +8,16 @@ import {
   type TreasuryOperationJournal,
   type TreasuryOperationKind,
   type TreasuryOperationRecord,
+  type TreasuryDriverLease,
 } from "./operation-journal.js";
 
 const OPERATION_KEY = /^[A-Za-z0-9._:-]{1,160}$/;
 const ADDRESS = /^kaspatest:[a-z0-9]+$/;
 const ATOMIC = /^[1-9][0-9]*$/;
 const MAX_RECONCILED_RETRIES = 8;
+const DRIVER_LEASE_TTL_MS = 60_000;
+const DRIVER_WAIT_MS = 10;
+const DRIVER_WAIT_ATTEMPTS = 600;
 
 export interface TreasuryOperationRequest {
   readonly operationKey: string;
@@ -71,7 +75,10 @@ export class TreasuryOperationModule {
   private readonly adapters: ReadonlyMap<TreasuryOperationKind, TreasuryOperationAdapter>;
   private readonly feeCeilingAtomic: string;
   private readonly directTreasuryRetries: number;
+  /** Only an optimization; durable Journal driver generations are authoritative. */
   private readonly preparing = new Set<string>();
+  private readonly driverOwner = `treasury-driver:${process.pid}:${randomBytes(8).toString("hex")}`;
+  private readonly activeDrivePromises = new Map<string, Promise<TreasuryOperationView>>();
 
   constructor(options: TreasuryOperationModuleOptions) {
     if (!options?.journal || !options.policy) {
@@ -103,7 +110,11 @@ export class TreasuryOperationModule {
     this.installCurrentPolicy();
   }
 
-  async execute(request: Readonly<TreasuryOperationRequest>): Promise<TreasuryOperationView> {
+  async execute(
+    request: Readonly<TreasuryOperationRequest>,
+    signal?: AbortSignal,
+  ): Promise<TreasuryOperationView> {
+    throwIfAborted(signal);
     const normalized = normalizeRequest(request);
     const adapter = this.requireAdapter(normalized.kind);
     adapter.validateRequest?.({
@@ -120,22 +131,26 @@ export class TreasuryOperationModule {
       retryLimit: this.directTreasuryRetries,
       policyDigest: policy.digest,
     });
-    return this.drive(record.operationKey);
+    return this.drive(record.operationKey, signal);
   }
 
   status(operationKey: string): TreasuryOperationView {
     return view(this.journal.requireTreasuryOperation(requireOperationKey(operationKey)));
   }
 
-  async recover(operationKey: string): Promise<TreasuryOperationView> {
+  async recover(operationKey: string, signal?: AbortSignal): Promise<TreasuryOperationView> {
+    throwIfAborted(signal);
     this.installCurrentPolicy();
-    return this.drive(requireOperationKey(operationKey));
+    return this.drive(requireOperationKey(operationKey), signal);
   }
 
   async cancel(operationKey: string): Promise<TreasuryOperationView> {
     const normalizedKey = requireOperationKey(operationKey);
     const current = this.journal.requireTreasuryOperation(normalizedKey);
-    if (current.state === "intent" && this.preparing.has(normalizedKey)) {
+    if (
+      current.state === "intent" &&
+      (this.preparing.has(normalizedKey) || current.driverOwner !== undefined)
+    ) {
       return view(this.journal.requestTreasuryOperationCancellation(normalizedKey));
     }
     return view(
@@ -159,14 +174,105 @@ export class TreasuryOperationModule {
     return this.journal.unresolvedTreasuryOperationCount();
   }
 
-  private async drive(operationKey: string): Promise<TreasuryOperationView> {
+  private async drive(
+    operationKey: string,
+    signal?: AbortSignal,
+  ): Promise<TreasuryOperationView> {
+    const existing = this.activeDrivePromises.get(operationKey);
+    if (existing) return existing;
+    const promise = this.driveUncoordinated(operationKey, signal);
+    this.activeDrivePromises.set(operationKey, promise);
+    try {
+      return await promise;
+    } finally {
+      if (this.activeDrivePromises.get(operationKey) === promise) {
+        this.activeDrivePromises.delete(operationKey);
+      }
+    }
+  }
+
+  private async driveUncoordinated(
+    operationKey: string,
+    signal?: AbortSignal,
+  ): Promise<TreasuryOperationView> {
+    const claim = this.journal.claimTreasuryOperationDriver(
+      operationKey,
+      this.driverOwner,
+      DRIVER_LEASE_TTL_MS,
+    );
+    if (!claim.acquired || !claim.lease) {
+      return this.waitForDriver(operationKey, signal);
+    }
+    const lease = claim.lease;
+    const renewDriver = () => {
+      try {
+        this.journal.renewTreasuryOperationDriver(lease, operationKey);
+      } catch {
+        // The Journal generation checks below fence the stale worker. The
+        // worker must never attempt a takeover or release a successor's lease.
+      }
+    };
+    const driverHeartbeat = setInterval(renewDriver, Math.floor(DRIVER_LEASE_TTL_MS / 3));
+    driverHeartbeat.unref();
+    const onAbort = () => {
+      try {
+        this.journal.requestTreasuryOperationCancellation(operationKey);
+      } catch {
+        // The owning driver continues to reconcile; cancellation is durable
+        // when the Journal accepts it and never releases protected capacity.
+      }
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+    try {
+      return await this.driveOwned(operationKey, lease);
+    } finally {
+      clearInterval(driverHeartbeat);
+      signal?.removeEventListener("abort", onAbort);
+      try {
+        this.journal.releaseTreasuryOperationDriver(lease, operationKey);
+      } catch {
+        // A stale or expired owner must not overwrite a successor's lease.
+      }
+    }
+  }
+
+  private async waitForDriver(
+    operationKey: string,
+    signal?: AbortSignal,
+  ): Promise<TreasuryOperationView> {
+    for (let attempt = 0; attempt < DRIVER_WAIT_ATTEMPTS; attempt += 1) {
+      if (signal?.aborted) {
+        try {
+          this.journal.requestTreasuryOperationCancellation(operationKey);
+        } catch {
+          // Preserve the durable driver's reconciliation responsibility.
+        }
+        throw new TreasuryOperationError("Treasury operation request was cancelled");
+      }
+      const current = this.journal.requireTreasuryOperation(operationKey);
+      if (current.state === "completed" || current.state === "failed_terminal") return view(current);
+      const claim = this.journal.claimTreasuryOperationDriver(
+        operationKey,
+        this.driverOwner,
+        DRIVER_LEASE_TTL_MS,
+      );
+      if (claim.acquired) {
+        return this.drive(operationKey, signal);
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, DRIVER_WAIT_MS));
+    }
+    return view(this.journal.requireTreasuryOperation(operationKey));
+  }
+
+  private async driveOwned(
+    operationKey: string,
+    driver: TreasuryDriverLease,
+  ): Promise<TreasuryOperationView> {
     let record = this.journal.requireTreasuryOperation(operationKey);
     const adapter = this.requireAdapter(record.kind);
 
-    if (record.state === "completed" || record.state === "failed_terminal") {
-      return view(record);
-    }
-
+    if (record.state === "completed" || record.state === "failed_terminal") return view(record);
     if (record.preparationFenced || (record.cancellationRequested && (record.state === "intent" || record.state === "prepared"))) {
       return view(record);
     }
@@ -186,25 +292,16 @@ export class TreasuryOperationModule {
           });
         } catch (error) {
           if (isTerminalPreEffectFailure(error)) {
-            return view(
-              this.journal.failTreasuryOperationPreparation(
-                operationKey,
-                error.code,
-              )
-            );
+            return view(this.journal.failTreasuryOperationPreparation(operationKey, error.code, driver));
           }
           if (isTransientPreparationFailure(error)) {
             const updated = this.journal.recordTreasuryPreparationRetry(
               operationKey,
               "transient_preparation_failure",
+              driver,
             );
             if (updated.cancellationRequested) {
-              return view(
-                this.journal.failTreasuryOperationPreparation(
-                  operationKey,
-                  "cancelled_before_effect",
-                )
-              );
+              return view(this.journal.failTreasuryOperationPreparation(operationKey, "cancelled_before_effect", driver));
             }
             if (updated.retryCount >= updated.retryLimit) {
               throw new TreasuryOperationError(
@@ -216,88 +313,90 @@ export class TreasuryOperationModule {
             this.journal.fenceTreasuryOperationPreparation(
               operationKey,
               "unknown_preparation_failure",
+              driver,
             );
           }
           throw error;
         }
-      } catch (error) {
-        throw error;
       } finally {
         this.preparing.delete(operationKey);
       }
-      if (!record.policyDigest) {
-        throw new TreasuryOperationError("Treasury operation has no durable policy snapshot");
-      }
-      record = this.journal.recordPreparedTreasuryOperation(operationKey, {
-        ...prepared,
-        policyDigest: record.policyDigest,
-      });
-      if (record.cancellationRequested) return view(record);
+      if (!record.policyDigest) throw new TreasuryOperationError("Treasury operation has no durable policy snapshot");
+      record = this.journal.recordPreparedTreasuryOperation(
+        operationKey,
+        { ...prepared, policyDigest: record.policyDigest },
+        driver,
+      );
+      if (record.cancellationRequested || record.preparationFenced) return view(record);
     }
 
     if (record.state === "observed") {
       await adapter.commit(
         record,
         this.journal.readPreparedTreasuryOperation(operationKey),
-        this.journal.readObservedTreasuryOperationDetail(operationKey)
+        this.journal.readObservedTreasuryOperationDetail(operationKey),
       );
-      return view(this.journal.completeTreasuryOperation(operationKey));
+      return view(this.journal.completeTreasuryOperation(operationKey, driver));
     }
 
     if (record.state === "submission_planned" || record.state === "submitted") {
-      record = await this.reconcile(record, adapter);
+      record = await this.reconcile(record, adapter, driver);
       if (record.state === "observed") {
         await adapter.commit(
           record,
           this.journal.readPreparedTreasuryOperation(operationKey),
-          this.journal.readObservedTreasuryOperationDetail(operationKey)
+          this.journal.readObservedTreasuryOperationDetail(operationKey),
         );
-        return view(this.journal.completeTreasuryOperation(operationKey));
+        return view(this.journal.completeTreasuryOperation(operationKey, driver));
       }
       if (record.state !== "prepared" || record.cancellationRequested) return view(record);
     }
 
     if (record.state !== "prepared") return view(record);
     if (record.retryCount > MAX_RECONCILED_RETRIES) {
-      throw new TreasuryOperationError(
-        "Treasury operation exceeded its bounded proof-backed submission retries"
-      );
+      throw new TreasuryOperationError("Treasury operation exceeded its bounded proof-backed submission retries");
     }
-    if (!record.resolvedAmountAtomic) {
-      throw new TreasuryOperationError("Prepared Treasury operation has no resolved amount");
-    }
+    if (!record.resolvedAmountAtomic) throw new TreasuryOperationError("Prepared Treasury operation has no resolved amount");
     if (record.kind !== "vault_deposit") {
       this.authorize(operationKey, record.destination, BigInt(record.resolvedAmountAtomic));
     }
-    if (!this.journal.planTreasuryOperationSubmission(operationKey)) {
-      return this.drive(operationKey);
+    if (!this.journal.planTreasuryOperationSubmission(operationKey, driver)) {
+      return this.driveOwned(operationKey, driver);
+    }
+    record = this.journal.requireTreasuryOperation(operationKey);
+    if (!this.journal.claimTreasuryOperationEffectCapability(operationKey, driver)) {
+      return view(this.journal.requireTreasuryOperation(operationKey));
     }
     record = this.journal.requireTreasuryOperation(operationKey);
     const bytes = this.journal.readPreparedTreasuryOperation(operationKey);
     try {
       const submitted = await adapter.submit(record, bytes);
-      record = this.journal.recordTreasuryOperationSubmissionAccepted(operationKey, submitted.transactionId);
+      record = this.journal.recordTreasuryOperationSubmissionAccepted(
+        operationKey,
+        submitted.transactionId,
+        driver,
+      );
     } catch {
       // Any transport/RPC exception is ambiguous. The exact signed bytes and
-      // planned identity are durable; observation below decides whether a
-      // later retry is safe.
+      // planned identity remain durable; observation decides whether retry is safe.
       record = this.journal.requireTreasuryOperation(operationKey);
     }
-    record = await this.reconcile(record, adapter);
+    record = await this.reconcile(record, adapter, driver);
     if (record.state === "observed") {
       await adapter.commit(
         record,
         bytes,
-        this.journal.readObservedTreasuryOperationDetail(operationKey)
+        this.journal.readObservedTreasuryOperationDetail(operationKey),
       );
-      record = this.journal.completeTreasuryOperation(operationKey);
+      record = this.journal.completeTreasuryOperation(operationKey, driver);
     }
     return view(record);
   }
 
   private async reconcile(
     record: TreasuryOperationRecord,
-    adapter: TreasuryOperationAdapter
+    adapter: TreasuryOperationAdapter,
+    driver?: TreasuryDriverLease,
   ): Promise<TreasuryOperationRecord> {
     if (record.state !== "submission_planned" && record.state !== "submitted") return record;
     const probe = await adapter.observe(
@@ -307,7 +406,8 @@ export class TreasuryOperationModule {
     return this.journal.recordTreasuryOperationObservation(
       record.operationKey,
       probe.status,
-      probe.detail
+      probe.detail,
+      driver,
     );
   }
 
@@ -473,6 +573,11 @@ function requireRetryLimit(value: number): number {
   return value;
 }
 
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (!signal?.aborted) return;
+  throw new TreasuryOperationError("Treasury operation request was cancelled");
+}
+
 function isTerminalPreEffectFailure(
   error: unknown,
 ): error is TreasuryPreparationError {
@@ -480,7 +585,13 @@ function isTerminalPreEffectFailure(
     error instanceof TreasuryPreparationError &&
     error.phase === "preparation" &&
     error.effect === "none" &&
-    (error.code === "invalid_destination" || error.code === "invalid_transaction_shape")
+    (
+      error.code === "invalid_destination" ||
+      error.code === "invalid_transaction_shape" ||
+      error.code === "insufficient_funds" ||
+      error.code === "not_funded" ||
+      error.code === "invalid_runtime_state"
+    )
   );
 }
 
