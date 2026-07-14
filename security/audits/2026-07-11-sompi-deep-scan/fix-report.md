@@ -426,3 +426,85 @@ amended; no additional accepted design decision changed. No sibling
 repository, AP2/x402 wire object, covenant rule, deployment, or remote branch
 was changed. The report is ready for independent re-review and does not claim
 independent acceptance.
+
+### Milestone 6: exact submission outcomes and Vault RPC classification
+
+Status: **verified — ready for independent re-review**
+
+The sealed re-review of
+`7656013c6d782ac32babb84507c252df9f902dea` validated four additional
+lifecycle findings:
+
+- `SOMPI-DIFF-TREASURY-CANCEL-001`
+- `SOMPI-DIFF-VAULT-RPC-SEND-001`
+- `SOMPI-DIFF-VAULT-RPC-DEPOSIT-001`
+- `SOMPI-DIFF-VAULT-RPC-TOPUP-001`
+
+All four reproduced before editing. Cancellation after node acceptance but
+before Journal acceptance reached `failed_terminal`, released 110 units of
+capacity, and admitted a successor. Four Vault-send RPC stages, three initial
+deposit stages, and four funded top-up stages escaped as plain errors, left
+retry count zero, durably fenced the sole Treasury slot, and survived restart
+and cancellation.
+
+Commit `081f619` closes those paths. Adapter submit errors and Journal commit
+errors are separate. An exact transaction result is durably accepted even if
+cancellation arrived after effect-capability issue, while a Journal acceptance
+failure propagates and retains the fence. Promise settlement was replaced by
+explicit `in_flight`, `ambiguous`, `accepted`, and
+`proven_not_executed` outcomes. Temporary corroborated absence never releases
+an in-flight, ambiguous, or accepted operation, and an accepted operation
+cannot be overwritten by a later absence claim.
+
+Every enumerated read-only Vault RPC await before the first signature now
+crosses a narrow `rpc_unavailable` boundary: client acquisition, wallet/vault
+UTXO reads, fee estimation, and server information. These proven no-effect
+failures use the existing manifest-bounded durable retry lifecycle. The wrapper
+does not include normalization, transaction construction, signing,
+serialization, submission, or unknown exceptions, so possible-effect failures
+remain fenced.
+
+Ordered verification:
+
+1. Focused Treasury, Vault, schema migration, and Journal fault-boundary tests
+   passed **35/35**. They cover all three Treasury adapters, cancellation after
+   exact acceptance, lagging absence, restart, successor blocking, Journal
+   acceptance failure, ambiguous submission, every reported Vault RPC stage,
+   and zero signatures before typed failure.
+2. The complete `npm test` passed **385 tests: 384 pass, 0 fail, 1 documented
+   root-only skip**. Offline smoke passed **13/13** checks.
+3. The original cancellation PoC exited at its obsolete vulnerable assertion
+   after recording `state=submitted`, `capacityUsed=110`, and
+   `unresolvedCount=1`. The Vault-send PoC reached a typed
+   `TreasuryPreparationError(code=transient_unavailable)` instead of its
+   expected plain error and permanent fence. Initial-deposit and top-up PoCs
+   likewise exited at their obsolete plain-error identity assertions after the
+   typed transient outcome appeared. Direct current-boundary regressions prove
+   the durable retry, restart, capacity, and zero-signature invariants.
+4. `npm pack --json` and the packed-artifact verifier passed with **173
+   entries**, **5,036,713 packed bytes**, and **14,358,917 unpacked file
+   bytes**. The generated archive was removed.
+5. The fresh funded Testnet-10 vertical against
+   `ws://10.0.3.26:17210/` reached `receipted` for Purchase
+   `pur_w9AgZJqW8U4IsOyVPxjraA`, exact transaction
+   `2a54ad1b9683629f60e4bb8c25492205a353f81b5c2651c0d27f91f1ac243a55`,
+   Merchant outpoint `:1`, and canonical report digest
+   `82a4e67848d6967c387b6279515ae04a541241c689cad97120a76b1329d5d0e3`.
+   The report is mode `0600` at
+   `/tmp/sompi-phase2d-final-live-reports/report.json`. The harness uses the
+   in-process auto-approved Authority fixture and does not claim separate-UID
+   human-present conformance.
+6. The final security review covered cancellation/acceptance ordering,
+   lagging observers, adapter-versus-Journal error domains, stale generations,
+   cross-adapter capacity reuse, RPC wrapper boundaries, signature timing,
+   retry exhaustion, secret leakage, AP2/x402 ownership, and native covenant
+   preservation.
+
+The original 21 deep-scan findings remain accounted for and these four later
+re-review findings are fixed at the current boundary. Ambiguous submission
+without positive evidence intentionally stays fenced until an operator-safe
+typed non-execution proof exists. The pre-crash temporary fix-report mirror is
+no longer present; the durable repository report is authoritative and no fake
+scan workspace was recreated. No sibling repository, AP2/x402 wire object,
+Kaspa covenant rule, deployment, package publication, or remote branch was
+changed.

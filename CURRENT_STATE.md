@@ -4,7 +4,7 @@ Last updated: **2026-07-14**
 
 ## Plain-English status
 
-**Phase 2D remediation round 2 is verified and ready for independent re-review.**
+**Phase 2D remediation round 3 is verified and ready for independent re-review.**
 The first human-present AP2 + Kaspa-x402 exact vertical remains testnet-only;
 the post-scan hardening gates now pass through the bounded Authority,
 Purchase/Journal, Evidence, MCP, and direct-Treasury lifecycles. Phase 3 has
@@ -17,8 +17,9 @@ Testnet-10 evidence. The completed deep security scan then found 21 medium/low
 issues concentrated in chain evidence/finality, operator provisioning, and
 unbounded operation lifecycles. The independent review of the initial Phase
 2D target `082def29636fe0a6802240ee358f867c34667b4c` reopened the lifecycle
-work. The remediation commits are now committed and verified locally; the
-branch is ready for independent re-review and Phase 3 has not started.
+work. The remediation commits through `081f619` are now committed and verified
+locally; the branch is ready for independent re-review and Phase 3 has not
+started.
 
 ## Git orientation at codification
 
@@ -31,8 +32,8 @@ branch is ready for independent re-review and Phase 3 has not started.
 - Required reviewed target: `082def29636fe0a6802240ee358f867c34667b4c`.
 - Phase 2D remediation commits through the independent-review repair round:
   `9420aff`, `fdedcad`, `3664e76`, `7e2fa5a`, `801df30`, `2088348`,
-  `1df2f9c`, `91f85cd`, and `a3e5a20`. The worktree is named and no remote
-  branch was changed.
+  `1df2f9c`, `91f85cd`, `a3e5a20`, and `081f619`. The worktree is named and
+  no remote branch was changed.
 - Latest implementation milestone: `4c6fc8f` (`Centralize trusted chain
   evidence`).
 - Untouched post-scan baseline: `npm test` passed with 339 tests, one privileged
@@ -219,14 +220,14 @@ Phases 3 through 6 have an implemented pre-hardening vertical:
 5. local crash/replay proofs and live Testnet-10 Purchase evidence passed.
 
 The deep scan acceptance gates were reopened and are now satisfied through the
-Phase 2D remediation. The full local vertical, offline smoke, focused suites,
-package verification, all PoCs, and the pinned live proof were rerun after the
-review target.
+third Phase 2D remediation round. The full local vertical, offline smoke,
+focused suites, package verification, all four latest PoCs, and the pinned live
+proof were rerun after the latest implementation commit.
 
 No remote push, package publish, deployment, or sibling-repository change was
 performed.
 
-## Phase 2D remediation round 2 verification
+## Phase 2D remediation round 2 verification (historical)
 
 The sealed re-review of `6619813135f78bfcfb5a9aceffca5a8959c337a0` identified
 three reportable defects and one Treasury safety blocker. The corrected
@@ -256,12 +257,62 @@ no-effect outcomes, and waiter takeover drives the exact acquired lease.
   This live harness uses an in-process auto-approved Authority fixture and
   does not claim separate-UID human-present Authority conformance.
 
-The next action is another independent review. Phase 3 has not started.
+That round was subsequently reopened by the sealed re-review of `7656013`.
+
+## Phase 2D remediation round 3 verification
+
+The sealed re-review of `7656013c6d782ac32babb84507c252df9f902dea`
+validated four additional lifecycle findings. Commit `081f619` repairs them
+without changing the Journal schema, AP2/x402 wire objects, Kaspa covenant
+rules, or any sibling repository:
+
+1. Exact adapter submission success is recorded outside the adapter-error
+   catch and remains authoritative after post-capability cancellation.
+2. `in_flight`, `ambiguous`, and `accepted` outcomes all retain capacity on
+   temporary corroborated absence. Only a separately typed durable
+   `proven_not_executed` outcome may release the effect capability; exact
+   acceptance cannot later be overwritten by an absence claim.
+3. Vault send, initial deposit, and funded top-up wrap every enumerated
+   read-only pre-sign client, UTXO, fee-estimate, and server-info RPC await as
+   `rpc_unavailable`. The existing manifest retry budget handles those proven
+   no-effect failures; signing, serialization, submission, and unknown errors
+   remain fail-closed.
+4. Regression coverage spans wallet send, vault send, and vault deposit;
+   cancellation/acceptance timing, lagging absence, restart, successor
+   admission, Journal acceptance failure, and zero-signature Vault RPC faults.
+
+Verification for this round:
+
+- Focused Treasury/Vault/schema/fault-boundary suite: **35 pass, 0 fail, 0
+  skipped**.
+- Complete `npm test`: **385 tests, 384 pass, 0 fail, 1 documented root-only
+  skip**. Offline smoke: **13/13 pass**.
+- Package verification: **173 entries**, **5,036,713 packed bytes**, and
+  **14,358,917 unpacked file bytes**; the generated archive was removed.
+- The cancellation PoC reached durable `submitted`, retained 110 units of
+  policy capacity, and remained unresolved after lagging absence. The Vault
+  send, initial-deposit, and top-up PoCs all stopped when their former plain
+  RPC errors became typed `transient_unavailable` preparation outcomes.
+- A fresh funded Testnet-10 run against `ws://10.0.3.26:17210/` reached
+  `receipted` for Purchase `pur_w9AgZJqW8U4IsOyVPxjraA`, exact transaction
+  `2a54ad1b9683629f60e4bb8c25492205a353f81b5c2651c0d27f91f1ac243a55`,
+  Merchant outpoint `:1`, and canonical report digest
+  `82a4e67848d6967c387b6279515ae04a541241c689cad97120a76b1329d5d0e3`.
+  The mode-`0600` report is
+  `/tmp/sompi-phase2d-final-live-reports/report.json`. The run uses the
+  in-process auto-approved Authority fixture and does not claim separate-UID
+  human-present Authority conformance.
+
+The four latest findings are fixed at their current boundaries and the
+original 21 deep-scan findings remain accounted for. Ambiguous submissions
+without later positive evidence intentionally remain fenced until an
+operator-safe typed non-execution proof exists; temporary absence is not such
+proof. Phase 3 has not started.
 
 ## Next action
 
-Independent review of the Phase 2D remediation commits is the next action. Do
-not start Phase 3 in this closeout.
+Independent review of the Phase 2D remediation commits through `081f619` is
+the next action. Do not start Phase 3 in this closeout.
 
 ## Known external uncertainties
 
@@ -286,10 +337,9 @@ These are contained by the design and do not block the hardening cutover:
 
 ## Current blockers
 
-No implementation or funding blocker remains. The live proof used the funded
-source wallet at `/home/luke/.sompi/testnet-10` and left isolated evidence under
-`/tmp`; the report intentionally does not claim human-present or separate-UID
-Authority conformance. The legacy direct-Treasury PoC harness is stale against
-the clean 2B PolicyEngine API; the current-boundary regression and exact
-baseline reproduction are the authoritative evidence. No sibling Kaspa-x402
-change is required.
+No implementation or funding blocker remains. The latest live proof used the
+funded source wallet at `/home/luke/.sompi/testnet-10` and left isolated
+evidence under `/tmp`; the report intentionally does not claim human-present
+or separate-UID Authority conformance. The pre-crash temporary security-fix
+report mirror no longer exists, so only the durable repository report was
+updated. No sibling Kaspa-x402 change is required.

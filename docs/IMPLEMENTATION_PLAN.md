@@ -208,6 +208,13 @@ path.
 - [x] Rerun the three canonical follow-up PoCs, the Treasury takeover safety
   PoC, focused lifecycle suites, the complete npm test, all 13 offline smoke
   checks, package verification, and the pinned live Testnet-10 proof.
+- [x] Remediate the sealed re-review of `7656013`: cancellation cannot erase
+  exact submission acceptance, temporary absence cannot release an accepted or
+  ambiguous effect, and every enumerated pre-sign Vault RPC await is typed as
+  bounded `rpc_unavailable` without widening post-sign handling.
+- [x] Rerun the four re-review PoCs, cross-adapter cancellation/restart tests,
+  Vault RPC fault matrix, complete suite, offline smoke, packed artifact, and
+  a fresh funded Testnet-10 vertical.
 
 Gate:
 
