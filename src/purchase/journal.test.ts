@@ -1056,6 +1056,7 @@ test("reconciliation renews its fence across a slow observer", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-slow-reconcile-"));
   const filename = path.join(directory, "purchase.sqlite");
   const journal = new PurchaseJournal(filename);
+  const reconciliationLeaseMs = 1_000;
   try {
     const purchase = authorizedPurchase(journal, 18);
     const preparedBytes = Buffer.from("slow");
@@ -1077,14 +1078,14 @@ test("reconciliation renews its fence across a slow observer", async () => {
           "slow-observer",
           {
             async observe() {
-              await new Promise((resolve) => setTimeout(resolve, 90));
+              await new Promise((resolve) => setTimeout(resolve, 2_200));
               return { status: "observed" as const, resultDigest: evidenceDigest("slow-result") };
             },
           },
         ],
       ])
     );
-    const summary = await reconciler.reconcile("slow-worker", 30);
+    const summary = await reconciler.reconcile("slow-worker", reconciliationLeaseMs);
     assert.equal(summary.leaseLost, false);
     assert.equal(summary.results[0]?.status, "observed");
   } finally {
