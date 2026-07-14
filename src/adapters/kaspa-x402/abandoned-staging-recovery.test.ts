@@ -319,6 +319,112 @@ test("a same-millisecond observation cannot reissue a consumed readiness proof",
   });
 });
 
+test("a newer readiness supersedes every sibling proof for the same recovery", async () => {
+  await withFixture(async (fixture) => {
+    const prepared = await fixture.prepare();
+    fixture.observeWith((request) => safeEvidence(request));
+    const firstObservation = await fixture.module.observe(prepared.preparedBytes);
+    const secondObservation = await fixture.module.observe(prepared.preparedBytes);
+    if (
+      firstObservation.status !== "safe_to_submit" ||
+      secondObservation.status !== "safe_to_submit"
+    ) {
+      throw new Error("expected readiness");
+    }
+    assert.notEqual(
+      firstObservation.readiness.proofDigest,
+      secondObservation.readiness.proofDigest
+    );
+    await assert.rejects(
+      fixture.module.submit(prepared.preparedBytes, firstObservation.readiness),
+      /already consumed/
+    );
+    assert.equal(
+      (await fixture.module.submit(prepared.preparedBytes, secondObservation.readiness)).status,
+      "accepted"
+    );
+    await assert.rejects(
+      fixture.module.submit(prepared.preparedBytes, secondObservation.readiness),
+      /already consumed/
+    );
+    assert.equal(fixture.submissionCalls.length, 1);
+  });
+});
+
+test("an observation started before submit cannot issue readiness after submit begins", async () => {
+  await withFixture(async (fixture) => {
+    const prepared = await fixture.prepare();
+    const releaseObservations: Array<() => void> = [];
+    fixture.observeWith(
+      (request) => new Promise<StagingRecoveryRaceEvidence>((resolve) => {
+        releaseObservations.push(() => resolve(safeEvidence(request)));
+      })
+    );
+    const firstPending = fixture.module.observe(prepared.preparedBytes);
+    const siblingPending = fixture.module.observe(prepared.preparedBytes);
+    assert.equal(releaseObservations.length, 2);
+
+    releaseObservations[0]();
+    const firstObservation = await firstPending;
+    if (firstObservation.status !== "safe_to_submit") throw new Error("expected readiness");
+
+    let releaseSubmission!: () => void;
+    fixture.submitWith(
+      (request) => new Promise<{ transactionId: string }>((resolve) => {
+        releaseSubmission = () => resolve({ transactionId: request.transactionId });
+      })
+    );
+    const submitting = fixture.module.submit(
+      prepared.preparedBytes,
+      firstObservation.readiness
+    );
+    assert.equal(fixture.submissionCalls.length, 1);
+
+    releaseObservations[1]();
+    const staleSibling = await siblingPending;
+    assert.equal(staleSibling.status, "pending");
+    assert.equal("readiness" in staleSibling, false);
+
+    releaseSubmission();
+    assert.equal((await submitting).status, "accepted");
+    assert.equal(fixture.submissionCalls.length, 1);
+  });
+});
+
+test("an observation started during submit cannot issue parallel readiness", async () => {
+  await withFixture(async (fixture) => {
+    const prepared = await fixture.prepare();
+    fixture.observeWith((request) => safeEvidence(request));
+    const ready = await fixture.module.observe(prepared.preparedBytes);
+    if (ready.status !== "safe_to_submit") throw new Error("expected readiness");
+
+    let releaseSubmission!: () => void;
+    fixture.submitWith(
+      (request) => new Promise<{ transactionId: string }>((resolve) => {
+        releaseSubmission = () => resolve({ transactionId: request.transactionId });
+      })
+    );
+    const submitting = fixture.module.submit(prepared.preparedBytes, ready.readiness);
+    assert.equal(fixture.submissionCalls.length, 1);
+
+    let releaseObservation!: () => void;
+    fixture.observeWith(
+      (request) => new Promise<StagingRecoveryRaceEvidence>((resolve) => {
+        releaseObservation = () => resolve(safeEvidence(request));
+      })
+    );
+    const observingDuringSubmit = fixture.module.observe(prepared.preparedBytes);
+
+    releaseSubmission();
+    assert.equal((await submitting).status, "accepted");
+    releaseObservation();
+    const concurrent = await observingDuringSubmit;
+    assert.equal(concurrent.status, "pending");
+    assert.equal("readiness" in concurrent, false);
+    assert.equal(fixture.submissionCalls.length, 1);
+  });
+});
+
 test("accepted submission reconciles after a process crash without a second broadcast", async () => {
   await withFixture(async (fixture) => {
     const prepared = await fixture.prepare();

@@ -340,7 +340,15 @@ export class AbandonedStagingRecovery {
   private readonly now: () => number;
   private readonly readinessProofs = new Map<
     string,
-    Readonly<{ state: "issued" | "consumed"; expiresAtMs: number }>
+    Readonly<{
+      preparedDigest: Sha256Digest;
+      state: "issued" | "consumed";
+      expiresAtMs: number;
+    }>
+  >();
+  private readonly readinessOperations = new Map<
+    Sha256Digest,
+    { generation: number; inFlightObservations: number; submissionInFlight: boolean }
   >();
   private readonly addressCodec = new KaspaTestnet10AddressCodec();
 
@@ -411,37 +419,48 @@ export class AbandonedStagingRecovery {
     const { envelope, preparedDigest } = this.requirePrepared(preparedBytes);
     if (signal.aborted) throw abortError(signal);
     const now = readClock(this.now);
+    this.pruneReadinessProofs(now);
+    const observationLifetime = this.beginReadinessObservation(preparedDigest);
     const deadlineAtMs = checkedDeadline(now, this.operationTimeoutMs);
-    let raw: Readonly<StagingRecoveryRaceEvidence>;
     try {
-      raw = await boundedCall(
-        this.observer.observeRace({
-          network: NETWORK,
-          staging: Object.freeze({
-            outpoint: envelope.staging.outpoint,
-            address: envelope.staging.address,
-            amountAtomic: envelope.staging.amountAtomic,
-            scriptPublicKey: envelope.staging.scriptPublicKey,
-            blockDaaScore: envelope.staging.blockDaaScore,
+      let raw: Readonly<StagingRecoveryRaceEvidence>;
+      try {
+        raw = await boundedCall(
+          this.observer.observeRace({
+            network: NETWORK,
+            staging: Object.freeze({
+              outpoint: envelope.staging.outpoint,
+              address: envelope.staging.address,
+              amountAtomic: envelope.staging.amountAtomic,
+              scriptPublicKey: envelope.staging.scriptPublicKey,
+              blockDaaScore: envelope.staging.blockDaaScore,
+            }),
+            exactPayment:
+              envelope.exactPayment === null
+                ? null
+                : Object.freeze({ ...envelope.exactPayment }),
+            recovery: recoveryCandidate(envelope),
+            deadlineAtMs,
+            signal,
           }),
-          exactPayment:
-            envelope.exactPayment === null
-              ? null
-              : Object.freeze({ ...envelope.exactPayment }),
-          recovery: recoveryCandidate(envelope),
           deadlineAtMs,
-          signal,
-        }),
-        deadlineAtMs,
-        this.now,
-        signal
-      );
-    } catch (cause) {
-      if (cause instanceof AbandonedStagingRecoveryError) throw cause;
-      throw adapterError("source_failure", "staging recovery race observation failed", { cause });
-    }
+          this.now,
+          signal
+        );
+      } catch (cause) {
+        if (cause instanceof AbandonedStagingRecoveryError) throw cause;
+        throw adapterError("source_failure", "staging recovery race observation failed", { cause });
+      }
 
-    return this.classifyObservation(envelope, preparedDigest, raw);
+      return this.classifyObservation(
+        envelope,
+        preparedDigest,
+        raw,
+        observationLifetime
+      );
+    } finally {
+      this.endReadinessObservation(preparedDigest);
+    }
   }
 
   async submit(
@@ -466,64 +485,69 @@ export class AbandonedStagingRecovery {
         "staging recovery readiness proof was already consumed; observe the race again"
       );
     }
-    this.readinessProofs.set(readiness.proofDigest, Object.freeze({
-      state: "consumed",
-      expiresAtMs: issued.expiresAtMs,
-    }));
-    if (signal.aborted) throw abortError(signal);
-    const deadlineAtMs = checkedDeadline(now, this.operationTimeoutMs);
-    const submissionBase = {
-      profile: ABANDONED_STAGING_RECOVERY_PROFILE,
-      preparedDigest,
-      readinessProofDigest: readiness.proofDigest,
-      recoveryTransactionId: envelope.recovery.transactionId,
-    };
+    if (issued.preparedDigest !== preparedDigest) {
+      throw adapterError("readiness_required", "staging recovery readiness changed its operation");
+    }
+    this.beginReadinessSubmission(preparedDigest);
+    this.consumeReadinessProofs(preparedDigest);
     try {
-      const submitted = await boundedCall(
-        this.submitter.submitRecovery({
-          network: NETWORK,
-          transactionId: envelope.recovery.transactionId,
-          transaction: envelope.recovery.transaction,
-          transactionEncoding: envelope.recovery.transactionEncoding,
-          deadlineAtMs,
-          signal,
-        }),
-        deadlineAtMs,
-        this.now,
-        signal
-      );
-      if (!submitted || !HASH32.test(submitted.transactionId)) {
-        return Object.freeze({
-          status: "conflict" as const,
-          transactionId: envelope.recovery.transactionId,
-          submissionDigest: digestCanonical({ ...submissionBase, status: "conflict" }),
-        });
-      }
-      if (submitted.transactionId !== envelope.recovery.transactionId) {
-        return Object.freeze({
-          status: "conflict" as const,
-          transactionId: envelope.recovery.transactionId,
-          submissionDigest: digestCanonical({
-            ...submissionBase,
-            status: "conflict",
-            returnedTransactionId: submitted.transactionId,
+      if (signal.aborted) throw abortError(signal);
+      const deadlineAtMs = checkedDeadline(now, this.operationTimeoutMs);
+      const submissionBase = {
+        profile: ABANDONED_STAGING_RECOVERY_PROFILE,
+        preparedDigest,
+        readinessProofDigest: readiness.proofDigest,
+        recoveryTransactionId: envelope.recovery.transactionId,
+      };
+      try {
+        const submitted = await boundedCall(
+          this.submitter.submitRecovery({
+            network: NETWORK,
+            transactionId: envelope.recovery.transactionId,
+            transaction: envelope.recovery.transaction,
+            transactionEncoding: envelope.recovery.transactionEncoding,
+            deadlineAtMs,
+            signal,
           }),
+          deadlineAtMs,
+          this.now,
+          signal,
+        );
+        if (!submitted || !HASH32.test(submitted.transactionId)) {
+          return Object.freeze({
+            status: "conflict" as const,
+            transactionId: envelope.recovery.transactionId,
+            submissionDigest: digestCanonical({ ...submissionBase, status: "conflict" }),
+          });
+        }
+        if (submitted.transactionId !== envelope.recovery.transactionId) {
+          return Object.freeze({
+            status: "conflict" as const,
+            transactionId: envelope.recovery.transactionId,
+            submissionDigest: digestCanonical({
+              ...submissionBase,
+              status: "conflict",
+              returnedTransactionId: submitted.transactionId,
+            }),
+          });
+        }
+        return Object.freeze({
+          status: "accepted" as const,
+          transactionId: submitted.transactionId,
+          submissionDigest: digestCanonical({ ...submissionBase, status: "accepted" }),
+        });
+      } catch (cause) {
+        // A timeout/transport failure can occur after the node accepted bytes.
+        // The same is true for cancellation after invocation. No cause text is
+        // exposed or used as permission to retry.
+        return Object.freeze({
+          status: "ambiguous" as const,
+          transactionId: envelope.recovery.transactionId,
+          submissionDigest: digestCanonical({ ...submissionBase, status: "ambiguous" }),
         });
       }
-      return Object.freeze({
-        status: "accepted" as const,
-        transactionId: submitted.transactionId,
-        submissionDigest: digestCanonical({ ...submissionBase, status: "accepted" }),
-      });
-    } catch (cause) {
-      // A timeout/transport failure can occur after the node accepted bytes.
-      // The same is true for cancellation after invocation. No cause text is
-      // exposed or used as permission to retry.
-      return Object.freeze({
-        status: "ambiguous" as const,
-        transactionId: envelope.recovery.transactionId,
-        submissionDigest: digestCanonical({ ...submissionBase, status: "ambiguous" }),
-      });
+    } finally {
+      this.endReadinessSubmission(preparedDigest);
     }
   }
 
@@ -781,7 +805,11 @@ export class AbandonedStagingRecovery {
   private classifyObservation(
     envelope: Readonly<AbandonedStagingRecoveryEnvelope>,
     preparedDigest: Sha256Digest,
-    raw: Readonly<StagingRecoveryRaceEvidence>
+    raw: Readonly<StagingRecoveryRaceEvidence>,
+    observationLifetime: Readonly<{
+      generation: number;
+      submissionInFlightAtStart: boolean;
+    }>
   ): Readonly<AbandonedStagingRecoveryObservation> {
     const evidenceDigest = observationDigest(envelope, preparedDigest, raw);
     const exact =
@@ -819,6 +847,15 @@ export class AbandonedStagingRecovery {
         return conflict("candidate_observed_while_staging_unspent", evidenceDigest);
       }
       if (exact.status === "absent" && recovery.status === "absent") {
+        const operation = this.readinessOperations.get(preparedDigest);
+        if (
+          !operation ||
+          observationLifetime.submissionInFlightAtStart ||
+          operation.generation !== observationLifetime.generation ||
+          operation.submissionInFlight
+        ) {
+          return Object.freeze({ status: "pending" as const, evidenceDigest });
+        }
         const observedAtMs = readClock(this.now);
         const proofBase = {
           version: 1 as const,
@@ -836,7 +873,9 @@ export class AbandonedStagingRecovery {
           proofDigest: digestCanonical(proofBase),
         });
         this.pruneReadinessProofs(observedAtMs);
+        this.consumeReadinessProofs(preparedDigest);
         this.readinessProofs.set(readiness.proofDigest, Object.freeze({
+          preparedDigest,
           state: "issued",
           expiresAtMs: readiness.expiresAtMs,
         }));
@@ -878,9 +917,87 @@ export class AbandonedStagingRecovery {
   }
 
   private pruneReadinessProofs(now: number): void {
+    const affected = new Set<Sha256Digest>();
     for (const [proofDigest, readiness] of this.readinessProofs) {
-      if (readiness.expiresAtMs <= now) this.readinessProofs.delete(proofDigest);
+      if (readiness.expiresAtMs <= now) {
+        this.readinessProofs.delete(proofDigest);
+        affected.add(readiness.preparedDigest);
+      }
     }
+    for (const preparedDigest of affected) {
+      this.cleanupReadinessOperation(preparedDigest);
+    }
+  }
+
+  private consumeReadinessProofs(preparedDigest: Sha256Digest): void {
+    for (const [proofDigest, readiness] of this.readinessProofs) {
+      if (readiness.preparedDigest !== preparedDigest || readiness.state === "consumed") continue;
+      this.readinessProofs.set(proofDigest, Object.freeze({
+        ...readiness,
+        state: "consumed",
+      }));
+    }
+  }
+
+  private beginReadinessObservation(preparedDigest: Sha256Digest): Readonly<{
+    generation: number;
+    submissionInFlightAtStart: boolean;
+  }> {
+    const operation = this.readinessOperations.get(preparedDigest) ?? {
+      generation: 0,
+      inFlightObservations: 0,
+      submissionInFlight: false,
+    };
+    operation.inFlightObservations += 1;
+    this.readinessOperations.set(preparedDigest, operation);
+    return Object.freeze({
+      generation: operation.generation,
+      submissionInFlightAtStart: operation.submissionInFlight,
+    });
+  }
+
+  private endReadinessObservation(preparedDigest: Sha256Digest): void {
+    const operation = this.readinessOperations.get(preparedDigest);
+    if (!operation || operation.inFlightObservations <= 0) {
+      throw adapterError("artifact_mismatch", "staging recovery observation lifetime is invalid");
+    }
+    operation.inFlightObservations -= 1;
+    this.cleanupReadinessOperation(preparedDigest);
+  }
+
+  private beginReadinessSubmission(preparedDigest: Sha256Digest): void {
+    const operation = this.readinessOperations.get(preparedDigest);
+    if (
+      !operation ||
+      operation.submissionInFlight ||
+      operation.generation >= Number.MAX_SAFE_INTEGER
+    ) {
+      throw adapterError("readiness_required", "staging recovery readiness generation is invalid");
+    }
+    operation.generation += 1;
+    operation.submissionInFlight = true;
+  }
+
+  private endReadinessSubmission(preparedDigest: Sha256Digest): void {
+    const operation = this.readinessOperations.get(preparedDigest);
+    if (!operation || !operation.submissionInFlight) {
+      throw adapterError("artifact_mismatch", "staging recovery submission lifetime is invalid");
+    }
+    operation.submissionInFlight = false;
+    this.cleanupReadinessOperation(preparedDigest);
+  }
+
+  private cleanupReadinessOperation(preparedDigest: Sha256Digest): void {
+    const operation = this.readinessOperations.get(preparedDigest);
+    if (
+      !operation ||
+      operation.inFlightObservations !== 0 ||
+      operation.submissionInFlight
+    ) return;
+    for (const readiness of this.readinessProofs.values()) {
+      if (readiness.preparedDigest === preparedDigest) return;
+    }
+    this.readinessOperations.delete(preparedDigest);
   }
 }
 
