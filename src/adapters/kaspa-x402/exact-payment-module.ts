@@ -768,7 +768,8 @@ export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
       () => controller.abort(new Error("egress deadline exceeded")),
       Math.max(1, remaining)
     );
-    timeout.unref();
+    // The paid request may be waiting on a handle-free injected transport, so
+    // its only completion deadline must stay referenced until finally clears it.
     const guard = egress.responseGuard(hop, (reason) => controller.abort(reason));
     try {
       controller.signal.throwIfAborted();

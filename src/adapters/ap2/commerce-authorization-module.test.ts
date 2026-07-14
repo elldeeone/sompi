@@ -87,12 +87,7 @@ test("Merchant authorization aborts an unresponsive transport at the egress dead
   let transportAborted = false;
   const stalled = await fixture((request) =>
     new Promise<PinnedHttpTransportResponse>((_resolve, reject) => {
-      const failsafe = setTimeout(
-        () => reject(new Error("Merchant authorization transport was not aborted")),
-        250
-      );
       request.signal.addEventListener("abort", () => {
-        clearTimeout(failsafe);
         transportAborted = true;
         reject(request.signal.reason);
       }, { once: true });

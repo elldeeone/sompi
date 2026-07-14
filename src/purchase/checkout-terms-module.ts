@@ -146,7 +146,9 @@ export class SompiCheckoutTermsModule implements CheckoutTermsModule {
         () => controller.abort(new Error("Checkout discovery deadline exceeded")),
         remaining
       );
-      timeout.unref();
+      // The deadline is the completion mechanism when an injected transport
+      // ignores abort and retains no event-loop handle of its own. Keep it
+      // referenced until the request settles, then clear it below.
       const guard = egress.responseGuard(hop, (reason) => controller.abort(reason));
       try {
         const headers: Array<readonly [string, string]> = [["accept", "application/json"]];

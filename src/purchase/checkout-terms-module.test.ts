@@ -65,9 +65,28 @@ test("Sompi checkout composition rejects duplicated headers and requirements sub
   );
 });
 
+test("Checkout discovery aborts a handle-free pending transport at its deadline", async () => {
+  const stalled = await checkoutFixture({
+    stallTransport: true,
+    // The module clock is one second ahead of the fixture policy clock.
+    requestTimeoutMs: 1_005,
+  });
+  await assert.rejects(
+    stalled.module.discover({
+      purchaseId: PURCHASE_ID as never,
+      resourceFingerprint: stalled.fingerprint,
+      egress: stalled.egress,
+    }),
+    /Checkout discovery deadline exceeded/
+  );
+  assert.equal(stalled.transportWasAborted(), true);
+});
+
 async function checkoutFixture(options: {
   duplicateCheckout?: boolean;
   substituteAmount?: boolean;
+  stallTransport?: boolean;
+  requestTimeoutMs?: number;
 } = {}) {
   const fingerprint = requestFingerprint({ url: URL, method: "GET" });
   const paymentRequired = paymentRequiredWire(options.substituteAmount ? "20000001" : "20000000");
@@ -97,6 +116,9 @@ async function checkoutFixture(options: {
   const policy = new EgressPolicy({
     allowRules: [{ hostname: "merchant.example", ports: [443] }],
     resolver: async () => [{ address: "93.184.216.34", family: 4 }],
+    limits: options.requestTimeoutMs === undefined
+      ? {}
+      : { requestTimeoutMs: options.requestTimeoutMs },
     now: () => FIXED_NOW * 1_000,
   });
   const request = await policy.validateRequest({ url: URL, method: "GET" });
@@ -120,6 +142,7 @@ async function checkoutFixture(options: {
     ["PAYMENT-REQUIRED", paymentHeader],
   ];
   if (options.duplicateCheckout) headers.push([SOMPI_CHECKOUT_HEADER, checkoutArtifact]);
+  let transportAborted = false;
   const module = new SompiCheckoutTermsModule({
     merchantCheckout: new Ap2MerchantCheckoutVerifier({
       trust: fixedTrustStore(),
@@ -128,7 +151,15 @@ async function checkoutFixture(options: {
     paymentRequirements: new KaspaX402PaymentRequirementsVerifier(),
     now: () => (FIXED_NOW + 1) * 1_000,
     transport: {
-      async send() {
+      async send(request) {
+        if (options.stallTransport) {
+          return await new Promise<never>((_resolve, reject) => {
+            request.signal.addEventListener("abort", () => {
+              transportAborted = true;
+              reject(request.signal.reason);
+            }, { once: true });
+          });
+        }
         return {
           status: 402,
           headers,
@@ -137,7 +168,13 @@ async function checkoutFixture(options: {
       },
     },
   });
-  return { module, egress, fingerprint, paymentHeader };
+  return {
+    module,
+    egress,
+    fingerprint,
+    paymentHeader,
+    transportWasAborted: () => transportAborted,
+  };
 }
 
 function paymentRequiredWire(amount: string) {

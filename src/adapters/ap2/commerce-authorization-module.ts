@@ -274,7 +274,8 @@ implements CommerceAuthorizationModule {
       () => controller.abort(new Error("AP2 Merchant authorization deadline exceeded")),
       Math.max(1, remaining)
     );
-    timeout.unref();
+    // This awaited deadline must remain live even when the transport returns a
+    // handle-free pending Promise. It is cleared in the request's finally path.
     const guard = egress.responseGuard(hop, (reason) => controller.abort(reason));
     try {
       controller.signal.throwIfAborted();

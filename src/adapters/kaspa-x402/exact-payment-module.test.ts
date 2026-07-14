@@ -402,6 +402,31 @@ test("recovery is deadline-bounded and snapshots observer-owned Settlement bytes
   assert.deepEqual(mutating.calls.providerPurposes, ["prepare"]);
 });
 
+test("paid request aborts a handle-free pending transport at its deadline", async () => {
+  let transportAborted = false;
+  const stalled = makeFixture({
+    transportSend: (request) =>
+      new Promise((_resolve, reject) => {
+        request.signal.addEventListener("abort", () => {
+          transportAborted = true;
+          reject(request.signal.reason);
+        }, { once: true });
+      }),
+  });
+  const prepared = await stalled.prepareExact();
+  await assert.rejects(
+    stalled.module.recoverFulfilment({
+      context: stalled.preparedContext(prepared),
+      egress: {
+        ...stalled.egress,
+        request: { ...stalled.egress.request, deadlineAtMs: NOW + 5 },
+      },
+    }),
+    /egress deadline exceeded/
+  );
+  assert.equal(transportAborted, true);
+});
+
 function makeFixture(
   options: {
     recoveryStatus?: "transaction_observed" | "payment_response" | "hung" | "pending";
@@ -410,6 +435,7 @@ function makeFixture(
     settlementAdditionalCostAtomic?: string;
     mutateRecoveryHeader?: boolean;
     providerFactory?: (context: any) => Promise<any>;
+    transportSend?: (request: any) => Promise<any>;
   } = {}
 ) {
   const calls = {
@@ -598,6 +624,7 @@ function makeFixture(
     send: async (transportRequest: any) => {
       calls.transport += 1;
       transportRequests.push(transportRequest);
+      if (options.transportSend) return await options.transportSend(transportRequest);
       const signature = transportRequest.headers.find(
         ([name]: [string, string]) => name.toLowerCase() === "payment-signature"
       )?.[1];
