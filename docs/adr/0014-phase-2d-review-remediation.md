@@ -48,3 +48,32 @@ Manifest; explicit projections remain test-only. Signed/prepared Treasury
 bytes and accepted evidence remain immutable, and ambiguous or possibly
 effectful work stays in reconciliation until authoritative proof permits a
 terminal outcome.
+
+## Amendment: 2026-07-14 stale-predecessor and local invariant remediation
+
+The follow-up independent review found that a driver generation fence cannot
+revoke an already-running external submission. Treasury therefore enters the
+durable `submission_in_flight` state immediately before invoking an adapter's
+submit operation. Lease expiry, cancellation, chain absence, and takeover do
+not terminalize, release capacity, or issue a second submit while that state
+may still have a live predecessor. A successor is observation/reconciliation
+only; the stale predecessor cannot mutate canonical state, and capacity is
+retained until accepted or rejected effect evidence is authoritative.
+
+The driver implementation owns the exact Journal lease it acquired. Initial
+claims and waiter takeovers use the same generation-scoped driver helper rather
+than re-entering the public same-key coalescer. A successful claim without its
+lease is a Journal invariant failure.
+
+Retained compound Purchase admissions are represented by the same completed
+`prevalidation_purchase` lease used by ordinary Purchase creation. The
+reservation is converted, never decremented, when the compound Purchase is
+retained, so restart derives one count for every retained Purchase.
+
+Vault preparation uses an exhaustive typed error seam for proven no-effect
+terminal and transient outcomes. Unknown exceptions are fenced for
+reconciliation and are never guessed safe from their message text.
+
+This amendment changes the clean-cutover Journal schema epoch to 10 so the
+new durable effect-possible state is explicit; epochs 1 through 9 remain
+rejected without compatibility readers.
