@@ -1,0 +1,6 @@
+[+] both exact outputs accepted at blockDaaScore=0
+[+] committed continuation: a980b664afb844bc0574f5d9a251830792ed4de141cb3bf0172f31a7ddb56b89:1
+[+] evidence after outputs disappeared: not_submitted
+[+] restart retained vanished continuation: a980b664afb844bc0574f5d9a251830792ed4de141cb3bf0172f31a7ddb56b89:1
+[+] exact transaction and covenant bindings remained intact
+[+] vulnerability reproduced

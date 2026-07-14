@@ -1,0 +1,16 @@
+[+] before secondary spend: exact=observed, recovery=absent
+[+] attributed staging spender: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+[+] after secondary spend: exact=absent, recovery=absent
+[+] attributed staging spender: <missing>
+[+] classifier before: conflict/exact_payment_won
+[+] classifier after: conflict/unknown_staging_spender
+✔ both candidates, partial evidence, unknown spenders, and mismatched spenders fail closed
+ℹ tests 1
+ℹ pass 1
+ℹ fail 0
+[+] production classifier regression passed
+✔ unknown staging spender fails closed and over-ceiling recovery remains persisted for manual authority
+ℹ tests 1
+ℹ pass 1
+ℹ fail 0
+[+] coordinator regression confirmed failed_terminal with in_flight reservation

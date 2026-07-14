@@ -1,0 +1,20 @@
+{
+  "profile": "urn:sompi:chain-evidence:testnet-10:1",
+  "observedAt": "2026-07-13T02:47:00Z",
+  "mode": "read-only",
+  "operatorNode": "ws://10.0.3.26:17210/",
+  "independentWitness": "https://api-tn10.kaspa.org/",
+  "transactionId": "e0ed1117bb95df5db090b4a304280fbf8b4176719a9eb55cfc4b71c92c812b16",
+  "status": "present",
+  "level": "depth-confirmed",
+  "view": "historical",
+  "blockHash": "f0123a6e0efab71daffc9f2da4f3540677a70a6ef1ae0b1bf0e6773174d26044",
+  "acceptingBlockHash": "80c7730471839b5adbb5f8a73627b1d82b1e046974576e9aaf869e2869a56526",
+  "acceptingBlockDaaScore": "515517713",
+  "virtualDaaScore": "515521091",
+  "primaryProfile": "kaspa-operator-wrpc-v1",
+  "witnessProfile": "kaspa-rest-accepted-history-v1",
+  "broadcasts": 0,
+  "signatures": 0,
+  "fundingRequired": false
+}

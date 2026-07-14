@@ -1,0 +1,9 @@
+[+] loaded target adapter from <source-root>/dist
+[+] RPC virtual DAA score: 1000
+[+] invented recovery block DAA score: 2000
+[+] exact candidate status: absent
+[+] recovery candidate status: observed
+[+] recovery candidate finality: accepted
+[+] staging status: spent
+[+] inferred spender: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+[+] vulnerable behavior reproduced: one RPC forged accepted recovery evidence

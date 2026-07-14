@@ -1,0 +1,45 @@
+{
+  "schema": "sompi-operator-provisioning-v1",
+  "revision": 1,
+  "dataDirectory": "/var/lib/sompi",
+  "ownerPublic": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+  "maxOutflowSompi": "500000000",
+  "windowSizeDaa": "36000",
+  "treasury": {
+    "maxSompiPerTx": "100000000",
+    "maxSompiPerHour": "500000000",
+    "allowlist": [],
+    "requireApprovalAboveSompi": "0",
+    "additionalCostCeilingAtomic": "25000000",
+    "operationFeeCeilingAtomic": "25000000"
+  },
+  "merchant": {
+    "allowRules": [
+      {
+        "hostname": "merchant.example",
+        "ports": [443]
+      }
+    ],
+    "merchantReceiptIssuer": "receipt:merchant",
+    "paymentReceiptIssuer": "receipt:payment"
+  },
+  "chainEvidence": {
+    "operatorNodeUrl": "ws://10.0.3.26:17210/",
+    "witnessBaseUrl": "https://api-tn10.kaspa.org/",
+    "depthConfirmationDaa": "10",
+    "finalityFloors": {
+      "settlement": "depth-confirmed",
+      "directTreasury": "accepted",
+      "vault": "accepted",
+      "staging": "accepted",
+      "recoveryRelease": "depth-confirmed"
+    }
+  },
+  "admission": {
+    "authorityPreauthSockets": 32,
+    "authorityPrompts": 4,
+    "prevalidationPurchases": 128,
+    "evidenceBytes": 67108864,
+    "directTreasuryRetries": 3
+  }
+}

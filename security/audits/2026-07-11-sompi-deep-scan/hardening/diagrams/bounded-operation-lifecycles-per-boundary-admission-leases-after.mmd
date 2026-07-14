@@ -1,0 +1,24 @@
+flowchart LR
+    Agent["Agent or compromised MCP\nuntrusted work"]
+    AuthorityLease["Authority admission lease\nseparate process and budget"]
+    PurchaseLease["Purchase admission lease\ntransactional storage budget"]
+    TreasuryLease["Treasury operation lease\ndurable state and failure class"]
+    Prompt["Cancellable bounded prompt scheduler"]
+    Evidence["Evidence store\nreserved bytes then commit"]
+    Journal["Purchase Journal\nlease, terminal, and release records"]
+    Operator["Legitimate operator work"]
+
+    Agent --> AuthorityLease
+    Agent --> PurchaseLease
+    Agent --> TreasuryLease
+    AuthorityLease --> Prompt
+    PurchaseLease --> Evidence
+    PurchaseLease --> Journal
+    TreasuryLease --> Journal
+    Operator --> Prompt
+    Operator --> Journal
+
+    classDef danger fill:#ffd6d6,stroke:#b42318,color:#3d0b08;
+    classDef guard fill:#d9f2e6,stroke:#147d52,color:#082b1c;
+    class Agent danger;
+    class AuthorityLease,PurchaseLease,TreasuryLease guard;

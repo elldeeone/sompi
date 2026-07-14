@@ -1,138 +1,119 @@
-# SompiVault: stateful rolling-window agent vault
+# SompiVault rolling-window treasury
 
-**Date:** 2026-06-29 · **Network:** Kaspa testnet-10 (Toccata active) · **Status:** live proof passed
+Status: retained consensus component in the v0.8 Purchase architecture
 
-## What this proves
+SompiVault is a stateful KIP-16 covenant on Kaspa testnet-10. The operator owns
+an unrestricted recovery key. The Agent-facing key may withdraw only within a
+rolling DAA-window cap enforced by Kaspa consensus. The cap includes the
+withdrawal and network fee; remaining value must continue into the same
+singleton covenant with the next state.
 
-SompiVault is a KIP-16 covenant vault for agent funds. The operator keeps an
-unrestricted owner recovery key. The agent gets its own key, but that key can
-only withdraw up to `maxOutflowSompi` per `windowSizeDaa` rolling DAA window.
-The cap counts withdrawal amount plus fee, and the remaining balance must
-continue back into the same singleton covenant with updated state.
+This on-chain cap is independent of Sompi's stricter software policy. A stolen
+Agent/vault key cannot bypass the covenant, while a compromised MCP process
+also cannot raise the operator-owned software limits.
 
-This is consensus enforcement, not an MCP policy promise. If the agent key is
-stolen, the attacker still has to satisfy the vault script on-chain.
-
-## Current contract
+## Contract
 
 Source: [`contracts/vault.sil`](../contracts/vault.sil)
 
-The static parameters are:
+Static parameters:
 
-- `agent`: x-only public key allowed to spend through the capped path
-- `owner`: x-only public key allowed to recover everything
-- `maxOutflow`: maximum amount plus fee per rolling window
-- `windowSize`: DAA window size
+- `agent`: x-only key for the capped path;
+- `owner`: x-only key for unrestricted operator recovery;
+- `maxOutflow`: maximum withdrawal plus fee per rolling window;
+- `windowSize`: window length in DAA units.
 
-The mutable state is:
+Mutable state:
 
-- `windowStart`: DAA score where the active window began
-- `spentInWindow`: cumulative outflow in the active window
+- `windowStart`: DAA score at which the active window began;
+- `spentInWindow`: cumulative outflow in that window.
 
 Entrypoints:
 
-- `withdraw(sig agentSig)` requires the agent signature, one covenant input,
-  sequence `0`, one covenant continuation output, a valid next state, and
-  `spentInWindow + outflow <= maxOutflow`. The sequence check keeps the spend
-  non-final, so a compromised agent key cannot use a finalized future-locktime
-  transaction to reset the window early. A reset also requires the active vault
-  UTXO's own DAA score to have aged at least one full window, so historical
-  locktimes cannot be chained through fresh continuation outputs.
-- `topup(sig agentSig)` merges regular wallet funds into the current singleton
-  vault UTXO. It preserves active state, but if the saved window and active
-  vault UTXO are already reset-eligible it starts a fresh zero-spent window
-  instead of carrying exhausted state into the new top-up output.
-- `recover(sig ownerSig)` lets the owner drain the current vault address without
-  agent cooperation.
+- `withdraw` requires the Agent signature, one covenant input, a non-final
+  sequence, one valid continuation output, and cumulative outflow no greater
+  than the cap. Active-input age and locktime rules prevent historical or
+  finalized-future reset tricks.
+- `topup` merges ordinary-wallet inputs into the singleton. It preserves active
+  state, or begins a fresh zero-spent window only when the saved window and
+  active UTXO are already reset-eligible.
+- `recover` lets the operator drain the current vault state without Agent
+  cooperation.
 
-## Runtime shape
+The runtime has no SilverScript compiler dependency. TypeScript template bytes
+are pinned against compiler fixtures, then parameterized only by public keys,
+cap, window, and current state.
 
-The package has no runtime SilverScript dependency. The TypeScript template in
-[`src/vault/template.ts`](../src/vault/template.ts) is derived from compiler
-output and parameterized by the operator's keys, cap, window, and state.
+## Durable runtime semantics
 
-The first `vault_deposit` creates a genesis covenant-bound UTXO. Later
-`vault_deposit` calls top up that same singleton. Both paths aggregate regular
-wallet UTXOs when the wallet balance is fragmented. `vault_send` spends the
-current vault UTXO, advances the state, derives the next vault address, and saves
-the new outpoint. Owner recovery reconstructs the current vault address from
-public parameters plus state.
+`vault_deposit` and `vault_send` are direct Treasury Movements in the same
+SQLite journal used by Purchases:
 
-In MCP mode, `paid_fetch` uses this same capped agent path to fund new
-`kaspa-escrow` deposits. The ordinary wallet remains setup/top-up working float;
-active paid API escrow channels must be vault-funded. `npm run proof:vault-commerce`
-exercises this end to end and writes a recovery file before spending.
+- a stable `operationKey` binds immutable intent;
+- source inputs, fee ceiling, prepared bytes, and transaction ID are durable
+  before signing/submission;
+- genesis deposit and top-up aggregate fragmented wallet UTXOs;
+- recovery observes the exact saved inputs/transaction before any proof-backed
+  resubmission;
+- a crash after chain acceptance cannot silently lose policy or vault state.
 
-## Checks
+A deposit transfers principal from Sompi's hot wallet into Sompi's protected
+vault, so policy capacity counts its network fee rather than treating its
+principal as a third-party spend. The principal remains separately recorded
+and audited. A withdrawal to a third party counts principal plus actual fee.
+Both paths reserve a conservative fee ceiling before signing.
 
-Compiler-derived fixture check:
+Purchase execution uses the vault as Treasury. A separately authorized staging
+transaction creates a one-use P2PK output for the immutable Kaspa-x402 exact
+payment. The ordinary hot wallet is only setup/top-up float; it is not a hidden
+fallback payment rail.
 
-```bash
-SILVERC=/path/to/silverc npm run fixtures:vault:check
-```
+## Operator ceremony
 
-Offline package smoke:
-
-```bash
-npm run build
-SOMPI_SMOKE_OFFLINE=1 npm run smoke
-```
-
-Live consensus proof:
+Generate the owner key on a trusted operator machine:
 
 ```bash
-npm run build
-SOMPI_NODE_URL=10.0.3.26 npm run proof:vault
-SOMPI_NODE_URL=10.0.3.26 SOMPI_VAULT_COMMERCE_FUNDER_PRIVATE_KEY=<funded-testnet-key> npm run proof:vault-commerce
+sompi-operator owner-key
 ```
 
-Use a synced node with UTXO index enabled. The vault-backed commerce proof writes
-a mode-0600 recovery file with disposable testnet keys before spending so
-interrupted runs can be resumed or recovered.
+Retain the private value offline. Supply only the public key and desired cap in
+the Operator Manifest provisioning spec, then complete the reviewed
+`preview`/`provision`/`install` ceremony before MCP starts. Fund Sompi's receive
+address with testnet KAS, then call `vault_deposit` with a stable operation key.
+`vault_status` exposes the public configuration and current on-chain state.
 
-The live proof exercises:
+Owner recovery is deliberately not an MCP tool. Run the packaged recovery
+utility on the trusted machine using a mode-`0600` owner-key file; never pass
+the private key through the Agent or shell history. See the utility's `--help`
+and [`docs/runbooks/RECONCILIATION.md`](runbooks/RECONCILIATION.md).
 
-1. genesis covenant-bound deposit accepted on-chain
-2. agent withdrawal inside the active window accepted on-chain
-3. deliberately over-window withdrawal rejected by consensus
-4. historical locktime reset attempt rejected by the covenant
-5. finalized future-locktime reset attempt rejected by the covenant
-6. singleton top-up accepted on-chain
-7. second withdrawal accepted after the DAA window resets
-8. owner recovery accepted on-chain
-
-The recovery file printed by `proof:vault` contains temporary testnet keys and
-the latest vault config so funds can be recovered if the harness exits early.
-
-## Latest live evidence
-
-Run:
+## Verification
 
 ```bash
-SOMPI_NODE_URL=10.0.3.26 npm run proof:vault
+npm run fixtures:vault:check
+npm test
 ```
 
-Parameters:
+The fixed suite covers compiler identity, genesis/top-up transaction shape,
+fragmented inputs, rolling-window transitions, fee convergence, historical and
+future locktime attacks, owner recovery, pre-sign fee denial, durable
+ambiguity, restart reconciliation, and shared Purchase/direct-operation policy
+capacity.
 
-- `maxOutflowSompi`: `100000000`
-- `windowSizeDaa`: `300`
-- first withdrawal: `40000000` sompi
-- top-up: `50000000` sompi
-- second withdrawal after reset: `40000000` sompi
+Live consensus evidence for the integrated Purchase/Treasury path is produced
+by the release testnet E2E rather than a second non-journaled vault harness.
+Transaction IDs for the release being assessed belong in
+[`CURRENT_STATE.md`](../CURRENT_STATE.md) or its generated evidence report.
+Historical txids prove only the exact earlier run, not the current package or
+mainnet readiness.
 
-Results:
+## Limitations
 
-| Step | Result | Evidence |
-|---|---|---|
-| Genesis covenant-bound deposit | Accepted | `15815f4ddefe61e8f0e155632f762be72bae60f9528b794fc0ff5a87985c68fb` |
-| Agent withdrawal inside active window | Accepted | `c67cf554ec7d84a8b631d2225a5fe6037a08bf22b753917fdc82cd7856bb7a9b` |
-| Agent over-window withdrawal | Rejected by covenant script | attempted tx `8b2288eb80013c7b75ff284bb9e6bd6c8f0c231742400dc1203f7bb08767ecf2` |
-| Historical locktime reset | Rejected by covenant script | attempted tx `98c2088aa5ce6ef6f3bf7339e1e22bc6a1d73d24614f97d625dd16cbe560a3b4` |
-| Finalized future-locktime reset | Rejected by covenant script | attempted tx `b89beb589f3fb8802463e76a0e27747a5e16ea01d49e3c4f34e8b56b3b6726b3` |
-| Singleton top-up | Accepted | `83f812db99d331d6ce6862c6df84d4619d21999fff533d30a8db52ba752e74c4` |
-| Agent withdrawal after window reset | Accepted | `c5eac251b4297fef449c98ba1ab8f7fe67e206b862e736da7735da53a5387b67` |
-| Owner recovery | Accepted | `7b1fa5ce830b2821b8a36cf80b87a66e8fd085788cf1eb998b45065f1fff261e` |
-
-The reset target was DAA `503605037`; the proof waited until DAA `503605040`
-so the node enforced both non-final input locktime and active-input-age gating
-before the reset spend.
+- software key files are suitable only for testnet experimentation;
+- the consensus cap limits the Agent path but cannot protect against loss of
+  the unrestricted owner key;
+- direct funds sent to a vault address without the expected covenant binding
+  are not treated as spendable vault state;
+- backup/restore must preserve the journal, wallet/vault state, and keys as one
+  consistent MCP security context;
+- this release cannot use mainnet.

@@ -1,0 +1,21 @@
+flowchart LR
+    Agent["Agent or compromised MCP\nuntrusted work"]
+    Socket["Authority sockets\nunbounded pre-auth set"]
+    Prompt["Authority prompt tail\nuncancellable queue"]
+    Purchase["Purchase intake\nimmutable body before admission"]
+    Treasury["Direct Treasury intent\nslot claimed before preparation"]
+    Resources["Descriptors, timers, disk,\npolicy capacity, operation slot"]
+    Operator["Legitimate operator work"]
+
+    Agent --> Socket
+    Socket --> Prompt
+    Agent --> Purchase
+    Agent --> Treasury
+    Socket --> Resources
+    Prompt --> Resources
+    Purchase --> Resources
+    Treasury --> Resources
+    Operator -.->|"blocked behind retained work"| Resources
+
+    classDef danger fill:#ffd6d6,stroke:#b42318,color:#3d0b08;
+    class Agent,Socket,Prompt danger;

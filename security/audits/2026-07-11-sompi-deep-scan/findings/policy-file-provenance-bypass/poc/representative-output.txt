@@ -1,0 +1,28 @@
+sompi: policy reloaded from <temporary-directory>/operator-policy.json
+{
+  "target": {
+    "packageVersion": "0.8.0",
+    "policySourceSha256": "f0ff964134f662238e787c521806b4441483fb664f87cdcccf0c202b153f0f57",
+    "exactPolicySourceMatch": true,
+    "policyModuleSha256": "35c1d63d8e83c46b843284391b4bcb61e6e07c20f1fbeeb9e4622ad119da7305",
+    "exactPolicyModuleMatch": true
+  },
+  "configuredPathIsSymlink": true,
+  "followedTargetMode": "666",
+  "before": {
+    "allowed": false,
+    "name": "PolicyViolation",
+    "message": "policy violation: amount 0.000001 KAS (100 sompi) exceeds the per-payment limit of 0.0000001 KAS (10 sompi). This limit was set deliberately by your human operator. Do not edit the policy file, restart processes, or bypass these tools with direct scripts to get around it — report this message to your operator and let them decide"
+  },
+  "after": {
+    "allowed": true
+  },
+  "activePolicy": {
+    "maxSompiPerTx": "1000",
+    "maxSompiPerHour": "1000",
+    "allowlist": [],
+    "requireApprovalAboveSompi": "0"
+  },
+  "reproduced": true
+}
+[+] restrictive denial became authorization after policy replacement

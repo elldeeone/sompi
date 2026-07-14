@@ -1,270 +1,249 @@
-# sompi
+# Sompi
 
-**The agent payment kit for Kaspa.** An MCP server that gives AI agents a policy-enforced Kaspa wallet: receive, send, and verify KAS payments with confirmation times fast enough for synchronous machine-to-machine commerce.
+Sompi is a testnet-first agent treasury and purchasing system for Kaspa. It
+lets an Agent express a resource-purchase intent while keeping human approval,
+Merchant commerce authorization, payment execution, policy accounting, and
+crash recovery in deterministic non-agentic modules.
 
-Named after the sompi — Kaspa's smallest unit (1 KAS = 100,000,000 sompi) — because machine-to-machine micropayments are what the sompi is for.
+The initial profile composes two evolving protocols without merging them:
 
-- **Toccata-native**: built against the v2.0.0 WASM SDK with v1 transactions, `storageMass` semantics, and node-derived fees (the post-Toccata 100 sompi/gram floor is handled automatically).
-- **Policy-enforced**: spending limits live in a config file *outside* the agent's tool surface. A prompt-injected agent cannot raise its own limits.
-- **Zero infrastructure**: connects to the public node network via the resolver by default; point it at your own node with one env var.
+- **AP2 v0.2 human-present** owns Merchant checkout evidence, exact human
+  authorization, closed mandates, and receipts.
+- **Kaspa-x402 `exact` alpha.6** owns HTTP payment requirements/payloads and
+  Kaspa Settlement.
+- **Sompi Purchase** binds both sides through canonical facts, identifiers, and
+  evidence digests. It adds no proprietary AP2 fields to x402 objects.
 
-## Quickstart
+Native KAS in AP2 is an explicitly experimental Sompi profile because AP2
+v0.2's standardized amount model does not define KAS/sompi. The first release
+supports only `kaspa:testnet-10`; mainnet is intentionally unavailable.
 
-From npm ([`@elldeeone/sompi`](https://www.npmjs.com/package/@elldeeone/sompi) — npm's similarity rules reserve the bare name):
+## Architecture
 
-```bash
-claude mcp add sompi -- npx -y @elldeeone/sompi
+```mermaid
+flowchart LR
+  A["Untrusted Agent / MCP client"] --> M["sompi-mcp"]
+  M --> P["Stable Purchase module"]
+  P <--> J["SQLite Purchase Journal"]
+  P --> AP2["Versioned AP2 adapter"]
+  AP2 <--> H["AP2-aware Merchant"]
+  P --> AUTH["Authenticated Unix IPC"]
+  AUTH --> U["sompi-authority\nseparate OS user + signer"]
+  P --> X["Versioned Kaspa-x402 adapter"]
+  X <--> H
+  X --> K["Kaspa testnet-10"]
+  P --> T["Wallet / covenant-vault Treasury"]
+  T --> K
 ```
 
-Or from source:
+The stable centre depends on narrow Sompi-owned interfaces. AP2 and
+Kaspa-x402 are adapters at the edge, pinned by an explicit supported-profile
+declaration and tested with conformance fixtures. Either adapter can evolve or
+be replaced without changing Purchase state or smuggling one protocol into the
+other.
+
+Checkout discovery follows the same boundary: Sompi bounds and joins the HTTP
+artifacts, AP2 verifies a Merchant Checkout containing only an opaque payment
+requirements digest, and Kaspa-x402 independently verifies the corresponding
+`PAYMENT-REQUIRED` bytes. A structural test prevents the two adapter trees from
+importing each other.
+
+Read the design in this order:
+
+1. [`CONTEXT.md`](CONTEXT.md)
+2. [`docs/architecture/SOMPI_ARCHITECTURE.md`](docs/architecture/SOMPI_ARCHITECTURE.md)
+3. [`docs/adr/`](docs/adr/README.md)
+4. [`docs/IMPLEMENTATION_PLAN.md`](docs/IMPLEMENTATION_PLAN.md)
+5. [`CURRENT_STATE.md`](CURRENT_STATE.md)
+
+## What is durable
+
+One SQLite-backed journal is the source of truth for:
+
+- Purchase intent, Checkout Terms, authority decisions, AP2 evidence, payment
+  attempts, Settlement, Fulfilment, and receipts;
+- immutable prepared transaction bytes and planned external effects;
+- ambiguity observations, fencing leases, and deterministic recovery;
+- policy snapshots, reservations, in-flight capacity, and observed spend;
+- direct `send_payment`, `vault_send`, and `vault_deposit` operations.
+
+An interrupted operation is recovered using its original `purchaseId`,
+`requestKey`, or `operationKey`. Sompi observes the exact saved transaction and
+inputs before any proof-backed resubmission; it never treats a timeout as
+permission to pay again.
+
+## Development quick start
+
+Requires Node.js 22 or newer.
 
 ```bash
-git clone https://github.com/elldeeone/sompi
+git clone https://github.com/elldeeone/sompi.git
 cd sompi
-npm install
-npm run build
-claude mcp add sompi -- node /path/to/sompi/dist/index.js
+npm ci
+npm test
 ```
 
-Or to any MCP client config:
+Run the deterministic full vertical proof:
+
+```bash
+npm run proof:e2e-local
+```
+
+That proof exercises real Sompi AP2 artifacts, authority IPC framing, Merchant
+authorization, vault staging, unchanged Kaspa-x402 exact calls, independent
+chain verification, fulfilment, receipts, restarts, and idempotency against a
+deterministic in-memory testnet fixture. It deliberately does **not** claim a
+live-network result or real OS-user isolation.
+
+The protocol conformance command verifies cross-language AP2 artifacts and the
+pinned Kaspa-x402 adapter contract:
+
+```bash
+npm run test:conformance
+```
+
+Its first run populates a private exact-commit/Python cache; set
+`SOMPI_CONFORMANCE_OFFLINE=1` to prove subsequent download-free replay.
+
+Live testnet evidence and exact limitations are recorded in
+[`CURRENT_STATE.md`](CURRENT_STATE.md), never presented as mainnet readiness.
+
+## Operator setup
+
+The production-shaped runtime is not a one-process quickstart. Create two
+distinct non-root users and follow
+[`docs/runbooks/AUTHORITY.md`](docs/runbooks/AUTHORITY.md):
+
+- `sompi-authority` owns its private AP2 signing key and foreground human
+  approval terminal;
+- `sompi-mcp` owns wallet/vault execution state and the Agent-facing MCP
+  process;
+- a dedicated group grants both users access only to the authenticated Unix
+  socket;
+- a root-only verifier proves that the MCP user cannot read the authority
+  signer before startup.
+
+Then configure the MCP command in the client using the environment established
+by that runbook. A typical executable is:
 
 ```json
 {
   "mcpServers": {
     "sompi": {
-      "command": "node",
-      "args": ["/path/to/sompi/dist/index.js"],
-      "env": { "SOMPI_NETWORK": "testnet-10" }
+      "command": "/opt/sompi/node_modules/.bin/sompi-mcp",
+      "env": {
+        "SOMPI_NETWORK": "testnet-10",
+        "SOMPI_OPERATOR_MANIFEST": "/etc/sompi/operator-manifest.json",
+        "SOMPI_OPERATOR_UID": "0",
+        "SOMPI_RUNTIME_GID": "1001",
+        "SOMPI_AUTHORITY_CLIENT_DIR": "/var/lib/sompi-mcp-authority-client",
+        "SOMPI_AUTHORITY_RUNTIME_DIR": "/run/sompi-authority",
+        "SOMPI_AUTHORITY_SOCKET": "/run/sompi-authority/authority.sock"
+      }
     }
   }
 }
 ```
 
-### Onboard an agent — you hold the keys
+The immutable manifest owns the runtime path, policy, Merchant allowlist,
+receipt issuers, node/witness profile, finality floors, and admission budgets.
+The authority identifiers are omitted from this short example; startup fails
+closed when any required deployment locator is absent.
 
-The right way to give an agent money is **not** to hand it a private key. Instead,
-the agent's main funds live in a **covenant vault that you control**: your key can
-recover everything at any time, while the agent's own key can only spend up to a
-rolling-window cap enforced by Kaspa consensus. A stolen or prompt-injected agent
-cannot exceed that on-chain window. The agent asks *you* for your public recovery
-key during setup — you never give it the private key.
+## MCP tools
 
-**1. Connect the agent** (no key yet — it just needs the tools):
-```json
-{ "mcpServers": { "sompi": {
-    "command": "npx", "args": ["-y", "@elldeeone/sompi"],
-    "env": { "SOMPI_NETWORK": "testnet-10" } } } }
-```
-
-**2. Generate *your* control key** (once, on your own machine; keep the private line safe):
-```bash
-npx -y @elldeeone/sompi gen-owner-key
-# prints:  public: <hex>   private: <hex>
-```
-
-**3. Tell the agent to set up its vault.** Plain English: *"set up your vault."*
-Its `vault_create` tool will ask you for two things — give it your **public** key
-from step 2 and a rolling-window cap (e.g. `100000000` = 1 KAS). It generates its
-own agent key and saves the vault config. Your private key never touches the
-agent's host.
-
-**4. Fund the agent's regular wallet**, from the
-[faucet](https://faucet-tn10.kaspanet.io/) or your wallet, then ask it to run
-`vault_deposit`. The first deposit creates the covenant-bound vault UTXO; later
-deposits top up the same singleton vault and reset an already-expired window
-instead of extending exhausted state. Verify with `vault_status`.
-
-Now the agent can spend (`vault_send`, capped by consensus) and pay for services
-(`paid_fetch`). New x402 escrow deposits are funded from the vault treasury, not
-from the ordinary hot wallet. The regular wallet is only setup/top-up working
-float, and **you** can drain or recover the vault any time with your key
-(`scripts/vault-recover.js`). Add a `SOMPI_POLICY` file for softer day-to-day
-limits on top of the hard consensus cap.
-
-> A plain hot wallet (auto-created, or `gen-wallet-key` + `SOMPI_PRIVATE_KEY`) also
-> exists for small working float — but the agent's real balance belongs in the
-> operator-controlled vault above.
-
-## Tools
-
-| Tool | What it does |
+| Tool | Purpose |
 |---|---|
-| `get_address` | The agent's receive address |
-| `get_balance` | Balance of own or any address |
-| `send_payment` | Send KAS — gated by the spending policy |
-| `await_payment` | Block until an incoming payment of at least N sompi arrives (UTXO subscription, not polling) |
-| `verify_payment` | Confirm a txid paid an address |
-| `paid_fetch` | Fetch a URL, auto-resolving HTTP 402 payment with vault-backed trust-minimized escrow |
-| `estimate_fee` | Live feerate buckets from the node |
-| `network_status` | Node sync state, DAA score, version |
-| `get_policy` | Read-only view of the active spending policy |
-| `vault_create` / `vault_status` / `vault_send` / `vault_deposit` | Covenant vault: rolling-window spending cap enforced by consensus (see below) |
+| `purchase` | Start or idempotently resume one AP2-authorized, Kaspa-x402 exact Purchase |
+| `purchase_status` | Read canonical Purchase state without an external effect |
+| `purchase_recover` | Reconcile an interrupted Purchase without blind repayment |
+| `payment_status` | Check wallet, vault, policy, journal, authority, and node readiness |
+| `get_address`, `get_balance` | Receive-address and balance reads |
+| `await_payment`, `verify_payment` | Observe incoming testnet payments |
+| `send_payment` | Durable policy-gated hot-wallet send with a stable operation key |
+| `vault_status` | Read the operator-provisioned consensus vault |
+| `vault_deposit` | Durable initial funding or top-up of the vault |
+| `vault_send` | Durable consensus-capped vault withdrawal |
+| `treasury_operation_status` | Read one direct Treasury Movement |
+| `treasury_operation_recover` | Reconcile one interrupted direct Treasury Movement |
+| `estimate_fee`, `network_status` | Bounded node fee and health information |
+| `get_policy` | Read the operator-owned software spending policy |
 
-Connections to public resolver nodes are verified against the explorer's
-chain tip (a **canonical-chain guard**): nodes that are unsynced, missing a
-UTXO index, or sitting on a stale fork are rejected with a clear error
-instead of silently reporting zero balances.
+Every state-changing direct Treasury tool requires a caller-stable
+`operationKey`. Every Purchase requires a caller-stable `requestKey`.
 
-## Spending policy
+## Vault model
 
-Every `send_payment` passes through a policy gate enforced below the LLM:
+Sompi keeps ordinary working float in a hot wallet and intended purchasing
+funds in a stateful Kaspa covenant vault. The Agent key can spend only within a
+rolling-window consensus cap. An offline operator key can recover the vault
+without Agent cooperation.
 
-```json
-{
-  "maxSompiPerTx": "100000000",
-  "maxSompiPerHour": "500000000",
-  "allowlist": ["kaspatest:qq..."],
-  "requireApprovalAboveSompi": "0"
-}
-```
-
-- `maxSompiPerTx` — hard cap per transaction (default 1 KAS)
-- `maxSompiPerHour` — rolling one-hour spend cap, persisted across restarts (default 5 KAS)
-- `allowlist` — if non-empty, only these destinations may receive funds
-- `requireApprovalAboveSompi` — sends above this are rejected with instructions to ask the human operator (0 = disabled)
-
-Point at a policy file with `SOMPI_POLICY=/path/to/policy.json`. Without one, conservative defaults apply. See `policy.example.json`.
-
-## Configuration
-
-| Env var | Default | Purpose |
-|---|---|---|
-| `SOMPI_NETWORK` | `testnet-10` | `mainnet`, `testnet-10`, ... |
-| `SOMPI_NODE_URL` | (public resolver) | Your own node's wRPC (borsh) URL |
-| `SOMPI_PRIVATE_KEY` | (generated keyfile) | Hex private key override |
-| `SOMPI_DATA_DIR` | `~/.sompi/<network>` | Keyfile + spend-log location |
-| `SOMPI_POLICY` | (built-in defaults) | Path to policy JSON |
-
-## Micropayment economics (KIP-9)
-
-Kaspa's storage mass (KIP-9) charges roughly `C/amount` grams (C = 10¹²) for creating small outputs — an anti-dust mechanism. Measured on testnet-10 post-Toccata (100 sompi/gram): a 0.5 KAS send costs ~0.02 KAS in fees (4%), a 0.1 KAS send costs ~0.1 KAS (100%). Rule of thumb: **sends below ~1 KAS pay >1% in storage-mass fees**. Agent protocols that need sub-KAS granularity should aggregate behind an escrow rather than pay on-chain per event — this is a design constraint for the x402 middleware.
-
-## Security notes
-
-- The default key storage is a plaintext file with 0600 permissions — fine for testnet experimentation, **not for meaningful mainnet funds**. Treat the wallet as a hot spending wallet holding only what the policy could spend.
-- The policy file and env vars are deliberately not writable through any MCP tool.
-- Fees are always derived from the node's fee estimator; nothing is hardcoded.
-
-## x402: agents paying for APIs
-
-The `paid_fetch` MCP tool resolves HTTP 402 responses automatically with
-**`kaspa-escrow`**: the client funds a covenant escrow once from its vault
-treasury, then pays each request with a cumulative off-chain voucher. On
-testnet-10 the first paid request includes the vault withdrawal, escrow
-deposit, and indexing step; later requests reuse the escrow and only send signed
-vouchers.
-
-Server side (any Node `http`-compatible framework):
-
-```ts
-import { EscrowServer } from "@elldeeone/sompi/dist/x402/escrow-server";
-
-const escrow = new EscrowServer({
-  networkId,
-  rpc: () => sellerWallet.client(),
-  wallet: () => sellerWallet,
-  serverPrivateHex: serverKey.privateKey,
-  serverPublicHex: serverKey.publicKey,
-  refundTimeout,
-  minDepositSompi: 90_000_000n,
-  pricePerRequestSompi: 1_000_000n,
-  dataDir,
-});
-
-http.createServer(async (req, res) => {
-  if (await escrow.gate(req, res)) return; // replied 402
-  // ... serve the paid content
-});
-```
-
-Run the full live demo (seller + buyer, real testnet KAS): `npm run demo:escrow`.
-
-The escrow deposit is never handed to the server. The client issues cumulative
-off-chain vouchers (BIP340 signatures) authorizing a running total, and:
-
-- the **server** can claim **at most** what the client signed for, with the
-  remainder staying in escrow;
-- the **client** can reclaim the unspent balance after a refund timeout if the
-  server vanishes.
-
-The voucher's replay protection is **on-chain, not a server promise**. Each
-voucher signs a domain-separated digest over `network`, the active escrow
-`scriptPubKey`, the full funding outpoint (`txid:vout`), and the authorized
-amount. The covenant rebuilds that exact message from transaction introspection
-and verifies it with `OpCheckSigFromStack`. In SilverScript source this is the
-`checkSigFromStack(...)` builtin, which lowers to the Toccata opcode. Because
-the claim's change returns to escrow under a *new* outpoint, a voucher is
-single-use: a server cannot replay one voucher against the change to drain the
-deposit. (See [docs/escrow-poc.md](docs/escrow-poc.md) for the live proof
-harness.)
-
-`paid_fetch` uses `kaspa-escrow` offers. In the MCP server it requires a funded
-vault and only keeps vault-funded escrow channels active; non-vault channels are
-retired for refund instead of used for new requests. The covenant template is
-derived from [`contracts/escrow.sil`](contracts/escrow.sil) with SilverScript
-compiler fixtures; the channel — and its replay rejection — is exercised by
-`scripts/escrow-live.js`.
-
-Sellers collect escrow revenue with
-`node scripts/escrow-claim.js <serviceDataDir> <destination>`. Clients can refund
-unspent balances after the timeout with `scripts/escrow-refund.js`.
-
-## Covenant vaults — the agent wallet
-
-This is how an agent should hold money (see onboarding above). A software policy is
-just a suggestion a stolen key ignores; the vault moves the spending limit into
-Kaspa consensus (KIP-16, live on testnet-10). The vault's agent path can withdraw at
-most `maxOutflowSompi` per `windowSizeDaa` rolling DAA window, counting the
-withdrawal amount plus fee, with the remainder forced back into the vault under
-the next state. **Every node on the network enforces this; a fully compromised
-agent key cannot exceed the active window.** The owner key (yours, kept offline)
-recovers everything.
-
-See [docs/vault-poc.md](docs/vault-poc.md) for the current stateful vault design,
-fixture checks, and live proof coverage.
-
-**Zero extra tooling.** The covenant ships inside this package as a
-compiler-verified template (`src/vault/template.ts`), checked byte-for-byte against the
-[SilverScript compiler](https://github.com/elldeeone/silverscript) in CI. Agents
-can only instantiate this audited rule-shape with their operator's parameters —
-they cannot author covenant logic.
-
-**Setup is a two-party ceremony by design:**
-
-1. Operator, on their own machine: `npx -y @elldeeone/sompi gen-owner-key` —
-   keep the private line, give the agent the public line plus the chosen cap.
-2. Agent: `vault_create` with those two values. It generates only its own key;
-   the unrestricted owner key never exists on the agent's host.
-3. Operator funds the agent's regular wallet, then the agent runs `vault_deposit`
-   to create the covenant-bound singleton vault UTXO.
-
-Owner recovery is likewise *not* an MCP tool — recover from your machine:
-`node scripts/vault-recover.js <ownerPriv> <agentPublic> <maxOutflowSompi> <windowSizeDaa> <windowStartDaa> <spentInWindowSompi> <destination>`
-(it re-derives the current vault address from public parameters and state; no
-agent cooperation needed).
-
-## Roadmap
-
-1. **Phase 1 (done)** — MCP server with policy-enforced wallet tools.
-2. **Phase 2 (done)** — x402 HTTP payment middleware + `paid_fetch`.
-3. **Phase 3 (done)** — Trust-minimized `kaspa-escrow`: SilverScript-derived covenant template, full-outpoint voucher replay protection, and live proof coverage.
-4. **Phase 4 (done)** — Covenant vaults (KIP-16): the agent wallet, with rolling-window spending limits enforced by consensus rather than software.
-5. **Vault-backed commerce (done)** — The vault is the treasury for escrow deposits and paid API usage, with the regular wallet kept as setup/top-up working float.
-
-## Development
+Generate the operator key outside the MCP session:
 
 ```bash
-npm run build   # compile
-npm run smoke   # offline policy checks + live testnet-10 checks
-SOMPI_NODE_URL=<node> SOMPI_VAULT_COMMERCE_FUNDER_PRIVATE_KEY=<funded-testnet-key> npm run proof:vault-commerce
+sompi-operator owner-key
 ```
 
-Live proofs require a synced node with UTXO index enabled. The vault-backed
-commerce harness writes a mode-0600 recovery file containing disposable testnet
-keys before it spends.
+Retain the private line offline. Put only the public line and desired cap in an
+operator provisioning spec. Review it with `sompi-operator preview`, create a
+sealed candidate with `provision`, and activate that exact digest with
+`install`. The owner private key is never an MCP argument or runtime file.
 
-The Kaspa WASM SDK (v2.0.0, Toccata) is vendored under `vendor/kaspa-wasm` because the npm `kaspa` package is unmaintained (2023). Sourced from the official [rusty-kaspa v2.0.0 release](https://github.com/kaspanet/rusty-kaspa/releases/tag/v2.0.0).
+The software policy remains an additional, stricter layer shared by Purchases
+and direct Treasury Movements, but is now an immutable projection of the
+Operator Manifest. See `operator.example.json` and the operator runbook.
+
+## Required runtime configuration
+
+| Variable | Purpose |
+|---|---|
+| `SOMPI_NETWORK` | Must be `testnet-10` in the initial release |
+| `SOMPI_OPERATOR_MANIFEST` | Operator-owned canonical manifest path |
+| `SOMPI_OPERATOR_UID` | Expected distinct manifest owner UID |
+| `SOMPI_RUNTIME_GID` | Fixed read-only manifest group GID |
+| `SOMPI_AUTHORITY_CLIENT_DIR` | MCP-owned IPC MAC copy and public trust store |
+| `SOMPI_AUTHORITY_RUNTIME_DIR` | Shared socket directory |
+| `SOMPI_AUTHORITY_SOCKET` | Authority Unix socket path |
+| `SOMPI_AUTHORITY_SOCKET_UID` | Expected distinct authority owner UID |
+| `SOMPI_AUTHORITY_SOCKET_GID` | Expected shared IPC group GID |
+| `SOMPI_AUTHORITY_ISSUER` | Authority issuer expected by both processes |
+| `SOMPI_AUTHORITY_IPC_KEY_ID` | IPC MAC key identifier expected by both processes |
+| `SOMPI_AUTHORITY_INSTRUMENT_ID` | Experimental native-KAS AP2 instrument identifier |
+
+The authority executable additionally accepts its private/client/runtime paths,
+signing `kid`, and socket GID as described in its runbook.
+
+## Security boundaries and limitations
+
+- The Agent, prompts, Merchant prose, HTTP responses, RPC responses, and MCP
+  arguments are untrusted.
+- The authority independently verifies Merchant Checkout evidence and displays
+  escaped canonical facts; approval requires typing the exact Purchase ID.
+- Merchant AP2 authorization is a separate HTTP stage completed before Treasury
+  staging. x402 receives only its standard payment request/header.
+- All Merchant egress is allowlisted, DNS/IP pinned, redirect-revalidated,
+  deadline-bound, and response-limited.
+- Private keys, raw signed headers, prepared transactions, and arbitrary lower
+  layer errors are excluded from MCP results.
+- Testnet keys are software files with restrictive permissions. Hardware-backed
+  authority signing, passkeys, autonomous mandates, batch settlement, UCP, and
+  mainnet are deferred.
+
+See [`docs/architecture/THREAT_MODEL.md`](docs/architecture/THREAT_MODEL.md) and
+[`docs/runbooks/`](docs/runbooks/README.md) before operating persistent funds.
+
+## Pinned protocol inputs
+
+The supported-profile declaration pins AP2 v0.2 schemas/upstream provenance,
+Kaspa-x402 `0.1.0-alpha.6`, ES256/SD-JWT dependencies, and the initial
+testnet-only network/scheme. Vendored AP2 schemas retain their upstream Apache
+2.0 license and provenance; Sompi source is MIT licensed.
+
+The old Sompi x402 v1 escrow implementation and compatibility paths were
+deleted at clean cutover. Kaspa-x402 remains an external package and is not
+modified to understand AP2.
 
 ## License
 
-MIT
+MIT. See [`LICENSE`](LICENSE). Vendored components retain their own licenses.

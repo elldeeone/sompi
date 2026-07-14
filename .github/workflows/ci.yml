@@ -14,8 +14,6 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm run build
-      - name: Offline checks (policy engine, key handling)
-        run: SOMPI_SMOKE_OFFLINE=1 node dist/smoke.js
+      - run: npm test
         env:
           SOMPI_DATA_DIR: /tmp/sompi-ci

@@ -4,14 +4,12 @@ SilverScript source and compiler-derived fixtures for the covenants shipped by
 this package:
 
 - `vault.sil` -> `src/vault/template.ts` (fixtures: `scripts/vault-fixtures.json`)
-- `escrow.sil` -> `src/x402/escrow-template.ts` (fixtures: `scripts/escrow-fixtures.json`)
 
-The npm package has no runtime dependency on SilverScript. `src/vault/template.ts`
-and `src/x402/escrow-template.ts` keep small parameterized segment templates so
-JS callers can instantiate arbitrary operator parameters. Those segments and
+The npm package has no runtime dependency on SilverScript.
+`src/vault/template.ts` keeps small parameterized segment templates so JS
+callers can instantiate arbitrary operator parameters. Those segments and
 fixtures are checked against upstream `silverc` output.
 
-`sompi-escrow-1` is the first public escrow template.
 `sompi-vault-1` is the first public vault template: a covenant-bound singleton
 with rolling-window state.
 
@@ -21,14 +19,12 @@ with rolling-window state.
 
    ```bash
    SILVERC=/path/to/silverc npm run fixtures:vault:check
-   SILVERC=/path/to/silverc npm run fixtures:escrow:check
    ```
 
    Or, from a SilverScript checkout:
 
    ```bash
    SILVERSCRIPT_DIR=/path/to/silverscript npm run fixtures:vault:check
-   SILVERSCRIPT_DIR=/path/to/silverscript npm run fixtures:escrow:check
    ```
 
 2. **Offline package smoke.** `npm run build && SOMPI_SMOKE_OFFLINE=1 npm run
@@ -36,19 +32,16 @@ with rolling-window state.
    fixtures, vault deposit/top-up aggregate fragmented wallet UTXOs, and
    top-up resets an expired exhausted window instead of extending it.
 
-3. **Live consensus proof.** Re-run the live proof script for the changed
-   contract against a Toccata node. For escrow, `scripts/escrow-live.js` proves
-   honest claim/refund paths and rejects replay/over-claim attempts. For vault,
-   `npm run proof:vault` proves allowed withdrawal, over-window rejection,
-   historical-locktime reset rejection, finalized future-locktime reset rejection,
-   window reset, top-up, and owner recovery.
+3. **Integrated testnet evidence.** The release E2E exercises durable
+   genesis/top-up, capped withdrawal/staging, recovery, and exact payment
+   through the same journaled path shipped to MCP. There is no second
+   non-journaled live-send harness.
 
 ## When a contract changes
 
-1. Update the relevant `.sil` file under `contracts/`.
+1. Update `contracts/vault.sil`.
 2. Compile with current upstream SilverScript and update the segment constants
-   in the matching TypeScript template.
-3. Run `npm run fixtures:vault` or `npm run fixtures:escrow` to refresh the
-   compiler-derived fixtures.
-4. Run the offline and live checks above, then update `docs/escrow-poc.md` with
-   live escrow evidence or `docs/vault-poc.md` with live vault evidence.
+   in `src/vault/template.ts`.
+3. Run `npm run fixtures:vault` to refresh the compiler-derived fixtures.
+4. Run the offline and integrated testnet checks above, then record live
+   evidence in `CURRENT_STATE.md`.

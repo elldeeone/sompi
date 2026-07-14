@@ -1,0 +1,2485 @@
+{
+  "$schema": "https://docs.oasis-open.org/sarif/sarif/v2.1.0/os/schemas/sarif-schema-2.1.0.json",
+  "runs": [
+    {
+      "automationDetails": {
+        "id": "ccc03842-b6f7-41d2-b169-cc7b9e6b90da"
+      },
+      "properties": {
+        "codexSecuritySchemaVersion": "1.0",
+        "codexSecurityTargetKind": "git_revision"
+      },
+      "results": [
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/chain-verifier.ts"
+                },
+                "region": {
+                  "endLine": 642,
+                  "startLine": 562
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Sompi 0.8.0 at revision `4ebb82d4f82bac46ae3addd112c4752f29630a8a` allows the one Kaspa RPC selected by the runtime to provide every fact used to decide that an exact-payment output exists and has reached the requested finality. The adapter checks the returned transaction ID, outpoint, amount, script, network, and finality rank, but it derives chain membership, block DAA score, virtual DAA score, and node health from that same unauthenticated source. These are consistency checks; they are not independent evidence that the transaction is on the canonical chain. The strongest practical route requires two cooperating actors that the Sompi threat model already treats as untrusted: the selected RPC and the Merchant. The Merchant receives the legitimate, policy-bounded signed exact transaction, withholds it instead of broadcasting it, and returns a successful response bound to that transaction. The RPC then invents a matching UTXO and enough DAA depth. Sompi can consequently write an observed spend, consume the reservation, and transition the Purchase to `settled` even though the transaction is absent from the network. If the inputs remain spendable, the Merchant may later submit the retained transaction after the false observation has fallen out of Sompi's one-hour software-policy window."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:e3aabc0cb0cde3e00897689dd7d638d2d5b9d38976eaa648421d74c149f3cb20"
+          },
+          "properties": {
+            "candidateId": "CAN-003",
+            "category": "Insufficient verification of chain-data authenticity",
+            "confidence": "high",
+            "findingId": "csf_a93fed9a133be4cf75a0de9e",
+            "occurrenceId": "occ_18186fc227592f2e2aadf5cd",
+            "severity": "medium"
+          },
+          "relatedLocations": [
+            {
+              "id": 0,
+              "message": {
+                "text": "entrypoint"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/chain-verifier.ts"
+                },
+                "region": {
+                  "endLine": 390,
+                  "startLine": 338
+                }
+              }
+            },
+            {
+              "id": 2,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/chain-verifier.ts"
+                },
+                "region": {
+                  "endLine": 417,
+                  "startLine": 383
+                }
+              }
+            },
+            {
+              "id": 3,
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/runtime/purchase-runtime.ts"
+                },
+                "region": {
+                  "endLine": 199,
+                  "startLine": 188
+                }
+              }
+            }
+          ],
+          "ruleId": "sompi.untrusted-rpc-false-settlement",
+          "ruleIndex": 18
+        },
+        {
+          "level": "note",
+          "locations": [
+            {
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/chain-verifier.ts"
+                },
+                "region": {
+                  "endLine": 669,
+                  "startLine": 591
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Sompi revision `4ebb82d4f82bac46ae3addd112c4752f29630a8a` (package version 0.8.0) can lose the evidence needed to settle an exact Kaspa-x402 Purchase after the Merchant spends the output it received. The exact-payment observer looks for the output in the current UTXO index and then for its parent transaction in the current mempool. Once the transaction has been accepted, has left the mempool, and its Merchant output has been spent, both current views are empty even though the payment happened. This matters when the original paid HTTP response was lost or a process crash occurred before Sompi durably recorded Settlement. A malicious Merchant can make that ambiguity deterministic by withholding the response and promptly spending its output. Recovery then remains `pending`, so Sompi cannot close the Settlement, obtain Fulfilment and Receipts through the paid-request replay, or resolve the associated accounting state."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:17dde80f254fc9ead682fb6e195117bce3c4c176260cd5ed16027bfe1c35c90b"
+          },
+          "properties": {
+            "candidateId": "CAN-017",
+            "category": "Insufficient verification of historical settlement evidence",
+            "confidence": "high",
+            "findingId": "csf_d752229336dc214aae595265",
+            "occurrenceId": "occ_206f2e6c61e5368d7b1439a7",
+            "severity": "low"
+          },
+          "relatedLocations": [
+            {
+              "id": 1,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/chain-verifier.ts"
+                },
+                "region": {
+                  "endLine": 390,
+                  "startLine": 383
+                }
+              }
+            },
+            {
+              "id": 2,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/chain-verifier.ts"
+                },
+                "region": {
+                  "endLine": 475,
+                  "startLine": 455
+                }
+              }
+            },
+            {
+              "id": 3,
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/exact-payment-module.ts"
+                },
+                "region": {
+                  "endLine": 523,
+                  "startLine": 494
+                }
+              }
+            },
+            {
+              "id": 4,
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/wallet.ts"
+                },
+                "region": {
+                  "endLine": 378,
+                  "startLine": 353
+                }
+              }
+            }
+          ],
+          "ruleId": "sompi.spent-payment-evidence-loss",
+          "ruleIndex": 16
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/staging-recovery-rpc.ts"
+                },
+                "region": {
+                  "endLine": 181,
+                  "startLine": 103
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Sompi's abandoned-staging recovery distinguishes an exact Merchant payment from a wallet recovery transaction by looking for each candidate's output in the current UTXO set and, if the output is absent, looking for the transaction in the current mempool. These are transient views. Once the winning output is spent and the winning transaction has left the mempool, both immutable candidates appear absent even though one necessarily spent the common staging outpoint. A configured malicious Merchant can reach this state without forging a transaction or compromising Sompi. After an exact payment accepts, the Merchant can delay or disrupt application completion and immediately spend its received output. Delayed recovery then loses the evidence that the exact transaction won. Sompi correctly refuses to guess, but it records an `unknown_staging_spender` conflict as terminal, stops re-observing the race, and leaves the Purchase's Treasury Reservation `in_flight`. That reservation continues consuming hourly policy capacity indefinitely. Repeating the timing against later human-approved Purchases can therefore create a cumulative accounting and Treasury-availability denial of service."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:5ffa15d012737c5fee3c892ce7e83f288de389d6ee0ee4086801cceeea4d673e"
+          },
+          "properties": {
+            "candidateId": "CAN-033",
+            "category": "Insufficient verification of historical chain evidence",
+            "confidence": "high",
+            "findingId": "csf_19c41616e7be4ba16eee1bfa",
+            "occurrenceId": "occ_27352f0449ffc061ae943620",
+            "severity": "medium"
+          },
+          "relatedLocations": [
+            {
+              "id": 1,
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/staging-recovery-rpc.ts"
+                },
+                "region": {
+                  "endLine": 260,
+                  "startLine": 185
+                }
+              }
+            },
+            {
+              "id": 2,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/abandoned-staging-recovery.ts"
+                },
+                "region": {
+                  "endLine": 854,
+                  "startLine": 764
+                }
+              }
+            },
+            {
+              "id": 3,
+              "message": {
+                "text": "entrypoint"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/staging-recovery-module.ts"
+                },
+                "region": {
+                  "endLine": 179,
+                  "startLine": 132
+                }
+              }
+            }
+          ],
+          "ruleId": "sompi.spent-staging-winner-evidence-loss",
+          "ruleIndex": 17
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/authority/protocol.ts"
+                },
+                "region": {
+                  "endLine": 70,
+                  "startLine": 43
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Sompi revision `4ebb82d4f82bac46ae3addd112c4752f29630a8a`, whose package metadata identifies it as version `0.8.0`, lets a configured Merchant choose `mempool` as the finality required for an exact payment. The requirements verifier accepts that value without applying a Sompi-controlled minimum. The Trusted Authority neither receives nor displays the decoded choice, and the staging-recovery adapter later copies it into the durable recovery plan. This becomes security-significant when Sompi observes its immutable recovery transaction in a node's mempool while the accepted staging output is still unspent. The recovery classifier deliberately reports a provisional `recovery_won` result. Because the Merchant-selected threshold is also `mempool`, the Purchase Journal treats that provisional result as final: it records the principal as returned, releases the in-flight reservation, and terminalizes the Purchase. If the recovery subsequently disappears and the competing exact payment becomes the one accepted by consensus, the Merchant has received the payment while Sompi has already made the corresponding policy capacity available for reuse."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:ac2ca36371fc8ffabc154e8fe43646b358fea37b341678fb3d3f3dbb941de42f"
+          },
+          "properties": {
+            "candidateId": "CAN-030",
+            "category": "Authorization-policy omission and finality downgrade",
+            "confidence": "high",
+            "findingId": "csf_c333cfcc76c27b8e05c087bb",
+            "occurrenceId": "occ_28a412485a5ceb292440e753",
+            "severity": "medium"
+          },
+          "relatedLocations": [
+            {
+              "id": 0,
+              "message": {
+                "text": "entrypoint"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/payment-requirements-verifier.ts"
+                },
+                "region": {
+                  "endLine": 86,
+                  "startLine": 63
+                }
+              }
+            },
+            {
+              "id": 2,
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/ap2/human-authority.ts"
+                },
+                "region": {
+                  "endLine": 204,
+                  "startLine": 179
+                }
+              }
+            },
+            {
+              "id": 3,
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/staging-recovery-module.ts"
+                },
+                "region": {
+                  "endLine": 251,
+                  "startLine": 228
+                }
+              }
+            },
+            {
+              "id": 4,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/abandoned-staging-recovery.ts"
+                },
+                "region": {
+                  "endLine": 820,
+                  "startLine": 785
+                }
+              }
+            },
+            {
+              "id": 5,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/purchase/journal.ts"
+                },
+                "region": {
+                  "endLine": 2812,
+                  "startLine": 2802
+                }
+              }
+            },
+            {
+              "id": 6,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/purchase/journal.ts"
+                },
+                "region": {
+                  "endLine": 5185,
+                  "startLine": 5142
+                }
+              }
+            }
+          ],
+          "ruleId": "sompi.merchant-mempool-finality-capacity-release",
+          "ruleIndex": 6
+        },
+        {
+          "level": "note",
+          "locations": [
+            {
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/chain-verifier.ts"
+                },
+                "region": {
+                  "endLine": 1383,
+                  "startLine": 1369
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Sompi 0.8.0 at revision `4ebb82d4f82bac46ae3addd112c4752f29630a8a` accepts a Kaspa RPC transaction's `verboseData.transactionId` as its canonical identity. When an expected Merchant output is absent from the UTXO index, a selected malicious RPC can return an incomplete transaction body, repeat the requested transaction ID in that verbose field, and provide the expected Merchant output. Sompi then reports the transaction as observed in the mempool even though the supplied body cannot be finalized to establish that identity. The immediate consequence is a bounded integrity failure in exact-payment recovery. A fabricated observation changes recovery from `pending` to `transaction_observed`, causing Sompi to replay the original immutable paid request. When a signed requirement explicitly permits mempool finality, the same primitive can also contribute the chain-observation half of a false Settlement, but only alongside separately valid, semantically false Merchant evidence. The bug does not disclose keys, authorize a new payee, modify the prepared transaction, or create an arbitrary or duplicate spend."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:eb1d05dcbcb00b418b65f359f09163f10976bab183fea945690416ee26b6e15b"
+          },
+          "properties": {
+            "candidateId": "CAN-016",
+            "category": "Insufficient verification of transaction identity",
+            "confidence": "high",
+            "findingId": "csf_d063c623e560e0a5b4ab3535",
+            "occurrenceId": "occ_296dfac87dc7a71d25b7a309",
+            "severity": "low"
+          },
+          "relatedLocations": [
+            {
+              "id": 0,
+              "message": {
+                "text": "entrypoint"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/chain-verifier.ts"
+                },
+                "region": {
+                  "endLine": 674,
+                  "startLine": 645
+                }
+              }
+            },
+            {
+              "id": 2,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/chain-verifier.ts"
+                },
+                "region": {
+                  "endLine": 701,
+                  "startLine": 675
+                }
+              }
+            },
+            {
+              "id": 3,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/chain-verifier.ts"
+                },
+                "region": {
+                  "endLine": 475,
+                  "startLine": 420
+                }
+              }
+            }
+          ],
+          "ruleId": "sompi.rpc-mempool-id-spoof",
+          "ruleIndex": 14
+        },
+        {
+          "level": "note",
+          "locations": [
+            {
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/runtime/config.ts"
+                },
+                "region": {
+                  "endLine": 447,
+                  "startLine": 421
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Sompi package version 0.8.0 at revision `4ebb82d4f82bac46ae3addd112c4752f29630a8a` supports an explicitly configured cleartext HTTP path for Merchant traffic. On that path, the AP2 commerce-authorization adapter accepts two unsigned JSON responses whose security-relevant fields merely reflect values that Sompi sent in the request. The adapter then labels a locally synthesized document as verified Merchant acceptance. That acceptance allows the Purchase to advance toward Treasury execution, after which the finalized Kaspa-x402 exact payment is placed in the `PAYMENT-SIGNATURE` header and sent through the same cleartext transport. An on-path attacker can therefore forge the Merchant's stage acceptance, observe the resulting signed transaction, and broadcast that transaction while withholding the paid resource request from the real Merchant. The practical result is a policy-bounded, paid-but-unfulfilled Purchase and disclosure of the authorization and payment artifacts carried on the wire."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:b292d7e436015887455fa33c5773fb8baec3aa775835b384c1c1e741c9002040"
+          },
+          "properties": {
+            "candidateId": "CAN-007",
+            "category": "Cleartext transmission of sensitive protocol data",
+            "confidence": "high",
+            "findingId": "csf_16a71774cc4998a5a83dabe9",
+            "occurrenceId": "occ_2a2a30aef8ee90fbacc59b99",
+            "severity": "low"
+          },
+          "relatedLocations": [
+            {
+              "id": 1,
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/ap2/commerce-authorization-module.ts"
+                },
+                "region": {
+                  "endLine": 249,
+                  "startLine": 228
+                }
+              }
+            },
+            {
+              "id": 2,
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/ap2/commerce-authorization-module.ts"
+                },
+                "region": {
+                  "endLine": 420,
+                  "startLine": 380
+                }
+              }
+            },
+            {
+              "id": 3,
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/purchase/coordinator.ts"
+                },
+                "region": {
+                  "endLine": 982,
+                  "startLine": 952
+                }
+              }
+            },
+            {
+              "id": 4,
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/purchase/coordinator.ts"
+                },
+                "region": {
+                  "endLine": 1076,
+                  "startLine": 1011
+                }
+              }
+            },
+            {
+              "id": 5,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/exact-payment-module.ts"
+                },
+                "region": {
+                  "endLine": 415,
+                  "startLine": 397
+                }
+              }
+            },
+            {
+              "id": 6,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/exact-payment-module.ts"
+                },
+                "region": {
+                  "endLine": 809,
+                  "startLine": 733
+                }
+              }
+            },
+            {
+              "id": 7,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/http/node-pinned-transport.ts"
+                },
+                "region": {
+                  "endLine": 84,
+                  "startLine": 30
+                }
+              }
+            }
+          ],
+          "ruleId": "sompi.cleartext-merchant-authorization",
+          "ruleIndex": 2
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/mcp/server.ts"
+                },
+                "region": {
+                  "endLine": 180,
+                  "startLine": 160
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Sompi's Agent-facing direct Treasury path records an operation as durable `intent` before the production wallet adapter fully validates and prepares the transaction. If preparation then fails deterministically, the exception leaves that intent unresolved. A partial unique index permits only one unresolved direct Treasury operation, and the state machine offers no supported way to terminalize an intent that can never prepare. One untrusted Agent request can therefore deny every later wallet send, vault send, and vault deposit on that Sompi service across process restarts. The failed request also retains its amount and fee ceiling in shared policy-capacity accounting. The reachable surface is the normal local stdio MCP session, not a network listener; the network attack vector is therefore none and the access scope is internal-only. The attacker needs the intended Agent role, a fresh operation key, and an amount permitted by operator policy; no filesystem, wallet-key, authority-key, or administrative access is required. The demonstrated request uses `kaspatest:a`, which satisfies the registered lexical field schema but is rejected by the pinned Kaspa SDK. The failure occurs before transaction submission, so the demonstrated impact is persistent availability and accounting denial rather than theft or unauthorized payment."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:1809f33b3cce976d74901d4dd23681e61055be6f515b625228510c71d81bb721"
+          },
+          "properties": {
+            "candidateId": "CAN-031",
+            "category": "Uncontrolled resource retention",
+            "confidence": "high",
+            "findingId": "csf_c8024d485e2cc14a03c12c12",
+            "occurrenceId": "occ_2b22e6d4c164c5fb704bfc7e",
+            "severity": "medium"
+          },
+          "relatedLocations": [
+            {
+              "id": 1,
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/treasury/operations.ts"
+                },
+                "region": {
+                  "endLine": 105,
+                  "startLine": 94
+                }
+              }
+            },
+            {
+              "id": 2,
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/treasury/operations.ts"
+                },
+                "region": {
+                  "endLine": 152,
+                  "startLine": 133
+                }
+              }
+            },
+            {
+              "id": 3,
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/treasury/operations.ts"
+                },
+                "region": {
+                  "endLine": 281,
+                  "startLine": 261
+                }
+              }
+            },
+            {
+              "id": 4,
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/purchase/journal.ts"
+                },
+                "region": {
+                  "endLine": 1349,
+                  "startLine": 1283
+                }
+              }
+            },
+            {
+              "id": 5,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/purchase/journal-schema.ts"
+                },
+                "region": {
+                  "endLine": 556,
+                  "startLine": 554
+                }
+              }
+            }
+          ],
+          "ruleId": "sompi.direct-treasury-preparation-lockout",
+          "ruleIndex": 3
+        },
+        {
+          "level": "note",
+          "locations": [
+            {
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/vault.ts"
+                },
+                "region": {
+                  "endLine": 700,
+                  "startLine": 652
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Sompi 0.8.0 at revision `4ebb82d4f82bac46ae3addd112c4752f29630a8a` can durably mark an authorized Purchase's Treasury staging as complete when its selected Kaspa RPC merely returns the two expected transaction outputs. The observation may still be provisional (`blockDaaScore` zero), and a malicious selected RPC can fabricate the same self-consistent response. The adapter does not require an accepted transaction proof before it rotates the shared vault to the new continuation outpoint and emits staging evidence for the Purchase journal. If those outputs subsequently disappear, the local vault points to a continuation that does not exist and the Purchase retains evidence for staging that never became accepted. This is a persistent availability and workflow integrity failure that requires owner/operator recovery. It does not let the RPC change the approved payee, amount, signed transaction, staging key, or covenant, and a nonexistent staging output cannot fund the later x402 settlement. We therefore assess the issue as Low severity / P3."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:80a02697db4d8730d1506d1b7a41e81f611fab213c043f12eddbe9c5d891e6d3"
+          },
+          "properties": {
+            "candidateId": "CAN-026",
+            "category": "Improper use of provisional staging finality",
+            "confidence": "high",
+            "findingId": "csf_713d4e19295bd2c91fbf5ab2",
+            "occurrenceId": "occ_317ac4753a613779d4481f31",
+            "severity": "low"
+          },
+          "relatedLocations": [
+            {
+              "id": 0,
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/vault-treasury-staging.ts"
+                },
+                "region": {
+                  "endLine": 324,
+                  "startLine": 270
+                }
+              }
+            },
+            {
+              "id": 2,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/vault-treasury-staging.ts"
+                },
+                "region": {
+                  "endLine": 395,
+                  "startLine": 382
+                }
+              }
+            },
+            {
+              "id": 3,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/vault.ts"
+                },
+                "region": {
+                  "endLine": 823,
+                  "startLine": 800
+                }
+              }
+            },
+            {
+              "id": 4,
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/purchase/coordinator.ts"
+                },
+                "region": {
+                  "endLine": 1656,
+                  "startLine": 1633
+                }
+              }
+            }
+          ],
+          "ruleId": "sompi.provisional-purchase-staging-finality",
+          "ruleIndex": 9
+        },
+        {
+          "level": "note",
+          "locations": [
+            {
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/wallet.ts"
+                },
+                "region": {
+                  "endLine": 348,
+                  "startLine": 308
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Sompi revision `4ebb82d4f82bac46ae3addd112c4752f29630a8a` (package version 0.8.0) can mark a direct wallet send `completed` after a single selected Kaspa RPC reports the exact transaction as a non-orphan mempool entry. A mempool entry is provisional: it does not establish accepted chain inclusion, a minimum DAA depth, or durable consensus finality. The same RPC response nevertheless crosses Sompi's `observed` boundary and becomes a terminal SQLite journal fact. If the entry was fabricated by the selected RPC or the transaction is later evicted, Sompi continues to report the send as completed. Restart does not repair the record because recovery returns terminal operations without another network observation. This can leave the operator and callers with a false payment-success record and temporarily incorrect rolling-capacity accounting."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:3997ed8a9423d1b0cb13ea4c3987b9ee1d1d1712831d8477bb260181cb48e9b8"
+          },
+          "properties": {
+            "candidateId": "CAN-023",
+            "category": "Improper use of provisional wallet finality",
+            "confidence": "high",
+            "findingId": "csf_ad105a75a0ac7134ca34ecfe",
+            "occurrenceId": "occ_43ce664e1fa9eddff60d6dae",
+            "severity": "low"
+          },
+          "relatedLocations": [
+            {
+              "id": 1,
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/treasury/operation-adapters.ts"
+                },
+                "region": {
+                  "endLine": 207,
+                  "startLine": 176
+                }
+              }
+            },
+            {
+              "id": 2,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/treasury/operations.ts"
+                },
+                "region": {
+                  "endLine": 171,
+                  "startLine": 163
+                }
+              }
+            },
+            {
+              "id": 3,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/purchase/journal.ts"
+                },
+                "region": {
+                  "endLine": 1638,
+                  "startLine": 1564
+                }
+              }
+            },
+            {
+              "id": 4,
+              "message": {
+                "text": "entrypoint"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/wallet.ts"
+                },
+                "region": {
+                  "endLine": 394,
+                  "startLine": 308
+                }
+              }
+            },
+            {
+              "id": 5,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/treasury/operation-adapters.ts"
+                },
+                "region": {
+                  "endLine": 208,
+                  "startLine": 176
+                }
+              }
+            },
+            {
+              "id": 6,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/treasury/operation-adapters.ts"
+                },
+                "region": {
+                  "endLine": 305,
+                  "startLine": 258
+                }
+              }
+            }
+          ],
+          "ruleId": "sompi.provisional-wallet-send-finality",
+          "ruleIndex": 12
+        },
+        {
+          "level": "note",
+          "locations": [
+            {
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/staging-recovery-rpc.ts"
+                },
+                "region": {
+                  "endLine": 484,
+                  "startLine": 482
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Sompi's abandoned-staging recovery observer treats broad English error phrases from a selected Kaspa RPC as affirmative proof that a transaction is absent. In particular, the classifier matches `not found` anywhere in an exception message, so the capability error `Method not found` is indistinguishable from a successful transaction-missing result. When the RPC emits this error for both immutable transactions competing for a still-unspent staging output, Sompi creates `safe_to_submit` readiness and can broadcast its prepared recovery transaction. The affected implementation was introduced in commit `52080d1278e8514dbfe453b352d71396d64fee50` and is present in revision `4ebb82d4f82bac46ae3addd112c4752f29630a8a`. No fixed revision was available when this report was prepared. I reviewed that exact revision and executed the included local-only proof of concept against its compiled production modules; I did not connect to a live RPC, broadcast a transaction, or run a competing transaction race on Testnet-10."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:90a1d1b1fa1e641811e35626f1cae4a97381ad138c6d2aec6e557c86ab1bc80e"
+          },
+          "properties": {
+            "candidateId": "CAN-006",
+            "category": "Fail-open exceptional-condition handling",
+            "confidence": "high",
+            "findingId": "csf_ab1d8af1712e72041f047eaa",
+            "occurrenceId": "occ_4f0cf53569350c7a383f51f4",
+            "severity": "low"
+          },
+          "relatedLocations": [
+            {
+              "id": 0,
+              "message": {
+                "text": "entrypoint"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/staging-recovery-rpc.ts"
+                },
+                "region": {
+                  "endLine": 181,
+                  "startLine": 146
+                }
+              }
+            },
+            {
+              "id": 2,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/abandoned-staging-recovery.ts"
+                },
+                "region": {
+                  "endLine": 820,
+                  "startLine": 785
+                }
+              }
+            },
+            {
+              "id": 3,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/purchase/coordinator.ts"
+                },
+                "region": {
+                  "endLine": 1921,
+                  "startLine": 1893
+                }
+              }
+            }
+          ],
+          "ruleId": "sompi.rpc-error-as-absence",
+          "ruleIndex": 13
+        },
+        {
+          "level": "note",
+          "locations": [
+            {
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/abandoned-staging-recovery.ts"
+                },
+                "region": {
+                  "endLine": 820,
+                  "startLine": 769
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Sompi's abandoned-staging recovery path treats one selected Kaspa RPC's current view as sufficient proof that neither of two competing transactions exists. If that RPC reports the immutable exact Merchant payment absent, the immutable recovery transaction absent, and their shared staging outpoint unspent, Sompi issues a short-lived `safe_to_submit` token. The Purchase module then uses that token to broadcast the recovery transaction. That evidence is internally consistent, but it does not establish global absence. A stale, partitioned, selectively omitting, or malicious RPC can supply the required tuple while the exact payment is already propagating or visible through another network view. We can therefore turn one observer's negative snapshot into an avoidable double-spend race between the authorized Merchant payment and Sompi's recovery sweep."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:ccbbfcc24df268d7f510ff078cd1a2df7b3a2261bbc223bc5d1a6745466a0e2a"
+          },
+          "properties": {
+            "candidateId": "CAN-018",
+            "category": "Insufficient verification of negative chain evidence",
+            "confidence": "high",
+            "findingId": "csf_a2bca6283834e1a8de5abb44",
+            "occurrenceId": "occ_5e0d44e1ac03cf5dbb0ec972",
+            "severity": "low"
+          },
+          "relatedLocations": [
+            {
+              "id": 0,
+              "message": {
+                "text": "entrypoint"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/abandoned-staging-recovery.ts"
+                },
+                "region": {
+                  "endLine": 438,
+                  "startLine": 401
+                }
+              }
+            },
+            {
+              "id": 2,
+              "message": {
+                "text": "entrypoint"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/staging-recovery-rpc.ts"
+                },
+                "region": {
+                  "endLine": 260,
+                  "startLine": 56
+                }
+              }
+            },
+            {
+              "id": 3,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/abandoned-staging-recovery.ts"
+                },
+                "region": {
+                  "endLine": 477,
+                  "startLine": 441
+                }
+              }
+            },
+            {
+              "id": 4,
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/runtime/purchase-runtime.ts"
+                },
+                "region": {
+                  "endLine": 238,
+                  "startLine": 231
+                }
+              }
+            }
+          ],
+          "ruleId": "sompi.single-rpc-absence-recovery-race",
+          "ruleIndex": 15
+        },
+        {
+          "level": "note",
+          "locations": [
+            {
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/mcp/purchase-tools.ts"
+                },
+                "region": {
+                  "endLine": 65,
+                  "startLine": 34
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Sompi 0.8.0 at revision `4ebb82d4f82bac46ae3addd112c4752f29630a8a` accepts Purchase request bodies from its untrusted Agent-facing MCP tool and stores them as immutable evidence before it applies egress policy, contacts a Merchant, or asks the Trusted Authority for approval. Each body is limited to 1 MiB, but there is no aggregate byte quota, Purchase-count limit, caller rate limit, or retention boundary. A caller with an ordinary local MCP session can therefore submit unique near-limit bodies and unique request keys, choose a destination that is guaranteed to fail egress validation, and make durable storage grow linearly without ever reaching Checkout or authority review. This is an uncontrolled resource-consumption issue (CWE-400), assessed as low severity / P3. It can consume the finite data volume used by one Sompi instance and eventually deny journal, evidence, Purchase, treasury, or recovery operations that share that storage. The shipped transport is inherited local stdio, each call is bounded, and a practical outage requires many calls and enough time to consume the available capacity. I did not establish a public network path, host-wide denial of service, unauthorized spending, or secret disclosure."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:9f1bebb35ae5807a2858ef5acf8603aad36c941ba4176f460f5ea463a9accb71"
+          },
+          "properties": {
+            "candidateId": "CAN-027",
+            "category": "Uncontrolled durable storage consumption",
+            "confidence": "high",
+            "findingId": "csf_035978be1b0c4f2807ba7e3b",
+            "occurrenceId": "occ_5ee8f909ea35d0e1c89f8af9",
+            "severity": "low"
+          },
+          "relatedLocations": [
+            {
+              "id": 0,
+              "message": {
+                "text": "entrypoint"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/mcp/server.ts"
+                },
+                "region": {
+                  "endLine": 469,
+                  "startLine": 452
+                }
+              }
+            },
+            {
+              "id": 2,
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/purchase/coordinator.ts"
+                },
+                "region": {
+                  "endLine": 591,
+                  "startLine": 566
+                }
+              }
+            },
+            {
+              "id": 3,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/purchase/coordinator.ts"
+                },
+                "region": {
+                  "endLine": 2349,
+                  "startLine": 2341
+                }
+              }
+            },
+            {
+              "id": 4,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/purchase/evidence-store.ts"
+                },
+                "region": {
+                  "endLine": 113,
+                  "startLine": 54
+                }
+              }
+            },
+            {
+              "id": 5,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/purchase/journal.ts"
+                },
+                "region": {
+                  "endLine": 1155,
+                  "startLine": 1099
+                }
+              }
+            }
+          ],
+          "ruleId": "sompi.prevalidation-purchase-storage-exhaustion",
+          "ruleIndex": 8
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/purchase/journal.ts"
+                },
+                "region": {
+                  "endLine": 2801,
+                  "startLine": 2782
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Sompi can permanently close an abandoned-staging recovery after seeing the Purchase's immutable exact-payment transaction only in a selected Kaspa RPC's mempool. The recovery plan may require `accepted` or `confirmed` finality, but the `exact_payment_won` journal branch does not compare the observed `winningFinality` with that requirement. It writes the recovery Effect as `observed`, which is terminal. On restart, the coordinator returns the stored exact winner before asking the recovery observer whether that transaction is still present. An attacker controlling the selected RPC can therefore report the already-known exact transaction as a mempool candidate and later stop reporting it. The same condition can occur naturally if an honest mempool candidate is evicted or rejected before acceptance. If the transaction never reaches the required finality, Sompi cannot automatically settle the Purchase or resume recovery of the staged output. The in-flight Reservation and staged principal remain tied up until operator repair. A shared malicious RPC can repeat the primitive over multiple eligible Purchases and consume usable policy capacity."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:128382a5c7830d0caf1b385e5ff7a82be0ad5a7a78eea2fe0fe3e553d954c14a"
+          },
+          "properties": {
+            "candidateId": "CAN-020",
+            "category": "Improper use of provisional chain evidence",
+            "confidence": "high",
+            "findingId": "csf_5d8fde2ffb28cf1231ff7fea",
+            "occurrenceId": "occ_6057cf3af9f8224edd298add",
+            "severity": "medium"
+          },
+          "relatedLocations": [
+            {
+              "id": 0,
+              "message": {
+                "text": "entrypoint"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/abandoned-staging-recovery.ts"
+                },
+                "region": {
+                  "endLine": 820,
+                  "startLine": 785
+                }
+              }
+            },
+            {
+              "id": 2,
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/purchase/journal.ts"
+                },
+                "region": {
+                  "endLine": 2831,
+                  "startLine": 2802
+                }
+              }
+            },
+            {
+              "id": 3,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/purchase/journal.ts"
+                },
+                "region": {
+                  "endLine": 7388,
+                  "startLine": 7375
+                }
+              }
+            },
+            {
+              "id": 4,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/purchase/coordinator.ts"
+                },
+                "region": {
+                  "endLine": 1871,
+                  "startLine": 1866
+                }
+              }
+            }
+          ],
+          "ruleId": "sompi.mempool-exact-terminal-recovery",
+          "ruleIndex": 5
+        },
+        {
+          "level": "note",
+          "locations": [
+            {
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/vault.ts"
+                },
+                "region": {
+                  "endLine": 700,
+                  "startLine": 652
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Sompi's direct `vault_send` path advances its durable covenant-vault configuration as soon as one selected Kaspa RPC returns the two expected transaction outputs. The code records the outputs' `blockDaaScore`, but it does not require the score to be nonzero, does not require an accepted or confirmed finality level, and does not independently establish chain inclusion before committing. A score of zero is treated elsewhere in the same revision as mempool-only evidence. This creates a state-desynchronization primitive. A selected malicious or impersonated RPC can briefly return the exact outputs of the signed vault transaction with `blockDaaScore=0`, or an honest RPC can expose equivalent provisional state that later disappears. Sompi then replaces the vault's current outpoint with the prepared continuation and marks the direct Treasury operation complete. If the transaction was never accepted, restart preserves an outpoint that does not exist while the original covenant output remains live. Normal automated vault use is then unavailable until an operator reconstructs the correct state or uses the offline owner-recovery path."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:917087bc0c1cd4b0ccff9f5b4d41f095cb9e18ee01a298532aa112342ea7b30d"
+          },
+          "properties": {
+            "candidateId": "CAN-024",
+            "category": "Improper use of provisional vault-spend finality",
+            "confidence": "high",
+            "findingId": "csf_b66e72d37cd13e86b636d67f",
+            "occurrenceId": "occ_61f1947be737f3fa623e43bf",
+            "severity": "low"
+          },
+          "relatedLocations": [
+            {
+              "id": 1,
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/treasury/operation-adapters.ts"
+                },
+                "region": {
+                  "endLine": 304,
+                  "startLine": 258
+                }
+              }
+            },
+            {
+              "id": 2,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/vault.ts"
+                },
+                "region": {
+                  "endLine": 823,
+                  "startLine": 800
+                }
+              }
+            },
+            {
+              "id": 3,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/treasury/operations.ts"
+                },
+                "region": {
+                  "endLine": 171,
+                  "startLine": 154
+                }
+              }
+            }
+          ],
+          "ruleId": "sompi.provisional-vault-send-continuation",
+          "ruleIndex": 11
+        },
+        {
+          "level": "note",
+          "locations": [
+            {
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/vault.ts"
+                },
+                "region": {
+                  "endLine": 251,
+                  "startLine": 238
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Sompi accepts an operator recovery public key when it creates its covenant vault. At revision `4ebb82d4f82bac46ae3addd112c4752f29630a8a` (`@elldeeone/sompi` 0.8.0), the MCP schema and the underlying vault manager only require this value to contain 64 hexadecimal characters. They do not verify that those bytes encode a valid secp256k1 x-only public key. An untrusted caller with first-run access to the local MCP process can therefore provide a value such as 32 bytes of `ff`. Sompi accepts the value, incorporates it into the covenant, and stores it as the operator's durable recovery authority. The pinned Kaspa SDK rejects the same value as an x-only public key. Because owner recovery later starts from a valid private key and compares its derived x-only public key with the stored bytes, no valid owner private key can match this configuration."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:c3d4f6e28612dca9c8019f150b2b4fd4ff8e4db97ba6ce6315d5d35a7792e0eb"
+          },
+          "properties": {
+            "candidateId": "CAN-008",
+            "category": "Improper validation of recovery-key input",
+            "confidence": "high",
+            "findingId": "csf_3e1db664c80f9618ecc5395f",
+            "occurrenceId": "occ_70f82e53a2f54e7e0ed5af79",
+            "severity": "low"
+          },
+          "relatedLocations": [
+            {
+              "id": 0,
+              "message": {
+                "text": "entrypoint"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/mcp/server.ts"
+                },
+                "region": {
+                  "endLine": 312,
+                  "startLine": 277
+                }
+              }
+            },
+            {
+              "id": 2,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/vault.ts"
+                },
+                "region": {
+                  "endLine": 276,
+                  "startLine": 253
+                }
+              }
+            },
+            {
+              "id": 3,
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/vault.ts"
+                },
+                "region": {
+                  "endLine": 1104,
+                  "startLine": 1084
+                }
+              }
+            }
+          ],
+          "ruleId": "sompi.invalid-vault-recovery-key",
+          "ruleIndex": 4
+        },
+        {
+          "level": "note",
+          "locations": [
+            {
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/authority/service.ts"
+                },
+                "region": {
+                  "endLine": 177,
+                  "startLine": 136
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Sompi's human-present Trusted Authority admits authenticated approval requests without an aggregate in-flight limit, then serializes their terminal ceremonies behind one Promise chain. Neither the authority transport nor the decision service can cancel a queued or active ceremony when its client disconnects, its request expires, its replay lease fails, or the authority begins shutting down. The terminal's `readline.question` also has no deadline or abort signal. Consequently, one unanswered ceremony blocks every later human-present approval on that authority instance, while repeated distinct requests retain additional promises, request state, and heartbeat timers. The affected code is in package version 0.8.0. The prompt queue first appears in commit `52080d1278e8514dbfe453b352d71396d64fee50`, and it remains present in revision `4ebb82d4f82bac46ae3addd112c4752f29630a8a`. No fixed revision was available when this report was prepared. I reviewed that exact revision and executed the included local proof of concept against its compiled production prompt implementation. I queued 128 ceremonies and observed that, with the first left unanswered, zero promises settled and only the first ceremony rendered. I did not run a destructive load against a live two-UID authority or use real IPC credentials, Merchant artifacts, or Testnet-10 funds."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:a859506fd4bae115c9c81236a64dcc117ca70ee1095bc1bb94b8d32a5d35eb59"
+          },
+          "properties": {
+            "candidateId": "CAN-013",
+            "category": "Uncontrolled authenticated resource consumption",
+            "confidence": "high",
+            "findingId": "csf_52c8acd75a32b912968c2561",
+            "occurrenceId": "occ_91443f98018856c6e7ceb48e",
+            "severity": "low"
+          },
+          "relatedLocations": [
+            {
+              "id": 0,
+              "message": {
+                "text": "entrypoint"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/authority/protocol.ts"
+                },
+                "region": {
+                  "endLine": 472,
+                  "startLine": 434
+                }
+              }
+            },
+            {
+              "id": 2,
+              "message": {
+                "text": "entrypoint"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/authority/service.ts"
+                },
+                "region": {
+                  "endLine": 243,
+                  "startLine": 203
+                }
+              }
+            },
+            {
+              "id": 3,
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/authority/transport.ts"
+                },
+                "region": {
+                  "endLine": 213,
+                  "startLine": 206
+                }
+              }
+            },
+            {
+              "id": 4,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/ap2/human-authority.ts"
+                },
+                "region": {
+                  "endLine": 150,
+                  "startLine": 136
+                }
+              }
+            },
+            {
+              "id": 5,
+              "message": {
+                "text": "entrypoint"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/authority/transport.ts"
+                },
+                "region": {
+                  "endLine": 214,
+                  "startLine": 192
+                }
+              }
+            },
+            {
+              "id": 6,
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/authority/service.ts"
+                },
+                "region": {
+                  "endLine": 244,
+                  "startLine": 203
+                }
+              }
+            },
+            {
+              "id": 7,
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/ap2/human-authority.ts"
+                },
+                "region": {
+                  "endLine": 114,
+                  "startLine": 72
+                }
+              }
+            },
+            {
+              "id": 8,
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/ap2/human-authority.ts"
+                },
+                "region": {
+                  "endLine": 170,
+                  "startLine": 144
+                }
+              }
+            },
+            {
+              "id": 9,
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/authority/runtime.ts"
+                },
+                "region": {
+                  "endLine": 269,
+                  "startLine": 251
+                }
+              }
+            }
+          ],
+          "ruleId": "sompi.authority-prompt-queue-dos",
+          "ruleIndex": 1
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/policy.ts"
+                },
+                "region": {
+                  "endLine": 74,
+                  "startLine": 43
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Sompi treats the file named by `SOMPI_POLICY` as an operator-owned control below the untrusted Agent. At revision `4ebb82d4f82bac46ae3addd112c4752f29630a8a` (package version `0.8.0`), `PolicyEngine` reads that file and hot-reloads it by pathname without checking whether it is a symbolic link, a regular file, owned by a trusted operator, non-writable by the Agent principal, or reached through protected ancestors. Both `statSync` and `readFileSync` follow symbolic links. Consequently, a lower-privilege local Agent-side process that can write or replace the configured leaf, a followed target, or a relevant ancestor can supply valid permissive policy JSON. On the next policy access, Sompi promotes those bytes into the active direct-spend policy. The Agent can then use the ordinary `send_payment` MCP tool to ask the credential-bearing Sompi process to prepare, sign, and submit an attacker-directed wallet transaction."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:d1b3d1959990b234e566b6270baef0361c15e19f3f078a1a1aeff68f7663a33b"
+          },
+          "properties": {
+            "candidateId": "CAN-032",
+            "category": "External control of security policy configuration",
+            "confidence": "high",
+            "findingId": "csf_1c6f4dc819da0211a4dd299b",
+            "occurrenceId": "occ_abc187ee15432d1dbcdc1f4e",
+            "severity": "medium"
+          },
+          "relatedLocations": [
+            {
+              "id": 1,
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/policy.ts"
+                },
+                "region": {
+                  "endLine": 156,
+                  "startLine": 145
+                }
+              }
+            },
+            {
+              "id": 2,
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/policy.ts"
+                },
+                "region": {
+                  "endLine": 115,
+                  "startLine": 82
+                }
+              }
+            },
+            {
+              "id": 3,
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/runtime/config.ts"
+                },
+                "region": {
+                  "endLine": 539,
+                  "startLine": 522
+                }
+              }
+            },
+            {
+              "id": 4,
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/treasury/operations.ts"
+                },
+                "region": {
+                  "endLine": 105,
+                  "startLine": 94
+                }
+              }
+            },
+            {
+              "id": 5,
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/treasury/operations.ts"
+                },
+                "region": {
+                  "endLine": 251,
+                  "startLine": 244
+                }
+              }
+            },
+            {
+              "id": 6,
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/mcp/server.ts"
+                },
+                "region": {
+                  "endLine": 180,
+                  "startLine": 160
+                }
+              }
+            }
+          ],
+          "ruleId": "sompi.policy-file-provenance-bypass",
+          "ruleIndex": 7
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/staging-recovery-rpc.ts"
+                },
+                "region": {
+                  "endLine": 143,
+                  "startLine": 56
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Sompi delegates abandoned staging-transaction recovery observation to one Kaspa RPC. That RPC supplies the UTXO set, the candidate block DAA score, and the virtual DAA score used to decide finality. A malicious selected RPC can therefore return a self-consistent, invented recovery output and cause Sompi to classify the immutable recovery transaction as the race winner. The classification is not merely informational. When the claimed finality meets the Purchase plan's requirement, the journal records the staging principal as returned, releases the in-flight policy reservation, and makes the Purchase terminal. If the competing exact payment wins on the real network and the released capacity is then reused, Merchant outflow is no longer represented by the policy accounting that was supposed to bound it."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:530b4287d6745443334e2a226dbe9258063ab3fec47c488aa29608b4288c47c1"
+          },
+          "properties": {
+            "candidateId": "CAN-004",
+            "category": "Insufficient verification of recovery finality",
+            "confidence": "high",
+            "findingId": "csf_8b02b5deb0f418d49c604b55",
+            "occurrenceId": "occ_b4719b16445aff7d921d0798",
+            "severity": "medium"
+          },
+          "relatedLocations": [
+            {
+              "id": 0,
+              "message": {
+                "text": "entrypoint"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/wallet.ts"
+                },
+                "region": {
+                  "endLine": 163,
+                  "startLine": 95
+                }
+              }
+            },
+            {
+              "id": 2,
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/staging-recovery-rpc.ts"
+                },
+                "region": {
+                  "endLine": 318,
+                  "startLine": 280
+                }
+              }
+            },
+            {
+              "id": 3,
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/kaspa-x402/abandoned-staging-recovery.ts"
+                },
+                "region": {
+                  "endLine": 854,
+                  "startLine": 764
+                }
+              }
+            },
+            {
+              "id": 4,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/purchase/journal.ts"
+                },
+                "region": {
+                  "endLine": 5186,
+                  "startLine": 5082
+                }
+              }
+            },
+            {
+              "id": 5,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/purchase/coordinator.ts"
+                },
+                "region": {
+                  "endLine": 1871,
+                  "startLine": 1866
+                }
+              }
+            }
+          ],
+          "ruleId": "sompi.untrusted-rpc-forged-recovery-finality",
+          "ruleIndex": 19
+        },
+        {
+          "level": "note",
+          "locations": [
+            {
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/authority/transport.ts"
+                },
+                "region": {
+                  "endLine": 75,
+                  "startLine": 60
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Sompi revision `4ebb82d4f82bac46ae3addd112c4752f29630a8a` (package version `0.8.0`) allows a lower-privilege local process with access to the Trusted Authority Unix socket to retain an unbounded number of server-side connections before presenting a complete frame or any authenticated request. The server adds every accepted socket to a process-wide `Set`, installs several listeners and a timer, and retains partial frame buffers. It does not first enforce an aggregate connection limit or an absolute pre-authentication deadline. An admitted local process can therefore open many connections, send a partial frame on each, and hold the resulting authority-process file descriptors and JavaScript objects. The normal production timeout is 150 seconds of inactivity, and further partial bytes renew it. At a deployment-specific resource limit, the authority can no longer accept a legitimate request, so new human-present Purchase approvals stop until the connections expire or the service is restarted."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:06e5b516fec35489c784aea5afc5ee5ca51c875915a2bcd09fc77ec9e711c22b"
+          },
+          "properties": {
+            "candidateId": "CAN-009",
+            "category": "Uncontrolled pre-authentication resource consumption",
+            "confidence": "high",
+            "findingId": "csf_fe4bff6d55d821775b73286b",
+            "occurrenceId": "occ_c840d4fbfa01d5389cfff84a",
+            "severity": "low"
+          },
+          "relatedLocations": [
+            {
+              "id": 1,
+              "message": {
+                "text": "entrypoint"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/authority/transport.ts"
+                },
+                "region": {
+                  "endLine": 190,
+                  "startLine": 150
+                }
+              }
+            },
+            {
+              "id": 2,
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/authority/runtime.ts"
+                },
+                "region": {
+                  "endLine": 268,
+                  "startLine": 255
+                }
+              }
+            },
+            {
+              "id": 3,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/adapters/ap2/human-authority.ts"
+                },
+                "region": {
+                  "endLine": 150,
+                  "startLine": 132
+                }
+              }
+            }
+          ],
+          "ruleId": "sompi.authority-preauth-socket-exhaustion",
+          "ruleIndex": 0
+        },
+        {
+          "level": "note",
+          "locations": [
+            {
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/vault.ts"
+                },
+                "region": {
+                  "endLine": 473,
+                  "startLine": 450
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Sompi package version 0.8.0 at revision `4ebb82d4f82bac46ae3addd112c4752f29630a8a` can treat a provisional vault deposit reported by one Kaspa RPC as a completed Treasury Movement. The vault observer performs strong equality checks on the locally signed transaction, output index, amount, covenant identity, and script. It nevertheless accepts the matching output at `blockDaaScore=0` and carries that value into an `observedAtDaa` field that no later component enforces. The direct-Treasury adapter then writes the prepared covenant and current outpoint into `vault/config.json`, and the Treasury operation becomes terminal. If the reported output subsequently disappears\u2014or never existed in canonical history\u2014the process continues to load the nonexistent outpoint after restart. Automated use of the configured vault is then unavailable until the operator reconstructs or repairs its state."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:eb6c5d253f47c4eff68fe2f1096d73c270ad52c7815726245aa8f1b97b2e7775"
+          },
+          "properties": {
+            "candidateId": "CAN-025",
+            "category": "Improper use of provisional vault-deposit finality",
+            "confidence": "high",
+            "findingId": "csf_5cc9e7e65a9635c426aa2814",
+            "occurrenceId": "occ_e613bf52913333f2f88007cc",
+            "severity": "low"
+          },
+          "relatedLocations": [
+            {
+              "id": 1,
+              "message": {
+                "text": "propagation"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/treasury/operation-adapters.ts"
+                },
+                "region": {
+                  "endLine": 406,
+                  "startLine": 361
+                }
+              }
+            },
+            {
+              "id": 2,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/vault.ts"
+                },
+                "region": {
+                  "endLine": 556,
+                  "startLine": 534
+                }
+              }
+            },
+            {
+              "id": 3,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/treasury/operations.ts"
+                },
+                "region": {
+                  "endLine": 171,
+                  "startLine": 154
+                }
+              }
+            },
+            {
+              "id": 4,
+              "message": {
+                "text": "entrypoint"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/vault.ts"
+                },
+                "region": {
+                  "endLine": 531,
+                  "startLine": 450
+                }
+              }
+            },
+            {
+              "id": 5,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/treasury/operation-adapters.ts"
+                },
+                "region": {
+                  "endLine": 305,
+                  "startLine": 258
+                }
+              }
+            }
+          ],
+          "ruleId": "sompi.provisional-vault-deposit-finality",
+          "ruleIndex": 10
+        },
+        {
+          "level": "warning",
+          "locations": [
+            {
+              "message": {
+                "text": "root_control"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/vault.ts"
+                },
+                "region": {
+                  "endLine": 277,
+                  "startLine": 238
+                }
+              }
+            }
+          ],
+          "message": {
+            "text": "Sompi exposes first-run covenant-vault creation as the Agent-facing MCP tool `vault_create`. The tool accepts an `ownerPublicKey` supplied by the MCP caller and persists it as the vault's unrestricted owner-recovery identity. Sompi's own threat model treats the Agent, MCP caller, and tool arguments as fully untrusted, yet this transition has no operator authentication, trusted confirmation, or comparison with an operator-pinned key. An attacker who controls the normal MCP session during initial setup can therefore generate a keypair, submit its public half, and retain the private half. If that vault is later funded, the attacker can use the shipped owner recovery path to send the entire current vault UTXO, minus the transaction fee, to an address it controls. The consensus rolling cap applies to the Agent branch, but not to owner recovery."
+          },
+          "partialFingerprints": {
+            "codexSecurity/v1": "codex-security/v1:sha256:965c6506e91e0a10896e24ee1fc7c9949933713e447289411e7afeb5660dab8c"
+          },
+          "properties": {
+            "candidateId": "CAN-001",
+            "category": "Missing authorization for recovery-authority assignment",
+            "confidence": "high",
+            "findingId": "csf_797428e32991eba2655d5a87",
+            "occurrenceId": "occ_fd51108c5bde80f10a952f36",
+            "severity": "medium"
+          },
+          "relatedLocations": [
+            {
+              "id": 0,
+              "message": {
+                "text": "entrypoint"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/mcp/server.ts"
+                },
+                "region": {
+                  "endLine": 312,
+                  "startLine": 276
+                }
+              }
+            },
+            {
+              "id": 2,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/vault.ts"
+                },
+                "region": {
+                  "endLine": 938,
+                  "startLine": 895
+                }
+              }
+            },
+            {
+              "id": 3,
+              "message": {
+                "text": "sink"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "src/vault.ts"
+                },
+                "region": {
+                  "endLine": 1104,
+                  "startLine": 1079
+                }
+              }
+            },
+            {
+              "id": 4,
+              "message": {
+                "text": "entrypoint"
+              },
+              "physicalLocation": {
+                "artifactLocation": {
+                  "uri": "scripts/vault-recover.js"
+                },
+                "region": {
+                  "endLine": 71,
+                  "startLine": 37
+                }
+              }
+            }
+          ],
+          "ruleId": "sompi.vault-recovery-authority-hijack",
+          "ruleIndex": 20
+        }
+      ],
+      "tool": {
+        "driver": {
+          "name": "Codex Security",
+          "rules": [
+            {
+              "id": "sompi.authority-preauth-socket-exhaustion",
+              "name": "sompi.authority-preauth-socket-exhaustion",
+              "properties": {
+                "tags": [
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "sompi.authority-preauth-socket-exhaustion"
+              }
+            },
+            {
+              "id": "sompi.authority-prompt-queue-dos",
+              "name": "sompi.authority-prompt-queue-dos",
+              "properties": {
+                "tags": [
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "sompi.authority-prompt-queue-dos"
+              }
+            },
+            {
+              "id": "sompi.cleartext-merchant-authorization",
+              "name": "sompi.cleartext-merchant-authorization",
+              "properties": {
+                "tags": [
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "sompi.cleartext-merchant-authorization"
+              }
+            },
+            {
+              "id": "sompi.direct-treasury-preparation-lockout",
+              "name": "sompi.direct-treasury-preparation-lockout",
+              "properties": {
+                "tags": [
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "sompi.direct-treasury-preparation-lockout"
+              }
+            },
+            {
+              "id": "sompi.invalid-vault-recovery-key",
+              "name": "sompi.invalid-vault-recovery-key",
+              "properties": {
+                "tags": [
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "sompi.invalid-vault-recovery-key"
+              }
+            },
+            {
+              "id": "sompi.mempool-exact-terminal-recovery",
+              "name": "sompi.mempool-exact-terminal-recovery",
+              "properties": {
+                "tags": [
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "sompi.mempool-exact-terminal-recovery"
+              }
+            },
+            {
+              "id": "sompi.merchant-mempool-finality-capacity-release",
+              "name": "sompi.merchant-mempool-finality-capacity-release",
+              "properties": {
+                "tags": [
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "sompi.merchant-mempool-finality-capacity-release"
+              }
+            },
+            {
+              "id": "sompi.policy-file-provenance-bypass",
+              "name": "sompi.policy-file-provenance-bypass",
+              "properties": {
+                "tags": [
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "sompi.policy-file-provenance-bypass"
+              }
+            },
+            {
+              "id": "sompi.prevalidation-purchase-storage-exhaustion",
+              "name": "sompi.prevalidation-purchase-storage-exhaustion",
+              "properties": {
+                "tags": [
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "sompi.prevalidation-purchase-storage-exhaustion"
+              }
+            },
+            {
+              "id": "sompi.provisional-purchase-staging-finality",
+              "name": "sompi.provisional-purchase-staging-finality",
+              "properties": {
+                "tags": [
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "sompi.provisional-purchase-staging-finality"
+              }
+            },
+            {
+              "id": "sompi.provisional-vault-deposit-finality",
+              "name": "sompi.provisional-vault-deposit-finality",
+              "properties": {
+                "tags": [
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "sompi.provisional-vault-deposit-finality"
+              }
+            },
+            {
+              "id": "sompi.provisional-vault-send-continuation",
+              "name": "sompi.provisional-vault-send-continuation",
+              "properties": {
+                "tags": [
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "sompi.provisional-vault-send-continuation"
+              }
+            },
+            {
+              "id": "sompi.provisional-wallet-send-finality",
+              "name": "sompi.provisional-wallet-send-finality",
+              "properties": {
+                "tags": [
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "sompi.provisional-wallet-send-finality"
+              }
+            },
+            {
+              "id": "sompi.rpc-error-as-absence",
+              "name": "sompi.rpc-error-as-absence",
+              "properties": {
+                "tags": [
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "sompi.rpc-error-as-absence"
+              }
+            },
+            {
+              "id": "sompi.rpc-mempool-id-spoof",
+              "name": "sompi.rpc-mempool-id-spoof",
+              "properties": {
+                "tags": [
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "sompi.rpc-mempool-id-spoof"
+              }
+            },
+            {
+              "id": "sompi.single-rpc-absence-recovery-race",
+              "name": "sompi.single-rpc-absence-recovery-race",
+              "properties": {
+                "tags": [
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "sompi.single-rpc-absence-recovery-race"
+              }
+            },
+            {
+              "id": "sompi.spent-payment-evidence-loss",
+              "name": "sompi.spent-payment-evidence-loss",
+              "properties": {
+                "tags": [
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "sompi.spent-payment-evidence-loss"
+              }
+            },
+            {
+              "id": "sompi.spent-staging-winner-evidence-loss",
+              "name": "sompi.spent-staging-winner-evidence-loss",
+              "properties": {
+                "tags": [
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "sompi.spent-staging-winner-evidence-loss"
+              }
+            },
+            {
+              "id": "sompi.untrusted-rpc-false-settlement",
+              "name": "sompi.untrusted-rpc-false-settlement",
+              "properties": {
+                "tags": [
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "sompi.untrusted-rpc-false-settlement"
+              }
+            },
+            {
+              "id": "sompi.untrusted-rpc-forged-recovery-finality",
+              "name": "sompi.untrusted-rpc-forged-recovery-finality",
+              "properties": {
+                "tags": [
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "sompi.untrusted-rpc-forged-recovery-finality"
+              }
+            },
+            {
+              "id": "sompi.vault-recovery-authority-hijack",
+              "name": "sompi.vault-recovery-authority-hijack",
+              "properties": {
+                "tags": [
+                  "security"
+                ]
+              },
+              "shortDescription": {
+                "text": "sompi.vault-recovery-authority-hijack"
+              }
+            }
+          ],
+          "version": "0.1.11"
+        }
+      },
+      "versionControlProvenance": [
+        {
+          "repositoryUri": "https://github.com/elldeeone/sompi",
+          "revisionId": "4ebb82d4f82bac46ae3addd112c4752f29630a8a"
+        }
+      ]
+    }
+  ],
+  "version": "2.1.0"
+}

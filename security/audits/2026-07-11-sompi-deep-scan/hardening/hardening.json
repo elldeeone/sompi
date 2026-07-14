@@ -1,0 +1,1398 @@
+{
+  "documentType": "codex-security.hardening-analysis",
+  "schemaVersion": "1.0",
+  "analysisId": "hardening_final",
+  "sourceScan": {
+    "scanId": "ccc03842-b6f7-41d2-b169-cc7b9e6b90da",
+    "targetRevision": "4ebb82d4f82bac46ae3addd112c4752f29630a8a",
+    "targetTree": "e1f6224f9bf18d8c4e1299c138789e41e9476655",
+    "sourceDrift": "none"
+  },
+  "assessment": {
+    "outcome": "opportunities_identified",
+    "summary": "Twenty-one findings support three cross-cutting opportunities: proof-backed chain evidence, trusted operator provisioning, and bounded operation lifecycles."
+  },
+  "constraints": {
+    "profile": "balanced",
+    "changeHorizons": [
+      "incremental",
+      "medium_term",
+      "foundational"
+    ],
+    "nonNegotiables": [
+      "Preserve Sompi's stable Purchase model independently of AP2 and x402 wire or SDK types.",
+      "Keep AP2 authorization and Kaspa-x402 payment execution at separate seams.",
+      "Do not create a universal payment-rail plugin system or require changes to the sibling Kaspa-x402 repository.",
+      "Keep the Trusted Authority deterministic, non-agentic, separately credentialed, and isolated from the MCP process.",
+      "Commit durable intent, reservation, idempotency, and recovery state before irreversible blockchain or Merchant effects.",
+      "Remain human-present, Kaspa-x402 exact, and Testnet-10 until recorded acceptance gates pass."
+    ],
+    "assumptions": [
+      "No measured latency, memory, storage, throughput, or availability budget was supplied.",
+      "A balanced security and delivery profile is appropriate for the current clean cutover.",
+      "Hardening outputs are derived design artifacts and do not remediate findings.",
+      "The scan was in final reporting and unsealed when this analysis was produced."
+    ]
+  },
+  "opportunities": [
+    {
+      "opportunityId": "proof-backed-chain-evidence",
+      "title": "Proof-backed chain evidence and finality",
+      "summary": "Give Settlement, recovery, wallet, vault, and staging one owned proof-level and finality boundary.",
+      "diagnosis": "Thirteen findings arise because raw current-view RPC and Merchant-selected finality facts are interpreted independently by several privileged state machines.",
+      "evidence": [
+        {
+          "claimType": "observed",
+          "sourceKind": "finding",
+          "findingId": "sompi.untrusted-rpc-false-settlement",
+          "candidateId": "CAN-003",
+          "path": "src/adapters/kaspa-x402/chain-verifier.ts",
+          "claim": "One selected RPC supplies UTXO membership and the DAA values used to create verified Settlement."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "finding",
+          "findingId": "sompi.untrusted-rpc-forged-recovery-finality",
+          "candidateId": "CAN-004",
+          "path": "src/adapters/kaspa-x402/staging-recovery-rpc.ts",
+          "claim": "One selected RPC can fabricate recovery finality that releases policy capacity."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "finding",
+          "findingId": "sompi.rpc-error-as-absence",
+          "candidateId": "CAN-006",
+          "path": "src/adapters/kaspa-x402/staging-recovery-rpc.ts",
+          "claim": "Generic RPC error text can become affirmative absence evidence."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "finding",
+          "findingId": "sompi.rpc-mempool-id-spoof",
+          "candidateId": "CAN-016",
+          "path": "src/adapters/kaspa-x402/chain-verifier.ts",
+          "claim": "Verbose RPC metadata can bypass canonical mempool transaction hashing."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "finding",
+          "findingId": "sompi.spent-payment-evidence-loss",
+          "candidateId": "CAN-017",
+          "path": "src/adapters/kaspa-x402/chain-verifier.ts",
+          "claim": "Current UTXO and mempool views lose payment evidence after the Merchant output is spent."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "finding",
+          "findingId": "sompi.single-rpc-absence-recovery-race",
+          "candidateId": "CAN-018",
+          "path": "src/adapters/kaspa-x402/abandoned-staging-recovery.ts",
+          "claim": "One negative RPC snapshot can authorize a competing recovery broadcast."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "finding",
+          "findingId": "sompi.mempool-exact-terminal-recovery",
+          "candidateId": "CAN-020",
+          "path": "src/purchase/journal.ts",
+          "claim": "Mempool exact-winner evidence can enter a terminal recovery state without the required-finality check."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "finding",
+          "findingId": "sompi.provisional-wallet-send-finality",
+          "candidateId": "CAN-023",
+          "path": "src/wallet.ts",
+          "claim": "A provisional wallet observation can durably complete a direct send."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "finding",
+          "findingId": "sompi.provisional-vault-send-continuation",
+          "candidateId": "CAN-024",
+          "path": "src/vault.ts",
+          "claim": "Provisional outputs can advance the durable vault continuation."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "finding",
+          "findingId": "sompi.provisional-vault-deposit-finality",
+          "candidateId": "CAN-025",
+          "path": "src/vault.ts",
+          "claim": "A provisional deposit observation can commit durable vault state."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "finding",
+          "findingId": "sompi.provisional-purchase-staging-finality",
+          "candidateId": "CAN-026",
+          "path": "src/adapters/kaspa-x402/vault-treasury-staging.ts",
+          "claim": "Provisional Purchase staging can commit vault and staging state."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "finding",
+          "findingId": "sompi.merchant-mempool-finality-capacity-release",
+          "candidateId": "CAN-030",
+          "path": "src/adapters/kaspa-x402/payment-requirements-verifier.ts",
+          "claim": "Merchant-selected mempool finality can control recovery capacity release."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "finding",
+          "findingId": "sompi.spent-staging-winner-evidence-loss",
+          "candidateId": "CAN-033",
+          "path": "src/adapters/kaspa-x402/staging-recovery-rpc.ts",
+          "claim": "Current views lose staging-winner attribution after the winner output is spent."
+        },
+        {
+          "claimType": "inferred",
+          "sourceKind": "source",
+          "path": "src/runtime/purchase-runtime.ts",
+          "claim": "Proof level, identity, history, and finality policy are owned by dispersed callers rather than one high-assurance boundary."
+        }
+      ],
+      "desiredInvariants": [
+        "Every durable Settlement, capacity release, direct-Treasury completion, vault continuation, and staging commit consumes proof meeting a Sompi-owned operator minimum.",
+        "Mempool evidence is always provisional and cannot terminalize state or release capacity.",
+        "Transaction identity is derived from canonical bytes or verified proof, never untrusted verbose metadata alone.",
+        "A single negative RPC snapshot is unknown and cannot authorize a competing irreversible broadcast.",
+        "Accepted transaction and winner evidence survives output spend, restart, and the required recovery/accounting horizon.",
+        "Proof profile, verifier identity, canonical facts, finality, and digest are durable before proof-dependent state transitions."
+      ],
+      "proposalPath": "proposals/proof-backed-chain-evidence.md",
+      "options": [
+        {
+          "optionId": "local-observer-guards",
+          "title": "Local observer guards",
+          "kind": "baseline",
+          "summary": "Patch every current observer with typed errors, canonical transaction hashing, accepted-finality floors, recoverable provisional states, and history checks.",
+          "diagramPaths": {
+            "before": "diagrams/proof-backed-chain-evidence-before.mmd",
+            "after": "diagrams/proof-backed-chain-evidence-local-observer-guards-after.mmd"
+          },
+          "findingCoverage": [
+            {
+              "findingId": "sompi.untrusted-rpc-false-settlement",
+              "effect": "mitigates",
+              "tacticalFixRequired": true,
+              "rationale": "Independent authenticity remains necessary after local tuple and finality hardening."
+            },
+            {
+              "findingId": "sompi.untrusted-rpc-forged-recovery-finality",
+              "effect": "mitigates",
+              "tacticalFixRequired": true,
+              "rationale": "Coherent DAA and finality checks reduce the path, but one RPC still supplies all chain facts."
+            },
+            {
+              "findingId": "sompi.rpc-error-as-absence",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Typed capability and not-found handling prevents errors from becoming absence evidence."
+            },
+            {
+              "findingId": "sompi.rpc-mempool-id-spoof",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Canonical local transaction hashing removes trust in verbose RPC identity."
+            },
+            {
+              "findingId": "sompi.spent-payment-evidence-loss",
+              "effect": "mitigates",
+              "tacticalFixRequired": true,
+              "rationale": "Historical lookup and persistence help only to the extent the current backend retains trustworthy history."
+            },
+            {
+              "findingId": "sompi.single-rpc-absence-recovery-race",
+              "effect": "mitigates",
+              "tacticalFixRequired": true,
+              "rationale": "Negative observations remain non-authorizing, but the current backend still lacks authenticated global absence."
+            },
+            {
+              "findingId": "sompi.mempool-exact-terminal-recovery",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "The exact-winner branch enforces required finality and provisional outcomes remain recoverable."
+            },
+            {
+              "findingId": "sompi.provisional-wallet-send-finality",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Direct wallet completion requires the operator finality floor."
+            },
+            {
+              "findingId": "sompi.provisional-vault-send-continuation",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Vault continuation commits only after the operator finality floor."
+            },
+            {
+              "findingId": "sompi.provisional-vault-deposit-finality",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Vault deposit commits only after the operator finality floor."
+            },
+            {
+              "findingId": "sompi.provisional-purchase-staging-finality",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Purchase staging commits only after the operator finality floor."
+            },
+            {
+              "findingId": "sompi.merchant-mempool-finality-capacity-release",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Merchant finality cannot lower the operator minimum or bypass its trusted display."
+            },
+            {
+              "findingId": "sompi.spent-staging-winner-evidence-loss",
+              "effect": "mitigates",
+              "tacticalFixRequired": true,
+              "rationale": "Historical winner lookup reduces ambiguity but remains dependent on backend history."
+            }
+          ],
+          "tradeoffs": [
+            {
+              "dimension": "security",
+              "direction": "improves",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "Closes known provisional, identity, and error-classification paths, but a selected RPC still controls positive chain facts and future callers can drift.",
+              "validationPlan": "Re-run all thirteen PoCs and search every durable consumer of RPC observations."
+            },
+            {
+              "dimension": "performance",
+              "direction": "neutral",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "Most guards are local; history checks add RPC calls only on affected recovery paths.",
+              "validationPlan": "Benchmark current and guarded Settlement and recovery p50/p95/p99 latency under identical RPC fixtures."
+            },
+            {
+              "dimension": "memory",
+              "direction": "neutral",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "Canonical hashing and typed outcomes use bounded temporary values; retained history adds durable storage rather than material heap.",
+              "validationPlan": "Compare peak RSS and retained history bytes across representative Purchases."
+            },
+            {
+              "dimension": "reliability",
+              "direction": "improves",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "Provisional outcomes remain recoverable, though stricter finality and history requirements can leave more operations pending.",
+              "validationPlan": "Inject mempool eviction, RPC disagreement, pruning, and restart and measure unresolved duration."
+            },
+            {
+              "dimension": "operability",
+              "direction": "regresses",
+              "confidence": "low",
+              "basis": "hypothetical",
+              "assessment": "Dispersed guards need separate metrics and can produce different pending reasons.",
+              "validationPlan": "Review dashboards and incident traces for every observer before rollout."
+            },
+            {
+              "dimension": "migration",
+              "direction": "neutral",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "Focused changes preserve current APIs, but journal transitions made under weak semantics cannot safely be reinterpreted.",
+              "validationPlan": "Run schema/restart tests and document rollback for each changed terminal state."
+            }
+          ],
+          "residualRisks": [
+            "One malicious selected RPC can still self-attest positive chain facts.",
+            "History availability and authenticity remain backend-dependent.",
+            "Finality policy can drift in future call sites."
+          ],
+          "implementationReadiness": {
+            "affectedComponents": [
+              "src/adapters/kaspa-x402/chain-verifier.ts",
+              "src/adapters/kaspa-x402/staging-recovery-rpc.ts",
+              "src/purchase/journal.ts",
+              "src/wallet.ts",
+              "src/vault.ts",
+              "src/adapters/kaspa-x402/vault-treasury-staging.ts"
+            ],
+            "workPackages": [
+              "Add typed RPC errors and canonical hashing.",
+              "Enforce operator finality floors and nonterminal provisional states.",
+              "Persist/query accepted transaction history.",
+              "Add targeted PoC regressions."
+            ],
+            "acceptanceCriteria": [
+              "All thirteen original PoCs fail before a durable false or terminal effect.",
+              "Mempool evidence never completes or releases capacity.",
+              "Post-spend history can attribute accepted payment and recovery winners."
+            ],
+            "migrationNotes": [
+              "Land as tactical protections before any structural cutover."
+            ],
+            "rollback": "Revert only to a schema-compatible release; never reinterpret new terminal/history records using weaker semantics."
+          }
+        },
+        {
+          "optionId": "typed-chain-evidence-gateway",
+          "title": "Typed Chain Evidence Gateway",
+          "kind": "structural",
+          "summary": "Centralize canonical identity, proof verification, history, negative evidence, source identity, and operator finality policy behind one Sompi-owned internal boundary.",
+          "diagramPaths": {
+            "before": "diagrams/proof-backed-chain-evidence-before.mmd",
+            "after": "diagrams/proof-backed-chain-evidence-typed-chain-evidence-gateway-after.mmd"
+          },
+          "findingCoverage": [
+            {
+              "findingId": "sompi.untrusted-rpc-false-settlement",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "A selected RPC cannot mint accepted proof alone; absent proof or independent witness remains unknown."
+            },
+            {
+              "findingId": "sompi.untrusted-rpc-forged-recovery-finality",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Capacity release consumes a proof-level winner rather than an RPC-labelled finality."
+            },
+            {
+              "findingId": "sompi.rpc-error-as-absence",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Gateway results distinguish not-found, capability failure, timeout, disagreement, and unknown."
+            },
+            {
+              "findingId": "sompi.rpc-mempool-id-spoof",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Gateway derives transaction identity canonically before issuing any proof-level result."
+            },
+            {
+              "findingId": "sompi.spent-payment-evidence-loss",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Accepted transaction proof is retained beyond current output lifetime."
+            },
+            {
+              "findingId": "sompi.single-rpc-absence-recovery-race",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "One negative view cannot create a readiness capability for a conflicting broadcast."
+            },
+            {
+              "findingId": "sompi.mempool-exact-terminal-recovery",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Proof-level state types prevent mempool evidence from entering a terminal accepted state."
+            },
+            {
+              "findingId": "sompi.provisional-wallet-send-finality",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Direct wallet completion consumes an accepted proof at the operator floor."
+            },
+            {
+              "findingId": "sompi.provisional-vault-send-continuation",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Durable vault continuation consumes an accepted proof at the operator floor."
+            },
+            {
+              "findingId": "sompi.provisional-vault-deposit-finality",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Durable vault deposit consumes an accepted proof at the operator floor."
+            },
+            {
+              "findingId": "sompi.provisional-purchase-staging-finality",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Purchase staging consumes an accepted proof at the operator floor."
+            },
+            {
+              "findingId": "sompi.merchant-mempool-finality-capacity-release",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Operator finality policy is owned once and Merchant input may only strengthen it."
+            },
+            {
+              "findingId": "sompi.spent-staging-winner-evidence-loss",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Historical winner proof preserves exact-versus-recovery attribution after spend."
+            }
+          ],
+          "tradeoffs": [
+            {
+              "dimension": "security",
+              "direction": "improves",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "Branded proof-level results make unsafe promotion difficult and eliminate dispersed finality ownership; authenticity still depends on the admitted backend profile.",
+              "validationPlan": "Require every PoC to stop at Unknown unless a proof or accepted independent witness is present."
+            },
+            {
+              "dimension": "performance",
+              "direction": "regresses",
+              "confidence": "medium",
+              "basis": "hypothetical",
+              "assessment": "Proof or witness collection adds network hops and makes latency depend on required sources; parallelism and bounded caching may contain it.",
+              "validationPlan": "Measure p50/p95/p99 proof latency, calls per proof, cache hit rate, and timeouts against the current observer."
+            },
+            {
+              "dimension": "memory",
+              "direction": "regresses",
+              "confidence": "low",
+              "basis": "hypothetical",
+              "assessment": "In-flight proof values and a bounded cache add modest memory; durable accepted history grows with transactions.",
+              "validationPlan": "Measure RSS, cache bytes, and retained proof bytes per Purchase under a defined retention horizon."
+            },
+            {
+              "dimension": "reliability",
+              "direction": "improves",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "Disagreement and unavailable proof become coherent pending states instead of false terminal state, at the cost of deliberate fail-closed availability.",
+              "validationPlan": "Fault proof backends, witnesses, cache, restart, and history and measure unresolved duration and safe recovery."
+            },
+            {
+              "dimension": "operability",
+              "direction": "regresses",
+              "confidence": "medium",
+              "basis": "hypothetical",
+              "assessment": "The gateway needs proof-source identity, disagreement, downgrade, history-miss, and pending-age telemetry.",
+              "validationPlan": "Exercise incident runbooks with one source stale, unavailable, or disagreeing."
+            },
+            {
+              "dimension": "migration",
+              "direction": "regresses",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "All consumers and journal proof metadata change, though read-only shadow mode permits comparison before cutover.",
+              "validationPlan": "Run shadow comparison to an agreed mismatch threshold, then remove old direct terminal paths in one clean cutover."
+            }
+          ],
+          "residualRisks": [
+            "Independent witnesses can collude or share an operational failure domain.",
+            "A proof profile can be specified incorrectly for Kaspa DAG finality or reorg behavior.",
+            "Fail-closed proof unavailability can reduce service availability."
+          ],
+          "implementationReadiness": {
+            "affectedComponents": [
+              "src/adapters/kaspa-x402",
+              "src/purchase/coordinator.ts",
+              "src/purchase/journal.ts",
+              "src/treasury",
+              "src/wallet.ts",
+              "src/vault.ts",
+              "src/runtime/purchase-runtime.ts"
+            ],
+            "workPackages": [
+              "Define proof-level types and allowed profiles.",
+              "Implement a proof/witness backend and historical index contract.",
+              "Add journal proof metadata.",
+              "Cut exact, recovery, wallet, vault, and staging consumers over.",
+              "Remove replaced direct RPC terminal paths."
+            ],
+            "acceptanceCriteria": [
+              "Only the gateway can mint proof-level values.",
+              "Every mapped state transition requires the correct proof level.",
+              "No single selected RPC can create accepted proof.",
+              "Original PoCs and crash/restart suites pass."
+            ],
+            "migrationNotes": [
+              "Shadow the gateway read-only before journal cutover.",
+              "Retain tactical guards during migration.",
+              "Do not keep permanent dual runtime paths."
+            ],
+            "rollback": "Before cutover, disable shadow calls; after cutover, roll back only to a release that understands the proof metadata and never silently downgrades profiles."
+          }
+        },
+        {
+          "optionId": "trusted-local-evidence-plane",
+          "title": "Trusted local evidence plane",
+          "kind": "isolation",
+          "summary": "Back the typed gateway with an operator-controlled Kaspa node and retained accepted-transaction history on an authenticated local channel.",
+          "diagramPaths": {
+            "before": "diagrams/proof-backed-chain-evidence-before.mmd",
+            "after": "diagrams/proof-backed-chain-evidence-trusted-local-evidence-plane-after.mmd"
+          },
+          "findingCoverage": [
+            {
+              "findingId": "sompi.untrusted-rpc-false-settlement",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "A locally controlled consensus source supplies gateway proof instead of one selected remote RPC."
+            },
+            {
+              "findingId": "sompi.untrusted-rpc-forged-recovery-finality",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Local accepted-chain state and history authenticate the recovery winner before release."
+            },
+            {
+              "findingId": "sompi.rpc-error-as-absence",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Local evidence-plane APIs return typed absence and capability outcomes."
+            },
+            {
+              "findingId": "sompi.rpc-mempool-id-spoof",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Canonical local transaction identity does not depend on remote verbose metadata."
+            },
+            {
+              "findingId": "sompi.spent-payment-evidence-loss",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "The retained accepted-transaction index preserves paid-output history."
+            },
+            {
+              "findingId": "sompi.single-rpc-absence-recovery-race",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Local accepted history and gateway policy prevent one remote negative snapshot from authorizing recovery."
+            },
+            {
+              "findingId": "sompi.mempool-exact-terminal-recovery",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Proof-level state and local accepted evidence keep mempool outcomes provisional."
+            },
+            {
+              "findingId": "sompi.provisional-wallet-send-finality",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Direct wallet completion requires local accepted proof."
+            },
+            {
+              "findingId": "sompi.provisional-vault-send-continuation",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Vault continuation requires local accepted proof."
+            },
+            {
+              "findingId": "sompi.provisional-vault-deposit-finality",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Vault deposit requires local accepted proof."
+            },
+            {
+              "findingId": "sompi.provisional-purchase-staging-finality",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Purchase staging requires local accepted proof."
+            },
+            {
+              "findingId": "sompi.merchant-mempool-finality-capacity-release",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Operator finality policy and local accepted evidence prevent mempool capacity release."
+            },
+            {
+              "findingId": "sompi.spent-staging-winner-evidence-loss",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "The local history index preserves staging-winner attribution."
+            }
+          ],
+          "tradeoffs": [
+            {
+              "dimension": "security",
+              "direction": "improves",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "Removes ordinary dependence on one selected remote RPC for consensus and history, while making the local node/index a trusted component.",
+              "validationPlan": "Run all PoCs with malicious public RPC telemetry and require local accepted proof for every terminal effect."
+            },
+            {
+              "dimension": "performance",
+              "direction": "unknown",
+              "confidence": "low",
+              "basis": "hypothetical",
+              "assessment": "Local steady-state queries may be faster, but synchronization, indexing, and gateway serialization add unmeasured costs.",
+              "validationPlan": "Measure sync/rebuild time and steady-state p50/p95/p99 query latency against remote and gateway baselines."
+            },
+            {
+              "dimension": "memory",
+              "direction": "regresses",
+              "confidence": "high",
+              "basis": "analogous",
+              "assessment": "A full node and history index require substantial process memory and persistent storage.",
+              "validationPlan": "Measure peak RSS, disk growth, compaction, and retained bytes over a representative chain/history horizon."
+            },
+            {
+              "dimension": "reliability",
+              "direction": "unknown",
+              "confidence": "medium",
+              "basis": "hypothetical",
+              "assessment": "Local control improves evidence availability after sync, but the node/index becomes a shared dependency whose staleness or corruption must fail closed.",
+              "validationPlan": "Inject restart, lag, corruption, stale tip, index loss, and rebuild while measuring safe service behavior."
+            },
+            {
+              "dimension": "operability",
+              "direction": "regresses",
+              "confidence": "high",
+              "basis": "analogous",
+              "assessment": "Node lifecycle, version pinning, disk, synchronization, indexing, backup/rebuild, monitoring, and on-call ownership are new obligations.",
+              "validationPlan": "Complete a timed rebuild and incident exercise with documented ownership and alert thresholds."
+            },
+            {
+              "dimension": "migration",
+              "direction": "regresses",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "The evidence plane is a new deployed component, but consumers remain stable if Option 2 lands first.",
+              "validationPlan": "Deploy behind the gateway, shadow results, prove health gates, then change only the permitted proof profile."
+            }
+          ],
+          "residualRisks": [
+            "The local node, host, or history index can be compromised, stale, or corrupted.",
+            "Reorg and finality policy errors remain possible.",
+            "Node resource exhaustion can deny every proof-dependent workflow."
+          ],
+          "implementationReadiness": {
+            "affectedComponents": [
+              "typed Chain Evidence Gateway",
+              "operator-controlled Kaspa node",
+              "accepted-transaction history index",
+              "runtime health and observability"
+            ],
+            "workPackages": [
+              "Deploy and pin the local node.",
+              "Build retained accepted history and authenticated local access.",
+              "Integrate as a gateway proof profile.",
+              "Add backup, rebuild, monitoring, and failure procedures."
+            ],
+            "acceptanceCriteria": [
+              "Public RPC lies cannot create terminal state.",
+              "Post-spend winner and payment evidence remains available for the required horizon.",
+              "Stale or unhealthy local evidence fails closed.",
+              "Rebuild and rollback procedures are demonstrated."
+            ],
+            "migrationNotes": [
+              "Implement after the gateway so consumer APIs do not change again.",
+              "Keep mainnet disabled until the evidence plane and independent review pass."
+            ],
+            "rollback": "Permit rollback only to another explicitly configured gateway proof profile; never fall back silently to a selected remote RPC."
+          }
+        }
+      ],
+      "recommendedOptionId": "typed-chain-evidence-gateway",
+      "recommendation": "Use the typed gateway for the current testnet cutover, retain local guards during migration, and require the trusted local evidence plane or equivalent verified proof before public/mainnet claims."
+    },
+    {
+      "opportunityId": "trusted-operator-provisioning",
+      "title": "Trusted operator provisioning and configuration provenance",
+      "summary": "Represent vault ownership, Treasury policy, and supported Merchant transport as one authenticated operator control-plane object.",
+      "diagnosis": "Four findings arise because documented operator intent enters through Agent arguments, permissive flags, or filesystem bytes without one enforced provenance and semantic-validation boundary.",
+      "evidence": [
+        {
+          "claimType": "observed",
+          "sourceKind": "finding",
+          "findingId": "sompi.vault-recovery-authority-hijack",
+          "candidateId": "CAN-001",
+          "path": "src/mcp/server.ts",
+          "claim": "Agent-facing vault_create accepts the owner recovery key and cap."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "finding",
+          "findingId": "sompi.cleartext-merchant-authorization",
+          "candidateId": "CAN-007",
+          "path": "src/runtime/config.ts",
+          "claim": "The supported runtime parser can explicitly permit unauthenticated HTTP Merchant transport."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "finding",
+          "findingId": "sompi.invalid-vault-recovery-key",
+          "candidateId": "CAN-008",
+          "path": "src/vault.ts",
+          "claim": "Vault creation checks key length/hex but does not parse a valid x-only curve point."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "finding",
+          "findingId": "sompi.policy-file-provenance-bypass",
+          "candidateId": "CAN-032",
+          "path": "src/policy.ts",
+          "claim": "Policy hot reload follows a path and mtime without enforcing file provenance before wallet authorization."
+        },
+        {
+          "claimType": "inferred",
+          "sourceKind": "source",
+          "path": "src/secure-local-state.ts",
+          "claim": "Strong local provenance primitives already exist but do not own all operator configuration."
+        }
+      ],
+      "desiredInvariants": [
+        "Vault recovery authority and consensus cap are installed through a trusted operator ceremony, never Agent-facing MCP input.",
+        "Every recovery public key is parsed as a valid pinned x-only curve point before persistence or covenant construction.",
+        "The supported Treasury-capable profile permits authenticated HTTPS Merchant transport only.",
+        "Operator configuration is read through stable owner/mode/link/inode checks and activated as a canonical versioned digest.",
+        "Policy reservations, vault configuration, and relevant operations record the exact active configuration revision.",
+        "Agent tools can request and inspect work but cannot create or loosen operator configuration."
+      ],
+      "proposalPath": "proposals/trusted-operator-provisioning.md",
+      "options": [
+        {
+          "optionId": "local-provenance-guards",
+          "title": "Local provenance guards",
+          "kind": "baseline",
+          "summary": "Harden each existing path with operator-only key input, pinned curve parsing, secure descriptor-based policy reads, and HTTPS-only transport.",
+          "diagramPaths": {
+            "before": "diagrams/trusted-operator-provisioning-before.mmd",
+            "after": "diagrams/trusted-operator-provisioning-local-provenance-guards-after.mmd"
+          },
+          "findingCoverage": [
+            {
+              "findingId": "sompi.vault-recovery-authority-hijack",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Owner recovery key and cap are removed from Agent input and read from an operator-controlled secure source."
+            },
+            {
+              "findingId": "sompi.cleartext-merchant-authorization",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "The supported Treasury runtime rejects HTTP."
+            },
+            {
+              "findingId": "sompi.invalid-vault-recovery-key",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "The pinned SDK parser validates every owner point before persistence."
+            },
+            {
+              "findingId": "sompi.policy-file-provenance-bypass",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Policy reads enforce regular-file, owner, mode, no-follow, parent, and stable-inode provenance."
+            }
+          ],
+          "tradeoffs": [
+            {
+              "dimension": "security",
+              "direction": "improves",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "Closes the observed paths but leaves operator identity, schema, activation, and audit duplicated across subsystems.",
+              "validationPlan": "Re-run all four PoCs and review every operator-owned configuration consumer."
+            },
+            {
+              "dimension": "performance",
+              "direction": "neutral",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "Curve parsing and filesystem metadata checks occur at setup/startup or reload, not on the network critical path.",
+              "validationPlan": "Measure startup and reload latency before and after the checks."
+            },
+            {
+              "dimension": "memory",
+              "direction": "neutral",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "Only bounded parsed key, policy, and stat values are retained.",
+              "validationPlan": "Compare process RSS across startup and repeated safe reloads."
+            },
+            {
+              "dimension": "reliability",
+              "direction": "improves",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "Unsafe deployments fail closed, though previously tolerated symlinks or modes can prevent startup/reload.",
+              "validationPlan": "Test all file replacement and restart cases and measure failure/recovery duration."
+            },
+            {
+              "dimension": "operability",
+              "direction": "regresses",
+              "confidence": "low",
+              "basis": "hypothetical",
+              "assessment": "Several secure-file ceremonies, digests, and error paths remain for operators to understand.",
+              "validationPlan": "Run the setup and recovery runbooks on a clean host."
+            },
+            {
+              "dimension": "migration",
+              "direction": "neutral",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "Focused changes preserve most runtime APIs, but Agent vault setup and HTTP deployments must change.",
+              "validationPlan": "Inventory current configuration and exercise one clean import without fallback paths."
+            }
+          ],
+          "residualRisks": [
+            "Future operator configuration paths can omit equivalent provenance checks.",
+            "An intentionally approved unsafe policy remains effective.",
+            "Operator identity and activation audit remain dispersed."
+          ],
+          "implementationReadiness": {
+            "affectedComponents": [
+              "src/mcp/server.ts",
+              "src/vault.ts",
+              "src/policy.ts",
+              "src/runtime/config.ts",
+              "src/http/node-pinned-transport.ts"
+            ],
+            "workPackages": [
+              "Remove owner key/cap from MCP input.",
+              "Parse x-only points through the pinned SDK.",
+              "Secure policy descriptor/path reads.",
+              "Reject HTTP in the supported runtime."
+            ],
+            "acceptanceCriteria": [
+              "All four PoCs fail before authority or signing sinks.",
+              "No unsafe file provenance is accepted.",
+              "Valid operator setup and HTTPS Purchases still pass."
+            ],
+            "migrationNotes": [
+              "Use as immediate protection before a manifest cutover."
+            ],
+            "rollback": "Revert code only with a compatible operator configuration; do not restore Agent recovery input or HTTP as an operational workaround."
+          }
+        },
+        {
+          "optionId": "operator-provisioned-manifest",
+          "title": "Operator-provisioned manifest",
+          "kind": "structural",
+          "summary": "Validate and atomically install one versioned manifest under secure local state, then give runtime components immutable typed projections and record its digest.",
+          "diagramPaths": {
+            "before": "diagrams/trusted-operator-provisioning-before.mmd",
+            "after": "diagrams/trusted-operator-provisioning-operator-provisioned-manifest-after.mmd"
+          },
+          "findingCoverage": [
+            {
+              "findingId": "sompi.vault-recovery-authority-hijack",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "An operator-only installer supplies recovery authority; MCP can only report readiness."
+            },
+            {
+              "findingId": "sompi.cleartext-merchant-authorization",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "The manifest schema makes HTTP incompatible with the supported Treasury profile."
+            },
+            {
+              "findingId": "sompi.invalid-vault-recovery-key",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Manifest validation parses and validates the exact x-only point before activation."
+            },
+            {
+              "findingId": "sompi.policy-file-provenance-bypass",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Secure installation, stable read, typed projection, revision, and digest replace raw policy-file hot reload."
+            }
+          ],
+          "tradeoffs": [
+            {
+              "dimension": "security",
+              "direction": "improves",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "One owned boundary enforces principal, provenance, semantic cross-field checks, and activation identity across the four controls.",
+              "validationPlan": "Run all PoCs plus malformed/cross-field manifest tests and verify no consumer parses raw configuration."
+            },
+            {
+              "dimension": "performance",
+              "direction": "neutral",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "Canonical parse, validation, and hashing occur at startup or deliberate activation.",
+              "validationPlan": "Measure setup, startup, and reload latency against the current configuration path."
+            },
+            {
+              "dimension": "memory",
+              "direction": "neutral",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "One immutable parsed manifest replaces several small parsed objects.",
+              "validationPlan": "Compare steady-state RSS and retained configuration objects."
+            },
+            {
+              "dimension": "reliability",
+              "direction": "improves",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "Atomic activation and one revision improve coherence; malformed replacement can deliberately block activation.",
+              "validationPlan": "Fault partial writes, fsync, inode replacement, restart, and rollback while checking last-verified behavior."
+            },
+            {
+              "dimension": "operability",
+              "direction": "improves",
+              "confidence": "medium",
+              "basis": "hypothetical",
+              "assessment": "One preview/validate/install command, digest, revision, and runbook replace multiple conventions.",
+              "validationPlan": "Conduct a clean-host provisioning and rollback exercise and collect operator errors."
+            },
+            {
+              "dimension": "migration",
+              "direction": "regresses",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "Vault, policy, egress, runtime config, and journal audit bindings change together.",
+              "validationPlan": "Preview-import existing values, require operator review, then perform a no-fallback clean cutover."
+            }
+          ],
+          "residualRisks": [
+            "A central parser or installer defect affects several controls.",
+            "Operator compromise or intentionally unsafe policy remains authoritative.",
+            "Hot reload, if retained, can introduce rollback or activation complexity."
+          ],
+          "implementationReadiness": {
+            "affectedComponents": [
+              "operator provisioning command",
+              "src/secure-local-state.ts",
+              "src/vault.ts",
+              "src/policy.ts",
+              "src/runtime/config.ts",
+              "src/purchase/journal.ts"
+            ],
+            "workPackages": [
+              "Specify canonical manifest and version.",
+              "Build preview/validate/install ceremony.",
+              "Project typed vault, policy, and HTTPS configuration.",
+              "Bind revision/digest to durable records.",
+              "Delete replaced Agent/file/HTTP paths."
+            ],
+            "acceptanceCriteria": [
+              "MCP cannot select recovery authority.",
+              "Unsafe keys, files, profiles, and HTTP combinations fail before activation.",
+              "Activation is atomic and auditable.",
+              "Original PoCs and restart tests pass."
+            ],
+            "migrationNotes": [
+              "Import current values only into a reviewable preview.",
+              "Require explicit operator installation.",
+              "Remove old runtime paths in the same cutover."
+            ],
+            "rollback": "Restore a previously verified manifest revision understood by the same runtime; never fall back to Agent arguments, raw policy paths, or HTTP."
+          }
+        },
+        {
+          "optionId": "signed-offline-bundle",
+          "title": "Signed offline bundle",
+          "kind": "foundational",
+          "summary": "Wrap the canonical manifest in a dedicated operator signature and verify trust root, semantics, and monotonic revision at runtime.",
+          "diagramPaths": {
+            "before": "diagrams/trusted-operator-provisioning-before.mmd",
+            "after": "diagrams/trusted-operator-provisioning-signed-offline-bundle-after.mmd"
+          },
+          "findingCoverage": [
+            {
+              "findingId": "sompi.vault-recovery-authority-hijack",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "A signed operator bundle, not MCP input, selects recovery authority."
+            },
+            {
+              "findingId": "sompi.cleartext-merchant-authorization",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Signed semantics still reject HTTP in the supported Treasury profile."
+            },
+            {
+              "findingId": "sompi.invalid-vault-recovery-key",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Bundle semantic validation rejects invalid x-only points."
+            },
+            {
+              "findingId": "sompi.policy-file-provenance-bypass",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Signature and monotonic revision authenticate bytes delivered through an untrusted path."
+            }
+          ],
+          "tradeoffs": [
+            {
+              "dimension": "security",
+              "direction": "improves",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "Authenticates configuration across untrusted distribution and rejects rollback, but creates a high-value signing key and trust root.",
+              "validationPlan": "Run all PoCs plus forgery, trust-root, rollback, and signer-rotation tests."
+            },
+            {
+              "dimension": "performance",
+              "direction": "neutral",
+              "confidence": "high",
+              "basis": "analogous",
+              "assessment": "One signature verification occurs at activation rather than on the payment path.",
+              "validationPlan": "Measure verification and activation latency for representative bundle sizes."
+            },
+            {
+              "dimension": "memory",
+              "direction": "neutral",
+              "confidence": "high",
+              "basis": "analogous",
+              "assessment": "Verification retains only bounded bundle, signature, and trust metadata.",
+              "validationPlan": "Compare activation peak RSS against Option 2."
+            },
+            {
+              "dimension": "reliability",
+              "direction": "unknown",
+              "confidence": "medium",
+              "basis": "hypothetical",
+              "assessment": "Untrusted distribution becomes tolerable, but lost signing keys or monotonic revision state can block updates.",
+              "validationPlan": "Exercise lost signer, damaged revision state, rotation, recovery, and signed rollback."
+            },
+            {
+              "dimension": "operability",
+              "direction": "regresses",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "Key generation, offline custody, backup, rotation, revocation, signing, distribution, and audit are new obligations.",
+              "validationPlan": "Complete an end-to-end ceremony and timed recovery with named ownership."
+            },
+            {
+              "dimension": "migration",
+              "direction": "regresses",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "Builds cleanly on the manifest but adds trust-root and signature-envelope migration.",
+              "validationPlan": "Adopt only after Option 2 semantics are stable, then migrate one test instance through key rotation."
+            }
+          ],
+          "residualRisks": [
+            "Signing-key compromise can authorize every receiving instance.",
+            "A valid signature does not make unsafe semantics safe.",
+            "Trust-root and monotonic-revision recovery can deny configuration updates."
+          ],
+          "implementationReadiness": {
+            "affectedComponents": [
+              "canonical operator manifest",
+              "configuration signing tool",
+              "runtime trust-root verifier",
+              "durable monotonic revision state"
+            ],
+            "workPackages": [
+              "Define signature envelope and algorithm.",
+              "Provision separate signing trust root.",
+              "Implement verification and revision checks.",
+              "Document rotation, revocation, backup, and signed rollback."
+            ],
+            "acceptanceCriteria": [
+              "Forged, old, wrong-network, wrong-signer, and semantically unsafe bundles fail closed.",
+              "Rotation and recovery are demonstrated.",
+              "Original PoCs remain blocked."
+            ],
+            "migrationNotes": [
+              "Adopt only when configuration crosses a real host or administrative boundary."
+            ],
+            "rollback": "Rollback requires a deliberately signed higher-revision bundle; never replay an older revision."
+          }
+        }
+      ],
+      "recommendedOptionId": "operator-provisioned-manifest",
+      "recommendation": "Use one secure local operator manifest for the current single-host product; add signatures only when real multi-host or offline distribution justifies the new credential lifecycle."
+    },
+    {
+      "opportunityId": "bounded-operation-lifecycles",
+      "title": "Bounded, cancellable operation lifecycles",
+      "summary": "Require admission, aggregate budget, cancellation or absolute expiry, terminal outcome, and exactly-once release for every retained resource.",
+      "diagnosis": "Four findings retain sockets, prompt work, immutable evidence bytes, policy capacity, or the direct-Treasury slot beyond the event that should release them.",
+      "evidence": [
+        {
+          "claimType": "observed",
+          "sourceKind": "finding",
+          "findingId": "sompi.authority-preauth-socket-exhaustion",
+          "candidateId": "CAN-009",
+          "path": "src/authority/transport.ts",
+          "claim": "Incomplete unauthenticated sockets consume an unbounded set under a resettable inactivity timeout."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "finding",
+          "findingId": "sompi.authority-prompt-queue-dos",
+          "candidateId": "CAN-013",
+          "path": "src/adapters/ap2/human-authority.ts",
+          "claim": "Authenticated decisions enter an unbounded uncancellable terminal prompt tail."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "finding",
+          "findingId": "sompi.prevalidation-purchase-storage-exhaustion",
+          "candidateId": "CAN-027",
+          "path": "src/purchase/coordinator.ts",
+          "claim": "Unique request bodies become immutable evidence before reversible egress validation and without aggregate quota."
+        },
+        {
+          "claimType": "observed",
+          "sourceKind": "finding",
+          "findingId": "sompi.direct-treasury-preparation-lockout",
+          "candidateId": "CAN-031",
+          "path": "src/treasury/operations.ts",
+          "claim": "A durable intent claim precedes SDK preparation, but permanent pre-submission failure has no terminal release transition."
+        },
+        {
+          "claimType": "inferred",
+          "sourceKind": "source",
+          "path": "src/purchase/journal.ts",
+          "claim": "Durability is correctly required before irreversible effects, but retained resources lack one complete admission-to-release contract."
+        }
+      ],
+      "desiredInvariants": [
+        "Every scarce resource acquired for untrusted work has an aggregate budget, owner, absolute lifetime, terminal outcome, and idempotent release path.",
+        "Pre-authentication Authority work uses a short non-renewable deadline; the human-decision timeout starts only after authenticated admission.",
+        "One AbortSignal follows an Authority decision across transport, service, prompt queue, and terminal input.",
+        "Reversible validation and transactional capacity admission occur before immutable Purchase/evidence creation.",
+        "Proven permanent pre-submission Treasury failures terminalize and release atomically; transient or ambiguous failures remain bound to the original identity.",
+        "Authority admission remains inside the Authority process, while Purchase/evidence and Treasury admission remain in the Purchase Journal."
+      ],
+      "proposalPath": "proposals/bounded-operation-lifecycles.md",
+      "options": [
+        {
+          "optionId": "local-limits-and-terminalization",
+          "title": "Local limits and terminalization",
+          "kind": "baseline",
+          "summary": "Add focused caps, absolute deadlines, cancellation, aggregate evidence quota, prevalidation ordering, and a safe Treasury terminal failure path.",
+          "diagramPaths": {
+            "before": "diagrams/bounded-operation-lifecycles-before.mmd",
+            "after": "diagrams/bounded-operation-lifecycles-local-limits-and-terminalization-after.mmd"
+          },
+          "findingCoverage": [
+            {
+              "findingId": "sompi.authority-preauth-socket-exhaustion",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "A fixed pre-authentication permit count and absolute frame deadline bound retained sockets."
+            },
+            {
+              "findingId": "sompi.authority-prompt-queue-dos",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "A bounded prompt queue and propagated cancellation remove disconnected, expired, lease-lost, and shutdown work."
+            },
+            {
+              "findingId": "sompi.prevalidation-purchase-storage-exhaustion",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "Egress validation precedes durability and a transactional aggregate quota bounds accepted evidence."
+            },
+            {
+              "findingId": "sompi.direct-treasury-preparation-lockout",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "SDK prevalidation and a restricted intent-to-failed-terminal transition release proven pre-submission failures."
+            }
+          ],
+          "tradeoffs": [
+            {
+              "dimension": "security",
+              "direction": "improves",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "Closes the four reproduced retention paths, though future resources can omit equivalent aggregate/release controls.",
+              "validationPlan": "Re-run all four PoCs and audit every retained untrusted-work resource."
+            },
+            {
+              "dimension": "performance",
+              "direction": "neutral",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "Counters and cancellation are constant-time; transactional evidence quota adds a short database critical section before fsync.",
+              "validationPlan": "Benchmark mixed hostile/legitimate authority and evidence workloads for p95/p99 latency and SQLite lock time."
+            },
+            {
+              "dimension": "memory",
+              "direction": "improves",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "Socket and prompt memory becomes bounded; quota metadata adds small durable state.",
+              "validationPlan": "Measure descriptors, heap, RSS, timers, and queued items at and above configured caps."
+            },
+            {
+              "dimension": "reliability",
+              "direction": "improves",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "Dead work releases resources, while low limits can reject legitimate bursts and misclassified Treasury errors can release unsafely.",
+              "validationPlan": "Inject every cancellation, write, restart, and preparation failure and verify exactly-once release."
+            },
+            {
+              "dimension": "operability",
+              "direction": "regresses",
+              "confidence": "low",
+              "basis": "hypothetical",
+              "assessment": "Operators gain several separate limits, overload errors, gauges, and repair paths.",
+              "validationPlan": "Exercise runbooks at each limit and verify alerts identify the owning subsystem."
+            },
+            {
+              "dimension": "migration",
+              "direction": "neutral",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "Authority changes are in memory; evidence quota and Treasury terminal state require compatible journal migration.",
+              "validationPlan": "Run old/new restart and rollback tests with quota reservations and terminal rows."
+            }
+          ],
+          "residualRisks": [
+            "Continuously admitted hostile work can still consume all available permits without a fairness identity.",
+            "Accepted legitimate evidence can still fill storage if retention is undefined.",
+            "Incorrect permanent-error classification can release Treasury capacity unsafely."
+          ],
+          "implementationReadiness": {
+            "affectedComponents": [
+              "src/authority/transport.ts",
+              "src/authority/service.ts",
+              "src/adapters/ap2/human-authority.ts",
+              "src/purchase/coordinator.ts",
+              "src/purchase/evidence-store.ts",
+              "src/purchase/journal.ts",
+              "src/treasury/operations.ts"
+            ],
+            "workPackages": [
+              "Cap pre-auth and authenticated authority work.",
+              "Propagate cancellation through the prompt.",
+              "Move reversible Purchase admission before durability and add transactional quota.",
+              "Prevalidate Treasury input and add safe terminal preparation failure."
+            ],
+            "acceptanceCriteria": [
+              "All four PoCs are bounded or rejected.",
+              "Every release path is exactly once.",
+              "No cancelled Authority work signs.",
+              "No ambiguous post-preparation Treasury state is terminalized."
+            ],
+            "migrationNotes": [
+              "Use as direct containment before adopting a shared lifecycle contract."
+            ],
+            "rollback": "Authority changes roll back by restart; durable rollback requires a schema-compatible version preserving quota and terminal history."
+          }
+        },
+        {
+          "optionId": "per-boundary-admission-leases",
+          "title": "Per-boundary admission leases",
+          "kind": "structural",
+          "summary": "Give Authority, Purchase/evidence, and direct Treasury the same admission-to-release invariants while keeping enforcement and storage separate across trust boundaries.",
+          "diagramPaths": {
+            "before": "diagrams/bounded-operation-lifecycles-before.mmd",
+            "after": "diagrams/bounded-operation-lifecycles-per-boundary-admission-leases-after.mmd"
+          },
+          "findingCoverage": [
+            {
+              "findingId": "sompi.authority-preauth-socket-exhaustion",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "An Authority-owned pre-auth lease reserves and releases each socket under a fixed aggregate budget."
+            },
+            {
+              "findingId": "sompi.authority-prompt-queue-dos",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "An authenticated decision lease carries cancellation and ownership through the bounded prompt scheduler."
+            },
+            {
+              "findingId": "sompi.prevalidation-purchase-storage-exhaustion",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "A transactional Purchase/evidence capacity lease reserves unique bytes/count before fsync and releases on rejection or write failure."
+            },
+            {
+              "findingId": "sompi.direct-treasury-preparation-lockout",
+              "effect": "addresses",
+              "tacticalFixRequired": true,
+              "rationale": "The durable Treasury lease distinguishes permanent pre-effect failure from transient and ambiguous states and releases atomically."
+            }
+          ],
+          "tradeoffs": [
+            {
+              "dimension": "security",
+              "direction": "improves",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "Makes owner, budget, cancellation, terminal outcome, and release explicit at each handoff without creating a cross-process broker.",
+              "validationPlan": "Assert every admission/release edge and re-run all four PoCs plus retained-resource inventory review."
+            },
+            {
+              "dimension": "performance",
+              "direction": "regresses",
+              "confidence": "low",
+              "basis": "hypothetical",
+              "assessment": "Constant-time lease bookkeeping is small; durable evidence admission can serialize briefly on a quota row.",
+              "validationPlan": "Measure p50/p95/p99 admission latency, SQLite lock duration, fsync throughput, and event-loop delay."
+            },
+            {
+              "dimension": "memory",
+              "direction": "improves",
+              "confidence": "high",
+              "basis": "source-derived",
+              "assessment": "Authority sockets, handlers, and prompts have auditable bounded counts; durable lease metadata is small.",
+              "validationPlan": "Measure counters, descriptors, timers, heap, RSS, and oldest item under sustained hostile load."
+            },
+            {
+              "dimension": "reliability",
+              "direction": "improves",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "Deterministic reclamation and integrity checks improve recovery, while leaked or double-released leases can deny work or oversubscribe capacity.",
+              "validationPlan": "Fault every state transition and verify counters never leak, go negative, or exceed capacity across restart."
+            },
+            {
+              "dimension": "operability",
+              "direction": "improves",
+              "confidence": "medium",
+              "basis": "hypothetical",
+              "assessment": "Common lifecycle names make dashboards and incident reasoning coherent, though limits remain separately configured per process.",
+              "validationPlan": "Run an overload incident exercise using admitted, active, expired, cancelled, released, and oldest-age metrics."
+            },
+            {
+              "dimension": "migration",
+              "direction": "regresses",
+              "confidence": "medium",
+              "basis": "source-derived",
+              "assessment": "Handoffs and durable schema change, but each trust boundary can cut over independently.",
+              "validationPlan": "Roll out Authority, Purchase/evidence, and Treasury separately and delete superseded counters after each owner is active."
+            }
+          ],
+          "residualRisks": [
+            "A shared vocabulary can become an overgeneralized runtime abstraction if resource-specific semantics are hidden.",
+            "A hostile client can monopolize permits without authenticated fairness.",
+            "Lease implementation bugs can leak or double-release resources."
+          ],
+          "implementationReadiness": {
+            "affectedComponents": [
+              "Authority transport/service/prompt",
+              "Purchase coordinator/evidence store/journal",
+              "direct Treasury module/journal"
+            ],
+            "workPackages": [
+              "Define the lifecycle vocabulary and review checklist.",
+              "Implement Authority-local admission/cancellation.",
+              "Implement transactional Purchase/evidence capacity.",
+              "Complete direct-Treasury terminal outcome semantics.",
+              "Add common fault-injection assertions without a shared runtime broker."
+            ],
+            "acceptanceCriteria": [
+              "Every retained object has one owner and active lease.",
+              "Aggregate usage never exceeds configured capacity.",
+              "Every terminal path releases exactly once.",
+              "Trust-boundary isolation remains intact.",
+              "Original PoCs and crash/restart suites pass."
+            ],
+            "migrationNotes": [
+              "Cut over independently per boundary.",
+              "Keep direct controls during migration.",
+              "Remove duplicate counters and exception-only release behavior after ownership is established."
+            ],
+            "rollback": "Authority in-memory rollback occurs by restart; durable rollback must preserve quota reservations and terminal Treasury history."
+          }
+        }
+      ],
+      "recommendedOptionId": "per-boundary-admission-leases",
+      "recommendation": "Use per-boundary admission leases with separate Authority and Purchase/Treasury enforcement; do not introduce a shared scheduler or weaken durable-before-effect ordering."
+    }
+  ],
+  "openQuestions": [
+    "Which Kaspa proof or independently operated witness profile is acceptable for the current Testnet-10 Chain Evidence Gateway?",
+    "What accepted or confirmed finality floor applies to each Settlement, direct Treasury, vault, staging, and recovery transition?",
+    "What history retention horizon is required for policy accounting, recovery, and dispute evidence?",
+    "Should the operator manifest require process restart or support monotonic hot reload?",
+    "Which OS identity owns operator-manifest installation and which UID/GID must runtime verification require?",
+    "What are the initial socket, prompt, Purchase-count, evidence-byte, and decision-lifetime budgets?",
+    "Which Treasury preparation errors can be proven permanent before signing or submission?",
+    "What evidence or operational threshold will trigger adoption of the trusted local evidence plane or signed offline configuration bundle?"
+  ]
+}

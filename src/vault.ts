@@ -1,9 +1,9 @@
-import * as fs from "node:fs";
-import * as path from "node:path";
+import { createHash } from "node:crypto";
 import {
   CovenantBinding,
   Hash,
   Keypair,
+  XOnlyPublicKey,
   PrivateKey,
   SighashType,
   Transaction,
@@ -13,9 +13,10 @@ import {
   payToAddressScript,
   payToScriptHashScript,
   payToScriptHashSignatureScript,
-} from "../vendor/kaspa-wasm/kaspa";
-import { VAULT_TEMPLATE_VERSION, VaultState, buildRedeemScript, buildSigArgs, bytesToHex, hexToBytes } from "./vault/template";
-import type { KaspaWallet } from "./wallet";
+} from "./kaspa-wasm.js";
+import { SecureLocalStateDirectory } from "./secure-local-state.js";
+import { VAULT_TEMPLATE_VERSION, VaultState, buildRedeemScript, buildSigArgs, bytesToHex, hexToBytes } from "./vault/template.js";
+import type { KaspaWallet } from "./wallet.js";
 
 /**
  * Covenant vault, pure JS.
@@ -38,8 +39,127 @@ export interface VaultConfig {
   currentOutpoint?: { txid: string; index: number };
 }
 
+export type VaultPreparationErrorCode =
+  | "invalid_input"
+  | "not_funded"
+  | "insufficient_funds"
+  | "invalid_runtime_state"
+  | "invalid_transaction_shape"
+  | "fee_exceeds_ceiling"
+  | "rpc_unavailable";
+
+/** Structured no-effect failures at the vault/Treasury adapter seam. */
+export class VaultPreparationError extends Error {
+  readonly code: VaultPreparationErrorCode;
+
+  constructor(code: VaultPreparationErrorCode, message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "VaultPreparationError";
+    this.code = code;
+  }
+}
+
+/** Stable digest of manifest-owned vault facts; excludes rolling/on-chain state. */
+export function vaultStaticConfigurationDigest(config: VaultConfig): string {
+  assertCurrentConfig(config, "testnet-10");
+  const bytes = Buffer.from(JSON.stringify({
+    template: config.template,
+    agentPublic: config.agentPublic,
+    ownerPublic: config.ownerPublic,
+    maxOutflowSompi: config.maxOutflowSompi,
+    windowSizeDaa: config.windowSizeDaa,
+    initialAddress: deriveVaultAddress(
+      config.agentPublic,
+      config.ownerPublic,
+      BigInt(config.maxOutflowSompi),
+      BigInt(config.windowSizeDaa),
+      { windowStartDaa: 0n, spentInWindowSompi: 0n },
+      "testnet-10"
+    ),
+  }), "utf8");
+  try {
+    return `sha256:${createHash("sha256").update(bytes).digest("base64url")}`;
+  } finally {
+    bytes.fill(0);
+  }
+}
+
+export interface PreparedVaultSpend {
+  transaction: string;
+  transactionEncoding: "kaspa-sdk-safe-json-v2.0.0";
+  transactionId: string;
+  destination: string;
+  destinationOutpoint: { txid: string; index: 0 };
+  amountSompi: bigint;
+  feeSompi: bigint;
+  continuationOutpoint: { txid: string; index: 1 };
+  continuationAddress: string;
+  continuationAmountSompi: bigint;
+  covenantId: string;
+  baseConfigDigest: string;
+  configUpdate: {
+    windowStartDaa: string;
+    spentInWindowSompi: string;
+    address: string;
+    currentOutpoint: { txid: string; index: 1 };
+  };
+}
+
+export interface ObservedVaultSpend {
+  transactionId: string;
+  destinationOutpoint: { txid: string; index: 0 };
+  continuationOutpoint: { txid: string; index: 1 };
+  amountSompi: bigint;
+  continuationAmountSompi: bigint;
+  observedAtDaa: bigint;
+  chainEvidenceDigest: string;
+  chainEvidenceLevel: "accepted" | "depth-confirmed" | "consensus-final";
+}
+
+export interface PreparedVaultDeposit {
+  readonly transaction: string;
+  readonly transactionEncoding: "kaspa-sdk-safe-json-v2.0.0";
+  readonly transactionId: string;
+  readonly depositKind: "initial" | "topup";
+  readonly depositedSompi: bigint;
+  readonly feeSompi: bigint;
+  readonly vaultAddress: string;
+  readonly vaultOutpoint: { readonly txid: string; readonly index: 0 };
+  readonly vaultAmountSompi: bigint;
+  readonly covenantId: string;
+  readonly baseConfigDigest: string;
+  readonly sourceInputs: readonly {
+    readonly address: string;
+    readonly txid: string;
+    readonly index: number;
+    readonly amountSompi: bigint;
+  }[];
+  readonly configUpdate: Partial<VaultConfig> & {
+    readonly currentOutpoint: { readonly txid: string; readonly index: 0 };
+  };
+}
+
+export interface ObservedVaultDeposit {
+  readonly transactionId: string;
+  readonly vaultOutpoint: { readonly txid: string; readonly index: 0 };
+  readonly vaultAmountSompi: bigint;
+  readonly covenantId: string;
+  readonly observedAtDaa: bigint;
+  readonly chainEvidenceDigest: string;
+  readonly chainEvidenceLevel: "accepted" | "depth-confirmed" | "consensus-final";
+}
+
+export interface VaultSpendResult {
+  txid: string;
+  amountSompi: bigint;
+  feeSompi: bigint;
+  configUpdate?: Partial<VaultConfig>;
+  preparedTransaction?: string;
+}
+
 type VaultSpendConfig = Pick<
   VaultConfig,
+  | "template"
   | "agentPublic"
   | "ownerPublic"
   | "maxOutflowSompi"
@@ -69,6 +189,9 @@ const GRAMS_PER_COMPUTE_BUDGET_UNIT = 100n;
 const DEFAULT_WINDOW_SIZE_DAA = 36_000n; // ~1 hour on testnet-10/mainnet at 10 BPS
 const VAULT_INPUT_COMPUTE_BUDGET = 50;
 const NON_FINAL_SEQUENCE = 0n;
+const MAX_VAULT_AGENT_KEY_BYTES = 256;
+const MAX_VAULT_CONFIG_BYTES = 64 * 1024;
+const UINT64_MAX = (1n << 64n) - 1n;
 
 /**
  * Deterministic fallback fee estimate for a 1-input vault spend.
@@ -103,64 +226,111 @@ export function estimateVaultSpendFeeSompi(
 }
 
 export class VaultManager {
-  private readonly vaultDir: string;
+  private readonly state: SecureLocalStateDirectory;
   private readonly networkId: string;
 
   constructor(dataDir: string, networkId: string) {
-    this.vaultDir = path.join(dataDir, "vault");
+    const root = new SecureLocalStateDirectory(dataDir, "Sompi data");
+    this.state = root.child("vault", "vault state");
     this.networkId = networkId;
   }
 
   get configured(): boolean {
-    return fs.existsSync(path.join(this.vaultDir, "config.json"));
+    const hasConfig = this.state.fileExists("config.json");
+    const hasAgentKey = this.state.fileExists("agent-key");
+    if (hasConfig !== hasAgentKey) {
+      throw new Error(
+        "vault state is incomplete after an interrupted creation; do not recreate or overwrite its secret"
+      );
+    }
+    return hasConfig;
   }
 
   config(): VaultConfig {
-    const config = JSON.parse(fs.readFileSync(path.join(this.vaultDir, "config.json"), "utf8")) as VaultConfig;
-    assertCurrentConfig(config);
-    return config;
+    if (!this.configured) throw new Error("vault is not configured");
+    const bytes = this.state.readFile("config.json", MAX_VAULT_CONFIG_BYTES);
+    try {
+      let config: unknown;
+      try {
+        config = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+      } catch (error) {
+        throw new Error("vault config is malformed", { cause: error });
+      }
+      assertCurrentConfig(config, this.networkId);
+      return config as VaultConfig;
+    } finally {
+      bytes.fill(0);
+    }
+  }
+
+  /** Stable address of this vault's zero-state covenant, independent of later rotations. */
+  initialAddress(): string {
+    const config = this.config();
+    return this.deriveAddress(
+      config.agentPublic,
+      config.ownerPublic,
+      BigInt(config.maxOutflowSompi),
+      BigInt(config.windowSizeDaa),
+      { windowStartDaa: 0n, spentInWindowSompi: 0n }
+    );
   }
 
   create(maxOutflowSompi: bigint, ownerPublicKey: string, windowSizeDaa: bigint = DEFAULT_WINDOW_SIZE_DAA): VaultConfig {
     if (this.configured) {
-      throw new Error(`vault already exists at ${this.vaultDir}; use it or move it aside first`);
+      throw new Error(`vault already exists at ${this.state.directory}; use it or move it aside first`);
     }
     const ownerPublic = ownerPublicKey.trim().toLowerCase();
     if (!/^[0-9a-f]{64}$/.test(ownerPublic)) {
       throw new Error(
         "ownerPublicKey must be a 32-byte x-only public key in hex (64 hex chars). " +
-          "Ask your human operator to run `npx @elldeeone/sompi gen-owner-key` on THEIR machine and " +
+          "Ask your human operator to run `sompi-operator owner-key` outside the MCP session and " +
           "give you the `public:` line; the private half must stay with them."
       );
     }
-    if (maxOutflowSompi <= 0n) throw new Error("maxOutflowSompi must be positive");
+    assertXOnlyPublicKey(ownerPublic, "ownerPublicKey");
+    if (maxOutflowSompi <= 0n) throw new Error("Vault spending cap must be positive.");
     if (windowSizeDaa <= 0n) throw new Error("windowSizeDaa must be positive");
 
-    const agent = Keypair.random();
-    const agentPublic = String(agent.xOnlyPublicKey);
-    const state = { windowStartDaa: 0n, spentInWindowSompi: 0n };
-    const address = this.deriveAddress(agentPublic, ownerPublic, maxOutflowSompi, windowSizeDaa, state);
+    let agent: Keypair | undefined;
+    let agentBytes: Buffer | undefined;
+    let configBytes: Buffer | undefined;
+    try {
+      agent = Keypair.random();
+      const agentPublic = String(agent.xOnlyPublicKey);
+      const state = { windowStartDaa: 0n, spentInWindowSompi: 0n };
+      const address = this.deriveAddress(agentPublic, ownerPublic, maxOutflowSompi, windowSizeDaa, state);
+      const config: VaultConfig = {
+        template: VAULT_TEMPLATE_VERSION,
+        agentPublic,
+        ownerPublic,
+        maxOutflowSompi: maxOutflowSompi.toString(),
+        windowSizeDaa: windowSizeDaa.toString(),
+        windowStartDaa: "0",
+        spentInWindowSompi: "0",
+        address,
+      };
+      assertCurrentConfig(config, this.networkId);
 
-    fs.mkdirSync(this.vaultDir, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(path.join(this.vaultDir, "agent-key"), agent.privateKey, { mode: 0o600 });
-
-    const config: VaultConfig = {
-      template: VAULT_TEMPLATE_VERSION,
-      agentPublic,
-      ownerPublic,
-      maxOutflowSompi: maxOutflowSompi.toString(),
-      windowSizeDaa: windowSizeDaa.toString(),
-      windowStartDaa: "0",
-      spentInWindowSompi: "0",
-      address,
-    };
-    this.saveConfig(config);
-    return config;
+      agentBytes = Buffer.from(agent.privateKey, "utf8");
+      this.state.createFileExclusive("agent-key", agentBytes, MAX_VAULT_AGENT_KEY_BYTES);
+      configBytes = encodeVaultConfig(config);
+      this.state.createFileExclusive("config.json", configBytes, MAX_VAULT_CONFIG_BYTES);
+      return config;
+    } finally {
+      configBytes?.fill(0);
+      agentBytes?.fill(0);
+      agent?.free();
+    }
   }
 
   private saveConfig(config: VaultConfig): void {
-    fs.mkdirSync(this.vaultDir, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(path.join(this.vaultDir, "config.json"), JSON.stringify(config, null, 2), { mode: 0o600 });
+    assertCurrentConfig(config, this.networkId);
+    const bytes = encodeVaultConfig(config);
+    try {
+      this.state.replaceFileAtomic("config.json", bytes, MAX_VAULT_CONFIG_BYTES);
+    } finally {
+      bytes.fill(0);
+    }
   }
 
   private deriveAddress(
@@ -170,11 +340,14 @@ export class VaultManager {
     windowSizeDaa: bigint,
     state: VaultState
   ): string {
-    const redeem = buildRedeemScript(agentPublic, ownerPublic, maxOutflowSompi, windowSizeDaa, state);
-    const spk = payToScriptHashScript(redeem);
-    const address = addressFromScriptPublicKey(spk, this.networkId);
-    if (!address) throw new Error("could not derive vault address");
-    return address.toString();
+    return deriveVaultAddress(
+      agentPublic,
+      ownerPublic,
+      maxOutflowSompi,
+      windowSizeDaa,
+      state,
+      this.networkId
+    );
   }
 
   async balanceSompi(wallet: KaspaWallet): Promise<bigint> {
@@ -198,48 +371,267 @@ export class VaultManager {
     return { spendableSompi, unboundSompi };
   }
 
-  async deposit(
+  /** Builds and signs a covenant deposit without broadcasting or changing config. */
+  async prepareDeposit(
     wallet: KaspaWallet,
     amountSompi: bigint | "max",
-    keepFloatSompi: bigint = 0n
-  ): Promise<{ txid: string; depositedSompi: bigint; feeSompi: bigint; vaultAddress: string; covenantId?: string }> {
-    if (amountSompi !== "max" && amountSompi <= 0n) throw new Error("deposit amount must be positive");
-    if (keepFloatSompi < 0n) throw new Error("keepFloatSompi must be non-negative");
+    keepFloatSompi: bigint = 0n,
+    feeCeilingSompi?: bigint
+  ): Promise<PreparedVaultDeposit> {
+    if (amountSompi !== "max" && amountSompi <= 0n) throw new VaultPreparationError("invalid_input", "vault deposit amount is invalid");
+    if (keepFloatSompi < 0n) throw new VaultPreparationError("invalid_input", "vault deposit keep-float is invalid");
+    if (feeCeilingSompi !== undefined && feeCeilingSompi < 0n) {
+      throw new VaultPreparationError("invalid_input", "vault deposit fee ceiling is invalid");
+    }
     const config = this.config();
-    const agentKey = fs.readFileSync(path.join(this.vaultDir, "agent-key"), "utf8").trim();
     const result = config.covenantId
-      ? await topUpVault({ wallet, config, privateKey: agentKey, amountSompi, keepFloatSompi })
-      : await fundInitialVault({ wallet, config, amountSompi, keepFloatSompi });
-
-    this.saveConfig({ ...config, ...result.configUpdate });
-    return {
-      txid: result.txid,
-      depositedSompi: result.depositedSompi,
-      feeSompi: result.feeSompi,
-      vaultAddress: result.configUpdate.address ?? config.address,
-      covenantId: result.configUpdate.covenantId ?? config.covenantId,
-    };
+      ? await this.withAgentPrivateKey(config, (signingKey) =>
+          topUpVault({
+            wallet,
+            config,
+            signingKey,
+            amountSompi,
+            keepFloatSompi,
+            feeCeilingSompi,
+            broadcast: false,
+          })
+        )
+      : await fundInitialVault({
+          wallet,
+          config,
+          amountSompi,
+          keepFloatSompi,
+          feeCeilingSompi,
+          broadcast: false,
+        });
+    if (!result.preparedTransaction) {
+      throw new Error("vault deposit preparation did not return signed transaction material");
+    }
+    const transaction = requirePreparedTransaction(result.preparedTransaction, result.txid);
+    try {
+      const output = transaction.outputs[0];
+      if (!output) throw new Error("prepared vault deposit has no covenant output");
+      const address = addressFromScriptPublicKey(output.scriptPublicKey, this.networkId);
+      const vaultAddress = address?.toString();
+      address?.free();
+      if (!vaultAddress) throw new Error("prepared vault deposit address cannot be derived");
+      const covenantId = result.configUpdate.covenantId ?? config.covenantId;
+      if (!covenantId || !/^[a-f0-9]{64}$/.test(covenantId)) {
+        throw new Error("prepared vault deposit covenant identity is invalid");
+      }
+      const binding = output.covenant;
+      if (!binding || String(binding.covenantId) !== covenantId || binding.authorizingInput !== 0) {
+        throw new Error("prepared vault deposit covenant binding changed");
+      }
+      const currentOutpoint = result.configUpdate.currentOutpoint;
+      if (currentOutpoint?.txid !== result.txid || currentOutpoint.index !== 0) {
+        throw new Error("prepared vault deposit continuation outpoint is invalid");
+      }
+      const sourceInputs = transaction.inputs.map((input) => {
+        const utxo = input.utxo;
+        if (!utxo) throw new Error("prepared vault deposit input lacks recovery UTXO data");
+        const source = addressFromScriptPublicKey(utxo.scriptPublicKey, this.networkId);
+        try {
+          const sourceAddress = source?.toString();
+          if (!sourceAddress) throw new Error("prepared vault deposit input address cannot be derived");
+          return Object.freeze({
+            address: sourceAddress,
+            txid: String(input.previousOutpoint.transactionId),
+            index: input.previousOutpoint.index,
+            amountSompi: BigInt(utxo.amount),
+          });
+        } finally {
+          source?.free();
+        }
+      });
+      const prepared: PreparedVaultDeposit = Object.freeze({
+        transaction: result.preparedTransaction,
+        transactionEncoding: "kaspa-sdk-safe-json-v2.0.0" as const,
+        transactionId: result.txid,
+        depositKind: config.covenantId ? "topup" as const : "initial" as const,
+        depositedSompi: result.depositedSompi,
+        feeSompi: result.feeSompi,
+        vaultAddress,
+        vaultOutpoint: Object.freeze({ txid: result.txid, index: 0 as const }),
+        vaultAmountSompi: BigInt(output.value),
+        covenantId,
+        baseConfigDigest: vaultConfigDigest(config),
+        sourceInputs: Object.freeze(sourceInputs),
+        configUpdate: Object.freeze({
+          ...result.configUpdate,
+          currentOutpoint: Object.freeze({ txid: result.txid, index: 0 as const }),
+        }),
+      });
+      const verified = requireBoundPreparedDeposit(prepared, this.networkId);
+      verified.free();
+      return prepared;
+    } finally {
+      transaction.free();
+    }
   }
 
-  async send(
+  async submitPreparedDeposit(
+    wallet: KaspaWallet,
+    prepared: PreparedVaultDeposit
+  ): Promise<{ transactionId: string }> {
+    const transaction = requireBoundPreparedDeposit(prepared, this.networkId);
+    try {
+      const rpc = await wallet.client();
+      const submitted = await (rpc as any).submitTransaction({ transaction, allowOrphan: false });
+      const transactionId = String(submitted?.transactionId ?? "");
+      if (transactionId !== prepared.transactionId) {
+        throw new Error("Kaspa node returned a different transaction identity for the prepared vault deposit");
+      }
+      return { transactionId };
+    } finally {
+      transaction.free();
+    }
+  }
+
+  commitObservedDeposit(
+    prepared: PreparedVaultDeposit,
+    observed: ObservedVaultDeposit
+  ): VaultConfig {
+    const transaction = requireBoundPreparedDeposit(prepared, this.networkId);
+    transaction.free();
+    if (
+      observed.transactionId !== prepared.transactionId ||
+      observed.vaultOutpoint.txid !== prepared.transactionId ||
+      observed.vaultOutpoint.index !== 0 ||
+      observed.vaultAmountSompi !== prepared.vaultAmountSompi ||
+      observed.covenantId !== prepared.covenantId ||
+      !validAcceptedChainEvidence(observed)
+    ) {
+      throw new Error("vault deposit observation does not match exact prepared transaction");
+    }
+    const current = this.config();
+    const updated: VaultConfig = { ...current, ...prepared.configUpdate };
+    if (vaultConfigMatchesDepositUpdate(current, prepared.configUpdate)) return current;
+    if (vaultConfigDigest(current) !== prepared.baseConfigDigest) {
+      throw new Error("vault state advanced after this deposit was prepared");
+    }
+    this.saveConfig(updated);
+    return updated;
+  }
+
+  /**
+   * Signs an immutable vault withdrawal without broadcasting it or advancing
+   * local vault state. The caller must durably journal this result before
+   * `submitPreparedSend` and must not call `commitObservedSend` until both
+   * outputs have been independently observed.
+   */
+  async prepareSend(
     wallet: KaspaWallet,
     destination: string,
     amount: bigint | "max",
-    authorize?: (amountSompi: bigint) => void
-  ): Promise<{ txid: string; amountSompi: bigint; feeSompi: bigint }> {
+    authorize?: (amountSompi: bigint) => void,
+    feeCeilingSompi?: bigint
+  ): Promise<PreparedVaultSpend> {
+    if (amount !== "max" && amount <= 0n) throw new VaultPreparationError("invalid_input", "vault send amount is invalid");
+    if (feeCeilingSompi !== undefined && feeCeilingSompi < 0n) {
+      throw new VaultPreparationError("invalid_input", "vault send fee ceiling is invalid");
+    }
     const config = this.config();
-    const agentKey = fs.readFileSync(path.join(this.vaultDir, "agent-key"), "utf8").trim();
-    const result = await spendVault({
-      wallet,
-      config,
-      fn: "withdraw",
-      privateKey: agentKey,
+    if (!config.covenantId) throw new VaultPreparationError("not_funded", "vault has not been covenant-funded");
+    const result = await this.withAgentPrivateKey(config, (signingKey) =>
+      spendVault({
+        wallet,
+        config,
+        fn: "withdraw",
+        signingKey,
+        destination,
+        amount,
+        authorize,
+        feeCeilingSompi,
+        broadcast: false,
+      })
+    );
+    if (!result.preparedTransaction || !result.configUpdate) {
+      throw new Error("vault preparation did not return an immutable transaction and state update");
+    }
+    const transaction = requirePreparedTransaction(
+      result.preparedTransaction,
+      result.txid
+    );
+    const outputs = transaction.outputs;
+    if (outputs.length !== 2) {
+      transaction.free();
+      throw new Error("prepared vault staging transaction must have exactly two outputs");
+    }
+    const destinationAmount = BigInt((outputs[0] as any).value);
+    const continuationAmount = BigInt((outputs[1] as any).value);
+    transaction.free();
+    if (destinationAmount !== result.amountSompi) {
+      throw new Error("prepared vault staging output does not match the requested amount");
+    }
+    const update = requirePreparedConfigUpdate(result.configUpdate, result.txid);
+    const prepared: PreparedVaultSpend = {
+      transaction: result.preparedTransaction,
+      transactionEncoding: "kaspa-sdk-safe-json-v2.0.0" as const,
+      transactionId: result.txid,
       destination,
-      amount,
-      authorize,
-    });
-    if (result.configUpdate) this.saveConfig({ ...config, ...result.configUpdate });
-    return { txid: result.txid, amountSompi: result.amountSompi, feeSompi: result.feeSompi };
+      destinationOutpoint: Object.freeze({ txid: result.txid, index: 0 as const }),
+      amountSompi: result.amountSompi,
+      feeSompi: result.feeSompi,
+      continuationOutpoint: Object.freeze({ txid: result.txid, index: 1 as const }),
+      continuationAddress: update.address,
+      continuationAmountSompi: continuationAmount,
+      covenantId: config.covenantId,
+      baseConfigDigest: vaultConfigDigest(config),
+      configUpdate: Object.freeze(update),
+    };
+    const validated = requireBoundPreparedTransaction(prepared, this.networkId);
+    validated.free();
+    return Object.freeze(prepared);
+  }
+
+  async submitPreparedSend(
+    wallet: KaspaWallet,
+    prepared: PreparedVaultSpend
+  ): Promise<{ transactionId: string }> {
+    assertPreparedVaultSpend(prepared);
+    const transaction = requireBoundPreparedTransaction(prepared, this.networkId);
+    try {
+      const rpc = await wallet.client();
+      const submitted = await (rpc as any).submitTransaction({
+        transaction,
+        allowOrphan: false,
+      });
+      const transactionId = String(submitted?.transactionId ?? "");
+      if (transactionId !== prepared.transactionId) {
+        throw new Error("Kaspa node returned a different transaction identity for the prepared vault send");
+      }
+      return { transactionId };
+    } finally {
+      transaction.free();
+    }
+  }
+
+  commitObservedSend(
+    prepared: PreparedVaultSpend,
+    observed: ObservedVaultSpend
+  ): VaultConfig {
+    assertPreparedVaultSpend(prepared);
+    if (
+      observed.transactionId !== prepared.transactionId ||
+      observed.destinationOutpoint.txid !== prepared.destinationOutpoint.txid ||
+      observed.destinationOutpoint.index !== 0 ||
+      observed.continuationOutpoint.txid !== prepared.continuationOutpoint.txid ||
+      observed.continuationOutpoint.index !== 1 ||
+      observed.amountSompi !== prepared.amountSompi ||
+      observed.continuationAmountSompi !== prepared.continuationAmountSompi ||
+      !validAcceptedChainEvidence(observed)
+    ) {
+      throw new Error("vault observation does not match the exact prepared staging transaction");
+    }
+    const current = this.config();
+    const updated: VaultConfig = { ...current, ...prepared.configUpdate };
+    if (vaultConfigMatchesUpdate(current, prepared.configUpdate)) return current;
+    if (vaultConfigDigest(current) !== prepared.baseConfigDigest) {
+      throw new Error("vault state advanced after this staging transaction was prepared");
+    }
+    this.saveConfig(updated);
+    return updated;
   }
 
   async recover(): Promise<never> {
@@ -249,17 +641,44 @@ export class VaultManager {
         "<windowSizeDaa> <windowStartDaa> <spentInWindowSompi> <destination>"
     );
   }
+
+  private async withAgentPrivateKey<T>(
+    config: VaultConfig,
+    operation: (privateKey: PrivateKey) => T | Promise<T>
+  ): Promise<T> {
+    const bytes = this.state.readFile("agent-key", MAX_VAULT_AGENT_KEY_BYTES);
+    let privateKey: PrivateKey | undefined;
+    try {
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes).trim();
+      if (!/^[a-fA-F0-9]{64}$/.test(text)) throw new Error("vault Agent key material is invalid");
+      try {
+        privateKey = new PrivateKey(text);
+      } catch (error) {
+        throw new Error("vault Agent key material is invalid", { cause: error });
+      }
+      if (!privateKeyMatchesXOnly(privateKey, config.agentPublic)) {
+        throw new Error("vault Agent key does not match the configured public key");
+      }
+      return await operation(privateKey);
+    } finally {
+      privateKey?.free();
+      bytes.fill(0);
+    }
+  }
 }
 
-export interface VaultSpendParams {
+interface VaultSpendParams {
   wallet: KaspaWallet;
   config: VaultSpendConfig;
   fn: "withdraw" | "recover";
-  privateKey: string;
+  signingKey: PrivateKey;
   destination: string;
   amount?: bigint | "max";
   feeSompi?: bigint;
+  feeCeilingSompi?: bigint;
   authorize?: (amountSompi: bigint) => void;
+  /** Defaults to true. False returns signed safe JSON without an RPC effect. */
+  broadcast?: boolean;
 }
 
 const MIN_VAULT_CHANGE_SOMPI = 100_000_000n;
@@ -267,21 +686,21 @@ const DUMMY_SIGNATURE = new Uint8Array(65).fill(0xab);
 const DUMMY_WALLET_SIGNATURE_SCRIPT = `41${"ab".repeat(65)}`;
 const MAX_FEE_CONVERGENCE_PASSES = 12;
 
-export async function spendVault(
+async function spendVault(
   params: VaultSpendParams
-): Promise<{ txid: string; amountSompi: bigint; feeSompi: bigint; configUpdate?: Partial<VaultConfig> }> {
+): Promise<VaultSpendResult> {
   const { wallet, config, fn, destination } = params;
-  assertCurrentConfig(config);
+  assertCurrentConfig(config, wallet.networkId);
   const max = BigInt(config.maxOutflowSompi);
   const windowSize = BigInt(config.windowSizeDaa);
   const currentState = stateFromConfig(config);
   const redeem = buildRedeemScript(config.agentPublic, config.ownerPublic, max, windowSize, currentState);
   const vaultSpk = payToScriptHashScript(redeem);
 
-  const rpc = await wallet.client();
+  const rpc = await vaultRpcRead(() => wallet.client());
   const utxo = await selectCurrentVaultUtxo(wallet, config, fn === "withdraw");
   const destSpk = payToAddressScript(destination);
-  const estimate = await rpc.getFeeEstimate();
+  const estimate = await vaultRpcRead(() => rpc.getFeeEstimate());
   const feerate = estimate.estimate?.normalBuckets?.[0]?.feerate ?? 100;
 
   if (fn === "recover") {
@@ -289,7 +708,9 @@ export async function spendVault(
     let converged = params.feeSompi !== undefined;
     for (let i = 0; i < MAX_FEE_CONVERGENCE_PASSES; i++) {
       const candidateAmount = utxo.amount - feeSompi;
-      if (candidateAmount <= 0n) throw new Error(`vault UTXO of ${utxo.amount} sompi is too small for recovery fee ${feeSompi}`);
+      if (candidateAmount <= 0n) {
+        throw new Error(`Vault balance ${displayAmount(utxo.amount)} is too small for recovery fee ${displayAmount(feeSompi)}.`);
+      }
       const candidateTx = buildTransaction({
         inputs: [txInput(utxo, "")],
         outputs: [{ value: candidateAmount, scriptPublicKey: destSpk }],
@@ -304,22 +725,33 @@ export async function spendVault(
     }
     if (!converged) throw new Error(`vault recovery fee estimate did not converge after ${MAX_FEE_CONVERGENCE_PASSES} passes`);
     const amountSompi = utxo.amount - feeSompi;
-    if (amountSompi <= 0n) throw new Error(`vault UTXO of ${utxo.amount} sompi is too small for recovery fee ${feeSompi}`);
+    if (amountSompi <= 0n) {
+      throw new Error(`Vault balance ${displayAmount(utxo.amount)} is too small for recovery fee ${displayAmount(feeSompi)}.`);
+    }
     const tx = buildTransaction({
       inputs: [txInput(utxo, "")],
       outputs: [{ value: amountSompi, scriptPublicKey: destSpk }],
       lockTime: 0n,
     });
-    const pushedSig = createInputSignature(tx, 0, new PrivateKey(params.privateKey), SighashType.All);
+    const pushedSig = createInputSignature(tx, 0, params.signingKey, SighashType.All);
     setInputScripts(tx, [payToScriptHashSignatureScript(redeem, buildSigArgs(hexToBytes(pushedSig).slice(1), "recover"))]);
     assertFeeCoversSignedTx(wallet.networkId, tx, feerate, feeSompi, "vault recovery");
+    if (params.broadcast === false) {
+      const txid = String(tx.finalize());
+      return {
+        txid,
+        amountSompi,
+        feeSompi,
+        preparedTransaction: tx.serializeToSafeJSON(),
+      };
+    }
     const { transactionId } = await (rpc as any).submitTransaction({ transaction: tx, allowOrphan: false });
     return { txid: String(transactionId), amountSompi, feeSompi };
   }
 
   if (!config.covenantId) throw new Error("vault has not been covenant-funded yet; call vault_deposit first");
 
-  const info = await rpc.getServerInfo();
+  const info = await vaultRpcRead(() => rpc.getServerInfo());
   const virtualDaa = BigInt(info.virtualDaaScore);
   // Keep the input non-final so header context enforces this DAA locktime.
   // The contract also requires the active vault UTXO itself to have aged a
@@ -330,8 +762,9 @@ export async function spendVault(
   const spentAtWindowStart = reset ? 0n : currentState.spentInWindowSompi;
   const remainingWindow = max - spentAtWindowStart;
   if (remainingWindow <= 0n) {
-    throw new Error(
-      `vault window exhausted: spent ${spentAtWindowStart} of ${max} sompi; ` +
+    throw new VaultPreparationError(
+      "invalid_runtime_state",
+      `Vault window exhausted: spent ${displayAmount(spentAtWindowStart)} of ${displayAmount(max)}; ` +
         `next reset at DAA ${resetTargetDaa}`
     );
   }
@@ -343,8 +776,14 @@ export async function spendVault(
     };
     const nextRedeem = buildRedeemScript(config.agentPublic, config.ownerPublic, max, windowSize, nextState);
     const nextSpk = payToScriptHashScript(nextRedeem);
-    const nextAddress = addressFromScriptPublicKey(nextSpk, wallet.networkId)?.toString();
-    if (!nextAddress) throw new Error("could not derive next vault address");
+    const derivedAddress = addressFromScriptPublicKey(nextSpk, wallet.networkId);
+    let nextAddress: string;
+    try {
+      if (!derivedAddress) throw new Error("could not derive next vault address");
+      nextAddress = derivedAddress.toString();
+    } finally {
+      derivedAddress?.free();
+    }
     return { nextState, nextRedeem, nextSpk, nextAddress };
   };
 
@@ -355,14 +794,17 @@ export async function spendVault(
     amountSompi = withdrawAmount(params.amount, remainingWindow, utxo.amount, feeSompi);
     const outflow = amountSompi + feeSompi;
     if (outflow > remainingWindow) {
-      throw new Error(
-        `outflow ${outflow} sompi (amount + estimated fee ${feeSompi}) exceeds remaining vault window ` +
-          `${remainingWindow} sompi`
+      throw new VaultPreparationError(
+        "invalid_runtime_state",
+        `Outflow ${displayAmount(outflow)} (amount + estimated fee ${displayAmount(feeSompi)}) exceeds remaining vault window ` +
+          `${displayAmount(remainingWindow)}.`
       );
     }
     const next = continuationFor(outflow);
     const changeSompi = utxo.amount - outflow;
-    if (changeSompi <= 0n) throw new Error(`vault UTXO of ${utxo.amount} sompi is too small for this spend`);
+    if (changeSompi <= 0n) {
+      throw new VaultPreparationError("insufficient_funds", `Vault balance ${displayAmount(utxo.amount)} is too small for this spend.`);
+    }
     const tx = buildTransaction({
       inputs: [txInput(utxo, "")],
       outputs: [
@@ -378,22 +820,33 @@ export async function spendVault(
     }
     feeSompi = nextFee;
   }
-  if (!converged) throw new Error(`vault withdrawal fee estimate did not converge after ${MAX_FEE_CONVERGENCE_PASSES} passes`);
+  if (!converged) {
+    throw new VaultPreparationError("invalid_runtime_state", `vault withdrawal fee estimate did not converge after ${MAX_FEE_CONVERGENCE_PASSES} passes`);
+  }
+
+  if (params.feeCeilingSompi !== undefined && feeSompi > params.feeCeilingSompi) {
+    throw new VaultPreparationError("fee_exceeds_ceiling", "vault withdrawal fee exceeds the capacity reserved before signing");
+  }
 
   amountSompi = withdrawAmount(params.amount, remainingWindow, utxo.amount, feeSompi);
   const outflow = amountSompi + feeSompi;
   if (outflow > remainingWindow) {
-    throw new Error(
-      `outflow ${outflow} sompi (amount + estimated fee ${feeSompi}) exceeds remaining vault window ` +
-        `${remainingWindow} sompi`
+    throw new VaultPreparationError(
+      "invalid_runtime_state",
+      `Outflow ${displayAmount(outflow)} (amount + estimated fee ${displayAmount(feeSompi)}) exceeds remaining vault window ` +
+        `${displayAmount(remainingWindow)}.`
     );
   }
-  if (amountSompi <= 0n) throw new Error(`vault UTXO of ${utxo.amount} sompi is too small for this spend`);
+  if (amountSompi <= 0n) {
+    throw new VaultPreparationError("insufficient_funds", `Vault balance ${displayAmount(utxo.amount)} is too small for this spend.`);
+  }
   params.authorize?.(amountSompi);
 
   const next = continuationFor(outflow);
   const changeSompi = utxo.amount - outflow;
-  if (changeSompi <= 0n) throw new Error(`vault UTXO of ${utxo.amount} sompi is too small for this spend`);
+  if (changeSompi <= 0n) {
+    throw new VaultPreparationError("insufficient_funds", `Vault balance ${displayAmount(utxo.amount)} is too small for this spend.`);
+  }
 
   const tx = buildTransaction({
     inputs: [txInput({ ...utxo, scriptPublicKey: vaultSpk }, "")],
@@ -403,9 +856,24 @@ export async function spendVault(
     ],
     lockTime: lockDaa,
   });
-  const pushedSig = createInputSignature(tx, 0, new PrivateKey(params.privateKey), SighashType.All);
+  const pushedSig = createInputSignature(tx, 0, params.signingKey, SighashType.All);
   setInputScripts(tx, [payToScriptHashSignatureScript(redeem, buildSigArgs(hexToBytes(pushedSig).slice(1), "withdraw"))]);
   assertFeeCoversSignedTx(wallet.networkId, tx, feerate, feeSompi, "vault withdrawal");
+  if (params.broadcast === false) {
+    const txid = String(tx.finalize());
+    return {
+      txid,
+      amountSompi,
+      feeSompi,
+      preparedTransaction: tx.serializeToSafeJSON(),
+      configUpdate: {
+        windowStartDaa: next.nextState.windowStartDaa.toString(),
+        spentInWindowSompi: next.nextState.spentInWindowSompi.toString(),
+        address: next.nextAddress,
+        currentOutpoint: { txid, index: 1 },
+      },
+    };
+  }
   const { transactionId } = await (rpc as any).submitTransaction({ transaction: tx, allowOrphan: false });
   const txid = String(transactionId);
 
@@ -422,20 +890,67 @@ export async function spendVault(
   };
 }
 
+export interface VaultOwnerRecoveryParams {
+  readonly wallet: KaspaWallet;
+  readonly config: VaultConfig;
+  readonly privateKey: string;
+  readonly destination: string;
+  readonly feeSompi?: bigint;
+}
+
+/**
+ * Explicit operator-only escape path for the unrestricted covenant owner.
+ * Agent and MCP execution use prepare/submit/observe through the journal; this
+ * export cannot invoke the capped Agent withdrawal branch.
+ */
+export async function recoverVaultWithOwner(
+  params: VaultOwnerRecoveryParams
+): Promise<VaultSpendResult> {
+  let privateKey: PrivateKey | undefined;
+  try {
+    try {
+      privateKey = new PrivateKey(params.privateKey.trim());
+    } catch (error) {
+      throw new Error("vault owner key material is invalid", { cause: error });
+    }
+    if (!privateKeyMatchesXOnly(privateKey, params.config.ownerPublic)) {
+      throw new Error("vault owner key does not match the configured public key");
+    }
+    return await spendVault({
+      wallet: params.wallet,
+      config: params.config,
+      fn: "recover",
+      signingKey: privateKey,
+      destination: params.destination,
+      ...(params.feeSompi === undefined ? {} : { feeSompi: params.feeSompi }),
+    });
+  } finally {
+    privateKey?.free();
+  }
+}
+
 async function fundInitialVault(params: {
   wallet: KaspaWallet;
   config: VaultConfig;
   amountSompi: bigint | "max";
   keepFloatSompi: bigint;
-}): Promise<{ txid: string; depositedSompi: bigint; feeSompi: bigint; configUpdate: Partial<VaultConfig> }> {
+  feeCeilingSompi?: bigint;
+  broadcast?: boolean;
+}): Promise<{
+  txid: string;
+  depositedSompi: bigint;
+  feeSompi: bigint;
+  configUpdate: Partial<VaultConfig>;
+  preparedTransaction?: string;
+}> {
   const { wallet, config, keepFloatSompi } = params;
-  const rpc = await wallet.client();
+  const rpc = await vaultRpcRead(() => wallet.client());
   let walletUtxos = params.amountSompi === "max" ? await listWalletUtxos(wallet) : await selectWalletUtxos(wallet, params.amountSompi);
   const vaultSpk = payToScriptHashScript(
     buildRedeemScript(config.agentPublic, config.ownerPublic, BigInt(config.maxOutflowSompi), BigInt(config.windowSizeDaa), stateFromConfig(config))
   );
   const changeSpk = payToAddressScript(wallet.address);
-  const estimate = await rpc.getFeeEstimate();
+  const estimate = await vaultRpcRead(() => rpc.getFeeEstimate());
   const feerate = estimate.estimate?.normalBuckets?.[0]?.feerate ?? 100;
 
   let feeSompi = 0n;
@@ -458,10 +973,18 @@ async function fundInitialVault(params: {
     }
     feeSompi = nextFee;
   }
-  if (!converged || !tx) throw new Error(`vault deposit fee estimate did not converge after ${MAX_FEE_CONVERGENCE_PASSES} passes`);
+  if (!converged || !tx) {
+    throw new VaultPreparationError("invalid_runtime_state", `vault deposit fee estimate did not converge after ${MAX_FEE_CONVERGENCE_PASSES} passes`);
+  }
   const walletTotal = sumUtxoAmounts(walletUtxos);
   if (walletTotal < amountSompi + feeSompi) {
-    throw new Error(`wallet UTXOs totaling ${walletTotal} sompi cannot cover deposit ${amountSompi} plus fee ${feeSompi}`);
+    throw new VaultPreparationError(
+      "insufficient_funds",
+      `Regular wallet balance ${displayAmount(walletTotal)} cannot cover vault deposit ${displayAmount(amountSompi)} plus fee ${displayAmount(feeSompi)}.`
+    );
+  }
+  if (params.feeCeilingSompi !== undefined && feeSompi > params.feeCeilingSompi) {
+    throw new VaultPreparationError("fee_exceeds_ceiling", "vault deposit fee exceeds the capacity reserved before signing");
   }
 
   tx = buildGenesisDepositTx(walletUtxos, vaultSpk, changeSpk, amountSompi, feeSompi);
@@ -471,7 +994,20 @@ async function fundInitialVault(params: {
   );
   assertFeeCoversSignedTx(wallet.networkId, tx, feerate, feeSompi, "vault deposit");
   const covenantId = tx.outputs[0].covenant?.covenantId?.toString();
-  if (!covenantId) throw new Error("failed to populate genesis covenant id");
+  if (!covenantId) throw new VaultPreparationError("invalid_runtime_state", "failed to populate genesis covenant id");
+  const preparedTxid = String(tx.finalize());
+  if (params.broadcast === false) {
+    return {
+      txid: preparedTxid,
+      depositedSompi: amountSompi,
+      feeSompi,
+      preparedTransaction: tx.serializeToSafeJSON(),
+      configUpdate: {
+        covenantId,
+        currentOutpoint: { txid: preparedTxid, index: 0 },
+      },
+    };
+  }
   const { transactionId } = await (rpc as any).submitTransaction({ transaction: tx, allowOrphan: false });
   const txid = String(transactionId);
   return {
@@ -488,29 +1024,43 @@ async function fundInitialVault(params: {
 async function topUpVault(params: {
   wallet: KaspaWallet;
   config: VaultConfig;
-  privateKey: string;
+  signingKey: PrivateKey;
   amountSompi: bigint | "max";
   keepFloatSompi: bigint;
-}): Promise<{ txid: string; depositedSompi: bigint; feeSompi: bigint; configUpdate: Partial<VaultConfig> }> {
-  const { wallet, config, privateKey, keepFloatSompi } = params;
+  feeCeilingSompi?: bigint;
+  broadcast?: boolean;
+}): Promise<{
+  txid: string;
+  depositedSompi: bigint;
+  feeSompi: bigint;
+  configUpdate: Partial<VaultConfig>;
+  preparedTransaction?: string;
+}> {
+  const { wallet, config, signingKey, keepFloatSompi } = params;
   if (!config.covenantId) throw new Error("vault has no covenant id; cannot top up");
-  const rpc = await wallet.client();
+  const rpc = await vaultRpcRead(() => wallet.client());
   const vaultUtxo = await selectCurrentVaultUtxo(wallet, config, true);
   let walletUtxos = params.amountSompi === "max" ? await listWalletUtxos(wallet) : await selectWalletUtxos(wallet, params.amountSompi);
   const state = stateFromConfig(config);
   const windowSize = BigInt(config.windowSizeDaa);
   const redeem = buildRedeemScript(config.agentPublic, config.ownerPublic, BigInt(config.maxOutflowSompi), windowSize, state);
-  const info = await rpc.getServerInfo();
+  const info = await vaultRpcRead(() => rpc.getServerInfo());
   const virtualDaa = BigInt(info.virtualDaaScore);
   const lockDaa = virtualDaa > 0n ? virtualDaa - 1n : 0n;
   const resetTargetDaa = maxBigInt(state.windowStartDaa, vaultUtxo.blockDaaScore) + windowSize;
   const nextState = lockDaa >= resetTargetDaa ? { windowStartDaa: lockDaa, spentInWindowSompi: 0n } : state;
   const nextRedeem = buildRedeemScript(config.agentPublic, config.ownerPublic, BigInt(config.maxOutflowSompi), windowSize, nextState);
   const nextSpk = payToScriptHashScript(nextRedeem);
-  const nextAddress = addressFromScriptPublicKey(nextSpk, wallet.networkId)?.toString();
-  if (!nextAddress) throw new Error("could not derive next vault address");
+  const derivedAddress = addressFromScriptPublicKey(nextSpk, wallet.networkId);
+  let nextAddress: string;
+  try {
+    if (!derivedAddress) throw new Error("could not derive next vault address");
+    nextAddress = derivedAddress.toString();
+  } finally {
+    derivedAddress?.free();
+  }
   const changeSpk = payToAddressScript(wallet.address);
-  const estimate = await rpc.getFeeEstimate();
+  const estimate = await vaultRpcRead(() => rpc.getFeeEstimate());
   const feerate = estimate.estimate?.normalBuckets?.[0]?.feerate ?? 100;
 
   let feeSompi = 0n;
@@ -536,19 +1086,42 @@ async function topUpVault(params: {
     }
     feeSompi = nextFee;
   }
-  if (!converged || !tx) throw new Error(`vault top-up fee estimate did not converge after ${MAX_FEE_CONVERGENCE_PASSES} passes`);
+  if (!converged || !tx) {
+    throw new VaultPreparationError("invalid_runtime_state", `vault top-up fee estimate did not converge after ${MAX_FEE_CONVERGENCE_PASSES} passes`);
+  }
   const walletTotal = sumUtxoAmounts(walletUtxos);
   if (walletTotal < amountSompi + feeSompi) {
-    throw new Error(`wallet UTXOs totaling ${walletTotal} sompi cannot cover top-up ${amountSompi} plus fee ${feeSompi}`);
+    throw new VaultPreparationError(
+      "insufficient_funds",
+      `Regular wallet balance ${displayAmount(walletTotal)} cannot cover vault top-up ${displayAmount(amountSompi)} plus fee ${displayAmount(feeSompi)}.`
+    );
+  }
+  if (params.feeCeilingSompi !== undefined && feeSompi > params.feeCeilingSompi) {
+    throw new VaultPreparationError("fee_exceeds_ceiling", "vault top-up fee exceeds the capacity reserved before signing");
   }
 
   tx = buildTopupTx(config, vaultUtxo, walletUtxos, nextSpk, changeSpk, amountSompi, feeSompi, lockDaa);
-  const pushedVaultSig = createInputSignature(tx, 0, new PrivateKey(privateKey), SighashType.All);
+  const pushedVaultSig = createInputSignature(tx, 0, signingKey, SighashType.All);
   setInputScripts(tx, [
     payToScriptHashSignatureScript(redeem, buildSigArgs(hexToBytes(pushedVaultSig).slice(1), "topup")),
     ...walletUtxos.map((_, index) => wallet.signInput(tx, index + 1)),
   ]);
   assertFeeCoversSignedTx(wallet.networkId, tx, feerate, feeSompi, "vault top-up");
+  const preparedTxid = String(tx.finalize());
+  if (params.broadcast === false) {
+    return {
+      txid: preparedTxid,
+      depositedSompi: amountSompi,
+      feeSompi,
+      preparedTransaction: tx.serializeToSafeJSON(),
+      configUpdate: {
+        windowStartDaa: nextState.windowStartDaa.toString(),
+        spentInWindowSompi: nextState.spentInWindowSompi.toString(),
+        address: nextAddress,
+        currentOutpoint: { txid: preparedTxid, index: 0 },
+      },
+    };
+  }
   const { transactionId } = await (rpc as any).submitTransaction({ transaction: tx, allowOrphan: false });
   const txid = String(transactionId);
   return {
@@ -654,17 +1227,17 @@ function setInputScripts(tx: Transaction, scripts: Array<string | Uint8Array>): 
 }
 
 async function selectCurrentVaultUtxo(wallet: KaspaWallet, config: VaultSpendConfig, requireCovenant: boolean): Promise<NormalizedUtxo> {
-  const rpc = await wallet.client();
-  const { entries } = await rpc.getUtxosByAddresses([config.address]);
+  const rpc = await vaultRpcRead(() => wallet.client());
+  const { entries } = await vaultRpcRead(() => rpc.getUtxosByAddresses([config.address]));
   let matches = normalizeEntries(entries);
   if (requireCovenant) {
-    if (!config.covenantId) throw new Error("vault has no covenant id; call vault_deposit first");
+    if (!config.covenantId) throw new VaultPreparationError("not_funded", "vault has no covenant id; call vault_deposit first");
     matches = matches.filter((entry) => entry.covenantId === config.covenantId);
   }
   if (config.currentOutpoint) {
     matches = matches.filter((entry) => entry.txid === config.currentOutpoint?.txid && entry.index === config.currentOutpoint?.index);
   }
-  if (!matches.length) throw new Error(`vault ${config.address} has no current spendable UTXO`);
+  if (!matches.length) throw new VaultPreparationError("insufficient_funds", `vault ${config.address} has no current spendable UTXO`);
   if (requireCovenant && matches.length !== 1) {
     throw new Error(`vault singleton invariant violated: found ${matches.length} current covenant UTXOs`);
   }
@@ -672,13 +1245,26 @@ async function selectCurrentVaultUtxo(wallet: KaspaWallet, config: VaultSpendCon
 }
 
 async function listWalletUtxos(wallet: KaspaWallet): Promise<NormalizedUtxo[]> {
-  const rpc = await wallet.client();
-  const { entries } = await rpc.getUtxosByAddresses([wallet.address]);
+  const rpc = await vaultRpcRead(() => wallet.client());
+  const { entries } = await vaultRpcRead(() => rpc.getUtxosByAddresses([wallet.address]));
   const normalized = normalizeEntries(entries)
     .filter((entry) => !entry.covenantId)
     .sort((a, b) => (a.amount > b.amount ? -1 : 1));
-  if (!normalized.length) throw new Error(`no spendable wallet UTXOs for ${wallet.address}; fund the wallet first`);
+  if (!normalized.length) throw new VaultPreparationError("insufficient_funds", "wallet has no spendable UTXOs");
   return normalized;
+}
+
+async function vaultRpcRead<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof VaultPreparationError) throw error;
+    throw new VaultPreparationError(
+      "rpc_unavailable",
+      "vault preparation RPC data is unavailable",
+      { cause: error },
+    );
+  }
 }
 
 async function selectWalletUtxos(wallet: KaspaWallet, amountHint: bigint): Promise<NormalizedUtxo[]> {
@@ -690,7 +1276,7 @@ async function selectWalletUtxos(wallet: KaspaWallet, amountHint: bigint): Promi
     total += entry.amount;
     if (total >= amountHint) return selected;
   }
-  throw new Error(`wallet UTXOs totaling ${total} sompi cannot cover required amount ${amountHint}`);
+  throw new VaultPreparationError("insufficient_funds", "wallet balance cannot cover the requested vault deposit");
 }
 
 function sumUtxoAmounts(utxos: NormalizedUtxo[]): bigint {
@@ -700,7 +1286,9 @@ function sumUtxoAmounts(utxos: NormalizedUtxo[]): bigint {
 function withdrawAmount(amount: bigint | "max" | undefined, remainingWindow: bigint, utxoAmount: bigint, feeSompi: bigint): bigint {
   if (amount !== "max") return amount!;
   const outflowCap = minBigInt(remainingWindow, utxoAmount - MIN_VAULT_CHANGE_SOMPI);
-  if (outflowCap <= 0n) throw new Error(`vault UTXO of ${utxoAmount} sompi is too small to withdraw from`);
+  if (outflowCap <= 0n) {
+    throw new VaultPreparationError("insufficient_funds", `Vault balance ${displayAmount(utxoAmount)} is too small to withdraw from.`);
+  }
   return outflowCap - feeSompi;
 }
 
@@ -708,7 +1296,10 @@ function depositAmountFor(requested: bigint | "max", walletTotal: bigint, feeSom
   if (requested !== "max") return requested;
   const amount = walletTotal - keepFloatSompi - feeSompi;
   if (amount <= 0n) {
-    throw new Error(`nothing to deposit: wallet UTXOs total ${walletTotal} sompi, float is ${keepFloatSompi}, fee is ${feeSompi}`);
+    throw new VaultPreparationError(
+      "insufficient_funds",
+      `Nothing to deposit: regular wallet has ${displayAmount(walletTotal)}, requested float is ${displayAmount(keepFloatSompi)}, and estimated fee is ${displayAmount(feeSompi)}.`
+    );
   }
   return amount;
 }
@@ -737,15 +1328,156 @@ function stateFromConfig(config: Pick<VaultConfig, "windowStartDaa" | "spentInWi
   };
 }
 
-function assertCurrentConfig(config: Partial<VaultConfig>): asserts config is VaultConfig {
-  const missing = ["agentPublic", "ownerPublic", "maxOutflowSompi", "windowSizeDaa", "windowStartDaa", "spentInWindowSompi", "address"].filter(
-    (key) => typeof (config as any)[key] !== "string"
-  );
-  if (missing.length) {
-    throw new Error(`vault config is not the current stateful format; recreate the vault (${missing.join(", ")} missing)`);
+function assertCurrentConfig(config: unknown, networkId: string): asserts config is VaultConfig {
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    throw new Error("vault config is not the current stateful format; recreate the vault");
   }
-  if (config.template !== undefined && config.template !== VAULT_TEMPLATE_VERSION) {
-    throw new Error(`unsupported vault template ${config.template}; expected ${VAULT_TEMPLATE_VERSION}`);
+  if (networkId !== "testnet-10") {
+    throw new Error("the initial Sompi vault profile supports only testnet-10");
+  }
+  const record = config as Record<string, unknown>;
+  const required = [
+    "address",
+    "agentPublic",
+    "maxOutflowSompi",
+    "ownerPublic",
+    "spentInWindowSompi",
+    "template",
+    "windowSizeDaa",
+    "windowStartDaa",
+  ];
+  const optional = ["covenantId", "currentOutpoint"];
+  const keys = Object.keys(record).sort();
+  if (
+    required.some((key) => !Object.prototype.hasOwnProperty.call(record, key)) ||
+    keys.some((key) => !required.includes(key) && !optional.includes(key))
+  ) {
+    throw new Error("vault config contains missing or unsupported fields");
+  }
+  if (record.template !== VAULT_TEMPLATE_VERSION) {
+    throw new Error(`unsupported vault template; expected ${VAULT_TEMPLATE_VERSION}`);
+  }
+  if (
+    typeof record.agentPublic !== "string" ||
+    !/^[a-f0-9]{64}$/.test(record.agentPublic) ||
+    typeof record.ownerPublic !== "string" ||
+    !/^[a-f0-9]{64}$/.test(record.ownerPublic)
+  ) {
+    throw new Error("vault config public keys are invalid or noncanonical");
+  }
+  assertXOnlyPublicKey(record.agentPublic, "vault Agent public key");
+  assertXOnlyPublicKey(record.ownerPublic, "vault owner public key");
+  const maxOutflowSompi = canonicalUint64(record.maxOutflowSompi, "maximum outflow");
+  const windowSizeDaa = canonicalUint64(record.windowSizeDaa, "window size");
+  const windowStartDaa = canonicalUint64(record.windowStartDaa, "window start");
+  const spentInWindowSompi = canonicalUint64(record.spentInWindowSompi, "window spend");
+  if (maxOutflowSompi === 0n || windowSizeDaa === 0n) {
+    throw new Error("vault config maximum outflow and window size must be positive");
+  }
+  if (spentInWindowSompi > maxOutflowSompi) {
+    throw new Error("vault config window spend exceeds its maximum outflow");
+  }
+  if (typeof record.address !== "string" || record.address.length === 0 || record.address.length > 256) {
+    throw new Error("vault config address is invalid");
+  }
+
+  const hasCovenantId = Object.prototype.hasOwnProperty.call(record, "covenantId");
+  const hasCurrentOutpoint = Object.prototype.hasOwnProperty.call(record, "currentOutpoint");
+  if (hasCovenantId !== hasCurrentOutpoint) {
+    throw new Error("vault config covenant identity and current outpoint must appear together");
+  }
+  if (hasCovenantId) {
+    if (typeof record.covenantId !== "string" || !/^[a-f0-9]{64}$/.test(record.covenantId)) {
+      throw new Error("vault config covenant identity is invalid or noncanonical");
+    }
+    if (!record.currentOutpoint || typeof record.currentOutpoint !== "object" || Array.isArray(record.currentOutpoint)) {
+      throw new Error("vault config current outpoint is invalid");
+    }
+    const outpoint = record.currentOutpoint as Record<string, unknown>;
+    const outpointKeys = Object.keys(outpoint).sort();
+    if (
+      outpointKeys.length !== 2 ||
+      outpointKeys[0] !== "index" ||
+      outpointKeys[1] !== "txid" ||
+      typeof outpoint.txid !== "string" ||
+      !/^[a-f0-9]{64}$/.test(outpoint.txid) ||
+      (outpoint.index !== 0 && outpoint.index !== 1)
+    ) {
+      throw new Error("vault config current outpoint is invalid or noncanonical");
+    }
+  }
+
+  const derivedAddress = deriveVaultAddress(
+    record.agentPublic,
+    record.ownerPublic,
+    maxOutflowSompi,
+    windowSizeDaa,
+    { windowStartDaa, spentInWindowSompi },
+    networkId
+  );
+  if (record.address !== derivedAddress) {
+    throw new Error("vault config address does not match its covenant state");
+  }
+}
+
+function assertXOnlyPublicKey(value: string, label: string): void {
+  let key: XOnlyPublicKey | undefined;
+  try {
+    key = new XOnlyPublicKey(value);
+    if (key.toString() !== value) throw new Error("noncanonical x-only public key");
+  } catch (cause) {
+    throw new Error(`${label} x-only public key is invalid`, { cause });
+  } finally {
+    key?.free();
+  }
+}
+
+function canonicalUint64(value: unknown, label: string): bigint {
+  if (typeof value !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(value)) {
+    throw new Error(`vault config ${label} is invalid or noncanonical`);
+  }
+  const parsed = BigInt(value);
+  if (parsed > UINT64_MAX) throw new Error(`vault config ${label} exceeds uint64`);
+  return parsed;
+}
+
+function deriveVaultAddress(
+  agentPublic: string,
+  ownerPublic: string,
+  maxOutflowSompi: bigint,
+  windowSizeDaa: bigint,
+  state: VaultState,
+  networkId: string
+): string {
+  const redeem = buildRedeemScript(
+    agentPublic,
+    ownerPublic,
+    maxOutflowSompi,
+    windowSizeDaa,
+    state
+  );
+  const scriptPublicKey = payToScriptHashScript(redeem);
+  const address = addressFromScriptPublicKey(scriptPublicKey, networkId);
+  try {
+    if (!address) throw new Error("could not derive vault address");
+    return address.toString();
+  } finally {
+    address?.free();
+    scriptPublicKey.free();
+  }
+}
+
+function encodeVaultConfig(config: VaultConfig): Buffer {
+  return Buffer.from(`${JSON.stringify(config, null, 2)}\n`, "utf8");
+}
+
+function privateKeyMatchesXOnly(privateKey: PrivateKey, expectedPublicKey: string): boolean {
+  let keypair: Keypair | undefined;
+  try {
+    keypair = privateKey.toKeypair();
+    return String(keypair.xOnlyPublicKey).toLowerCase() === expectedPublicKey.toLowerCase();
+  } finally {
+    keypair?.free();
   }
 }
 
@@ -765,7 +1497,7 @@ function estimateTxFeeSompi(networkId: string, tx: Transaction, feerate: number,
 function assertFeeCoversSignedTx(networkId: string, tx: Transaction, feerate: number, feeSompi: bigint, label: string): void {
   const requiredFee = minimumSignedTxFeeSompi(networkId, tx, feerate);
   if (feeSompi < requiredFee) {
-    throw new Error(`${label} fee ${feeSompi} sompi is below final signed transaction minimum ${requiredFee} sompi`);
+    throw new Error(`${label} fee ${displayAmount(feeSompi)} is below final signed transaction minimum ${displayAmount(requiredFee)}.`);
   }
 }
 
@@ -780,6 +1512,18 @@ function feeRateSompiPerGram(feerate: number): bigint {
 
 function withFeeMargin(feeSompi: bigint): bigint {
   return (feeSompi * 110n + 99n) / 100n;
+}
+
+function displayAmount(sompi: bigint): string {
+  return `${formatKas(sompi)} KAS (${sompi} sompi)`;
+}
+
+function formatKas(sompi: bigint): string {
+  const sign = sompi < 0n ? "-" : "";
+  const absolute = sompi < 0n ? -sompi : sompi;
+  const whole = absolute / 100_000_000n;
+  const fraction = (absolute % 100_000_000n).toString().padStart(8, "0").replace(/0+$/, "");
+  return `${sign}${whole}${fraction ? `.${fraction}` : ""}`;
 }
 
 function covenantBinding(covenantId: string, authorizingInput: number): CovenantBinding {
@@ -801,9 +1545,289 @@ function maxBigInt(a: bigint, b: bigint): bigint {
   return a > b ? a : b;
 }
 
+function requirePreparedTransaction(transactionJson: string, expectedTxid: string): Transaction {
+  if (typeof transactionJson !== "string" || transactionJson.length === 0 || transactionJson.length > 2_000_000) {
+    throw new Error("prepared vault transaction artifact is empty or oversized");
+  }
+  let transaction: Transaction;
+  try {
+    transaction = Transaction.deserializeFromSafeJSON(transactionJson);
+  } catch {
+    throw new Error("prepared vault transaction artifact is not valid Kaspa safe JSON");
+  }
+  try {
+    const transactionId = String(transaction.finalize());
+    if (transactionId !== expectedTxid || !/^[a-f0-9]{64}$/.test(transactionId)) {
+      throw new Error("prepared vault transaction identity does not match its signed artifact");
+    }
+    if (transaction.serializeToSafeJSON() !== transactionJson) {
+      throw new Error("prepared vault transaction artifact is not canonical Kaspa safe JSON");
+    }
+    return transaction;
+  } catch (error) {
+    transaction.free();
+    throw error;
+  }
+}
+
+function requireBoundPreparedTransaction(
+  prepared: PreparedVaultSpend,
+  networkId: string
+): Transaction {
+  assertPreparedVaultSpend(prepared);
+  const transaction = requirePreparedTransaction(prepared.transaction, prepared.transactionId);
+  try {
+    const outputs = transaction.outputs;
+    if (outputs.length !== 2) {
+      throw new Error("prepared vault staging transaction must have exactly two outputs");
+    }
+    if (
+      BigInt(outputs[0].value) !== prepared.amountSompi ||
+      BigInt(outputs[1].value) !== prepared.continuationAmountSompi
+    ) {
+      throw new Error("prepared vault staging transaction output amounts changed");
+    }
+    const destinationAddress = addressFromScriptPublicKey(outputs[0].scriptPublicKey, networkId);
+    const continuationAddress = addressFromScriptPublicKey(outputs[1].scriptPublicKey, networkId);
+    try {
+      if (
+        destinationAddress?.toString() !== prepared.destination ||
+        continuationAddress?.toString() !== prepared.continuationAddress
+      ) {
+        throw new Error("prepared vault staging transaction output addresses changed");
+      }
+    } finally {
+      destinationAddress?.free();
+      continuationAddress?.free();
+    }
+    if (outputs[0].covenant !== undefined) {
+      throw new Error("prepared vault staging destination output must not carry a covenant");
+    }
+    const binding = outputs[1].covenant;
+    if (
+      !binding ||
+      String(binding.covenantId) !== prepared.covenantId ||
+      binding.authorizingInput !== 0
+    ) {
+      throw new Error("prepared vault continuation covenant binding changed");
+    }
+    return transaction;
+  } catch (error) {
+    transaction.free();
+    throw error;
+  }
+}
+
+function requireBoundPreparedDeposit(
+  prepared: PreparedVaultDeposit,
+  networkId: string
+): Transaction {
+  if (
+    !prepared ||
+    prepared.transactionEncoding !== "kaspa-sdk-safe-json-v2.0.0" ||
+    !/^[a-f0-9]{64}$/.test(prepared.transactionId) ||
+    (prepared.depositKind !== "initial" && prepared.depositKind !== "topup") ||
+    prepared.depositedSompi <= 0n ||
+    prepared.feeSompi < 0n ||
+    prepared.vaultAmountSompi < prepared.depositedSompi ||
+    prepared.vaultOutpoint.txid !== prepared.transactionId ||
+    prepared.vaultOutpoint.index !== 0 ||
+    !/^[a-f0-9]{64}$/.test(prepared.covenantId) ||
+    !/^sha256:[A-Za-z0-9_-]{43}$/.test(prepared.baseConfigDigest) ||
+    prepared.sourceInputs.length === 0 ||
+    prepared.configUpdate.currentOutpoint?.txid !== prepared.transactionId ||
+    prepared.configUpdate.currentOutpoint.index !== 0
+  ) {
+    throw new Error("prepared vault deposit metadata is invalid");
+  }
+  const transaction = requirePreparedTransaction(prepared.transaction, prepared.transactionId);
+  try {
+    const output = transaction.outputs[0];
+    if (!output || BigInt(output.value) !== prepared.vaultAmountSompi) {
+      throw new Error("prepared vault deposit output amount changed");
+    }
+    const address = addressFromScriptPublicKey(output.scriptPublicKey, networkId);
+    try {
+      if (address?.toString() !== prepared.vaultAddress) {
+        throw new Error("prepared vault deposit output address changed");
+      }
+    } finally {
+      address?.free();
+    }
+    const binding = output.covenant;
+    if (
+      !binding ||
+      String(binding.covenantId) !== prepared.covenantId ||
+      binding.authorizingInput !== 0
+    ) {
+      throw new Error("prepared vault deposit covenant binding changed");
+    }
+    const inputs = transaction.inputs;
+    if (inputs.length !== prepared.sourceInputs.length) {
+      throw new Error("prepared vault deposit source inputs changed");
+    }
+    let inputTotal = 0n;
+    for (let index = 0; index < inputs.length; index++) {
+      const actual = inputs[index];
+      const wanted = prepared.sourceInputs[index];
+      const utxo = actual.utxo;
+      if (
+        !utxo ||
+        String(actual.previousOutpoint.transactionId) !== wanted.txid ||
+        actual.previousOutpoint.index !== wanted.index ||
+        BigInt(utxo.amount) !== wanted.amountSompi
+      ) {
+        throw new Error("prepared vault deposit source input binding changed");
+      }
+      const source = addressFromScriptPublicKey(utxo.scriptPublicKey, networkId);
+      try {
+        if (source?.toString() !== wanted.address) {
+          throw new Error("prepared vault deposit source address changed");
+        }
+      } finally {
+        source?.free();
+      }
+      inputTotal += wanted.amountSompi;
+    }
+    const outputTotal = transaction.outputs.reduce(
+      (sum, candidate) => sum + BigInt(candidate.value),
+      0n
+    );
+    if (inputTotal - outputTotal !== prepared.feeSompi) {
+      throw new Error("prepared vault deposit fee changed");
+    }
+    if (prepared.depositKind === "initial") {
+      if (
+        prepared.vaultAmountSompi !== prepared.depositedSompi ||
+        prepared.configUpdate.covenantId !== prepared.covenantId
+      ) {
+        throw new Error("prepared initial vault deposit config changed");
+      }
+    } else if (
+      prepared.configUpdate.address !== prepared.vaultAddress ||
+      typeof prepared.configUpdate.windowStartDaa !== "string" ||
+      typeof prepared.configUpdate.spentInWindowSompi !== "string"
+    ) {
+      throw new Error("prepared vault top-up continuation config changed");
+    }
+    return transaction;
+  } catch (error) {
+    transaction.free();
+    throw error;
+  }
+}
+
+function requirePreparedConfigUpdate(
+  candidate: Partial<VaultConfig>,
+  transactionId: string
+): PreparedVaultSpend["configUpdate"] {
+  if (
+    typeof candidate.windowStartDaa !== "string" ||
+    !/^(?:0|[1-9][0-9]*)$/.test(candidate.windowStartDaa) ||
+    typeof candidate.spentInWindowSompi !== "string" ||
+    !/^(?:0|[1-9][0-9]*)$/.test(candidate.spentInWindowSompi) ||
+    typeof candidate.address !== "string" ||
+    candidate.address.length === 0 ||
+    candidate.currentOutpoint?.txid !== transactionId ||
+    candidate.currentOutpoint.index !== 1
+  ) {
+    throw new Error("prepared vault send returned an invalid continuation state update");
+  }
+  return {
+    windowStartDaa: candidate.windowStartDaa,
+    spentInWindowSompi: candidate.spentInWindowSompi,
+    address: candidate.address,
+    currentOutpoint: { txid: transactionId, index: 1 },
+  };
+}
+
+function assertPreparedVaultSpend(prepared: PreparedVaultSpend): void {
+  if (
+    !prepared ||
+    prepared.transactionEncoding !== "kaspa-sdk-safe-json-v2.0.0" ||
+    !/^[a-f0-9]{64}$/.test(prepared.transactionId) ||
+    prepared.destinationOutpoint.txid !== prepared.transactionId ||
+    prepared.destinationOutpoint.index !== 0 ||
+    prepared.continuationOutpoint.txid !== prepared.transactionId ||
+    prepared.continuationOutpoint.index !== 1 ||
+    prepared.amountSompi <= 0n ||
+    prepared.feeSompi < 0n ||
+    prepared.continuationAmountSompi <= 0n ||
+    !/^[a-f0-9]{64}$/.test(prepared.covenantId) ||
+    !/^sha256:[A-Za-z0-9_-]{43}$/.test(prepared.baseConfigDigest)
+  ) {
+    throw new Error("prepared vault spend metadata is invalid");
+  }
+  requirePreparedConfigUpdate(prepared.configUpdate, prepared.transactionId);
+}
+
+function vaultConfigDigest(config: VaultConfig): string {
+  const canonical = JSON.stringify({
+    template: config.template,
+    agentPublic: config.agentPublic,
+    ownerPublic: config.ownerPublic,
+    maxOutflowSompi: config.maxOutflowSompi,
+    windowSizeDaa: config.windowSizeDaa,
+    windowStartDaa: config.windowStartDaa,
+    spentInWindowSompi: config.spentInWindowSompi,
+    address: config.address,
+    covenantId: config.covenantId ?? null,
+    currentOutpoint: config.currentOutpoint
+      ? { txid: config.currentOutpoint.txid, index: config.currentOutpoint.index }
+      : null,
+  });
+  return `sha256:${createHash("sha256").update("sompi:vault-config:v1\0").update(canonical).digest("base64url")}`;
+}
+
+function vaultConfigMatchesUpdate(
+  config: VaultConfig,
+  update: PreparedVaultSpend["configUpdate"]
+): boolean {
+  return (
+    config.windowStartDaa === update.windowStartDaa &&
+    config.spentInWindowSompi === update.spentInWindowSompi &&
+    config.address === update.address &&
+    config.currentOutpoint?.txid === update.currentOutpoint.txid &&
+    config.currentOutpoint.index === update.currentOutpoint.index
+  );
+}
+
+function vaultConfigMatchesDepositUpdate(
+  current: VaultConfig,
+  update: PreparedVaultDeposit["configUpdate"]
+): boolean {
+  for (const [key, value] of Object.entries(update) as Array<
+    [keyof VaultConfig, VaultConfig[keyof VaultConfig]]
+  >) {
+    if (JSON.stringify(current[key]) !== JSON.stringify(value)) return false;
+  }
+  return true;
+}
+
+function validAcceptedChainEvidence(
+  observed: Pick<
+    ObservedVaultSpend | ObservedVaultDeposit,
+    "observedAtDaa" | "chainEvidenceDigest" | "chainEvidenceLevel"
+  >
+): boolean {
+  return (
+    observed.observedAtDaa >= 0n &&
+    observed.observedAtDaa <= UINT64_MAX &&
+    /^sha256:[A-Za-z0-9_-]{43}$/.test(observed.chainEvidenceDigest) &&
+    ["accepted", "depth-confirmed", "consensus-final"].includes(
+      observed.chainEvidenceLevel
+    )
+  );
+}
+
 export function generateOwnerKey(): { privateKey: string; publicKey: string } {
-  const kp = Keypair.random();
-  return { privateKey: kp.privateKey, publicKey: String(kp.xOnlyPublicKey) };
+  let keypair: Keypair | undefined;
+  try {
+    keypair = Keypair.random();
+    return { privateKey: keypair.privateKey, publicKey: String(keypair.xOnlyPublicKey) };
+  } finally {
+    keypair?.free();
+  }
 }
 
 export { bytesToHex };

@@ -1,0 +1,6 @@
+[+] vulnerable revision: 4ebb82d4f82bac46ae3addd112c4752f29630a8a
+[+] alternate view: exact=observed/confirmed staging=spent
+[+] selected RPC: exact=absent recovery=absent staging=unspent
+[+] classifier result: safe_to_submit
+[+] recovery submission calls: 1
+[+] reproduced: one selected RPC authorized the competing recovery submission

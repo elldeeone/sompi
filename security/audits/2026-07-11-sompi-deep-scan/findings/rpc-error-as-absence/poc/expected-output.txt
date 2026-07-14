@@ -1,0 +1,10 @@
+[+] affected revision: 4ebb82d4f82bac46ae3addd112c4752f29630a8a
+[+] injected RPC error: Method not found
+[+] mempool lookups classified: 2
+[+] exact payment observation: absent
+[+] recovery observation: absent
+[+] staging observation: unspent
+[+] recovery decision: safe_to_submit
+[+] external-effect seam calls: 1
+[+] readiness replay rejected: true
+[+] no network connection or blockchain submission was performed

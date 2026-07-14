@@ -1,0 +1,27 @@
+flowchart LR
+    RPC["Selected Kaspa RPC\nuntrusted observations"]
+    Proof["Independent proof or witness\nuntrusted until verified"]
+    Merchant["Merchant\nuntrusted response and requested finality"]
+    Gateway["Sompi Chain Evidence Gateway\nidentity, proof, history, finality policy"]
+    Exact["Kaspa-x402 exact adapter"]
+    Recovery["Staging recovery adapter"]
+    Direct["Wallet and vault adapters"]
+    Purchase["Purchase module"]
+    Journal["Purchase Journal\ncanonical proof metadata and digest"]
+
+    RPC --> Gateway
+    Proof --> Gateway
+    Merchant -->|"protocol evidence"| Exact
+    Merchant -->|"requested finality"| Recovery
+    Gateway -->|"AcceptedChainProof or Unknown"| Exact
+    Gateway -->|"WinnerProof, NegativeSet, or Unknown"| Recovery
+    Gateway -->|"AcceptedChainProof or Unknown"| Direct
+    Exact --> Purchase
+    Recovery --> Purchase
+    Direct --> Purchase
+    Purchase --> Journal
+
+    classDef danger fill:#ffd6d6,stroke:#b42318,color:#3d0b08;
+    classDef guard fill:#d9f2e6,stroke:#147d52,color:#082b1c;
+    class RPC,Proof,Merchant danger;
+    class Gateway guard;

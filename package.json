@@ -1,7 +1,7 @@
 {
   "name": "@elldeeone/sompi",
-  "version": "0.7.0",
-  "description": "Sompi — the agent payment kit for Kaspa. MCP server with policy-enforced wallet tools, Toccata-native.",
+  "version": "0.8.0",
+  "description": "Deterministic agent treasury and purchasing for AP2 and Kaspa-x402 exact on Kaspa testnet-10.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -15,42 +15,78 @@
     "micropayments",
     "model-context-protocol"
   ],
-  "type": "commonjs",
-  "main": "dist/index.js",
+  "type": "module",
+  "exports": {
+    "./package.json": "./package.json"
+  },
   "bin": {
-    "sompi-mcp": "dist/index.js"
+    "sompi-authority": "dist/authority-main.js",
+    "sompi-mcp": "dist/index.js",
+    "sompi-operator": "dist/operator-main.js",
+    "sompi-vault-recover": "scripts/vault-recover.js",
+    "sompi-verify-authority-isolation": "scripts/verify-authority-isolation.js"
   },
   "files": [
+    "CONTEXT.md",
+    "CURRENT_STATE.md",
+    "LICENSE",
+    "contracts",
     "dist",
+    "!dist/**/*.test.js",
+    "!dist/e2e/live-testnet-*.js",
+    "docs",
+    "operator.example.json",
+    "scripts/package.json",
+    "scripts/prepare-package.mjs",
+    "scripts/require-source-tree.mjs",
+    "scripts/run-local-e2e.mjs",
+    "scripts/run-protocol-conformance.mjs",
+    "scripts/vault-fixtures.json",
+    "scripts/vault-recover.js",
+    "scripts/verify-authority-isolation.js",
+    "scripts/verify-packed-artifact.mjs",
+    "test/conformance",
+    "vendor/ap2-v0.2-schemas",
+    "vendor/kaspa-x402-alpha.6-conformance",
     "vendor/kaspa-wasm"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
-    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
-    "build": "npm run clean && tsc",
+    "clean": "node scripts/require-source-tree.mjs clean && node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "build": "node scripts/require-source-tree.mjs build && npm run clean && tsc",
+    "test": "npm run build && npm run test:unit && SOMPI_SMOKE_OFFLINE=1 npm run smoke",
+    "test:unit": "node scripts/require-source-tree.mjs test:unit && node scripts/run-unit-tests.js",
+    "test:conformance": "node scripts/run-protocol-conformance.mjs",
     "start": "node dist/index.js",
+    "authority:init": "node dist/authority-main.js init",
+    "authority:start": "node dist/authority-main.js",
     "smoke": "node dist/smoke.js",
-    "fixtures:vault": "node scripts/compile-vault-fixtures.js",
-    "fixtures:vault:check": "node scripts/compile-vault-fixtures.js --check",
-    "fixtures:escrow": "node scripts/compile-escrow-fixtures.js",
-    "fixtures:escrow:check": "node scripts/compile-escrow-fixtures.js --check",
-    "demo:escrow": "node dist/demo-escrow.js",
-    "proof:vault": "node scripts/vault-live.js",
-    "proof:vault-commerce": "node scripts/vault-commerce-live.js",
-    "prepublishOnly": "npm run build"
+    "fixtures:vault": "node scripts/require-source-tree.mjs fixtures:vault && node scripts/compile-vault-fixtures.js",
+    "fixtures:vault:check": "node scripts/require-source-tree.mjs fixtures:vault:check && node scripts/compile-vault-fixtures.js --check",
+    "proof:e2e-local": "node scripts/run-local-e2e.mjs",
+    "package:verify": "node scripts/verify-packed-artifact.mjs",
+    "prepack": "npm run build && node scripts/prepare-package.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.0.0",
-    "@noble/curves": "^1.9.7",
-    "@noble/hashes": "^1.8.0",
-    "websocket": "^1.0.35",
-    "zod": "^3.23.0"
+    "@kaspa-x402/client": "0.1.0-alpha.6",
+    "@kaspa-x402/core": "0.1.0-alpha.6",
+    "@kaspa-x402/covenant": "0.1.0-alpha.6",
+    "@kaspa-x402/server": "0.1.0-alpha.6",
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "@sd-jwt/core": "0.20.0",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "better-sqlite3": "12.11.1",
+    "jose": "5.10.0",
+    "websocket": "1.0.35",
+    "zod": "3.25.76"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
-    "@types/websocket": "^1.0.10",
-    "typescript": "^5.6.0"
+    "@types/better-sqlite3": "7.6.13",
+    "@types/node": "22.19.21",
+    "@types/websocket": "1.0.10",
+    "typescript": "5.9.3"
   }
 }

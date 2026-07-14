@@ -1,0 +1,7 @@
+[+] target package: @elldeeone/sompi 0.8.0
+[+] call=1 egress=host_denied purchase=created files=1 bytes=1048576
+[+] call=2 egress=host_denied purchase=created files=2 bytes=2097152
+[+] call=3 egress=host_denied purchase=created files=3 bytes=3145728
+[+] checkout calls: 0
+[+] vulnerable behavior reproduced: 3 denied requests retained 3145728 evidence bytes
+[+] disposable state removed

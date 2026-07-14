@@ -1,0 +1,2 @@
+{"scenario":"aggregate","unauthenticatedPartialConnections":128,"serverRetainedSockets":128,"configuredTimeoutMs":150000,"handlerInvocations":0}
+{"scenario":"drip","timeoutMs":500,"elapsedMs":603,"retainedAfterDrip":true,"handlerInvocations":0}

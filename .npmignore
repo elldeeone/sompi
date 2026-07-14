@@ -1,0 +1,9 @@
+dist/**/*.test.js
+dist/e2e/live-testnet-*.js
+src/
+node_modules/
+.git/
+.github/
+.agents/
+.codex/
+goal.md

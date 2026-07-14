@@ -1,0 +1,21 @@
+flowchart LR
+    Operator["Operator intent"]
+    Agent["Agent or MCP caller\nuntrusted"]
+    Files["Configured files\nowner, mode, no-follow checks"]
+    MCP["sompi-mcp\nlocal input guards"]
+    Vault["Vault configuration\ncurve-valid owner key"]
+    Policy["Policy loader\nsecure descriptor read"]
+    Egress["HTTPS-only Merchant policy"]
+    Treasury["Wallet and vault signing"]
+
+    Operator --> Files
+    Agent --> MCP
+    Files --> Policy
+    MCP --> Vault
+    Policy --> Treasury
+    Egress --> Treasury
+
+    classDef danger fill:#ffd6d6,stroke:#b42318,color:#3d0b08;
+    classDef guard fill:#d9f2e6,stroke:#147d52,color:#082b1c;
+    class Agent danger;
+    class Files,MCP,Policy,Egress guard;

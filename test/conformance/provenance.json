@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "recordedOn": "2026-07-11",
+  "ap2": {
+    "repository": "https://github.com/google-agentic-commerce/AP2.git",
+    "release": "v0.2.0",
+    "commit": "b4587ac1d055888a73b4b21750973cffba961793",
+    "python": "3.12",
+    "upstreamFiles": {
+      "pyproject.toml": "sha256:78656cfd88b01d10c693a7fdffdf9d789dc4ddfbb57c208b583e13986fd44b63",
+      "uv.lock": "sha256:0061f2deb92977a371cc9bf40595f17eb612f9c461089375f05e63997db543b0"
+    },
+    "conformanceLock": {
+      "path": "test/conformance/ap2-v0.2/python/uv.lock",
+      "sha256": "sha256:20cffba14dc1e4bdfda9de92b2d15268ccd04ba5346f758fa87ed36ee00a616d",
+      "registry": "https://pypi.org/simple"
+    },
+    "localFixtureFiles": {
+      "test/conformance/ap2-v0.2/fixture.json": "sha256:ff1ff34fc5e5008bda217744273f44138b3d47d53c737563ae9a3f80dc48bc31",
+      "test/conformance/ap2-v0.2/python_bridge.py": "sha256:84a9e8e19e349e1c9291999915478522c9098c6756a25714a725b3ececc62bbb",
+      "test/conformance/ap2-v0.2/python/pyproject.toml": "sha256:72d539bce57fc129e8ea789ca441ca37ee7116cf0cd02e6012c124723374a8ec"
+    },
+    "pythonLockedPackages": [
+      "annotated-types==0.7.0",
+      "cffi==2.0.0",
+      "colorama==0.4.6",
+      "cryptography==46.0.5",
+      "iniconfig==2.3.0",
+      "jwcrypto==1.5.6",
+      "packaging==26.2",
+      "pluggy==1.6.0",
+      "py==1.11.0",
+      "pycparser==3.0",
+      "pydantic==2.12.5",
+      "pydantic-core==2.41.5",
+      "pygments==2.20.0",
+      "pytest==9.0.2",
+      "pyyaml==6.0.3",
+      "sd-jwt==0.10.4",
+      "typing-extensions==4.15.0",
+      "typing-inspection==0.4.2"
+    ],
+    "fixture": "test/conformance/ap2-v0.2/fixture.json",
+    "checks": [
+      "Python-issued closed Checkout and Payment Mandates verify in Sompi TypeScript",
+      "Sompi TypeScript-issued closed Checkout and Payment Mandates verify in pinned Python",
+      "Sompi Checkout and Payment Receipts verify in pinned Python",
+      "both Receipt references equal the pinned Python issuer-JWT hash"
+    ],
+    "claimBoundary": "AP2 v0.2 Human Present direct profile with Sompi's experimental native-KAS instrument; not general AP2 or standardized KAS interoperability"
+  },
+  "kaspaX402": {
+    "repository": "https://github.com/elldeeone/kaspa-x402.git",
+    "sourceCommit": "28ac222d3a375b9a2a56c11396f388086eeeae76",
+    "version": "0.1.0-alpha.6",
+    "npmIntegrity": {
+      "@kaspa-x402/core": "sha512-LKlqnX6p3mZSNRimUEr0J5p5odcgoYK2n2STHi6pfnUNhUejqXmFJJNYz0Vo9f2Utas4vLAGO1KcsioBUIFhMg==",
+      "@kaspa-x402/covenant": "sha512-hZSmIMYD0AHGc+cROZ/OlAoHbooGcFmUYn3bvHWCMt1AK310mqKCVyCqWXd0dl2B4K6455UwGfAr1NHmgqWl8Q==",
+      "@kaspa-x402/client": "sha512-BEyiCDh7tdMJxOmtlKj/8yxnqskF5SbxcbdcSeTkjHXVTmzm7rBkgQ69Q56DWEvaevtoGVolBrBjcN/Sm7TTdQ==",
+      "@kaspa-x402/server": "sha512-Wi84DBsbvxgszJxgw5afjkEDGPR4kdN1CvY/n32YRFRSmDbPup8TGf3m2GyyK2V4FQWcdwP9FsS07kOLthLfkA=="
+    },
+    "vector": {
+      "upstreamPath": "vectors/x402-http/exact-transaction.json",
+      "vendoredPath": "vendor/kaspa-x402-alpha.6-conformance/exact-transaction.json",
+      "bytes": 7162,
+      "sha256": "15b5a878df6453d456b06b36bab3e17f872430bb744efd716a8008a0fbe17a9f"
+    },
+    "checks": [
+      "published package versions and lockfile SRI equal the central supported profile",
+      "the unmodified exact HTTP vector decodes and validates through alpha.6",
+      "the raw vector fails Sompi's required Payment Identifier binding",
+      "the same exact requirements plus the official Payment Identifier extension pass Sompi's adapter preparation contract"
+    ],
+    "claimBoundary": "offline alpha.6 exact HTTP and adapter-contract conformance only; not a live Kaspa testnet result"
+  }
+}

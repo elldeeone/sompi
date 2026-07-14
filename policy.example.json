@@ -1,6 +1,0 @@
-{
-  "maxSompiPerTx": "100000000",
-  "maxSompiPerHour": "500000000",
-  "allowlist": [],
-  "requireApprovalAboveSompi": "0"
-}
