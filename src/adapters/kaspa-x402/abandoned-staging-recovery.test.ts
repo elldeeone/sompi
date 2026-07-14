@@ -425,6 +425,46 @@ test("an observation started during submit cannot issue parallel readiness", asy
   });
 });
 
+test("prepared artifact variants for one recovery share the submission fence", async () => {
+  await withFixture(async (fixture) => {
+    const exactPrepared = await fixture.prepare();
+    const noExactPrepared = await fixture.prepare({
+      exactPayment: { mode: "no_exact_candidate" },
+    });
+    assert.equal(noExactPrepared.transactionId, exactPrepared.transactionId);
+    assert.notEqual(noExactPrepared.preparedDigest, exactPrepared.preparedDigest);
+
+    fixture.observeWith((request) => safeEvidence(request));
+    const ready = await fixture.module.observe(noExactPrepared.preparedBytes);
+    if (ready.status !== "safe_to_submit") throw new Error("expected readiness");
+
+    let releaseSubmission!: () => void;
+    fixture.submitWith(
+      (request) => new Promise<{ transactionId: string }>((resolve) => {
+        releaseSubmission = () => resolve({ transactionId: request.transactionId });
+      })
+    );
+    const submitting = fixture.module.submit(noExactPrepared.preparedBytes, ready.readiness);
+    assert.equal(fixture.submissionCalls.length, 1);
+
+    let releaseObservation!: () => void;
+    fixture.observeWith(
+      (request) => new Promise<StagingRecoveryRaceEvidence>((resolve) => {
+        releaseObservation = () => resolve(safeEvidence(request));
+      })
+    );
+    const aliasedObservation = fixture.module.observe(exactPrepared.preparedBytes);
+
+    releaseSubmission();
+    assert.equal((await submitting).status, "accepted");
+    releaseObservation();
+    const aliased = await aliasedObservation;
+    assert.equal(aliased.status, "pending");
+    assert.equal("readiness" in aliased, false);
+    assert.equal(fixture.submissionCalls.length, 1);
+  });
+});
+
 test("accepted submission reconciles after a process crash without a second broadcast", async () => {
   await withFixture(async (fixture) => {
     const prepared = await fixture.prepare();

@@ -341,13 +341,14 @@ export class AbandonedStagingRecovery {
   private readonly readinessProofs = new Map<
     string,
     Readonly<{
+      operationId: string;
       preparedDigest: Sha256Digest;
       state: "issued" | "consumed";
       expiresAtMs: number;
     }>
   >();
   private readonly readinessOperations = new Map<
-    Sha256Digest,
+    string,
     { generation: number; inFlightObservations: number; submissionInFlight: boolean }
   >();
   private readonly addressCodec = new KaspaTestnet10AddressCodec();
@@ -417,10 +418,11 @@ export class AbandonedStagingRecovery {
     signal = new AbortController().signal
   ): Promise<Readonly<AbandonedStagingRecoveryObservation>> {
     const { envelope, preparedDigest } = this.requirePrepared(preparedBytes);
+    const operationId = envelope.recovery.transactionId;
     if (signal.aborted) throw abortError(signal);
     const now = readClock(this.now);
     this.pruneReadinessProofs(now);
-    const observationLifetime = this.beginReadinessObservation(preparedDigest);
+    const observationLifetime = this.beginReadinessObservation(operationId);
     const deadlineAtMs = checkedDeadline(now, this.operationTimeoutMs);
     try {
       let raw: Readonly<StagingRecoveryRaceEvidence>;
@@ -455,11 +457,12 @@ export class AbandonedStagingRecovery {
       return this.classifyObservation(
         envelope,
         preparedDigest,
+        operationId,
         raw,
         observationLifetime
       );
     } finally {
-      this.endReadinessObservation(preparedDigest);
+      this.endReadinessObservation(operationId);
     }
   }
 
@@ -488,8 +491,12 @@ export class AbandonedStagingRecovery {
     if (issued.preparedDigest !== preparedDigest) {
       throw adapterError("readiness_required", "staging recovery readiness changed its operation");
     }
-    this.beginReadinessSubmission(preparedDigest);
-    this.consumeReadinessProofs(preparedDigest);
+    const operationId = envelope.recovery.transactionId;
+    if (issued.operationId !== operationId) {
+      throw adapterError("readiness_required", "staging recovery readiness changed its operation");
+    }
+    this.beginReadinessSubmission(operationId);
+    this.consumeReadinessProofs(operationId);
     try {
       if (signal.aborted) throw abortError(signal);
       const deadlineAtMs = checkedDeadline(now, this.operationTimeoutMs);
@@ -547,7 +554,7 @@ export class AbandonedStagingRecovery {
         });
       }
     } finally {
-      this.endReadinessSubmission(preparedDigest);
+      this.endReadinessSubmission(operationId);
     }
   }
 
@@ -805,6 +812,7 @@ export class AbandonedStagingRecovery {
   private classifyObservation(
     envelope: Readonly<AbandonedStagingRecoveryEnvelope>,
     preparedDigest: Sha256Digest,
+    operationId: string,
     raw: Readonly<StagingRecoveryRaceEvidence>,
     observationLifetime: Readonly<{
       generation: number;
@@ -847,7 +855,7 @@ export class AbandonedStagingRecovery {
         return conflict("candidate_observed_while_staging_unspent", evidenceDigest);
       }
       if (exact.status === "absent" && recovery.status === "absent") {
-        const operation = this.readinessOperations.get(preparedDigest);
+        const operation = this.readinessOperations.get(operationId);
         if (
           !operation ||
           observationLifetime.submissionInFlightAtStart ||
@@ -873,8 +881,9 @@ export class AbandonedStagingRecovery {
           proofDigest: digestCanonical(proofBase),
         });
         this.pruneReadinessProofs(observedAtMs);
-        this.consumeReadinessProofs(preparedDigest);
+        this.consumeReadinessProofs(operationId);
         this.readinessProofs.set(readiness.proofDigest, Object.freeze({
+          operationId,
           preparedDigest,
           state: "issued",
           expiresAtMs: readiness.expiresAtMs,
@@ -917,21 +926,21 @@ export class AbandonedStagingRecovery {
   }
 
   private pruneReadinessProofs(now: number): void {
-    const affected = new Set<Sha256Digest>();
+    const affected = new Set<string>();
     for (const [proofDigest, readiness] of this.readinessProofs) {
       if (readiness.expiresAtMs <= now) {
         this.readinessProofs.delete(proofDigest);
-        affected.add(readiness.preparedDigest);
+        affected.add(readiness.operationId);
       }
     }
-    for (const preparedDigest of affected) {
-      this.cleanupReadinessOperation(preparedDigest);
+    for (const operationId of affected) {
+      this.cleanupReadinessOperation(operationId);
     }
   }
 
-  private consumeReadinessProofs(preparedDigest: Sha256Digest): void {
+  private consumeReadinessProofs(operationId: string): void {
     for (const [proofDigest, readiness] of this.readinessProofs) {
-      if (readiness.preparedDigest !== preparedDigest || readiness.state === "consumed") continue;
+      if (readiness.operationId !== operationId || readiness.state === "consumed") continue;
       this.readinessProofs.set(proofDigest, Object.freeze({
         ...readiness,
         state: "consumed",
@@ -939,34 +948,34 @@ export class AbandonedStagingRecovery {
     }
   }
 
-  private beginReadinessObservation(preparedDigest: Sha256Digest): Readonly<{
+  private beginReadinessObservation(operationId: string): Readonly<{
     generation: number;
     submissionInFlightAtStart: boolean;
   }> {
-    const operation = this.readinessOperations.get(preparedDigest) ?? {
+    const operation = this.readinessOperations.get(operationId) ?? {
       generation: 0,
       inFlightObservations: 0,
       submissionInFlight: false,
     };
     operation.inFlightObservations += 1;
-    this.readinessOperations.set(preparedDigest, operation);
+    this.readinessOperations.set(operationId, operation);
     return Object.freeze({
       generation: operation.generation,
       submissionInFlightAtStart: operation.submissionInFlight,
     });
   }
 
-  private endReadinessObservation(preparedDigest: Sha256Digest): void {
-    const operation = this.readinessOperations.get(preparedDigest);
+  private endReadinessObservation(operationId: string): void {
+    const operation = this.readinessOperations.get(operationId);
     if (!operation || operation.inFlightObservations <= 0) {
       throw adapterError("artifact_mismatch", "staging recovery observation lifetime is invalid");
     }
     operation.inFlightObservations -= 1;
-    this.cleanupReadinessOperation(preparedDigest);
+    this.cleanupReadinessOperation(operationId);
   }
 
-  private beginReadinessSubmission(preparedDigest: Sha256Digest): void {
-    const operation = this.readinessOperations.get(preparedDigest);
+  private beginReadinessSubmission(operationId: string): void {
+    const operation = this.readinessOperations.get(operationId);
     if (
       !operation ||
       operation.submissionInFlight ||
@@ -978,26 +987,26 @@ export class AbandonedStagingRecovery {
     operation.submissionInFlight = true;
   }
 
-  private endReadinessSubmission(preparedDigest: Sha256Digest): void {
-    const operation = this.readinessOperations.get(preparedDigest);
+  private endReadinessSubmission(operationId: string): void {
+    const operation = this.readinessOperations.get(operationId);
     if (!operation || !operation.submissionInFlight) {
       throw adapterError("artifact_mismatch", "staging recovery submission lifetime is invalid");
     }
     operation.submissionInFlight = false;
-    this.cleanupReadinessOperation(preparedDigest);
+    this.cleanupReadinessOperation(operationId);
   }
 
-  private cleanupReadinessOperation(preparedDigest: Sha256Digest): void {
-    const operation = this.readinessOperations.get(preparedDigest);
+  private cleanupReadinessOperation(operationId: string): void {
+    const operation = this.readinessOperations.get(operationId);
     if (
       !operation ||
       operation.inFlightObservations !== 0 ||
       operation.submissionInFlight
     ) return;
     for (const readiness of this.readinessProofs.values()) {
-      if (readiness.preparedDigest === preparedDigest) return;
+      if (readiness.operationId === operationId) return;
     }
-    this.readinessOperations.delete(preparedDigest);
+    this.readinessOperations.delete(operationId);
   }
 }
 
