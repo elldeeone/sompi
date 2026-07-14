@@ -10,6 +10,7 @@ import type { TreasuryOperationModule, TreasuryOperationView } from "../treasury
 import {
   createSompiMcpServer,
   registerSompiTools,
+  type McpRequestExtra,
   type McpToolRegistrar,
   type McpToolResult,
 } from "./server.js";
@@ -291,6 +292,37 @@ test("direct mutation tools require stable keys and call only the durable Treasu
   ]);
 });
 
+test("registered Treasury MCP handlers preserve the SDK cancellation signal", async () => {
+  let observedSignal: AbortSignal | undefined;
+  const operations = fakeTreasuryOperations({
+    async execute(request, signal) {
+      observedSignal = signal;
+      await new Promise<void>((resolve) => {
+        signal?.addEventListener("abort", () => resolve(), { once: true });
+      });
+      throw new Error("caller cancelled");
+    },
+  });
+  const registrar = new CapturingRegistrar();
+  registerSompiTools(registrar, fakeRuntime(), operations);
+  const controller = new AbortController();
+  const pending = registrar.call(
+    "send_payment",
+    {
+      operationKey: "direct:mcp:cancel-signal",
+      to: "kaspatest:merchant",
+      amountSompi: "100",
+    },
+    { signal: controller.signal },
+  );
+  controller.abort(new Error("transport closed"));
+  const result = await pending;
+  assert.equal(observedSignal, controller.signal);
+  assert.equal(observedSignal?.aborted, true);
+  assert.equal(result.isError, true);
+  assert.equal(parseResult(result).errorCode, "WALLET_SEND_FAILED");
+});
+
 test("mutation tools fail closed when durable Treasury composition is absent", async () => {
   const registrar = new CapturingRegistrar();
   registerSompiTools(registrar, fakeRuntime());
@@ -308,23 +340,23 @@ class CapturingRegistrar implements McpToolRegistrar {
     string,
     {
       readonly config: Parameters<McpToolRegistrar["registerTool"]>[1];
-      readonly handler: (args: any) => Promise<McpToolResult>;
+      readonly handler: (args: any, extra?: McpRequestExtra) => Promise<McpToolResult>;
     }
   >();
 
   registerTool(
     name: string,
     config: Parameters<McpToolRegistrar["registerTool"]>[1],
-    handler: (args: any) => Promise<McpToolResult>
+    handler: (args: any, extra?: McpRequestExtra) => Promise<McpToolResult>
   ): void {
     assert.equal(this.tools.has(name), false, `duplicate tool ${name}`);
     this.tools.set(name, { config, handler });
   }
 
-  async call(name: string, args: unknown): Promise<McpToolResult> {
+  async call(name: string, args: unknown, extra?: McpRequestExtra): Promise<McpToolResult> {
     const tool = this.tools.get(name);
     assert.ok(tool, `missing tool ${name}`);
-    return tool.handler(args);
+    return tool.handler(args, extra);
   }
 }
 
@@ -443,7 +475,7 @@ function fakeTreasuryOperations(
     async execute(request: {
       operationKey: string;
       kind: "wallet_send" | "vault_send" | "vault_deposit";
-    }) {
+    }, _signal?: AbortSignal) {
       return fakeTreasuryOperationView(request.operationKey, request.kind);
     },
     status(operationKey: string) {

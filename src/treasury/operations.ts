@@ -322,11 +322,27 @@ export class TreasuryOperationModule {
         this.preparing.delete(operationKey);
       }
       if (!record.policyDigest) throw new TreasuryOperationError("Treasury operation has no durable policy snapshot");
-      record = this.journal.recordPreparedTreasuryOperation(
-        operationKey,
-        { ...prepared, policyDigest: record.policyDigest },
-        driver,
-      );
+      try {
+        record = this.journal.recordPreparedTreasuryOperation(
+          operationKey,
+          { ...prepared, policyDigest: record.policyDigest },
+          driver,
+        );
+      } catch (error) {
+        const latest = this.journal.requireTreasuryOperation(operationKey);
+        if (
+          latest.state === "intent" &&
+          latest.cancellationRequested &&
+          !latest.preparationFenced
+        ) {
+          return view(this.journal.failTreasuryOperationPreparation(
+            operationKey,
+            "cancelled_before_effect",
+            driver,
+          ));
+        }
+        throw error;
+      }
       if (record.cancellationRequested || record.preparationFenced) return view(record);
     }
 
@@ -361,7 +377,10 @@ export class TreasuryOperationModule {
       this.authorize(operationKey, record.destination, BigInt(record.resolvedAmountAtomic));
     }
     if (!this.journal.planTreasuryOperationSubmission(operationKey, driver)) {
-      return this.driveOwned(operationKey, driver);
+      // A cancelled/fenced operation or a successor driver owns the current
+      // durable view. Never recurse with a stale generation and risk doing
+      // adapter work after ownership has moved.
+      return view(this.journal.requireTreasuryOperation(operationKey));
     }
     record = this.journal.requireTreasuryOperation(operationKey);
     if (!this.journal.claimTreasuryOperationEffectCapability(operationKey, driver)) {

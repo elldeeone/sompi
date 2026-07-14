@@ -169,6 +169,130 @@ test("direct and Purchase reservations share one transactional hourly capacity",
   );
 });
 
+test("a durable Treasury driver serializes cross-handle execution and effects", async () => {
+  await withFixture(async ({ journal, policy, wallet, vault, deposit, module }) => {
+    let releasePreparation!: () => void;
+    wallet.prepareGate = new Promise<void>((resolve) => {
+      releasePreparation = resolve;
+    });
+    wallet.probes.push(observed(wallet.transactionId));
+    const secondWallet = new FakeAdapter("wallet_send", "4");
+    const secondVault = new FakeAdapter("vault_send", "5");
+    const secondDeposit = new FakeAdapter("vault_deposit", "6");
+    const secondModule = new TreasuryOperationModule({
+      journal,
+      policy,
+      adapters: [secondWallet, secondVault, secondDeposit],
+      feeCeilingAtomic: "10",
+    });
+
+    const first = module.execute({
+      operationKey: "direct:driver:single-writer",
+      kind: "wallet_send",
+      destination: DESTINATION,
+      amountAtomic: "100",
+    });
+    for (let attempt = 0; attempt < 100 && wallet.prepareCalls === 0; attempt += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(wallet.prepareCalls, 1);
+    const second = secondModule.execute({
+      operationKey: "direct:driver:single-writer",
+      kind: "wallet_send",
+      destination: DESTINATION,
+      amountAtomic: "100",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(secondWallet.prepareCalls, 0, "a foreign live driver must block adapter work");
+    releasePreparation();
+
+    const [firstView, secondView] = await Promise.all([first, second]);
+    assert.equal(firstView.state, "completed");
+    assert.equal(secondView.state, "completed");
+    assert.equal(wallet.prepareCalls, 1);
+    assert.equal(wallet.submitCalls, 1);
+    assert.equal(wallet.commitCalls, 1);
+    assert.equal(secondWallet.prepareCalls, 0);
+    assert.equal(secondWallet.submitCalls, 0);
+    assert.equal(secondWallet.commitCalls, 0);
+  });
+});
+
+test("driver takeover preserves an effect capability until authoritative observation", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-treasury-driver-takeover-"));
+  let now = NOW;
+  const journal = new PurchaseJournal(path.join(directory, "purchase.sqlite"), { now: () => now });
+  const policy = new PolicyEngine({
+    maxSompiPerTx: 1_000n,
+    maxSompiPerHour: 10_000n,
+    requireApprovalAboveSompi: 0n,
+    allowlist: [DESTINATION],
+  });
+  try {
+    const wallet = new FakeAdapter("wallet_send", "7");
+    const vault = new FakeAdapter("vault_send", "8");
+    const deposit = new FakeAdapter("vault_deposit", "9");
+    new TreasuryOperationModule({
+      journal,
+      policy,
+      adapters: [wallet, vault, deposit],
+      feeCeilingAtomic: "10",
+    });
+    const snapshot = journal.requireActivePolicy();
+    journal.claimTreasuryOperationIntent({
+      operationKey: "direct:driver:takeover",
+      requestDigest: evidenceDigest("driver-takeover"),
+      kind: "wallet_send",
+      destination: DESTINATION,
+      requestedAmountAtomic: "100",
+      feeCeilingAtomic: "10",
+      retryLimit: 3,
+      policyDigest: snapshot.digest,
+    });
+    const first = journal.claimTreasuryOperationDriver(
+      "direct:driver:takeover",
+      "driver:first",
+      60_000,
+    );
+    assert.ok(first.lease);
+    journal.recordPreparedTreasuryOperation(
+      "direct:driver:takeover",
+      {
+        bytes: Buffer.from("prepared-before-takeover", "utf8"),
+        transactionId: "7".repeat(64),
+        amountAtomic: "100",
+        feeAtomic: "10",
+        policyDigest: snapshot.digest,
+      },
+      first.lease,
+    );
+    assert.equal(journal.planTreasuryOperationSubmission("direct:driver:takeover", first.lease), true);
+    assert.equal(journal.claimTreasuryOperationEffectCapability("direct:driver:takeover", first.lease), true);
+    now += 60_001;
+    const successor = journal.claimTreasuryOperationDriver(
+      "direct:driver:takeover",
+      "driver:successor",
+      60_000,
+    );
+    assert.ok(successor.acquired);
+    assert.ok(successor.lease);
+    assert.equal(successor.lease.generation, first.lease.generation + 1);
+    assert.equal(successor.record.effectCapabilityGeneration, first.lease.generation);
+    assert.throws(
+      () => journal.recordTreasuryOperationSubmissionAccepted(
+        "direct:driver:takeover",
+        "7".repeat(64),
+        first.lease,
+      ),
+      /stale|capability/,
+    );
+    assert.equal(journal.requireTreasuryOperation("direct:driver:takeover").state, "submission_planned");
+  } finally {
+    journal.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("Purchase capacity blocks a direct operation before signing or submission", async () => {
   await withFixture(
     async ({ journal, module, wallet }) => {
@@ -427,7 +551,7 @@ test("retry exhaustion is exact and cancellation never frees prepared or submitt
   });
 });
 
-test("cancellation during preparation fences returned signed material without submission", async () => {
+test("cancellation during preparation terminalizes only after proving no effect", async () => {
   await withFixture(async ({ module, journal, wallet }) => {
     let releasePreparation!: () => void;
     wallet.prepareGate = new Promise<void>((resolve) => {
@@ -448,12 +572,12 @@ test("cancellation during preparation fences returned signed material without su
     assert.equal(requested.cancellationRequested, true);
     releasePreparation();
     const prepared = await execution;
-    assert.equal(prepared.state, "prepared");
+    assert.equal(prepared.state, "failed_terminal");
     assert.equal(prepared.cancellationRequested, true);
     assert.equal(prepared.safeToRetry, false);
     assert.equal(wallet.submitCalls, 0);
-    assert.equal(journal.treasuryPolicyCapacityUsed(), 110n);
-    assert.equal((await module.recover("direct:cancel-during-preparation")).state, "prepared");
+    assert.equal(journal.treasuryPolicyCapacityUsed(), 0n);
+    assert.equal((await module.recover("direct:cancel-during-preparation")).state, "failed_terminal");
   });
 });
 

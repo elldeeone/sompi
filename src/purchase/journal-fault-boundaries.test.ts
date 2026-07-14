@@ -6,6 +6,7 @@ import test from "node:test";
 
 import type {
   PreparedTreasuryOperation,
+  TreasuryDriverLease,
   TreasuryOperationIntent,
 } from "../treasury/operation-journal.js";
 import { authorizationFactsDigest } from "./contracts.js";
@@ -658,7 +659,7 @@ function treasuryPreparationScenario(journal: PurchaseJournal): FaultBoundarySce
   const setup = treasuryOperationSetup(journal, 22, "intent");
   return {
     act: (target) =>
-      target.recordPreparedTreasuryOperation(setup.intent.operationKey, setup.prepared),
+      target.recordPreparedTreasuryOperation(setup.intent.operationKey, setup.prepared, setup.driver),
     assertRolledBack(target) {
       const operation = target.requireTreasuryOperation(setup.intent.operationKey);
       assert.equal(operation.state, "intent");
@@ -681,7 +682,7 @@ function treasuryPreparationScenario(journal: PurchaseJournal): FaultBoundarySce
 function treasurySubmissionPlanScenario(journal: PurchaseJournal): FaultBoundaryScenario {
   const setup = treasuryOperationSetup(journal, 23, "prepared");
   return {
-    act: (target) => target.planTreasuryOperationSubmission(setup.intent.operationKey),
+    act: (target) => target.planTreasuryOperationSubmission(setup.intent.operationKey, setup.driver),
     assertRolledBack(target) {
       assert.equal(target.requireTreasuryOperation(setup.intent.operationKey).state, "prepared");
     },
@@ -701,7 +702,8 @@ function treasuryObservationScenario(journal: PurchaseJournal): FaultBoundarySce
       target.recordTreasuryOperationObservation(
         setup.intent.operationKey,
         "observed",
-        setup.observationDetail
+        setup.observationDetail,
+        setup.driver,
       ),
     assertRolledBack(target) {
       assert.equal(target.requireTreasuryOperation(setup.intent.operationKey).state, "submitted");
@@ -720,7 +722,7 @@ function treasuryObservationScenario(journal: PurchaseJournal): FaultBoundarySce
 function treasuryCompletionScenario(journal: PurchaseJournal): FaultBoundaryScenario {
   const setup = treasuryOperationSetup(journal, 25, "observed");
   return {
-    act: (target) => target.completeTreasuryOperation(setup.intent.operationKey),
+    act: (target) => target.completeTreasuryOperation(setup.intent.operationKey, setup.driver),
     assertRolledBack(target) {
       const operation = target.requireTreasuryOperation(setup.intent.operationKey);
       assert.equal(operation.state, "observed");
@@ -1229,6 +1231,7 @@ function treasuryOperationSetup(
   intent: TreasuryOperationIntent;
   prepared: PreparedTreasuryOperation;
   observationDetail: Readonly<Record<string, unknown>>;
+  driver?: TreasuryDriverLease;
 } {
   const policy = journal.installPolicy(policyDefinition());
   const transactionId = byte(seed + 96).repeat(32);
@@ -1255,18 +1258,28 @@ function treasuryOperationSetup(
     amountAtomic: "100",
     feeAtomic: "10",
   });
-  if (target !== "policy") journal.claimTreasuryOperationIntent(intent);
+  let driver: TreasuryDriverLease | undefined;
+  if (target !== "policy") {
+    journal.claimTreasuryOperationIntent(intent);
+    driver = journal.claimTreasuryOperationDriver(
+      intent.operationKey,
+      "fault-boundary-driver",
+      60_000,
+    ).lease;
+    assert.ok(driver);
+  }
   if (["prepared", "submitted", "observed"].includes(target)) {
-    journal.recordPreparedTreasuryOperation(intent.operationKey, prepared);
+    journal.recordPreparedTreasuryOperation(intent.operationKey, prepared, driver);
   }
   if (["submitted", "observed"].includes(target)) {
-    assert.equal(journal.planTreasuryOperationSubmission(intent.operationKey), true);
-    journal.recordTreasuryOperationSubmissionAccepted(intent.operationKey, transactionId);
+    assert.equal(journal.planTreasuryOperationSubmission(intent.operationKey, driver), true);
+    assert.equal(journal.claimTreasuryOperationEffectCapability(intent.operationKey, driver!), true);
+    journal.recordTreasuryOperationSubmissionAccepted(intent.operationKey, transactionId, driver);
   }
   if (target === "observed") {
-    journal.recordTreasuryOperationObservation(intent.operationKey, "observed", observationDetail);
+    journal.recordTreasuryOperationObservation(intent.operationKey, "observed", observationDetail, driver);
   }
-  return { intent, prepared, observationDetail };
+  return { intent, prepared, observationDetail, driver };
 }
 
 function observeMerchantAuthorization(

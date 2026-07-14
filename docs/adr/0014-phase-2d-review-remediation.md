@@ -17,8 +17,12 @@ Treasury operations use a Journal-owned transition reducer with a durable
 driver owner, monotonically increasing generation, bounded lease expiry, and a
 generation-bound effect capability. Every preparation, plan, submission,
 observation, and completion transition checks the current generation and the
-cancellation/preparation fences. Unknown failures remain fenced; only typed,
-proven no-effect outcomes can retry or terminalize.
+cancellation/preparation fences. If a driver expires after an effect
+capability was issued, the capability's old generation remains as a historical
+fence; a successor may observe and reconcile but cannot submit until exact
+non-submission proof clears that marker and a new capability is issued. Unknown
+failures remain fenced; only typed, proven no-effect outcomes can retry or
+terminalize.
 
 Authority forwards one transport AbortSignal through the production Unix
 endpoint and human decision seam. Prompt admission is reserved before fresh

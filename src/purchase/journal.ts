@@ -1700,7 +1700,11 @@ export class PurchaseJournal {
       const updated = this.db.prepare(
         `UPDATE treasury_operations
             SET driver_owner = ?, driver_generation = ?, driver_lease_expires_at_ms = ?,
-                effect_capability_generation = NULL, updated_at_ms = ?
+                effect_capability_generation = CASE
+                  WHEN state IN ('intent', 'prepared') THEN NULL
+                  ELSE effect_capability_generation
+                END,
+                updated_at_ms = ?
           WHERE operation_key = ?
             AND (driver_owner IS NULL OR driver_lease_expires_at_ms <= ? OR driver_owner = ?)`
       ).run(owner, generation, expiresAtMs, now, operationKey, now, owner);
@@ -1761,94 +1765,105 @@ export class PurchaseJournal {
     assertTreasuryOperationKey(operationKey);
     validatePreparedTreasuryOperation(prepared);
     const digest = evidenceDigest(prepared.bytes);
-    const stored = this.storePreparedMaterial(prepared.bytes, digest);
-    const record = this.db.transaction(() => {
-      const current = this.requireTreasuryOperation(operationKey);
-      if (driver && !driverOwns(current, driver, this.timestamp())) {
-        throw new JournalInvariantError("direct Treasury preparation driver is stale");
-      }
-      if (current.preparationFenced) {
-        throw new JournalInvariantError("fenced Treasury preparation cannot commit prepared material");
-      }
-      if (current.state !== "intent") {
-        if (
-          current.preparedDigest === stored.digest &&
-          current.transactionId === prepared.transactionId &&
-          current.resolvedAmountAtomic === prepared.amountAtomic &&
-          current.feeAtomic === prepared.feeAtomic &&
-          current.policyDigest === prepared.policyDigest
-        ) {
-          return current;
+    try {
+      const record = this.db.transaction(() => {
+        const current = this.requireTreasuryOperation(operationKey);
+        if (driver && !driverOwns(current, driver, this.timestamp())) {
+          throw new JournalInvariantError("direct Treasury preparation driver is stale");
         }
-        throw new JournalInvariantError(
-          "direct Treasury operation preparation conflicts with durable material"
+        if (current.preparationFenced) {
+          throw new JournalInvariantError("fenced Treasury preparation cannot commit prepared material");
+        }
+        if (current.state !== "intent") {
+          if (
+            current.preparedDigest === digest &&
+            current.transactionId === prepared.transactionId &&
+            current.resolvedAmountAtomic === prepared.amountAtomic &&
+            current.feeAtomic === prepared.feeAtomic &&
+            current.policyDigest === prepared.policyDigest
+          ) {
+            return current;
+          }
+          throw new JournalInvariantError(
+            "direct Treasury operation preparation conflicts with durable material"
+          );
+        }
+        if (current.cancellationRequested) {
+          throw new JournalInvariantError("cancelled Treasury preparation cannot commit prepared material");
+        }
+        const policy = this.requireActivePolicy();
+        if (
+          current.policyDigest !== prepared.policyDigest ||
+          policy.digest !== prepared.policyDigest
+        ) {
+          throw new PolicyReservationError(
+            "treasury policy changed before direct operation preparation was committed"
+          );
+        }
+        if (
+          current.requestedAmountAtomic !== "max" &&
+          current.requestedAmountAtomic !== prepared.amountAtomic
+        ) {
+          throw new JournalInvariantError("prepared direct Treasury amount changed immutable intent");
+        }
+        if (BigInt(prepared.feeAtomic) > BigInt(current.feeCeilingAtomic)) {
+          throw new PolicyReservationError(
+            "prepared direct Treasury fee exceeds the capacity reserved before signing"
+          );
+        }
+        const now = this.timestamp();
+        this.expireReservationsInternal(now);
+        this.assertDirectTreasuryCapacity(
+          policy,
+          current.kind,
+          current.destination,
+          prepared.amountAtomic,
+          current.feeCeilingAtomic,
+          now,
+          operationKey
         );
-      }
-      const policy = this.requireActivePolicy();
-      if (
-        current.policyDigest !== prepared.policyDigest ||
-        policy.digest !== prepared.policyDigest
-      ) {
-        throw new PolicyReservationError(
-          "treasury policy changed before direct operation preparation was committed"
+        const stored = this.storePreparedMaterial(prepared.bytes, digest);
+        const driverSql = driver
+          ? " AND driver_owner = ? AND driver_generation = ?"
+          : "";
+        const updated = this.db.prepare(
+          `UPDATE treasury_operations
+              SET resolved_amount_atomic = ?, fee_atomic = ?, transaction_id = ?,
+                  prepared_digest = ?, prepared_ref = ?, prepared_byte_length = ?,
+                  state = 'prepared', updated_at_ms = ?
+            WHERE operation_key = ? AND state = 'intent'
+              AND cancellation_requested = 0 AND preparation_fenced = 0${driverSql}`
+        ).run(
+          prepared.amountAtomic,
+          prepared.feeAtomic,
+          prepared.transactionId,
+          stored.digest,
+          stored.storageRef,
+          stored.byteLength,
+          now,
+          operationKey,
+          ...(driver ? [driver.owner, driver.generation] : [])
         );
-      }
-      if (
-        current.requestedAmountAtomic !== "max" &&
-        current.requestedAmountAtomic !== prepared.amountAtomic
-      ) {
-        throw new JournalInvariantError("prepared direct Treasury amount changed immutable intent");
-      }
-      if (BigInt(prepared.feeAtomic) > BigInt(current.feeCeilingAtomic)) {
-        throw new PolicyReservationError(
-          "prepared direct Treasury fee exceeds the capacity reserved before signing"
+        if (updated.changes !== 1) {
+          throw new JournalInvariantError("concurrent direct Treasury preparation changed state");
+        }
+        this.inject("treasury_operation.after_prepared_update");
+        this.insertTreasuryOperationTransition(
+          operationKey,
+          "intent",
+          "prepared",
+          "signed_material_persisted",
+          now
         );
+        return this.requireTreasuryOperation(operationKey);
+      });
+      return record.immediate();
+    } catch (error) {
+      if (!this.preparedMaterialHasDurableOwner(digest)) {
+        this.preparedMaterialStore?.removeUnreferenced(digest);
       }
-      const now = this.timestamp();
-      this.expireReservationsInternal(now);
-      this.assertDirectTreasuryCapacity(
-        policy,
-        current.kind,
-        current.destination,
-        prepared.amountAtomic,
-        current.feeCeilingAtomic,
-        now,
-        operationKey
-      );
-      const driverSql = driver
-        ? " AND driver_owner = ? AND driver_generation = ?"
-        : "";
-      const updated = this.db.prepare(
-        `UPDATE treasury_operations
-            SET resolved_amount_atomic = ?, fee_atomic = ?, transaction_id = ?,
-                prepared_digest = ?, prepared_ref = ?, prepared_byte_length = ?,
-                state = 'prepared', updated_at_ms = ?
-          WHERE operation_key = ? AND state = 'intent' AND preparation_fenced = 0${driverSql}`
-      ).run(
-        prepared.amountAtomic,
-        prepared.feeAtomic,
-        prepared.transactionId,
-        stored.digest,
-        stored.storageRef,
-        stored.byteLength,
-        now,
-        operationKey
-        , ...(driver ? [driver.owner, driver.generation] : [])
-      );
-      if (updated.changes !== 1) {
-        throw new JournalInvariantError("concurrent direct Treasury preparation changed state");
-      }
-      this.inject("treasury_operation.after_prepared_update");
-      this.insertTreasuryOperationTransition(
-        operationKey,
-        "intent",
-        "prepared",
-        "signed_material_persisted",
-        now
-      );
-      return this.requireTreasuryOperation(operationKey);
-    });
-    return record.immediate();
+      throw error;
+    }
   }
 
   recordTreasuryPreparationRetry(
@@ -1965,7 +1980,8 @@ export class PurchaseJournal {
       const updated = this.db.prepare(
         `UPDATE treasury_operations
             SET preparation_fenced = 1, updated_at_ms = ?
-          WHERE operation_key = ? AND state = 'intent' AND preparation_fenced = 0${driverSql}`
+          WHERE operation_key = ? AND state = 'intent'
+            AND cancellation_requested = 0 AND preparation_fenced = 0${driverSql}`
       ).run(now, operationKey, ...(driver ? [driver.owner, driver.generation] : []));
       if (updated.changes !== 1) throw new JournalInvariantError("concurrent direct Treasury preparation fence");
       this.insertTreasuryOperationTransition(operationKey, "intent", "intent", reasonCode, now);
@@ -2178,10 +2194,16 @@ export class PurchaseJournal {
         throw new JournalInvariantError("direct Treasury submission capability is no longer valid");
       }
       const now = this.timestamp();
-      this.db.prepare(
+      const updated = this.db.prepare(
         `UPDATE treasury_operations SET state = 'submitted', updated_at_ms = ?
-          WHERE operation_key = ? AND state = 'submission_planned'`
-      ).run(now, operationKey);
+          WHERE operation_key = ? AND state = 'submission_planned'
+            AND cancellation_requested = 0 AND preparation_fenced = 0
+            AND effect_capability_generation IS NOT NULL
+            ${driver ? "AND driver_owner = ? AND driver_generation = ?" : ""}`
+      ).run(now, operationKey, ...(driver ? [driver.owner, driver.generation] : []));
+      if (updated.changes !== 1) {
+        throw new JournalInvariantError("direct Treasury submission capability was lost");
+      }
       this.insertTreasuryOperationTransition(
         operationKey,
         "submission_planned",
@@ -2239,9 +2261,15 @@ export class PurchaseJournal {
         : "";
       const updated = this.db.prepare(
         `UPDATE treasury_operations
-            SET state = ?, retry_count = retry_count + ?, updated_at_ms = ?
+            SET state = ?,
+                effect_capability_generation = CASE
+                  WHEN ? IN ('prepared', 'failed_terminal') THEN NULL
+                  ELSE effect_capability_generation
+                END,
+                retry_count = retry_count + ?, updated_at_ms = ?
           WHERE operation_key = ? AND state = ?${driverSql}`
       ).run(
+        next,
         next,
         status === "not_submitted" && !cancelledAndProvedNotSubmitted ? 1 : 0,
         now,
@@ -5827,6 +5855,16 @@ export class PurchaseJournal {
     return stored;
   }
 
+  private preparedMaterialHasDurableOwner(digest: Sha256Digest): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 AS owner FROM treasury_operations
+          WHERE prepared_digest = ? LIMIT 1`
+      )
+      .get(digest) as { owner: number } | undefined;
+    return row?.owner === 1;
+  }
+
   private readPreparedMaterial(
     digest: Sha256Digest,
     storageRef: string,
@@ -7423,10 +7461,11 @@ function treasuryOperationFromRow(row: TreasuryOperationRow): TreasuryOperationR
   }
   if (
     operation.effectCapabilityGeneration !== undefined &&
-    (operation.effectCapabilityGeneration !== operation.driverGeneration ||
+    (operation.effectCapabilityGeneration < 1 ||
+      operation.effectCapabilityGeneration > operation.driverGeneration ||
       !["submission_planned", "submitted", "observed", "completed"].includes(operation.state))
   ) {
-    throw new JournalInvariantError("direct Treasury effect capability is bound to the wrong generation");
+    throw new JournalInvariantError("direct Treasury effect capability generation is invalid");
   }
   return operation;
 }
