@@ -361,6 +361,117 @@ test("an expired predecessor cannot be rebroadcast or release capacity after sub
   }
 });
 
+test("Vault send and deposit takeovers are observation-only while a submit predecessor is live", async () => {
+  for (const [kind, amountAtomic, keepFloatAtomic] of [
+    ["vault_send", "100", undefined],
+    ["vault_deposit", "max", "20"],
+  ] as const) {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), `sompi-treasury-${kind}-takeover-`));
+    fs.chmodSync(directory, 0o700);
+    let now = NOW;
+    const journal = new PurchaseJournal(path.join(directory, "purchase.sqlite"), { now: () => now });
+    const policy = new PolicyEngine({
+      maxSompiPerTx: 1_000n,
+      maxSompiPerHour: 10_000n,
+      requireApprovalAboveSompi: 0n,
+      allowlist: [DESTINATION],
+    });
+    const predecessor = new FakeAdapter(kind, "a");
+    const successor = new FakeAdapter(kind, "a");
+    predecessor.setSubmitGate();
+    successor.probes.push(notSubmitted(successor.transactionId));
+    const moduleFor = (adapter: FakeAdapter) => new TreasuryOperationModule({
+      journal,
+      policy,
+      adapters: [
+        kind === "wallet_send" ? adapter : new FakeAdapter("wallet_send", "b"),
+        kind === "vault_send" ? adapter : new FakeAdapter("vault_send", "c"),
+        kind === "vault_deposit" ? adapter : new FakeAdapter("vault_deposit", "d"),
+      ],
+      feeCeilingAtomic: "10",
+    });
+    const firstModule = moduleFor(predecessor);
+    const secondModule = moduleFor(successor);
+    const operationKey = `direct:${kind}:stale-submit`;
+    try {
+      const first = firstModule.execute({
+        operationKey,
+        kind,
+        destination: DESTINATION,
+        amountAtomic,
+        ...(keepFloatAtomic === undefined ? {} : { keepFloatAtomic }),
+      });
+      await predecessor.submitEntered;
+      now += 60_001;
+      const takeover = await secondModule.recover(operationKey);
+      assert.equal(takeover.state, "submission_planned");
+      assert.equal(successor.submitCalls, 0);
+      assert.equal(journal.requireTreasuryOperation(operationKey).submissionInFlight, true);
+      predecessor.releaseSubmit();
+      await assert.rejects(first, /stale|capability|concurrent/);
+      assert.equal(successor.submitCalls, 0);
+    } finally {
+      journal.close();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
+  }
+});
+
+test("cancellation during a paused submit retains the effect fence until observation resolves", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-treasury-cancelled-submit-"));
+  fs.chmodSync(directory, 0o700);
+  let now = NOW;
+  const journal = new PurchaseJournal(path.join(directory, "purchase.sqlite"), { now: () => now });
+  const policy = new PolicyEngine({
+    maxSompiPerTx: 1_000n,
+    maxSompiPerHour: 10_000n,
+    requireApprovalAboveSompi: 0n,
+    allowlist: [DESTINATION],
+  });
+  const predecessor = new FakeAdapter("wallet_send", "a");
+  const successor = new FakeAdapter("wallet_send", "a");
+  predecessor.setSubmitGate();
+  successor.probes.push(notSubmitted(successor.transactionId), observed(successor.transactionId));
+  const firstModule = new TreasuryOperationModule({
+    journal,
+    policy,
+    adapters: [predecessor, new FakeAdapter("vault_send", "b"), new FakeAdapter("vault_deposit", "c")],
+    feeCeilingAtomic: "10",
+  });
+  const secondModule = new TreasuryOperationModule({
+    journal,
+    policy,
+    adapters: [successor, new FakeAdapter("vault_send", "d"), new FakeAdapter("vault_deposit", "e")],
+    feeCeilingAtomic: "10",
+  });
+  try {
+    const first = firstModule.execute({
+      operationKey: "direct:cancelled-submit",
+      kind: "wallet_send",
+      destination: DESTINATION,
+      amountAtomic: "100",
+    });
+    await predecessor.submitEntered;
+    assert.equal((await secondModule.cancel("direct:cancelled-submit")).cancellationRequested, true);
+    now += 60_001;
+    const fenced = await secondModule.recover("direct:cancelled-submit");
+    assert.equal(fenced.state, "submission_planned");
+    assert.equal(fenced.recoveryRequired, true);
+    assert.equal(journal.requireTreasuryOperation("direct:cancelled-submit").submissionInFlight, true);
+    assert.equal(journal.unresolvedTreasuryOperationCount(), 1);
+    assert.equal(journal.treasuryPolicyCapacityUsed(), 110n);
+    predecessor.releaseSubmit();
+    await assert.rejects(first, /stale|capability|concurrent/);
+    const completed = await secondModule.recover("direct:cancelled-submit");
+    assert.equal(completed.state, "completed");
+    assert.equal(journal.unresolvedTreasuryOperationCount(), 0);
+    assert.equal(successor.submitCalls, 0);
+  } finally {
+    journal.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("a waiter takeover drives its acquired generation instead of re-entering the coalescer", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-treasury-waiter-takeover-"));
   fs.chmodSync(directory, 0o700);
