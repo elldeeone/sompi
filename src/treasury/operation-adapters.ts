@@ -687,7 +687,10 @@ function classifyVaultPreparationError(error: unknown): TreasuryPreparationError
           : "transient_unavailable";
     return new TreasuryPreparationError(code, "preparation", "vault preparation failed", "none");
   }
-  return new TreasuryPreparationError("transient_unavailable", "preparation", "vault preparation is unavailable", "none");
+  // Unknown adapter failures are deliberately not guessed safe. The Treasury
+  // module fences them for reconciliation because a plain exception does not
+  // prove that no signed material or external effect exists.
+  throw error;
 }
 
 function walletEnvelope(

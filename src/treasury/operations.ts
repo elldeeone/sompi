@@ -78,6 +78,8 @@ export class TreasuryOperationModule {
   /** Only an optimization; durable Journal driver generations are authoritative. */
   private readonly driverOwner = `treasury-driver:${process.pid}:${randomBytes(8).toString("hex")}`;
   private readonly activeDrivePromises = new Map<string, Promise<TreasuryOperationView>>();
+  /** Local proof that this process's previously awaited submit has settled. */
+  private readonly quiescentSubmissions = new Set<string>();
 
   constructor(options: TreasuryOperationModuleOptions) {
     if (!options?.journal || !options.policy) {
@@ -199,7 +201,14 @@ export class TreasuryOperationModule {
     if (!claim.acquired || !claim.lease) {
       return this.waitForDriver(operationKey, signal);
     }
-    const lease = claim.lease;
+    return this.driveClaimed(operationKey, claim.lease, signal);
+  }
+
+  private async driveClaimed(
+    operationKey: string,
+    lease: TreasuryDriverLease,
+    signal?: AbortSignal,
+  ): Promise<TreasuryOperationView> {
     const renewDriver = () => {
       try {
         this.journal.renewTreasuryOperationDriver(lease, operationKey);
@@ -254,7 +263,10 @@ export class TreasuryOperationModule {
         DRIVER_LEASE_TTL_MS,
       );
       if (claim.acquired) {
-        return this.drive(operationKey, signal);
+        if (!claim.lease) {
+          throw new TreasuryOperationError("Journal acquired a Treasury driver without its lease");
+        }
+        return this.driveClaimed(operationKey, claim.lease, signal);
       }
       await new Promise<void>((resolve) => setTimeout(resolve, DRIVER_WAIT_MS));
     }
@@ -298,10 +310,15 @@ export class TreasuryOperationModule {
             return view(this.journal.failTreasuryOperationPreparation(operationKey, "cancelled_before_effect", driver));
           }
           if (updated.retryCount >= updated.retryLimit) {
-            throw new TreasuryOperationError(
-              "direct Treasury preparation retry limit was reached; recover or replace the operation",
-              { cause: error }
-            );
+            // The adapter contract classified this failure as proven
+            // no-effect. The final manifest-bounded attempt therefore closes
+            // the intent explicitly and releases its exclusive slot instead
+            // of leaving an unrecoverable capacity leak.
+            return view(this.journal.failTreasuryOperationPreparation(
+              operationKey,
+              "retry_exhausted",
+              driver,
+            ));
           }
         } else {
           this.journal.fenceTreasuryOperationPreparation(
@@ -347,7 +364,12 @@ export class TreasuryOperationModule {
     }
 
     if (record.state === "submission_planned" || record.state === "submitted") {
-      record = await this.reconcile(record, adapter, driver);
+      record = await this.reconcile(
+        record,
+        adapter,
+        driver,
+        this.quiescentSubmissions.has(operationKey),
+      );
       if (record.state === "observed") {
         await adapter.commit(
           record,
@@ -379,19 +401,25 @@ export class TreasuryOperationModule {
     }
     record = this.journal.requireTreasuryOperation(operationKey);
     const bytes = this.journal.readPreparedTreasuryOperation(operationKey);
+    let submissionSettled = false;
     try {
       const submitted = await adapter.submit(record, bytes);
+      submissionSettled = true;
+      this.quiescentSubmissions.add(operationKey);
       record = this.journal.recordTreasuryOperationSubmissionAccepted(
         operationKey,
         submitted.transactionId,
         driver,
       );
     } catch {
+      submissionSettled = true;
+      this.quiescentSubmissions.add(operationKey);
       // Any transport/RPC exception is ambiguous. The exact signed bytes and
       // planned identity remain durable; observation decides whether retry is safe.
       record = this.journal.requireTreasuryOperation(operationKey);
     }
-    record = await this.reconcile(record, adapter, driver);
+    record = await this.reconcile(record, adapter, driver, submissionSettled);
+    if (record.state !== "submission_planned") this.quiescentSubmissions.delete(operationKey);
     if (record.state === "observed") {
       await adapter.commit(
         record,
@@ -407,6 +435,7 @@ export class TreasuryOperationModule {
     record: TreasuryOperationRecord,
     adapter: TreasuryOperationAdapter,
     driver?: TreasuryDriverLease,
+    submissionQuiescent = false,
   ): Promise<TreasuryOperationRecord> {
     if (record.state !== "submission_planned" && record.state !== "submitted") return record;
     const probe = await adapter.observe(
@@ -418,6 +447,7 @@ export class TreasuryOperationModule {
       probe.status,
       probe.detail,
       driver,
+      submissionQuiescent,
     );
   }
 

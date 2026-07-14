@@ -293,6 +293,122 @@ test("driver takeover preserves an effect capability until authoritative observa
   }
 });
 
+test("an expired predecessor cannot be rebroadcast or release capacity after submit begins", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-treasury-stale-submit-"));
+  fs.chmodSync(directory, 0o700);
+  let now = NOW;
+  const journal = new PurchaseJournal(path.join(directory, "purchase.sqlite"), { now: () => now });
+  const policy = new PolicyEngine({
+    maxSompiPerTx: 1_000n,
+    maxSompiPerHour: 10_000n,
+    requireApprovalAboveSompi: 0n,
+    allowlist: [DESTINATION],
+  });
+  const predecessor = new FakeAdapter("wallet_send", "a");
+  const successor = new FakeAdapter("wallet_send", "a");
+  predecessor.setSubmitGate();
+  successor.probes.push(notSubmitted(successor.transactionId), observed(successor.transactionId));
+  const adapters = (wallet: FakeAdapter) => [
+    wallet,
+    new FakeAdapter("vault_send", "b"),
+    new FakeAdapter("vault_deposit", "c"),
+  ];
+  const firstModule = new TreasuryOperationModule({
+    journal,
+    policy,
+    adapters: adapters(predecessor),
+    feeCeilingAtomic: "10",
+  });
+  const secondModule = new TreasuryOperationModule({
+    journal,
+    policy,
+    adapters: adapters(successor),
+    feeCeilingAtomic: "10",
+  });
+  try {
+    const first = firstModule.execute({
+      operationKey: "direct:stale-submit",
+      kind: "wallet_send",
+      destination: DESTINATION,
+      amountAtomic: "100",
+    });
+    await predecessor.submitEntered;
+    const paused = journal.requireTreasuryOperation("direct:stale-submit");
+    assert.equal(paused.submissionInFlight, true);
+    assert.equal(journal.treasuryPolicyCapacityUsed(), 110n);
+
+    now += 60_001;
+    const takeover = await secondModule.recover("direct:stale-submit");
+    assert.equal(takeover.state, "submission_planned");
+    assert.equal(journal.requireTreasuryOperation("direct:stale-submit").submissionInFlight, true);
+    assert.equal(successor.submitCalls, 0);
+    assert.equal(journal.unresolvedTreasuryOperationCount(), 1);
+    assert.equal(journal.treasuryPolicyCapacityUsed(), 110n);
+
+    predecessor.releaseSubmit();
+    await assert.rejects(first, /stale|capability|concurrent/);
+    assert.equal(successor.submitCalls, 0);
+    assert.equal(journal.requireTreasuryOperation("direct:stale-submit").submissionInFlight, true);
+
+    const completed = await secondModule.recover("direct:stale-submit");
+    assert.equal(completed.state, "completed");
+    assert.equal(predecessor.submitCalls, 1);
+    assert.equal(successor.submitCalls, 0);
+    assert.equal(journal.unresolvedTreasuryOperationCount(), 0);
+  } finally {
+    journal.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("a waiter takeover drives its acquired generation instead of re-entering the coalescer", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-treasury-waiter-takeover-"));
+  fs.chmodSync(directory, 0o700);
+  let now = NOW;
+  const journal = new PurchaseJournal(path.join(directory, "purchase.sqlite"), { now: () => now });
+  const policy = new PolicyEngine({
+    maxSompiPerTx: 1_000n,
+    maxSompiPerHour: 10_000n,
+    requireApprovalAboveSompi: 0n,
+    allowlist: [DESTINATION],
+  });
+  const wallet = new FakeAdapter("wallet_send", "d");
+  wallet.probes.push(observed(wallet.transactionId));
+  const module = new TreasuryOperationModule({
+    journal,
+    policy,
+    adapters: [wallet, new FakeAdapter("vault_send", "e"), new FakeAdapter("vault_deposit", "f")],
+    feeCeilingAtomic: "10",
+  });
+  try {
+    const snapshot = journal.requireActivePolicy();
+    journal.claimTreasuryOperationIntent({
+      operationKey: "direct:waiter-takeover",
+      requestDigest: evidenceDigest("waiter-takeover"),
+      kind: "wallet_send",
+      destination: DESTINATION,
+      requestedAmountAtomic: "100",
+      feeCeilingAtomic: "10",
+      retryLimit: 3,
+      policyDigest: snapshot.digest,
+    });
+    journal.claimTreasuryOperationDriver("direct:waiter-takeover", "foreign-driver", 60_000);
+    const recovery = module.recover("direct:waiter-takeover");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    now += 60_001;
+    const completed = await recovery;
+    assert.equal(completed.state, "completed");
+    assert.equal(wallet.prepareCalls, 1);
+    assert.equal(wallet.submitCalls, 1);
+    assert.equal(wallet.observeCalls, 1);
+    assert.equal(wallet.commitCalls, 1);
+    assert.equal(journal.unresolvedTreasuryOperationCount(), 0);
+  } finally {
+    journal.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("Purchase capacity blocks a direct operation before signing or submission", async () => {
   await withFixture(
     async ({ journal, module, wallet }) => {
@@ -515,9 +631,10 @@ test("retry exhaustion is exact and cancellation never frees prepared or submitt
       destination: DESTINATION,
       amountAtomic: "100",
     }), TreasuryPreparationError);
-    await assert.rejects(() => module.recover("direct:retry-exhaustion"), /retry limit/);
-    await assert.rejects(() => module.recover("direct:retry-exhaustion"), /retry limit/);
+    const exhausted = await module.recover("direct:retry-exhaustion");
+    assert.equal(exhausted.state, "failed_terminal");
     assert.equal(journal.requireTreasuryOperation("direct:retry-exhaustion").retryCount, 2);
+    assert.equal(journal.treasuryPolicyCapacityUsed(), 0n);
   }, { directTreasuryRetries: 2 });
 
   await withFixture(async ({ module, journal, wallet }) => {
@@ -616,11 +733,29 @@ class FakeAdapter implements TreasuryOperationAdapter {
   feeAtomic = "10";
   readonly probes: TreasuryOperationProbe[] = [];
   readonly submittedArtifacts: string[] = [];
+  readonly submitEntered: Promise<void>;
+  private resolveSubmitEntered!: () => void;
+  private submitGate?: Promise<void>;
+  private releaseSubmitGate?: () => void;
   onSubmit?: (intent: TreasuryOperationRecord) => void;
   onPrepare?: (intent: TreasuryOperationRecord) => void;
 
   constructor(readonly kind: TreasuryOperationKind, txByte: string) {
     this.transactionId = txByte.repeat(64);
+    this.submitEntered = new Promise<void>((resolve) => {
+      this.resolveSubmitEntered = resolve;
+    });
+  }
+
+  setSubmitGate(): void {
+    this.submitGate = new Promise<void>((resolve) => {
+      this.releaseSubmitGate = resolve;
+    });
+  }
+
+  releaseSubmit(): void {
+    this.releaseSubmitGate?.();
+    this.releaseSubmitGate = undefined;
   }
 
   validateRequest(): void {
@@ -654,6 +789,8 @@ class FakeAdapter implements TreasuryOperationAdapter {
     this.submitCalls += 1;
     this.onSubmit?.(intent);
     this.submittedArtifacts.push(Buffer.from(preparedBytes).toString("base64"));
+    this.resolveSubmitEntered();
+    if (this.submitGate) await this.submitGate;
     if (this.submitErrors-- > 0) throw new Error("injected ambiguous submission");
     return { transactionId: this.transactionId };
   }

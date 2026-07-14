@@ -10,7 +10,7 @@ import {
   payToAddressScript,
   payToScriptHashScript,
 } from "./kaspa-wasm.js";
-import { VaultManager, generateOwnerKey } from "./vault.js";
+import { VaultManager, VaultPreparationError, generateOwnerKey } from "./vault.js";
 import { buildRedeemScript } from "./vault/template.js";
 import { KaspaWallet } from "./wallet.js";
 
@@ -174,6 +174,41 @@ test("deposit fee ceiling fails before any wallet signature", async () => {
     await assert.rejects(
       vault.prepareDeposit(wallet, 100_000_000n, 0n, 1n),
       /fee exceeds the capacity reserved before signing/
+    );
+    assert.equal(signatures, 0);
+  } finally {
+    simulator.close();
+    walletScript.free();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("maximum deposit that cannot preserve keep-float is a typed no-effect terminal failure", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-vault-deposit-insufficient-"));
+  fs.chmodSync(directory, 0o700);
+  const wallet = new KaspaWallet({ networkId: "testnet-10", dataDir: path.join(directory, "wallet") });
+  const vault = new VaultManager(directory, "testnet-10");
+  vault.create(500_000_000n, generateOwnerKey().publicKey, 300n);
+  const walletScript = payToAddressScript(wallet.address);
+  const simulator = new UtxoSimulator(wallet.networkId);
+  simulator.add(wallet.address, {
+    outpoint: { transactionId: "55".repeat(32), index: 0 },
+    amount: 100_000n,
+    scriptPublicKey: walletScript,
+    blockDaaScore: 1n,
+    isCoinbase: false,
+  });
+  (wallet as any).client = async () => simulator.rpc();
+  let signatures = 0;
+  const originalSign = wallet.signInput.bind(wallet);
+  (wallet as any).signInput = (...args: Parameters<KaspaWallet["signInput"]>) => {
+    signatures += 1;
+    return originalSign(...args);
+  };
+  try {
+    await assert.rejects(
+      vault.prepareDeposit(wallet, "max", 100_000n, 100_000n),
+      (error: unknown) => error instanceof VaultPreparationError && error.code === "insufficient_funds",
     );
     assert.equal(signatures, 0);
   } finally {

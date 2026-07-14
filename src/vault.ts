@@ -1264,7 +1264,8 @@ function depositAmountFor(requested: bigint | "max", walletTotal: bigint, feeSom
   if (requested !== "max") return requested;
   const amount = walletTotal - keepFloatSompi - feeSompi;
   if (amount <= 0n) {
-    throw new Error(
+    throw new VaultPreparationError(
+      "insufficient_funds",
       `Nothing to deposit: regular wallet has ${displayAmount(walletTotal)}, requested float is ${displayAmount(keepFloatSompi)}, and estimated fee is ${displayAmount(feeSompi)}.`
     );
   }

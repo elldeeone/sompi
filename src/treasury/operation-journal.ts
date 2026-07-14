@@ -25,6 +25,12 @@ export interface TreasuryOperationRecord {
   readonly driverLeaseExpiresAtMs?: number;
   /** Effect capability issued by the Journal immediately before submit. */
   readonly effectCapabilityGeneration?: number;
+  /**
+   * Durable effect-possible fence. Once set, an adapter submit may be live or
+   * may already have returned, so takeover is observation-only until the
+   * Journal records authoritative outcome evidence.
+   */
+  readonly submissionInFlight: boolean;
   readonly resolvedAmountAtomic?: string;
   readonly feeAtomic?: string;
   readonly transactionId?: string;
@@ -144,6 +150,7 @@ export interface TreasuryOperationJournal {
     status: TreasuryOperationObservationStatus,
     detail: Readonly<Record<string, unknown>>,
     driver?: TreasuryDriverLease,
+    submissionQuiescent?: boolean,
   ): TreasuryOperationRecord;
   completeTreasuryOperation(operationKey: string, driver?: TreasuryDriverLease): TreasuryOperationRecord;
   requireTreasuryOperation(operationKey: string): TreasuryOperationRecord;

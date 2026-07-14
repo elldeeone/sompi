@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 
 export const JOURNAL_APPLICATION_ID = 0x534f4d50; // SOMP
-export const JOURNAL_SCHEMA_VERSION = 9;
+export const JOURNAL_SCHEMA_VERSION = 10;
 
 export const JOURNAL_SCHEMA_V1_SQL = `
   CREATE TABLE schema_migrations (
@@ -860,6 +860,12 @@ export const JOURNAL_SCHEMA_V8_MIGRATION_SQL = `
     BEGIN SELECT RAISE(ABORT, 'Purchase admission intent history is immutable'); END;
 `;
 
+/** Clean-cutover epoch for the durable pre-submit effect-possible fence. */
+export const JOURNAL_SCHEMA_V9_MIGRATION_SQL = `
+  ALTER TABLE treasury_operations
+    ADD COLUMN submission_in_flight INTEGER NOT NULL DEFAULT 0 CHECK (submission_in_flight IN (0, 1));
+`;
+
 export const JOURNAL_SCHEMA_V2_SQL = `${JOURNAL_SCHEMA_V1_SQL}\n${JOURNAL_SCHEMA_V2_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V3_SQL = `${JOURNAL_SCHEMA_V2_SQL}\n${JOURNAL_SCHEMA_V3_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V4_SQL = `${JOURNAL_SCHEMA_V3_SQL}\n${JOURNAL_SCHEMA_V4_MIGRATION_SQL}`;
@@ -867,7 +873,8 @@ export const JOURNAL_SCHEMA_V5_SQL = `${JOURNAL_SCHEMA_V4_SQL}\n${JOURNAL_SCHEMA
 export const JOURNAL_SCHEMA_V6_SQL = `${JOURNAL_SCHEMA_V5_SQL}\n${JOURNAL_SCHEMA_V6_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V7_SQL = `${JOURNAL_SCHEMA_V6_SQL}\n${JOURNAL_SCHEMA_V7_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V8_SQL = `${JOURNAL_SCHEMA_V7_SQL}\n${JOURNAL_SCHEMA_V8_MIGRATION_SQL}`;
-export const JOURNAL_SCHEMA_SQL = JOURNAL_SCHEMA_V8_SQL;
+export const JOURNAL_SCHEMA_V9_SQL = `${JOURNAL_SCHEMA_V8_SQL}\n${JOURNAL_SCHEMA_V9_MIGRATION_SQL}`;
+export const JOURNAL_SCHEMA_SQL = JOURNAL_SCHEMA_V9_SQL;
 
 export const JOURNAL_SCHEMA_V1_CHECKSUM = sha256Text(JOURNAL_SCHEMA_V1_SQL);
 export const JOURNAL_SCHEMA_V2_CHECKSUM = sha256Text(JOURNAL_SCHEMA_V2_SQL);

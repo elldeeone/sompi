@@ -188,6 +188,53 @@ test("Purchase plus mandatory request evidence admits before either durable obje
   }
 });
 
+test("compound Purchase admission remains counted after commit and restart", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-compound-counted-"));
+  fs.chmodSync(directory, 0o700);
+  const filename = path.join(directory, "purchase.sqlite");
+  const admission = { ...ADMISSION, prevalidationPurchases: 1, evidenceBytes: 10 };
+  const compound = (seed: number) => ({
+    purchase: input(seed),
+    evidence: {
+      bytes: Buffer.alloc(0),
+      mediaType: "application/octet-stream",
+      profile: "test:request-body:1",
+      kind: "purchase-request-body",
+    },
+  });
+  let journal = new PurchaseJournal(filename, { ...options(), admission });
+  try {
+    const retained = journal.createPurchaseWithEvidence(compound(60));
+    assert.equal(retained.id, input(60).id);
+    assert.deepEqual(journal.admissionStatus()?.prevalidationPurchases, {
+      used: 1,
+      budget: 1,
+      saturated: true,
+    });
+  } finally {
+    journal.close();
+  }
+  journal = new PurchaseJournal(filename, { ...options(), admission });
+  try {
+    assert.deepEqual(journal.admissionStatus()?.prevalidationPurchases, {
+      used: 1,
+      budget: 1,
+      saturated: true,
+    });
+    assert.throws(
+      () => journal.createPurchaseWithEvidence(compound(61)),
+      PurchaseAdmissionError,
+    );
+    const replay = journal.createPurchaseWithEvidence(compound(60));
+    assert.equal(replay.id, input(60).id);
+    assert.equal(journal.admissionStatus()?.prevalidationPurchases.used, 1);
+    assert.equal(journal.findPurchase(input(61).id), undefined);
+  } finally {
+    journal.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("unexpired foreign admission remains live and expired recovery is idempotent", () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-admission-owner-"));
   fs.chmodSync(directory, 0o700);

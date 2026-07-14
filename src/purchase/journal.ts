@@ -1920,7 +1920,8 @@ export class PurchaseJournal {
       reasonCode !== "insufficient_funds" &&
       reasonCode !== "not_funded" &&
       reasonCode !== "invalid_runtime_state" &&
-      reasonCode !== "cancelled_before_effect"
+      reasonCode !== "cancelled_before_effect" &&
+      reasonCode !== "retry_exhausted"
     ) {
       throw new JournalInvariantError("direct Treasury terminal preparation reason is invalid");
     }
@@ -2154,16 +2155,26 @@ export class PurchaseJournal {
     const claim = this.db.transaction(() => {
       const current = this.requireTreasuryOperation(operationKey);
       if (!driverOwns(current, driver, this.timestamp()) || current.state !== "submission_planned" ||
-          current.cancellationRequested || current.preparationFenced) return false;
+          current.cancellationRequested || current.preparationFenced || current.submissionInFlight) return false;
+      const now = this.timestamp();
       const updated = this.db.prepare(
         `UPDATE treasury_operations
-            SET effect_capability_generation = ?, updated_at_ms = ?
+            SET effect_capability_generation = ?, submission_in_flight = 1, updated_at_ms = ?
           WHERE operation_key = ? AND state = 'submission_planned'
             AND cancellation_requested = 0 AND preparation_fenced = 0
             AND driver_owner = ? AND driver_generation = ?
-            AND effect_capability_generation IS NULL`
-      ).run(driver.generation, this.timestamp(), operationKey, driver.owner, driver.generation);
-      return updated.changes === 1;
+            AND effect_capability_generation IS NULL
+            AND submission_in_flight = 0`
+      ).run(driver.generation, now, operationKey, driver.owner, driver.generation);
+      if (updated.changes !== 1) return false;
+      this.insertTreasuryOperationTransition(
+        operationKey,
+        "submission_planned",
+        "submission_planned",
+        "submission_in_flight",
+        now,
+      );
+      return true;
     });
     return claim.immediate();
   }
@@ -2195,9 +2206,10 @@ export class PurchaseJournal {
       }
       const now = this.timestamp();
       const updated = this.db.prepare(
-        `UPDATE treasury_operations SET state = 'submitted', updated_at_ms = ?
+        `UPDATE treasury_operations SET state = 'submitted', submission_in_flight = 0, updated_at_ms = ?
           WHERE operation_key = ? AND state = 'submission_planned'
             AND cancellation_requested = 0 AND preparation_fenced = 0
+            AND submission_in_flight = 1
             AND effect_capability_generation IS NOT NULL
             ${driver ? "AND driver_owner = ? AND driver_generation = ?" : ""}`
       ).run(now, operationKey, ...(driver ? [driver.owner, driver.generation] : []));
@@ -2221,6 +2233,7 @@ export class PurchaseJournal {
     status: TreasuryOperationObservationStatus,
     detail: Readonly<Record<string, unknown>>,
     driver?: TreasuryDriverLease,
+    submissionQuiescent = false,
   ): TreasuryOperationRecord {
     assertTreasuryOperationKey(operationKey);
     if (!["observed", "not_submitted", "pending"].includes(status)) {
@@ -2249,6 +2262,15 @@ export class PurchaseJournal {
       if (status === "pending" || current.state === "observed") {
         return this.requireTreasuryOperation(operationKey);
       }
+      // A pre-submit effect-possible fence is deliberately stronger than an
+      // exact absence observation. The predecessor may still be paused inside
+      // the external call and can resume after this transaction commits.
+      // Preserve the fence, capability, policy capacity, and reconciliation
+      // state until accepted evidence (or a separately proven rejection) is
+      // recorded.
+      if (current.submissionInFlight && status === "not_submitted" && !submissionQuiescent) {
+        return this.requireTreasuryOperation(operationKey);
+      }
       const cancelledAndProvedNotSubmitted =
         status === "not_submitted" && current.cancellationRequested;
       const next: TreasuryOperationState = status === "observed"
@@ -2262,6 +2284,10 @@ export class PurchaseJournal {
       const updated = this.db.prepare(
         `UPDATE treasury_operations
             SET state = ?,
+                submission_in_flight = CASE
+                  WHEN ? IN ('prepared', 'failed_terminal', 'observed') THEN 0
+                  ELSE submission_in_flight
+                END,
                 effect_capability_generation = CASE
                   WHEN ? IN ('prepared', 'failed_terminal') THEN NULL
                   ELSE effect_capability_generation
@@ -2269,6 +2295,7 @@ export class PurchaseJournal {
                 retry_count = retry_count + ?, updated_at_ms = ?
           WHERE operation_key = ? AND state = ?${driverSql}`
       ).run(
+        next,
         next,
         next,
         status === "not_submitted" && !cancelledAndProvedNotSubmitted ? 1 : 0,
@@ -6494,6 +6521,26 @@ export class PurchaseJournal {
         );
       }
 
+      // Convert the compound admission's reserved count into the same
+      // durable completed lease used by ordinary Purchase creation. The
+      // reservation is retained for the Purchase lifetime; it is not a
+      // temporary counter to decrement after the row is published.
+      const purchaseLeaseId = `purchase:${purchaseInput.id}`;
+      const purchaseLease = this.db.prepare(
+        `SELECT purchase_id, state FROM admission_leases WHERE lease_id = ?`
+      ).get(purchaseLeaseId) as { purchase_id: string | null; state: string } | undefined;
+      if (!purchaseLease) {
+        this.db.prepare(
+          `INSERT INTO admission_leases
+             (lease_id, owner, resource, purchase_id, quantity, state,
+              deadline_at_ms, outcome, created_at_ms, updated_at_ms)
+           VALUES (?, ?, 'prevalidation_purchase', ?, 1, 'completed', NULL,
+                   'purchase_retained', ?, ?)`
+        ).run(purchaseLeaseId, current.owner, purchaseInput.id, now, now);
+      } else if (purchaseLease.purchase_id !== purchaseInput.id || purchaseLease.state !== "completed") {
+        throw new JournalInvariantError("Purchase admission count lease is inconsistent");
+      }
+
       const artifact = this.findEvidence(pending.evidence_digest as Sha256Digest);
       if (artifact) {
         assertSameEvidenceBlob(artifact, staged.byteLength, staged.storageRef);
@@ -6545,12 +6592,6 @@ export class PurchaseJournal {
       } else if (evidenceLease.state !== "completed") {
         throw new JournalInvariantError("Evidence admission lease is not active");
       }
-      this.db.prepare(
-        `UPDATE journal_admission_budget
-            SET reserved_purchase_count = reserved_purchase_count - 1,
-                updated_at_ms = ?
-          WHERE singleton = 1`
-      ).run(now);
       const updated = this.db.prepare(
         `UPDATE purchase_admission_intents
             SET state = 'committed', outcome = 'purchase_and_evidence_retained', updated_at_ms = ?
@@ -6960,6 +7001,7 @@ interface TreasuryOperationRow {
   driver_generation: number;
   driver_lease_expires_at_ms: number | null;
   effect_capability_generation: number | null;
+  submission_in_flight: number;
   state: string;
   retry_count: number;
   created_at_ms: number;
@@ -7402,6 +7444,7 @@ function treasuryOperationFromRow(row: TreasuryOperationRow): TreasuryOperationR
     ...(row.effect_capability_generation === null
       ? {}
       : { effectCapabilityGeneration: row.effect_capability_generation }),
+    submissionInFlight: row.submission_in_flight === 1,
     ...(row.resolved_amount_atomic === null
       ? {}
       : { resolvedAmountAtomic: row.resolved_amount_atomic }),
@@ -7465,7 +7508,18 @@ function treasuryOperationFromRow(row: TreasuryOperationRow): TreasuryOperationR
       operation.effectCapabilityGeneration > operation.driverGeneration ||
       !["submission_planned", "submitted", "observed", "completed"].includes(operation.state))
   ) {
-    throw new JournalInvariantError("direct Treasury effect capability generation is invalid");
+      throw new JournalInvariantError("direct Treasury effect capability generation is invalid");
+  }
+  if (
+    operation.submissionInFlight &&
+    (operation.state !== "submission_planned" ||
+      operation.effectCapabilityGeneration === undefined ||
+      operation.preparedDigest === undefined)
+  ) {
+    throw new JournalInvariantError("direct Treasury submission-in-flight fence is invalid");
+  }
+  if (operation.state !== "submission_planned" && operation.submissionInFlight) {
+    throw new JournalInvariantError("direct Treasury submission-in-flight fence has an invalid state");
   }
   return operation;
 }
