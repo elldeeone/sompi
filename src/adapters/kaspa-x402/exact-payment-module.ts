@@ -1531,7 +1531,8 @@ async function runBeforeDeadline<T>(
       controller.abort(error);
       reject(error);
     }, Math.min(remaining, 0x7fff_ffff));
-    timeout.unref();
+    // The deadline must keep the process alive when the observed operation is
+    // a handle-free pending Promise. It is cleared immediately on settlement.
   });
   try {
     return await Promise.race([

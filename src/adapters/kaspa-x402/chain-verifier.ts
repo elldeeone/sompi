@@ -1107,7 +1107,10 @@ async function boundedCall<T>(
     () => controller.abort(error("deadline_exceeded", `${label} deadline exceeded`)),
     remaining
   );
-  timeout.unref();
+  // This timer is the completion mechanism when a source ignores abort and
+  // retains no event-loop handles of its own. Keep it referenced until the
+  // bounded call settles; otherwise Node may terminate with the caller still
+  // awaiting a deadline that can no longer fire.
   try {
     controller.signal.throwIfAborted();
     return await raceSignal(action(controller.signal), controller.signal);

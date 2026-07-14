@@ -32,6 +32,10 @@ test("clean cutover rejects every superseded journal schema without mutation", (
       db.pragma(`application_id = ${JOURNAL_APPLICATION_ID}`);
       db.pragma(`user_version = ${version}`);
       db.close();
+      // better-sqlite3 honours the process umask. Make the legacy fixture meet
+      // the Journal's 0600 precondition so this test reaches the schema-epoch
+      // rejection under both developer and GitHub Actions umasks.
+      fs.chmodSync(filename, 0o600);
       assert.throws(
         () => new PurchaseJournal(filename),
         new RegExp(`clean cutover refuses Purchase Journal schema ${version}`)
