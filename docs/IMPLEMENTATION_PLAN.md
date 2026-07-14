@@ -1,6 +1,6 @@
 # Sompi AP2 + Kaspa-x402 implementation plan
 
-Status: **Phase 2D remediation round 2 verified — ready for independent re-review; Phase 3 not started**
+Status: **Phase 2D post-review hardening verified; Phase 3 not started**
 
 Architecture: [`docs/architecture/SOMPI_ARCHITECTURE.md`](architecture/SOMPI_ARCHITECTURE.md)
 
@@ -215,15 +215,20 @@ path.
 - [x] Rerun the four re-review PoCs, cross-adapter cancellation/restart tests,
   Vault RPC fault matrix, complete suite, offline smoke, packed artifact, and
   a fresh funded Testnet-10 vertical.
+- [x] Remove the speculative caller-selected `proven_not_executed` release;
+  reject the removed outcome at runtime and keep every current absence
+  observation fenced until a future structured proof design is accepted.
 
 Gate:
 
 - Socket flood, prompt queue, Purchase/evidence exhaustion, retry saturation,
   restart, and cancellation-race tests pass.
 - Capacity is neither leaked nor reused while an effect may still exist.
+- Removed or unknown submission outcomes cannot release an effect capability,
+  reservation, or exclusive slot, including after restart.
 - No central scheduler or cross-module lifecycle semantics are introduced.
-- The independent review remediation branch is ready for independent review;
-  no Phase 3 implementation has started.
+- The exact remediation review completed with zero reportable findings, the
+  post-review cleanup gates pass, and no Phase 3 implementation has started.
 
 ## Phase 3: Deepen the Purchase module behind existing MCP UX
 

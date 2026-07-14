@@ -508,3 +508,41 @@ no longer present; the durable repository report is authoritative and no fake
 scan workspace was recreated. No sibling repository, AP2/x402 wire object,
 Kaspa covenant rule, deployment, package publication, or remote branch was
 changed.
+
+### Milestone 7: remove speculative non-execution release
+
+Status: **verified**
+
+The exact security review of `7656013..eb96534` found no reportable defects but
+identified one non-blocking hardening caveat: the runtime retained a dormant
+caller-selected `proven_not_executed` outcome without a structured proof or
+production emitter.
+
+Commit `1151938` removes that outcome from the runtime contract and deletes its
+Journal release transition. Before the fix, a focused regression reproduced
+the dormant path: the string alone moved a `submission_planned` operation back
+to `prepared`, cleared its effect capability, and released the exclusive slot.
+After the fix, the same value is rejected as an invalid submission outcome;
+the operation, capability, and 110-unit policy reservation remain fenced after
+restart. All supported `not_submitted` observations now retain capacity.
+
+ADR-0014 records that any future automatic release requires a structured proof
+bound to the exact operation, prepared transaction, inputs, capability
+generation, immutable Chain Evidence, and Finality Floor, plus positive,
+substitution, replay, crash, and restart tests. Current or corroborated absence
+is never sufficient.
+
+Verification:
+
+1. The focused Journal/Treasury lifecycle suite passed **26/26**.
+2. The complete `npm test` passed **386 tests: 385 pass, 0 fail, 1 documented
+   root-only skip**. Offline smoke passed **13/13** checks.
+3. `npm pack --json` and packed-artifact verification passed with **173
+   entries**, **5,038,543 packed bytes**, and **14,363,292 unpacked file
+   bytes**; the archive was removed.
+4. `git diff --check` passed. The pre-existing fresh funded Testnet-10 proof
+   remains the current live evidence because this Journal-only deletion does
+   not change network or protocol behavior.
+
+No Journal schema, AP2/x402 wire object, Kaspa-x402 mechanism, covenant rule,
+sibling repository, deployment, package publication, or remote branch changed.

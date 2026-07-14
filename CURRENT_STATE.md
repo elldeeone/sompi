@@ -4,7 +4,7 @@ Last updated: **2026-07-14**
 
 ## Plain-English status
 
-**Phase 2D remediation round 3 is verified and ready for independent re-review.**
+**Phase 2D post-review hardening is verified and ready to become the new base.**
 The first human-present AP2 + Kaspa-x402 exact vertical remains testnet-only;
 the post-scan hardening gates now pass through the bounded Authority,
 Purchase/Journal, Evidence, MCP, and direct-Treasury lifecycles. Phase 3 has
@@ -17,9 +17,10 @@ Testnet-10 evidence. The completed deep security scan then found 21 medium/low
 issues concentrated in chain evidence/finality, operator provisioning, and
 unbounded operation lifecycles. The independent review of the initial Phase
 2D target `082def29636fe0a6802240ee358f867c34667b4c` reopened the lifecycle
-work. The remediation commits through `081f619` are now committed and verified
-locally; the branch is ready for independent re-review and Phase 3 has not
-started.
+work. The remediation commits through `eb96534` passed an exact independent
+security diff review with zero reportable findings. Commit `1151938` then
+removed the remaining speculative non-execution release and is verified
+locally; Phase 3 has not started.
 
 ## Git orientation at codification
 
@@ -32,8 +33,9 @@ started.
 - Required reviewed target: `082def29636fe0a6802240ee358f867c34667b4c`.
 - Phase 2D remediation commits through the independent-review repair round:
   `9420aff`, `fdedcad`, `3664e76`, `7e2fa5a`, `801df30`, `2088348`,
-  `1df2f9c`, `91f85cd`, `a3e5a20`, and `081f619`. The worktree is named and
-  no remote branch was changed.
+  `1df2f9c`, `91f85cd`, `a3e5a20`, `081f619`, `eb96534`, and the post-review
+  hardening commit `1151938`. The worktree is named and no remote branch was
+  changed.
 - Latest implementation milestone: `4c6fc8f` (`Centralize trusted chain
   evidence`).
 - Untouched post-scan baseline: `npm test` passed with 339 tests, one privileged
@@ -269,9 +271,8 @@ rules, or any sibling repository:
 1. Exact adapter submission success is recorded outside the adapter-error
    catch and remains authoritative after post-capability cancellation.
 2. `in_flight`, `ambiguous`, and `accepted` outcomes all retain capacity on
-   temporary corroborated absence. Only a separately typed durable
-   `proven_not_executed` outcome may release the effect capability; exact
-   acceptance cannot later be overwritten by an absence claim.
+   temporary corroborated absence; exact acceptance cannot later be
+   overwritten by an absence claim.
 3. Vault send, initial deposit, and funded top-up wrap every enumerated
    read-only pre-sign client, UTXO, fee-estimate, and server-info RPC await as
    `rpc_unavailable`. The existing manifest retry budget handles those proven
@@ -304,15 +305,38 @@ Verification for this round:
   human-present Authority conformance.
 
 The four latest findings are fixed at their current boundaries and the
-original 21 deep-scan findings remain accounted for. Ambiguous submissions
-without later positive evidence intentionally remain fenced until an
-operator-safe typed non-execution proof exists; temporary absence is not such
-proof. Phase 3 has not started.
+original 21 deep-scan findings remain accounted for. The exact review of
+`7656013..eb96534` completed with zero reportable findings.
+
+## Phase 2D post-review hardening
+
+Commit `1151938` removes the unused caller-selected
+`proven_not_executed` outcome. Before the change, the focused regression
+demonstrated that the string alone could move an effect-capable operation back
+to `prepared` without any structured proof. The Journal now rejects the
+removed value, and every supported `not_submitted` observation retains the
+effect capability, reservation, and exclusive slot across restart.
+
+Verification after the clean cutover:
+
+- Focused Journal/Treasury lifecycle suite: **26 pass, 0 fail, 0 skipped**.
+- Complete `npm test`: **386 tests, 385 pass, 0 fail, 1 documented root-only
+  skip**. Offline smoke: **13/13 pass**.
+- Package verification: **173 entries**, **5,038,543 packed bytes**, and
+  **14,363,292 unpacked file bytes**; the generated archive was removed.
+- `git diff --check` passed. No Journal schema, AP2/x402 wire object,
+  Kaspa-x402 mechanism, covenant rule, sibling repository, deployment, or
+  remote branch changed.
+
+The fresh funded Testnet-10 proof already recorded above remains the current
+live vertical evidence; this Journal-only deletion does not alter network or
+protocol behavior and did not spend additional testnet funds.
 
 ## Next action
 
-Independent review of the Phase 2D remediation commits through `081f619` is
-the next action. Do not start Phase 3 in this closeout.
+Normalize the verified `phase-2d-review-remediation` branch into one main base,
+then execute Phase 3 from that exact base. Do not carry the hardening work on a
+branch-of-a-branch.
 
 ## Known external uncertainties
 
