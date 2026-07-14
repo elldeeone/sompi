@@ -762,7 +762,8 @@ async function spendVault(
   const spentAtWindowStart = reset ? 0n : currentState.spentInWindowSompi;
   const remainingWindow = max - spentAtWindowStart;
   if (remainingWindow <= 0n) {
-    throw new Error(
+    throw new VaultPreparationError(
+      "invalid_runtime_state",
       `Vault window exhausted: spent ${displayAmount(spentAtWindowStart)} of ${displayAmount(max)}; ` +
         `next reset at DAA ${resetTargetDaa}`
     );
@@ -793,14 +794,17 @@ async function spendVault(
     amountSompi = withdrawAmount(params.amount, remainingWindow, utxo.amount, feeSompi);
     const outflow = amountSompi + feeSompi;
     if (outflow > remainingWindow) {
-      throw new Error(
+      throw new VaultPreparationError(
+        "invalid_runtime_state",
         `Outflow ${displayAmount(outflow)} (amount + estimated fee ${displayAmount(feeSompi)}) exceeds remaining vault window ` +
           `${displayAmount(remainingWindow)}.`
       );
     }
     const next = continuationFor(outflow);
     const changeSompi = utxo.amount - outflow;
-    if (changeSompi <= 0n) throw new Error(`Vault balance ${displayAmount(utxo.amount)} is too small for this spend.`);
+    if (changeSompi <= 0n) {
+      throw new VaultPreparationError("insufficient_funds", `Vault balance ${displayAmount(utxo.amount)} is too small for this spend.`);
+    }
     const tx = buildTransaction({
       inputs: [txInput(utxo, "")],
       outputs: [
@@ -816,26 +820,33 @@ async function spendVault(
     }
     feeSompi = nextFee;
   }
-  if (!converged) throw new Error(`vault withdrawal fee estimate did not converge after ${MAX_FEE_CONVERGENCE_PASSES} passes`);
+  if (!converged) {
+    throw new VaultPreparationError("invalid_runtime_state", `vault withdrawal fee estimate did not converge after ${MAX_FEE_CONVERGENCE_PASSES} passes`);
+  }
 
   if (params.feeCeilingSompi !== undefined && feeSompi > params.feeCeilingSompi) {
-    throw new Error("vault withdrawal fee exceeds the capacity reserved before signing");
+    throw new VaultPreparationError("fee_exceeds_ceiling", "vault withdrawal fee exceeds the capacity reserved before signing");
   }
 
   amountSompi = withdrawAmount(params.amount, remainingWindow, utxo.amount, feeSompi);
   const outflow = amountSompi + feeSompi;
   if (outflow > remainingWindow) {
-    throw new Error(
+    throw new VaultPreparationError(
+      "invalid_runtime_state",
       `Outflow ${displayAmount(outflow)} (amount + estimated fee ${displayAmount(feeSompi)}) exceeds remaining vault window ` +
         `${displayAmount(remainingWindow)}.`
     );
   }
-  if (amountSompi <= 0n) throw new Error(`Vault balance ${displayAmount(utxo.amount)} is too small for this spend.`);
+  if (amountSompi <= 0n) {
+    throw new VaultPreparationError("insufficient_funds", `Vault balance ${displayAmount(utxo.amount)} is too small for this spend.`);
+  }
   params.authorize?.(amountSompi);
 
   const next = continuationFor(outflow);
   const changeSompi = utxo.amount - outflow;
-  if (changeSompi <= 0n) throw new Error(`Vault balance ${displayAmount(utxo.amount)} is too small for this spend.`);
+  if (changeSompi <= 0n) {
+    throw new VaultPreparationError("insufficient_funds", `Vault balance ${displayAmount(utxo.amount)} is too small for this spend.`);
+  }
 
   const tx = buildTransaction({
     inputs: [txInput({ ...utxo, scriptPublicKey: vaultSpk }, "")],
@@ -962,15 +973,18 @@ async function fundInitialVault(params: {
     }
     feeSompi = nextFee;
   }
-  if (!converged || !tx) throw new Error(`vault deposit fee estimate did not converge after ${MAX_FEE_CONVERGENCE_PASSES} passes`);
+  if (!converged || !tx) {
+    throw new VaultPreparationError("invalid_runtime_state", `vault deposit fee estimate did not converge after ${MAX_FEE_CONVERGENCE_PASSES} passes`);
+  }
   const walletTotal = sumUtxoAmounts(walletUtxos);
   if (walletTotal < amountSompi + feeSompi) {
-    throw new Error(
+    throw new VaultPreparationError(
+      "insufficient_funds",
       `Regular wallet balance ${displayAmount(walletTotal)} cannot cover vault deposit ${displayAmount(amountSompi)} plus fee ${displayAmount(feeSompi)}.`
     );
   }
   if (params.feeCeilingSompi !== undefined && feeSompi > params.feeCeilingSompi) {
-    throw new Error("vault deposit fee exceeds the capacity reserved before signing");
+    throw new VaultPreparationError("fee_exceeds_ceiling", "vault deposit fee exceeds the capacity reserved before signing");
   }
 
   tx = buildGenesisDepositTx(walletUtxos, vaultSpk, changeSpk, amountSompi, feeSompi);
@@ -980,7 +994,7 @@ async function fundInitialVault(params: {
   );
   assertFeeCoversSignedTx(wallet.networkId, tx, feerate, feeSompi, "vault deposit");
   const covenantId = tx.outputs[0].covenant?.covenantId?.toString();
-  if (!covenantId) throw new Error("failed to populate genesis covenant id");
+  if (!covenantId) throw new VaultPreparationError("invalid_runtime_state", "failed to populate genesis covenant id");
   const preparedTxid = String(tx.finalize());
   if (params.broadcast === false) {
     return {
@@ -1072,15 +1086,18 @@ async function topUpVault(params: {
     }
     feeSompi = nextFee;
   }
-  if (!converged || !tx) throw new Error(`vault top-up fee estimate did not converge after ${MAX_FEE_CONVERGENCE_PASSES} passes`);
+  if (!converged || !tx) {
+    throw new VaultPreparationError("invalid_runtime_state", `vault top-up fee estimate did not converge after ${MAX_FEE_CONVERGENCE_PASSES} passes`);
+  }
   const walletTotal = sumUtxoAmounts(walletUtxos);
   if (walletTotal < amountSompi + feeSompi) {
-    throw new Error(
+    throw new VaultPreparationError(
+      "insufficient_funds",
       `Regular wallet balance ${displayAmount(walletTotal)} cannot cover vault top-up ${displayAmount(amountSompi)} plus fee ${displayAmount(feeSompi)}.`
     );
   }
   if (params.feeCeilingSompi !== undefined && feeSompi > params.feeCeilingSompi) {
-    throw new Error("vault top-up fee exceeds the capacity reserved before signing");
+    throw new VaultPreparationError("fee_exceeds_ceiling", "vault top-up fee exceeds the capacity reserved before signing");
   }
 
   tx = buildTopupTx(config, vaultUtxo, walletUtxos, nextSpk, changeSpk, amountSompi, feeSompi, lockDaa);
@@ -1214,7 +1231,7 @@ async function selectCurrentVaultUtxo(wallet: KaspaWallet, config: VaultSpendCon
   const { entries } = await rpc.getUtxosByAddresses([config.address]);
   let matches = normalizeEntries(entries);
   if (requireCovenant) {
-    if (!config.covenantId) throw new Error("vault has no covenant id; call vault_deposit first");
+    if (!config.covenantId) throw new VaultPreparationError("not_funded", "vault has no covenant id; call vault_deposit first");
     matches = matches.filter((entry) => entry.covenantId === config.covenantId);
   }
   if (config.currentOutpoint) {
@@ -1256,7 +1273,9 @@ function sumUtxoAmounts(utxos: NormalizedUtxo[]): bigint {
 function withdrawAmount(amount: bigint | "max" | undefined, remainingWindow: bigint, utxoAmount: bigint, feeSompi: bigint): bigint {
   if (amount !== "max") return amount!;
   const outflowCap = minBigInt(remainingWindow, utxoAmount - MIN_VAULT_CHANGE_SOMPI);
-  if (outflowCap <= 0n) throw new Error(`Vault balance ${displayAmount(utxoAmount)} is too small to withdraw from.`);
+  if (outflowCap <= 0n) {
+    throw new VaultPreparationError("insufficient_funds", `Vault balance ${displayAmount(utxoAmount)} is too small to withdraw from.`);
+  }
   return outflowCap - feeSompi;
 }
 
