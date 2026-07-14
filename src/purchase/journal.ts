@@ -2240,7 +2240,7 @@ export class PurchaseJournal {
     if (!["observed", "not_submitted", "pending"].includes(status)) {
       throw new JournalInvariantError("direct Treasury observation status is invalid");
     }
-    if (!["in_flight", "ambiguous", "accepted", "proven_not_executed"].includes(submissionOutcome)) {
+    if (!["in_flight", "ambiguous", "accepted"].includes(submissionOutcome)) {
       throw new JournalInvariantError("direct Treasury submission outcome is invalid");
     }
     const detailJson = canonicalTreasuryObservationJson(detail);
@@ -2252,19 +2252,6 @@ export class PurchaseJournal {
       const current = this.requireTreasuryOperation(operationKey);
       if (!["submission_planned", "submitted", "observed"].includes(current.state)) {
         throw new JournalInvariantError("direct Treasury operation is not awaiting observation");
-      }
-      if (
-        submissionOutcome === "proven_not_executed" &&
-        (
-          status !== "not_submitted" ||
-          current.state !== "submission_planned" ||
-          !current.submissionInFlight ||
-          current.effectCapabilityGeneration === undefined
-        )
-      ) {
-        throw new JournalInvariantError(
-          "direct Treasury non-execution proof is not bound to an effect-possible submission",
-        );
       }
       if (driver && !driverOwns(current, driver, this.timestamp())) {
         throw new JournalInvariantError("direct Treasury observation driver is stale");
@@ -2279,43 +2266,21 @@ export class PurchaseJournal {
       if (status === "pending" || current.state === "observed") {
         return this.requireTreasuryOperation(operationKey);
       }
-      // Absence can release the effect fence only after an ambiguous submit
-      // call has actually settled without a result. A live call may resume,
-      // while an exact accepted result is stronger positive evidence than a
-      // temporarily lagging absence observation. Both remain in
-      // Reconciliation until accepted chain evidence or a separately typed
-      // authoritative rejection is recorded.
-      if (status === "not_submitted" && submissionOutcome !== "proven_not_executed") {
+      // No current observation is proof that an exact effect-capable
+      // transaction can no longer execute. Temporary or corroborated absence
+      // therefore retains the capability, reservation, and exclusive slot for
+      // Reconciliation under every supported submission outcome.
+      if (status === "not_submitted") {
         return this.requireTreasuryOperation(operationKey);
       }
-      const cancelledAndProvedNotSubmitted =
-        status === "not_submitted" && current.cancellationRequested;
-      const next: TreasuryOperationState = status === "observed"
-        ? "observed"
-        : cancelledAndProvedNotSubmitted
-          ? "failed_terminal"
-          : "prepared";
       const driverSql = driver
         ? " AND driver_owner = ? AND driver_generation = ?"
         : "";
       const updated = this.db.prepare(
         `UPDATE treasury_operations
-            SET state = ?,
-                submission_in_flight = CASE
-                  WHEN ? IN ('prepared', 'failed_terminal', 'observed') THEN 0
-                  ELSE submission_in_flight
-                END,
-                effect_capability_generation = CASE
-                  WHEN ? IN ('prepared', 'failed_terminal') THEN NULL
-                  ELSE effect_capability_generation
-                END,
-                retry_count = retry_count + ?, updated_at_ms = ?
+            SET state = 'observed', submission_in_flight = 0, updated_at_ms = ?
           WHERE operation_key = ? AND state = ?${driverSql}`
       ).run(
-        next,
-        next,
-        next,
-        status === "not_submitted" && !cancelledAndProvedNotSubmitted ? 1 : 0,
         now,
         operationKey,
         current.state,
@@ -2327,12 +2292,8 @@ export class PurchaseJournal {
       this.insertTreasuryOperationTransition(
         operationKey,
         current.state,
-        next,
-        status === "observed"
-          ? "chain_observed"
-          : cancelledAndProvedNotSubmitted
-            ? "cancelled_after_exact_non_submission_proof"
-            : "exact_inputs_prove_not_submitted",
+        "observed",
+        "chain_observed",
         now
       );
       return this.requireTreasuryOperation(operationKey);

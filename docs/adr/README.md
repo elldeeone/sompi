@@ -19,3 +19,4 @@ or documentation is not allowed.
 | [0011](0011-trusted-operator-provisioning.md) | Immutable Operator Manifest installed outside MCP | Accepted |
 | [0012](0012-chain-evidence-and-finality.md) | Sompi-owned typed Chain Evidence and explicit finality floors | Accepted |
 | [0013](0013-bounded-operation-lifecycles.md) | Per-module bounded Admission Leases and cancellation semantics | Accepted |
+| [0014](0014-phase-2d-review-remediation.md) | Phase 2D review remediation lifecycles | Accepted |

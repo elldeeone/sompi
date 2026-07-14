@@ -100,8 +100,7 @@ export type TreasuryOperationObservationStatus =
 export type TreasurySubmissionOutcome =
   | "in_flight"
   | "ambiguous"
-  | "accepted"
-  | "proven_not_executed";
+  | "accepted";
 
 /**
  * Direct Treasury operations use the Purchase Journal implementation of this

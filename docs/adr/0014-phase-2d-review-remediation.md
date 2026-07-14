@@ -100,3 +100,22 @@ preparation retry budget and never create signed bytes or an external effect.
 The wrapper ends at the individual RPC await: normalization, transaction
 construction, signing, serialization, submission, and unknown exceptions
 remain fail-closed and are not guessed transient.
+
+## Amendment: 2026-07-14 remove speculative non-execution release
+
+The runtime has no structured, Chain-Evidence-backed proof that an exact
+effect-capable transaction can no longer execute. A caller-selected
+`proven_not_executed` outcome string is therefore not proof and is removed from
+the clean-cutover runtime.
+
+The supported submission outcomes are `in_flight`, `ambiguous`, and
+`accepted`. A `not_submitted` observation under every supported outcome keeps
+the effect capability, reservation, and exclusive slot fenced for
+Reconciliation. Unknown and removed outcomes fail closed at the Journal
+boundary.
+
+A future automatic release path requires a new accepted design with a
+structured proof bound to the exact operation, prepared transaction, inputs,
+effect-capability generation, immutable Chain Evidence, and the applicable
+Finality Floor. It must ship with positive proof, substitution, replay, crash,
+and restart tests. Temporary or corroborated current absence is never enough.

@@ -515,10 +515,10 @@ test("cancellation after exact acceptance retains policy through absence and res
             "not_submitted",
             { status: "not_submitted", transactionId: adapter.transactionId },
             undefined,
-            "proven_not_executed",
+            "proven_not_executed" as never,
           ),
-          /non-execution proof is not bound/,
-          "exact acceptance cannot be overwritten by a later absence claim",
+          /submission outcome is invalid/,
+          "removed non-execution claims must fail closed at runtime",
         );
 
         await assert.rejects(

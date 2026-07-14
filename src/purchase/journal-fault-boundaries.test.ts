@@ -100,6 +100,57 @@ test("every Journal fault point rolls back atomically and its exact action recov
   }
 });
 
+test("an unsupported non-execution claim cannot release an effect-capable Treasury operation", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-journal-non-execution-"));
+  const filename = path.join(directory, "purchase.sqlite");
+  const evidenceDirectory = path.join(directory, "evidence");
+  const clock = testClock();
+  let journal: PurchaseJournal | undefined;
+  try {
+    journal = openJournal(filename, evidenceDirectory, clock);
+    const setup = treasuryOperationSetup(journal, 90, "prepared");
+    assert.ok(setup.driver);
+    assert.equal(
+      journal.planTreasuryOperationSubmission(setup.intent.operationKey, setup.driver),
+      true,
+    );
+    assert.equal(
+      journal.claimTreasuryOperationEffectCapability(setup.intent.operationKey, setup.driver),
+      true,
+    );
+    assert.throws(
+      () => journal!.recordTreasuryOperationObservation(
+        setup.intent.operationKey,
+        "not_submitted",
+        { status: "not_submitted", transactionId: setup.prepared.transactionId },
+        setup.driver,
+        "proven_not_executed" as never,
+      ),
+      /submission outcome is invalid/,
+    );
+    const retained = journal.requireTreasuryOperation(setup.intent.operationKey);
+    assert.equal(retained.state, "submission_planned");
+    assert.equal(retained.submissionInFlight, true);
+    assert.equal(retained.effectCapabilityGeneration, setup.driver.generation);
+    assert.equal(journal.treasuryPolicyCapacityUsed(), 110n);
+    journal.close();
+
+    journal = openJournal(filename, evidenceDirectory, clock);
+    const restarted = journal.requireTreasuryOperation(setup.intent.operationKey);
+    assert.equal(restarted.state, "submission_planned");
+    assert.equal(restarted.submissionInFlight, true);
+    assert.equal(restarted.effectCapabilityGeneration, setup.driver.generation);
+    assert.equal(journal.treasuryPolicyCapacityUsed(), 110n);
+  } finally {
+    try {
+      journal?.close();
+    } catch {
+      // Preserve the primary regression assertion.
+    }
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 function assertFaultBoundary(
   point: JournalFaultPoint,
   factory: FaultBoundaryScenarioFactory
