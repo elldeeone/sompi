@@ -286,6 +286,39 @@ test("ambiguous submit consumes readiness; a new proof is required before a proo
   });
 });
 
+test("a same-millisecond observation cannot reissue a consumed readiness proof", async () => {
+  await withFixture(async (fixture) => {
+    const prepared = await fixture.prepare();
+    fixture.observeWith((request) => safeEvidence(request));
+    fixture.submitWith(async () => {
+      throw new Error("response lost after node acceptance");
+    });
+    const firstObservation = await fixture.module.observe(prepared.preparedBytes);
+    if (firstObservation.status !== "safe_to_submit") throw new Error("expected readiness");
+    assert.equal(
+      (await fixture.module.submit(prepared.preparedBytes, firstObservation.readiness)).status,
+      "ambiguous"
+    );
+
+    fixture.submitWith(async (request) => ({ transactionId: request.transactionId }));
+    const secondObservation = await fixture.module.observe(prepared.preparedBytes);
+    if (secondObservation.status !== "safe_to_submit") throw new Error("expected fresh readiness");
+    assert.notEqual(
+      secondObservation.readiness.proofDigest,
+      firstObservation.readiness.proofDigest
+    );
+    await assert.rejects(
+      fixture.module.submit(prepared.preparedBytes, firstObservation.readiness),
+      /already consumed/
+    );
+    assert.equal(
+      (await fixture.module.submit(prepared.preparedBytes, secondObservation.readiness)).status,
+      "accepted"
+    );
+    assert.equal(fixture.submissionCalls.length, 2);
+  });
+});
+
 test("accepted submission reconciles after a process crash without a second broadcast", async () => {
   await withFixture(async (fixture) => {
     const prepared = await fixture.prepare();

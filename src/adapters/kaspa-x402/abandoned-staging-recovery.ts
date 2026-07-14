@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 import {
   ScriptPublicKey,
@@ -37,6 +37,7 @@ const UINT64_MAX = (1n << 64n) - 1n;
 const UINT32_MAX = 0xffff_ffff;
 const HASH32 = /^[a-f0-9]{64}$/;
 const DIGEST = /^sha256:[A-Za-z0-9_-]{43}$/;
+const READINESS_ISSUANCE_NONCE = /^[A-Za-z0-9_-]{22}$/;
 const PAYMENT_IDENTIFIER = /^pay_[A-Za-z0-9_-]{43}$/;
 const SERIALIZED_V0_SCRIPT = /^0000(?:[a-f0-9]{2})+$/;
 const SIGNATURE_SCRIPT = /^[a-f0-9]{132}$/;
@@ -193,6 +194,8 @@ export interface StagingRecoveryReadiness {
   readonly recoveryTransactionId: string;
   readonly exactPaymentTransactionId: string | null;
   readonly raceEvidenceDigest: Sha256Digest;
+  /** Per-observation capability entropy; never persisted as Purchase state. */
+  readonly issuanceNonce: string;
   readonly observedAtMs: number;
   readonly expiresAtMs: number;
   readonly proofDigest: Sha256Digest;
@@ -824,6 +827,7 @@ export class AbandonedStagingRecovery {
           recoveryTransactionId: envelope.recovery.transactionId,
           exactPaymentTransactionId: envelope.exactPayment?.transactionId ?? null,
           raceEvidenceDigest: evidenceDigest,
+          issuanceNonce: randomBytes(16).toString("base64url"),
           observedAtMs,
           expiresAtMs: checkedDeadline(observedAtMs, this.readinessTtlMs),
         };
@@ -1564,6 +1568,7 @@ function validateReadiness(
     recoveryTransactionId: value.recoveryTransactionId,
     exactPaymentTransactionId: value.exactPaymentTransactionId,
     raceEvidenceDigest: value.raceEvidenceDigest,
+    issuanceNonce: value.issuanceNonce,
     observedAtMs: value.observedAtMs,
     expiresAtMs: value.expiresAtMs,
   };
@@ -1575,6 +1580,7 @@ function validateReadiness(
     value.exactPaymentTransactionId !==
       (envelope.exactPayment?.transactionId ?? null) ||
     !DIGEST.test(value.raceEvidenceDigest) ||
+    !READINESS_ISSUANCE_NONCE.test(value.issuanceNonce) ||
     !Number.isSafeInteger(value.observedAtMs) ||
     !Number.isSafeInteger(value.expiresAtMs) ||
     value.observedAtMs > now ||
