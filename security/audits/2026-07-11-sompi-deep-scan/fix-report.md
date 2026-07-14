@@ -1,8 +1,10 @@
 # Security remediation report
 
-Status: **in progress**
+Status: **verified — Phase 2D review remediation ready for independent re-review**
 
 Target baseline: `4ebb82d4f82bac46ae3addd112c4752f29630a8a`
+
+Independent review target reopened by this closeout: `082def29636fe0a6802240ee358f867c34667b4c`.
 
 ## Patch contract
 
@@ -162,11 +164,11 @@ retained when first accepted remains available after pruning.
 Residual risk is now the separate bounded-lifecycle workstream. The remaining
 four validated findings are not marked fixed by this milestone.
 
-### Milestone 3: bounded operational lifecycles
+### Milestone 3: bounded operational lifecycles — initial implementation
 
-Status: **verified**
+Status: **superseded and reopened by the independent review of `082def2`**
 
-Implemented ADR-0013 narrowly with one shared Admission Lease vocabulary and
+The initial implementation applied ADR-0013 narrowly with one shared Admission Lease vocabulary and
 separate enforcement at each owning boundary. Trusted Authority pre-auth
 sockets are admitted before parser state and bounded at the manifest's
 `authorityPreauthSockets: 32` budget with a non-renewable frame deadline.
@@ -192,7 +194,7 @@ bytes, submission, or an external effect may exist, cancellation and errors
 remain fenced for Reconciliation. Wallet send, vault send, and vault deposit
 share the same policy-capacity accounting.
 
-Findings closed by this milestone:
+Findings provisionally addressed by this milestone; final dispositions are recorded in Milestone 4:
 
 - `authority-preauth-socket-exhaustion`
 - `authority-prompt-queue-dos`
@@ -234,8 +236,104 @@ Ordered verification:
 7. The durable repository report and the temporary mirror were both updated:
    `/tmp/codex-security-scans-u5YlLn/sompi/4ebb82d4f82bac46ae3addd112c4752f29630a8a_20260711T145619Z_75jg_ull/artifacts/fix_report.md`.
 
+### Milestone 4: Phase 2D independent-review remediation
+
+Status: **verified — ready for independent re-review**
+
+The independent review of the initial Phase 2D commits found ten reportable
+findings, three additional engineering blockers, and the deferred post-sign
+Authority abort defect. This milestone is committed locally as:
+
+- `9420aff063fbeae9a13e9fa88bab651f9e387e86` — enforce bounded Phase 2D
+  lifecycle ownership;
+- `fdedcad39b05f1e8db9722fbeaf2055a590ca11c` — close review lifecycle race
+  boundaries;
+- `3664e768b165be8c1d4f7efdc43b2026a9432fb2` — preserve wallet chain
+  observation bindings.
+- `7e2fa5ad4594a24085b1f8121d35cef3f6b495cf` — remove in-memory Treasury lifecycle authority; cancellation now
+  relies only on the Journal-owned driver/state.
+
+The ten reportable findings are fixed at their current production boundaries:
+
+1. MCP cancellation now carries the SDK signal into Treasury and leaves a
+   durable cancellation/reconciliation view after any possible effect.
+2. Production wallet, vault, deposit, and RPC preparation failures use an
+   exhaustive typed terminal/transient/unknown contract.
+3. A Journal-owned durable driver serializes same-key execution across handles
+   and restart; stale generations cannot submit.
+4. Prompt admission occurs before replay acquisition and replay rows/tokens/
+   result storage have bounded high-water marks with eager expiry cleanup.
+5. Plan, preparation, submission, observation, and completion transitions use
+   cancellation/fence/current-generation CAS checks.
+6. Digest-scoped evidence cleanup cannot unlink a live writer's blob.
+7. Successful preparation cannot bypass the durable preparation fence or
+   effect capability.
+8. Purchase count and mandatory request evidence are one compound admission;
+   denied egress and evidence failure leave no Purchase or attachment.
+9. The production Authority Unix wrapper forwards the connection AbortSignal.
+10. Exact authoritative `not_submitted` evidence plus cancellation terminalizes
+    and releases capacity; weaker evidence remains in Reconciliation.
+
+The three additional engineering blockers are fixed: `SOMPI-DIFF-AUTH-003`
+uses the manifest socket projection through the production wrapper;
+`SOMPI-DIFF-JOURNAL-002` preserves unexpired foreign live leases; and
+`SOMPI-DIFF-JOURNAL-004` rebuilds committed evidence bytes from unique artifact
+digests. Deferred `SOMPI-DIFF-AUTH-002` is fixed by signal checks after human
+and AP2 signing awaits and decision-store discard of late persisted results.
+
+Architecture remains separate by owner: there is no universal scheduler,
+broker, cross-process lease service, workflow engine, or payment-rail plugin
+system. AP2/x402 wire objects and Kaspa-x402 mechanics are unchanged, and the
+sibling repository is untouched. The clean-cutover Journal is epoch 9;
+schemas 1 through 8 are rejected untouched.
+
+Ordered verification:
+
+1. Current-boundary regressions passed for Treasury reducer/driver takeover,
+   MCP signal forwarding, Authority production cap and abort, prompt/replay
+   saturation and late answers, compound Purchase/evidence admission,
+   digest ownership, foreign lease recovery, unique-byte restart accounting,
+   crash/fault boundaries, and exact non-submission release.
+2. Focused remediation/config/lifecycle suites passed 81/81. `npm test`
+   passed 377 tests: 376 passed, 0 failed, 1 documented root-only skip.
+   Offline smoke passed all 13 checks.
+3. The ten review PoCs all exited nonzero at repaired assertions: signal was
+   forwarded; replay rows stayed bounded; rejected evidence retained no
+   Purchase; MCP cancellation produced zero submit/observe/commit calls;
+   shared evidence survived rollback; cancel/plan produced zero submit calls;
+   exact absence produced `failed_terminal`; same-key duplication timed out at
+   its obsolete second-prepare expectation; typed preparation no longer fenced
+   permanently; and stale prepared material could not submit.
+4. The four original Phase 2D PoCs all stopped at fixed behavior: pre-auth
+   retained 32 rather than 128 sockets; prompt over-cap work was rejected at
+   the four-prompt boundary; denied egress retained `purchase=absent files=0
+   bytes=0`; and the old direct-Treasury harness stopped at its stale
+   pre-2B reviewed-revision hash guard. Direct current-boundary regressions,
+   not hash/API guards, establish the fourth disposition.
+5. `npm pack --json` and `node scripts/verify-packed-artifact.mjs
+   elldeeone-sompi-0.8.0.tgz` passed with 173 entries, 5,034,044 packed bytes,
+   and 14,347,715 unpacked file bytes. The archive was removed.
+6. The pinned live Testnet-10 proof against `ws://10.0.3.26:17210/` plus the
+   independent HTTPS witness resumed after a bootstrap recovery boundary and
+   reached `receipted`. The public-facts report digest is
+   `c7e94f421414f30ec1c800951315319e76ba33ac74b6f82d4599b67fa0709257`, for
+   Purchase `pur_sT4BfCHohfrU3mOMJ_GYsg`, exact transaction
+   `c98749c8871f2c9e7d8aa38d7369149eef7c63d31a707ddb87acbbdae2ddf451`, and
+   Merchant outpoint `:1`. The run used the in-process auto-approved Authority
+   fixture and therefore does not claim human-present or separate-UID live
+   Authority conformance; those paths have production-wrapper hermetic tests.
+7. The final security diff review covered lease leaks/double release,
+   cancellation/signing races, stale driver effects, quota drift, unsafe
+   terminalization, evidence unlink races, secret leakage, dead compatibility
+   paths, and AP2/x402 boundary violations.
+
 All 21 scan findings are now accounted for: 4 Operator Provisioning, 13 Chain
-Evidence/finality, and 4 bounded lifecycle findings. No AP2 or Kaspa-x402 wire
-format, sibling repository, deployment, or remote branch was changed. The
-remaining risks are the intentionally testnet-only profile, evolving external
-standards, and the stale legacy direct-Treasury PoC harness described above.
+Evidence/finality, and 4 bounded lifecycle findings — four, not eight. The
+durable report and its existing temporary mirror are byte-identical at:
+
+`/tmp/codex-security-scans-u5YlLn/sompi/4ebb82d4f82bac46ae3addd112c4752f29630a8a_20260711T145619Z_75jg_ull/artifacts/fix_report.md`
+
+Residual risk is limited to the intentionally testnet-only profile, evolving
+external AP2/x402 standards, the in-process Authority mode used by the live
+proof, and the stale legacy direct-Treasury PoC harness. The branch is ready
+for independent re-review; this report does not claim independent acceptance.

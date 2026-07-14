@@ -1,33 +1,39 @@
 # Current state
 
-Last updated: **2026-07-13**
+Last updated: **2026-07-14**
 
 ## Plain-English status
 
-**Phase 2D bounded operational lifecycles are complete and ready for review.**
+**Phase 2D review remediation is complete and ready for independent re-review.**
 The first human-present AP2 + Kaspa-x402 exact vertical remains testnet-only;
 the post-scan hardening gates now pass through the bounded Authority,
-Purchase/Journal, Evidence, and direct-Treasury lifecycles.
+Purchase/Journal, Evidence, MCP, and direct-Treasury lifecycles. Phase 3 has
+not started.
 
 Phases 0 through 6 were implemented through `4ebb82d`, including the stable
 Purchase module, clean Kaspa-x402 alpha.6 exact path, isolated interactive AP2
 Authority, demo Merchant, crash recovery, local vertical proof, and live
 Testnet-10 evidence. The completed deep security scan then found 21 medium/low
 issues concentrated in chain evidence/finality, operator provisioning, and
-unbounded operation lifecycles. Phases 2A through 2D are now committed and
-verified; the branch is ready for review and Phase 3 has not started.
+unbounded operation lifecycles. The independent review of the initial Phase
+2D target `082def29636fe0a6802240ee358f867c34667b4c` reopened the lifecycle
+work. The remediation commits are now committed and verified locally; the
+branch is ready for independent re-review and Phase 3 has not started.
 
 ## Git orientation at codification
 
 - Repository: `https://github.com/elldeeone/sompi`
 - Normalized local `main`: `1bbfa0c` (`Document AP2 and Kaspa-x402 architecture`)
-- Active implementation branch: `ap2-kaspa-purchase-core`
+- Active implementation branch: `phase-2d-review-remediation`
 - Historical branch/HEAD before the Phase 2D execution:
   `ap2-kaspa-purchase-core` at the required
   `17cce287fb0006aee9dd5f36697b58d770054e2f`.
-- Phase 2D implementation commit: `856131a` (`Bound Phase 2D operational
-  lifecycles`). The delegated review worktree is intentionally detached at
-  the final local closeout commit; no remote branch was changed.
+- Required reviewed target: `082def29636fe0a6802240ee358f867c34667b4c`.
+- Phase 2D remediation commits: `9420aff` (`enforce bounded Phase 2D
+  lifecycle ownership`), `fdedcad` (`close review lifecycle race
+  boundaries`), `3664e76` (`preserve wallet chain observation bindings`),
+  and `7e2fa5a` (`remove in-memory Treasury lifecycle authority`). The
+  worktree is named and no remote branch was changed.
 - Latest implementation milestone: `4c6fc8f` (`Centralize trusted chain
   evidence`).
 - Untouched post-scan baseline: `npm test` passed with 339 tests, one privileged
@@ -113,43 +119,55 @@ Phase 2C is complete in `4c6fc8f`:
    read-only live check produced depth-confirmed evidence from
    `ws://10.0.3.26:17210/` plus `https://api-tn10.kaspa.org/`.
 
-Phase 2D is complete in local implementation milestones `856131a`, `5cc8785`,
-and `fec8df4`, plus the closeout commit:
+The initial Phase 2D implementation was reviewed independently against
+`082def29636fe0a6802240ee358f867c34667b4c` and reopened. Review remediation is
+complete in local commits `9420aff`, `fdedcad`, `3664e76`, and `7e2fa5a`:
 
-1. Trusted Authority pre-authentication sockets are admitted before parser
-   state and bounded at the manifest's 32-socket budget; a non-renewable frame
-   deadline, overload rejection, signal propagation, and exactly-once release
-   cover handoff, malformed input, timeout, disconnect, and shutdown.
-2. Authenticated human decisions are bounded at the manifest's four-prompt
-   budget, retain one visible terminal ceremony, and cancel queued/active work
-   on disconnect, expiry, heartbeat loss, shutdown, and late answers.
-3. Purchase count and immutable Evidence bytes use Journal-owned SQLite
-   Admission Lease history and atomic counters. Unique blobs consume bytes,
-   identical blobs deduplicate, durable link/publication faults reconcile on
-   restart, valid evidence is never deleted for quota, and secret-free MCP
-   saturation status is exposed.
-4. Direct Treasury validation runs before durable claim. Typed permanent
-   pre-effect failures terminalize and release policy capacity, transient
-   preparation failures use the durable manifest retry bound, and prepared,
-   submitted, or ambiguous work remains fenced for Reconciliation. Wallet send,
-   vault send, and vault deposit share the same policy-capacity protections.
-5. The clean-cutover Journal schema is epoch 8; v1 through v7 are rejected
+1. Treasury now has a Journal-owned reducer/command boundary, durable driver
+   owner and generation, bounded takeover, effect capabilities, typed
+   terminal/transient/unknown preparation outcomes, exact retry accounting,
+   cancellation/fence CAS, and proof-backed release after exact
+   non-submission.
+2. MCP registered handlers preserve the SDK AbortSignal through wallet send,
+   vault send, vault deposit, and recovery. Authority's production Unix wrapper
+   forwards transport cancellation, prompt admission precedes replay growth,
+   replay rows/tokens/result storage are bounded, and late decisions/signatures
+   cannot become approvals.
+3. Purchase plus mandatory request evidence is one Journal-owned compound
+   admission. Digest publication cleanup is ownership-scoped, unexpired
+   foreign leases survive startup, unique committed evidence bytes rebuild
+   idempotently, and denied egress leaves no Purchase or evidence state.
+4. The three additional engineering blockers are covered: production Authority
+   uses the manifest socket cap, Journal startup is owner/deadline aware, and
+   shared-digest reconstruction counts unique artifacts once.
+5. The clean-cutover Journal schema is epoch 9; epochs 1 through 8 are rejected
    untouched. No central scheduler, AP2/x402 wire change, Kaspa-x402 change,
-   or sibling-repository change was introduced.
-6. Verification completed with 370 unit tests (369 pass, 0 fail, 1 documented
-   root-only skip), 13 offline smoke checks, 201 focused lifecycle/config/E2E
-   tests (201 pass), deterministic local E2E receipted state, and a 172-entry
-   packed artifact accepted by the package verifier.
+   sibling-repository change, deployment, or remote branch change was made.
+6. Focused remediation/config/lifecycle tests passed 81/81. The complete
+   suite passed 377 tests: 376 pass, 0 fail, 1 documented root-only skip.
+   Offline smoke passed all 13 checks. The package verifier passed for 173
+   entries, 5,034,044 packed bytes, and 14,347,715 unpacked file bytes.
 
-The four lifecycle PoC dispositions are recorded in the Phase 2D fix report:
-the fixed pre-auth PoC observed only 32 retained sockets, the fixed prompt PoC
-was bounded at four admitted prompts, and the fixed storage PoC retained no
-Purchase or evidence bytes for denied egress. The original direct-Treasury
-PoC's pre-2B PolicyEngine constructor no longer crosses the clean-cutover API;
-the exact 17cce baseline was reproduced separately (permanent preparation left
-an `intent` row and 110 units of capacity, blocking the next operation), while
-the fixed current seam has direct regression coverage for terminalization,
-retry bounds, restart, cancellation, and slot reuse.
+The ten review PoCs all stopped at repaired invariants: signal forwarding,
+bounded replay, compound admission, durable MCP cancellation, shared-digest
+ownership, cancel/plan CAS, exact absence release, single-driver execution,
+typed preparation failure, and preparation-fence ownership. The four original
+Phase 2D PoCs likewise stopped at fixed behavior; the direct-Treasury harness
+has only a stale reviewed-revision hash guard, so the current-boundary direct
+regressions are authoritative. The four validated lifecycle findings, not
+eight, are now fixed and all 21 scan findings are accounted for.
+
+Live Testnet-10 proof was run and resumed from an isolated bootstrap recovery
+state against the pinned `ws://10.0.3.26:17210/` node plus the independent
+HTTPS witness. The public-facts report is `/tmp/sompi-phase2d-live-evidence/report.json`
+with digest `c7e94f421414f30ec1c800951315319e76ba33ac74b6f82d4599b67fa0709257`;
+it reached `receipted` for Purchase `pur_sT4BfCHohfrU3mOMJ_GYsg`, exact
+transaction `c98749c8871f2c9e7d8aa38d7369149eef7c63d31a707ddb87acbbdae2ddf451`,
+Merchant outpoint `:1`, confirmed bootstrap/KIP-10/vault evidence, and one
+unique exact transaction across duplicate requests. This run used the
+repository's in-process auto-approved Authority fixture, so it does not claim
+human-present terminal or separate-UID Authority conformance; those seams have
+hermetic production-wrapper and abort regression coverage.
 
 Phase 0 is complete:
 
@@ -201,16 +219,18 @@ Phases 3 through 6 have an implemented pre-hardening vertical:
    and AP2 receipts;
 5. local crash/replay proofs and live Testnet-10 Purchase evidence passed.
 
-The deep scan acceptance gates were reopened and are now satisfied through
-Phase 2D. The full local vertical, offline smoke, focused suites, and package
-verification were rerun after the bounded-lifecycle cutover.
+The deep scan acceptance gates were reopened and are now satisfied through the
+Phase 2D remediation. The full local vertical, offline smoke, focused suites,
+package verification, all PoCs, and the pinned live proof were rerun after the
+review target.
 
 No remote push, package publish, deployment, or sibling-repository change was
 performed.
 
 ## Next action
 
-Review the Phase 2D local commits. Do not start Phase 3 in this closeout.
+Independent review of the Phase 2D remediation commits is the next action. Do
+not start Phase 3 in this closeout.
 
 ## Known external uncertainties
 
@@ -235,9 +255,10 @@ These are contained by the design and do not block the hardening cutover:
 
 ## Current blockers
 
-No implementation blocker remains. A fresh funded Testnet-10 Treasury wallet
-would be required for a future live funded rerun, but no such rerun was in
-scope. The legacy direct-Treasury PoC harness is stale against the clean 2B
-PolicyEngine API; the current-boundary regression and exact baseline
-reproduction are the authoritative evidence. No sibling Kaspa-x402 change is
-required.
+No implementation or funding blocker remains. The live proof used the funded
+source wallet at `/home/luke/.sompi/testnet-10` and left isolated evidence under
+`/tmp`; the report intentionally does not claim human-present or separate-UID
+Authority conformance. The legacy direct-Treasury PoC harness is stale against
+the clean 2B PolicyEngine API; the current-boundary regression and exact
+baseline reproduction are the authoritative evidence. No sibling Kaspa-x402
+change is required.

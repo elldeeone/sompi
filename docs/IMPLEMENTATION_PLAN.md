@@ -1,6 +1,6 @@
 # Sompi AP2 + Kaspa-x402 implementation plan
 
-Status: **In progress — Phases 0 through 2C complete; post-scan hardening in progress**
+Status: **Phase 2D review remediation complete — ready for independent re-review; Phase 3 not started**
 
 Architecture: [`docs/architecture/SOMPI_ARCHITECTURE.md`](architecture/SOMPI_ARCHITECTURE.md)
 
@@ -194,6 +194,17 @@ path.
   observability at each owning module.
 - [x] Preserve leases/reservations and enter Reconciliation after any possible
   external effect.
+- [x] Reopen and remediate the independent review of the initial Phase 2D
+  implementation: durable Treasury reducer/driver generations, MCP signal
+  propagation, exhaustive production preparation outcomes, cancellation/fence
+  CAS, Authority abort propagation, prompt-before-replay admission, compound
+  Purchase/evidence admission, digest-scoped publication ownership, and the
+  three additional engineering blockers.
+- [x] Bump the clean-cutover Journal schema to epoch 9 and reject epochs 1–8
+  untouched; verify migration and restart behavior.
+- [x] Rerun all ten independent-review PoCs, the four original Phase 2D PoCs,
+  focused lifecycle suites, the complete npm test, offline smoke, package
+  verification, and the pinned live Testnet-10 proof.
 
 Gate:
 
@@ -201,6 +212,8 @@ Gate:
   restart, and cancellation-race tests pass.
 - Capacity is neither leaked nor reused while an effect may still exist.
 - No central scheduler or cross-module lifecycle semantics are introduced.
+- The independent review remediation branch is ready for independent review;
+  no Phase 3 implementation has started.
 
 ## Phase 3: Deepen the Purchase module behind existing MCP UX
 
