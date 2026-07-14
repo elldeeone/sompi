@@ -280,6 +280,21 @@ test("accepted submission reconciles after a process crash without a second broa
   });
 });
 
+test("staging recovery rejects a handle-free pending observer at its deadline", async () => {
+  await withFixture(async (fixture) => {
+    const prepared = await fixture.prepare();
+    fixture.observeWith(() => new Promise<never>(() => undefined));
+    const bounded = fixture.newModule({ operationTimeoutMs: 5 });
+    await assert.rejects(
+      bounded.observe(prepared.preparedBytes),
+      (error: unknown) =>
+        error instanceof Error &&
+        "code" in error &&
+        error.code === "deadline_exceeded"
+    );
+  });
+});
+
 test("cancellation or a contradictory node response after invocation is ambiguous or conflict, never retry permission", async () => {
   await withFixture(async (fixture) => {
     const prepared = await fixture.prepare();
@@ -555,11 +570,18 @@ interface Fixture {
   nowMs: number;
   submissionCalls: Array<Record<string, unknown>>;
   prepare(overrides?: Record<string, unknown>): ReturnType<AbandonedStagingRecovery["prepare"]>;
-  observeWith(observer: (request: StagingRecoveryRaceRequest) => StagingRecoveryRaceEvidence): void;
+  observeWith(
+    observer: (
+      request: StagingRecoveryRaceRequest
+    ) => StagingRecoveryRaceEvidence | Promise<StagingRecoveryRaceEvidence>
+  ): void;
   submitWith(
     submitter: (request: any) => Promise<{ transactionId: string }>
   ): void;
-  newModule(overrides?: { recoveryAddress?: string }): AbandonedStagingRecovery;
+  newModule(overrides?: {
+    recoveryAddress?: string;
+    operationTimeoutMs?: number;
+  }): AbandonedStagingRecovery;
 }
 
 async function withFixture(action: (fixture: Fixture) => Promise<void>): Promise<void> {
@@ -634,7 +656,10 @@ async function withFixture(action: (fixture: Fixture) => Promise<void>): Promise
       merchantOutputIndex: 1 as const,
     };
     const recoveryAddress = addressForPrivateKey(RECOVERY_PRIVATE_KEY);
-    let observer = (race: StagingRecoveryRaceRequest): StagingRecoveryRaceEvidence => safeEvidence(race);
+    let observer: (
+      race: StagingRecoveryRaceRequest
+    ) => StagingRecoveryRaceEvidence | Promise<StagingRecoveryRaceEvidence> =
+      (race) => safeEvidence(race);
     let submitter = async (submission: any) => ({ transactionId: submission.transactionId as string });
     const submissionCalls: Array<Record<string, unknown>> = [];
     const fixture = {
@@ -652,7 +677,10 @@ async function withFixture(action: (fixture: Fixture) => Promise<void>): Promise
       submitWith(next: typeof submitter) {
         submitter = next;
       },
-      newModule(overrides: { recoveryAddress?: string } = {}) {
+      newModule(overrides: {
+        recoveryAddress?: string;
+        operationTimeoutMs?: number;
+      } = {}) {
         return new AbandonedStagingRecovery({
           keyStore: store,
           recoveryAddress: overrides.recoveryAddress ?? recoveryAddress,
@@ -663,6 +691,9 @@ async function withFixture(action: (fixture: Fixture) => Promise<void>): Promise
               return submitter(submission);
             },
           },
+          ...(overrides.operationTimeoutMs === undefined
+            ? {}
+            : { operationTimeoutMs: overrides.operationTimeoutMs }),
           now: () => fixture.nowMs,
         });
       },

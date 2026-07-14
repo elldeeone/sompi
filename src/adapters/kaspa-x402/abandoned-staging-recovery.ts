@@ -1776,7 +1776,9 @@ async function boundedCall<T>(
       () => finish("reject", adapterError("deadline_exceeded", "staging recovery deadline expired")),
       remaining
     );
-    timer.unref?.();
+    // The observer or submitter may return a handle-free pending Promise. This
+    // deadline is then the only completion mechanism, so keep it referenced
+    // until finish() clears it.
     callerSignal.addEventListener("abort", onAbort, { once: true });
     void promise.then(
       (value) => finish("resolve", value),
