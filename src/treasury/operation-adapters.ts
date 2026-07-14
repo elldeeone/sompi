@@ -254,7 +254,15 @@ export class WalletTreasuryOperationAdapter implements TreasuryOperationAdapter 
         transactionId: envelope.prepared.transactionId,
         destinationOutpoint: `${envelope.prepared.transactionId}:${envelope.prepared.destinationOutpoint.index}`,
         amountAtomic: envelope.prepared.amountAtomic,
-        ...(observation.evidence ? { chainEvidenceDigest: observation.evidence.detailDigest, chainEvidenceLevel: observation.evidence.level } : {}),
+        ...(observation.evidence
+          ? {
+              chainEvidenceDigest: observation.evidence.detailDigest,
+              chainEvidenceLevel: observation.evidence.level,
+              ...(observation.evidence.acceptingBlockDaaScore === undefined
+                ? {}
+                : { observedAtDaa: observation.evidence.acceptingBlockDaaScore }),
+            }
+          : {}),
       }),
     });
   }
@@ -265,7 +273,7 @@ export class WalletTreasuryOperationAdapter implements TreasuryOperationAdapter 
     observedDetail: Readonly<Record<string, unknown>>
   ): Promise<void> {
     const envelope = decodeWallet(preparedBytes, intent);
-    requireObservedDetail(observedDetail, intent, envelope.prepared.transactionId);
+    requireObservedDetail(observedDetail, intent, envelope.prepared.transactionId, false);
     // A regular-wallet send has no mutable local chain state to advance. The
     // durable observed fact itself is the idempotent commit.
   }
@@ -957,7 +965,8 @@ function requireIntent(intent: TreasuryOperationRecord, kind: TreasuryOperationK
 function requireObservedDetail(
   detail: Readonly<Record<string, unknown>>,
   intent: TreasuryOperationRecord,
-  transactionId: string
+  transactionId: string,
+  requireObservedAtDaa = true,
 ): void {
   if (
     detail.profile !== OBSERVATION_PROFILE ||
@@ -965,8 +974,10 @@ function requireObservedDetail(
     detail.status !== "observed" ||
     detail.operationKey !== intent.operationKey ||
     detail.transactionId !== transactionId ||
-    typeof detail.observedAtDaa !== "string" ||
-    !/^(?:0|[1-9][0-9]*)$/.test(detail.observedAtDaa) ||
+    (requireObservedAtDaa && (
+      typeof detail.observedAtDaa !== "string" ||
+      !/^(?:0|[1-9][0-9]*)$/.test(detail.observedAtDaa)
+    )) ||
     typeof detail.chainEvidenceDigest !== "string" ||
     !/^sha256:[A-Za-z0-9_-]{43}$/.test(detail.chainEvidenceDigest) ||
     !["accepted", "depth-confirmed", "consensus-final"].includes(
