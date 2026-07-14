@@ -77,3 +77,26 @@ reconciliation and are never guessed safe from their message text.
 This amendment changes the clean-cutover Journal schema epoch to 10 so the
 new durable effect-possible state is explicit; epochs 1 through 9 remain
 rejected without compatibility readers.
+
+## Amendment: 2026-07-14 exact submission outcomes
+
+An issued effect capability remains authoritative after cancellation. If the
+adapter returns the exact prepared transaction identity, the Journal records
+that acceptance even when cancellation was requested after capability issue.
+Journal acceptance failures are not adapter failures and must never be caught
+or downgraded to ambiguous submission.
+
+Submission reconciliation uses explicit outcomes rather than Promise
+quiescence. `in_flight`, `ambiguous`, and `accepted` all retain the effect
+capability and policy reservation when observers report temporary absence.
+Only a separately typed `proven_not_executed` outcome may clear the capability,
+retry, or terminalize a cancelled operation. Corroborated current chain
+absence is not by itself proof of node rejection because an accepted
+transaction may not yet be visible to either observer.
+
+Known read-only Kaspa RPC awaits before the first Vault signature are typed at
+the Vault boundary as `rpc_unavailable`. They consume the manifest-bounded
+preparation retry budget and never create signed bytes or an external effect.
+The wrapper ends at the individual RPC await: normalization, transaction
+construction, signing, serialization, submission, and unknown exceptions
+remain fail-closed and are not guessed transient.

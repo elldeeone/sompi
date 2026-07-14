@@ -697,10 +697,10 @@ async function spendVault(
   const redeem = buildRedeemScript(config.agentPublic, config.ownerPublic, max, windowSize, currentState);
   const vaultSpk = payToScriptHashScript(redeem);
 
-  const rpc = await wallet.client();
+  const rpc = await vaultRpcRead(() => wallet.client());
   const utxo = await selectCurrentVaultUtxo(wallet, config, fn === "withdraw");
   const destSpk = payToAddressScript(destination);
-  const estimate = await rpc.getFeeEstimate();
+  const estimate = await vaultRpcRead(() => rpc.getFeeEstimate());
   const feerate = estimate.estimate?.normalBuckets?.[0]?.feerate ?? 100;
 
   if (fn === "recover") {
@@ -751,7 +751,7 @@ async function spendVault(
 
   if (!config.covenantId) throw new Error("vault has not been covenant-funded yet; call vault_deposit first");
 
-  const info = await rpc.getServerInfo();
+  const info = await vaultRpcRead(() => rpc.getServerInfo());
   const virtualDaa = BigInt(info.virtualDaaScore);
   // Keep the input non-final so header context enforces this DAA locktime.
   // The contract also requires the active vault UTXO itself to have aged a
@@ -944,13 +944,13 @@ async function fundInitialVault(params: {
   preparedTransaction?: string;
 }> {
   const { wallet, config, keepFloatSompi } = params;
-  const rpc = await wallet.client();
+  const rpc = await vaultRpcRead(() => wallet.client());
   let walletUtxos = params.amountSompi === "max" ? await listWalletUtxos(wallet) : await selectWalletUtxos(wallet, params.amountSompi);
   const vaultSpk = payToScriptHashScript(
     buildRedeemScript(config.agentPublic, config.ownerPublic, BigInt(config.maxOutflowSompi), BigInt(config.windowSizeDaa), stateFromConfig(config))
   );
   const changeSpk = payToAddressScript(wallet.address);
-  const estimate = await rpc.getFeeEstimate();
+  const estimate = await vaultRpcRead(() => rpc.getFeeEstimate());
   const feerate = estimate.estimate?.normalBuckets?.[0]?.feerate ?? 100;
 
   let feeSompi = 0n;
@@ -1038,13 +1038,13 @@ async function topUpVault(params: {
 }> {
   const { wallet, config, signingKey, keepFloatSompi } = params;
   if (!config.covenantId) throw new Error("vault has no covenant id; cannot top up");
-  const rpc = await wallet.client();
+  const rpc = await vaultRpcRead(() => wallet.client());
   const vaultUtxo = await selectCurrentVaultUtxo(wallet, config, true);
   let walletUtxos = params.amountSompi === "max" ? await listWalletUtxos(wallet) : await selectWalletUtxos(wallet, params.amountSompi);
   const state = stateFromConfig(config);
   const windowSize = BigInt(config.windowSizeDaa);
   const redeem = buildRedeemScript(config.agentPublic, config.ownerPublic, BigInt(config.maxOutflowSompi), windowSize, state);
-  const info = await rpc.getServerInfo();
+  const info = await vaultRpcRead(() => rpc.getServerInfo());
   const virtualDaa = BigInt(info.virtualDaaScore);
   const lockDaa = virtualDaa > 0n ? virtualDaa - 1n : 0n;
   const resetTargetDaa = maxBigInt(state.windowStartDaa, vaultUtxo.blockDaaScore) + windowSize;
@@ -1060,7 +1060,7 @@ async function topUpVault(params: {
     derivedAddress?.free();
   }
   const changeSpk = payToAddressScript(wallet.address);
-  const estimate = await rpc.getFeeEstimate();
+  const estimate = await vaultRpcRead(() => rpc.getFeeEstimate());
   const feerate = estimate.estimate?.normalBuckets?.[0]?.feerate ?? 100;
 
   let feeSompi = 0n;
@@ -1227,8 +1227,8 @@ function setInputScripts(tx: Transaction, scripts: Array<string | Uint8Array>): 
 }
 
 async function selectCurrentVaultUtxo(wallet: KaspaWallet, config: VaultSpendConfig, requireCovenant: boolean): Promise<NormalizedUtxo> {
-  const rpc = await wallet.client();
-  const { entries } = await rpc.getUtxosByAddresses([config.address]);
+  const rpc = await vaultRpcRead(() => wallet.client());
+  const { entries } = await vaultRpcRead(() => rpc.getUtxosByAddresses([config.address]));
   let matches = normalizeEntries(entries);
   if (requireCovenant) {
     if (!config.covenantId) throw new VaultPreparationError("not_funded", "vault has no covenant id; call vault_deposit first");
@@ -1245,13 +1245,26 @@ async function selectCurrentVaultUtxo(wallet: KaspaWallet, config: VaultSpendCon
 }
 
 async function listWalletUtxos(wallet: KaspaWallet): Promise<NormalizedUtxo[]> {
-  const rpc = await wallet.client();
-  const { entries } = await rpc.getUtxosByAddresses([wallet.address]);
+  const rpc = await vaultRpcRead(() => wallet.client());
+  const { entries } = await vaultRpcRead(() => rpc.getUtxosByAddresses([wallet.address]));
   const normalized = normalizeEntries(entries)
     .filter((entry) => !entry.covenantId)
     .sort((a, b) => (a.amount > b.amount ? -1 : 1));
   if (!normalized.length) throw new VaultPreparationError("insufficient_funds", "wallet has no spendable UTXOs");
   return normalized;
+}
+
+async function vaultRpcRead<T>(operation: () => Promise<T>): Promise<T> {
+  try {
+    return await operation();
+  } catch (error) {
+    if (error instanceof VaultPreparationError) throw error;
+    throw new VaultPreparationError(
+      "rpc_unavailable",
+      "vault preparation RPC data is unavailable",
+      { cause: error },
+    );
+  }
 }
 
 async function selectWalletUtxos(wallet: KaspaWallet, amountHint: bigint): Promise<NormalizedUtxo[]> {

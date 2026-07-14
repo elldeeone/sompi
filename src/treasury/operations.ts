@@ -9,6 +9,7 @@ import {
   type TreasuryOperationKind,
   type TreasuryOperationRecord,
   type TreasuryDriverLease,
+  type TreasurySubmissionOutcome,
 } from "./operation-journal.js";
 
 const OPERATION_KEY = /^[A-Za-z0-9._:-]{1,160}$/;
@@ -78,8 +79,6 @@ export class TreasuryOperationModule {
   /** Only an optimization; durable Journal driver generations are authoritative. */
   private readonly driverOwner = `treasury-driver:${process.pid}:${randomBytes(8).toString("hex")}`;
   private readonly activeDrivePromises = new Map<string, Promise<TreasuryOperationView>>();
-  /** Local proof that this process's previously awaited submit has settled. */
-  private readonly quiescentSubmissions = new Set<string>();
 
   constructor(options: TreasuryOperationModuleOptions) {
     if (!options?.journal || !options.policy) {
@@ -364,11 +363,14 @@ export class TreasuryOperationModule {
     }
 
     if (record.state === "submission_planned" || record.state === "submitted") {
+      const submissionOutcome: TreasurySubmissionOutcome = record.state === "submitted"
+        ? "accepted"
+        : "in_flight";
       record = await this.reconcile(
         record,
         adapter,
         driver,
-        this.quiescentSubmissions.has(operationKey),
+        submissionOutcome,
       );
       if (record.state === "observed") {
         await adapter.commit(
@@ -401,25 +403,25 @@ export class TreasuryOperationModule {
     }
     record = this.journal.requireTreasuryOperation(operationKey);
     const bytes = this.journal.readPreparedTreasuryOperation(operationKey);
-    let submissionSettled = false;
+    let submitted: { readonly transactionId: string };
     try {
-      const submitted = await adapter.submit(record, bytes);
-      submissionSettled = true;
-      this.quiescentSubmissions.add(operationKey);
-      record = this.journal.recordTreasuryOperationSubmissionAccepted(
-        operationKey,
-        submitted.transactionId,
-        driver,
-      );
+      submitted = await adapter.submit(record, bytes);
     } catch {
-      submissionSettled = true;
-      this.quiescentSubmissions.add(operationKey);
       // Any transport/RPC exception is ambiguous. The exact signed bytes and
-      // planned identity remain durable; observation decides whether retry is safe.
+      // planned identity remain durable; temporary absence cannot make retry safe.
       record = this.journal.requireTreasuryOperation(operationKey);
+      record = await this.reconcile(record, adapter, driver, "ambiguous");
+      return view(record);
     }
-    record = await this.reconcile(record, adapter, driver, submissionSettled);
-    if (record.state !== "submission_planned") this.quiescentSubmissions.delete(operationKey);
+    // Journal acceptance is deliberately outside the adapter catch. An exact
+    // successful result must never be downgraded to an ambiguous failure when
+    // cancellation or a stale driver makes the local write reject.
+    record = this.journal.recordTreasuryOperationSubmissionAccepted(
+      operationKey,
+      submitted.transactionId,
+      driver,
+    );
+    record = await this.reconcile(record, adapter, driver, "accepted");
     if (record.state === "observed") {
       await adapter.commit(
         record,
@@ -435,7 +437,7 @@ export class TreasuryOperationModule {
     record: TreasuryOperationRecord,
     adapter: TreasuryOperationAdapter,
     driver?: TreasuryDriverLease,
-    submissionQuiescent = false,
+    submissionOutcome: TreasurySubmissionOutcome = "in_flight",
   ): Promise<TreasuryOperationRecord> {
     if (record.state !== "submission_planned" && record.state !== "submitted") return record;
     const probe = await adapter.observe(
@@ -447,7 +449,7 @@ export class TreasuryOperationModule {
       probe.status,
       probe.detail,
       driver,
-      submissionQuiescent,
+      submissionOutcome,
     );
   }
 

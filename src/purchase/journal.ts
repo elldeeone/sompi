@@ -39,6 +39,7 @@ import type {
   TreasuryOperationObservationStatus,
   TreasuryOperationRecord,
   TreasuryOperationState,
+  TreasurySubmissionOutcome,
   TreasuryDriverClaim,
   TreasuryDriverLease,
 } from "../treasury/operation-journal.js";
@@ -2199,7 +2200,7 @@ export class PurchaseJournal {
         throw new JournalInvariantError("direct Treasury submission was not durably planned");
       }
       if (
-        current.cancellationRequested || current.preparationFenced ||
+        current.preparationFenced ||
         (driver !== undefined && current.effectCapabilityGeneration !== driver.generation)
       ) {
         throw new JournalInvariantError("direct Treasury submission capability is no longer valid");
@@ -2208,7 +2209,7 @@ export class PurchaseJournal {
       const updated = this.db.prepare(
         `UPDATE treasury_operations SET state = 'submitted', submission_in_flight = 0, updated_at_ms = ?
           WHERE operation_key = ? AND state = 'submission_planned'
-            AND cancellation_requested = 0 AND preparation_fenced = 0
+            AND preparation_fenced = 0
             AND submission_in_flight = 1
             AND effect_capability_generation IS NOT NULL
             ${driver ? "AND driver_owner = ? AND driver_generation = ?" : ""}`
@@ -2233,11 +2234,14 @@ export class PurchaseJournal {
     status: TreasuryOperationObservationStatus,
     detail: Readonly<Record<string, unknown>>,
     driver?: TreasuryDriverLease,
-    submissionQuiescent = false,
+    submissionOutcome: TreasurySubmissionOutcome = "in_flight",
   ): TreasuryOperationRecord {
     assertTreasuryOperationKey(operationKey);
     if (!["observed", "not_submitted", "pending"].includes(status)) {
       throw new JournalInvariantError("direct Treasury observation status is invalid");
+    }
+    if (!["in_flight", "ambiguous", "accepted", "proven_not_executed"].includes(submissionOutcome)) {
+      throw new JournalInvariantError("direct Treasury submission outcome is invalid");
     }
     const detailJson = canonicalTreasuryObservationJson(detail);
     if (Buffer.byteLength(detailJson) > 16_384) {
@@ -2248,6 +2252,19 @@ export class PurchaseJournal {
       const current = this.requireTreasuryOperation(operationKey);
       if (!["submission_planned", "submitted", "observed"].includes(current.state)) {
         throw new JournalInvariantError("direct Treasury operation is not awaiting observation");
+      }
+      if (
+        submissionOutcome === "proven_not_executed" &&
+        (
+          status !== "not_submitted" ||
+          current.state !== "submission_planned" ||
+          !current.submissionInFlight ||
+          current.effectCapabilityGeneration === undefined
+        )
+      ) {
+        throw new JournalInvariantError(
+          "direct Treasury non-execution proof is not bound to an effect-possible submission",
+        );
       }
       if (driver && !driverOwns(current, driver, this.timestamp())) {
         throw new JournalInvariantError("direct Treasury observation driver is stale");
@@ -2262,13 +2279,13 @@ export class PurchaseJournal {
       if (status === "pending" || current.state === "observed") {
         return this.requireTreasuryOperation(operationKey);
       }
-      // A pre-submit effect-possible fence is deliberately stronger than an
-      // exact absence observation. The predecessor may still be paused inside
-      // the external call and can resume after this transaction commits.
-      // Preserve the fence, capability, policy capacity, and reconciliation
-      // state until accepted evidence (or a separately proven rejection) is
-      // recorded.
-      if (current.submissionInFlight && status === "not_submitted" && !submissionQuiescent) {
+      // Absence can release the effect fence only after an ambiguous submit
+      // call has actually settled without a result. A live call may resume,
+      // while an exact accepted result is stronger positive evidence than a
+      // temporarily lagging absence observation. Both remain in
+      // Reconciliation until accepted chain evidence or a separately typed
+      // authoritative rejection is recorded.
+      if (status === "not_submitted" && submissionOutcome !== "proven_not_executed") {
         return this.requireTreasuryOperation(operationKey);
       }
       const cancelledAndProvedNotSubmitted =

@@ -10,7 +10,7 @@ import {
 } from "./kaspa-wasm.js";
 import { buildRedeemScript } from "./vault/template.js";
 import { KaspaWallet } from "./wallet.js";
-import { VaultManager, generateOwnerKey } from "./vault.js";
+import { VaultManager, VaultPreparationError, generateOwnerKey } from "./vault.js";
 
 test("vault staging is prepared, submitted, observed, and committed at separate durable edges", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-vault-prepared-"));
@@ -45,8 +45,13 @@ test("vault staging is prepared, submitted, observed, and committed at separate 
     )
   );
   let submitted: Transaction | undefined;
+  let failPoint: "wallet.client" | "getUtxosByAddresses" | "getFeeEstimate" | "getServerInfo" | undefined;
   (wallet as any).client = async () => ({
     getUtxosByAddresses: async (addresses: string[]) => {
+      if (failPoint === "getUtxosByAddresses") {
+        failPoint = undefined;
+        throw new Error("injected pre-sign getUtxosByAddresses timeout");
+      }
       if (addresses.length === 1 && addresses[0] === funded.address) {
         return {
           entries: [
@@ -83,8 +88,20 @@ test("vault staging is prepared, submitted, observed, and committed at separate 
         ],
       };
     },
-    getFeeEstimate: async () => ({ estimate: { normalBuckets: [{ feerate: 100 }] } }),
-    getServerInfo: async () => ({ virtualDaaScore: "100" }),
+    getFeeEstimate: async () => {
+      if (failPoint === "getFeeEstimate") {
+        failPoint = undefined;
+        throw new Error("injected pre-sign getFeeEstimate timeout");
+      }
+      return { estimate: { normalBuckets: [{ feerate: 100 }] } };
+    },
+    getServerInfo: async () => {
+      if (failPoint === "getServerInfo") {
+        failPoint = undefined;
+        throw new Error("injected pre-sign getServerInfo timeout");
+      }
+      return { virtualDaaScore: "100" };
+    },
     getMempoolEntry: async () => {
       throw new Error("transaction not found");
     },
@@ -99,10 +116,32 @@ test("vault staging is prepared, submitted, observed, and committed at separate 
       return { transactionId: String(submitted.finalize()) };
     },
   });
+  const workingClient = (wallet as any).client;
+  (wallet as any).client = async () => {
+    if (failPoint === "wallet.client") {
+      failPoint = undefined;
+      throw new Error("injected pre-sign wallet.client timeout");
+    }
+    return workingClient();
+  };
 
   try {
     const before = vault.config();
     assert.equal(vault.initialAddress(), created.address);
+    for (const stage of [
+      "wallet.client",
+      "getUtxosByAddresses",
+      "getFeeEstimate",
+      "getServerInfo",
+    ] as const) {
+      failPoint = stage;
+      await assert.rejects(
+        vault.prepareSend(wallet, wallet.address, 70_000_000n),
+        (error: unknown) =>
+          error instanceof VaultPreparationError && error.code === "rpc_unavailable",
+        `${stage} must be a typed pre-sign no-effect RPC failure`,
+      );
+    }
     await assert.rejects(
       vault.prepareSend(wallet, wallet.address, 70_000_000n, undefined, 1n),
       /fee exceeds the capacity reserved before signing/

@@ -74,8 +74,8 @@ test("direct Treasury execution persists intent and signed bytes before one subm
   });
 });
 
-test("ambiguous submission stays pending and retries only after exact non-submission proof", async () => {
-  await withFixture(async ({ module, wallet }) => {
+test("ambiguous submission remains fenced through temporary absence and later completes from acceptance evidence", async () => {
+  await withFixture(async ({ journal, module, wallet }) => {
     wallet.submitErrors = 1;
     wallet.probes.push(pending(wallet.transactionId), pending(wallet.transactionId));
     const first = await module.execute({
@@ -93,11 +93,16 @@ test("ambiguous submission stays pending and retries only after exact non-submis
     assert.equal(wallet.submitCalls, 1, "pending observation must never rebroadcast");
 
     wallet.probes.push(notSubmitted(wallet.transactionId), observed(wallet.transactionId));
+    const absent = await module.recover("direct:wallet:ambiguous");
+    assert.equal(absent.state, "submission_planned");
+    assert.equal(absent.retryCount, 0);
+    assert.equal(wallet.submitCalls, 1, "temporary absence must not rebroadcast an ambiguous submission");
+    assert.equal(journal.treasuryPolicyCapacityUsed(), 110n);
+
     const recovered = await module.recover("direct:wallet:ambiguous");
     assert.equal(recovered.state, "completed");
-    assert.equal(recovered.retryCount, 1);
-    assert.equal(wallet.submitCalls, 2);
-    assert.equal(new Set(wallet.submittedArtifacts).size, 1, "retry must reuse exact signed bytes");
+    assert.equal(recovered.retryCount, 0);
+    assert.equal(wallet.submitCalls, 1);
   });
 });
 
@@ -470,6 +475,112 @@ test("cancellation during a paused submit retains the effect fence until observa
     journal.close();
     fs.rmSync(directory, { recursive: true, force: true });
   }
+});
+
+test("cancellation after exact acceptance retains policy through absence and restart for every Treasury adapter", async () => {
+  for (const [kind, capacityUsed] of [
+    ["wallet_send", 110n],
+    ["vault_send", 110n],
+    ["vault_deposit", 10n],
+  ] as const) {
+    await withFixture(
+      async ({ directory, journal, policy, module, wallet, vault, deposit }) => {
+        const adapter = kind === "wallet_send" ? wallet : kind === "vault_send" ? vault : deposit;
+        const operationKey = `direct:${kind}:cancel-after-acceptance`;
+        adapter.setSubmitGate();
+        adapter.probes.push(
+          notSubmitted(adapter.transactionId),
+          observed(adapter.transactionId),
+        );
+        const cancellation = new AbortController();
+        const execution = module.execute({
+          operationKey,
+          kind,
+          destination: DESTINATION,
+          amountAtomic: "100",
+        }, cancellation.signal);
+        await adapter.submitEntered;
+        cancellation.abort();
+        adapter.releaseSubmit();
+
+        const reconciled = await execution;
+        assert.equal(reconciled.state, "submitted");
+        assert.equal(reconciled.cancellationRequested, true);
+        assert.equal(reconciled.recoveryRequired, true);
+        assert.equal(journal.unresolvedTreasuryOperationCount(), 1);
+        assert.equal(journal.treasuryPolicyCapacityUsed(), capacityUsed);
+        assert.throws(
+          () => journal.recordTreasuryOperationObservation(
+            operationKey,
+            "not_submitted",
+            { status: "not_submitted", transactionId: adapter.transactionId },
+            undefined,
+            "proven_not_executed",
+          ),
+          /non-execution proof is not bound/,
+          "exact acceptance cannot be overwritten by a later absence claim",
+        );
+
+        await assert.rejects(
+          module.execute({
+            operationKey: `direct:${kind}:cancel-after-acceptance-successor`,
+            kind: "wallet_send",
+            destination: DESTINATION,
+            amountAtomic: "100",
+          }),
+          PolicyReservationError,
+        );
+
+        const restartedJournal = new PurchaseJournal(path.join(directory, "purchase.sqlite"), {
+          now: () => NOW,
+        });
+        try {
+          const restartedModule = new TreasuryOperationModule({
+            journal: restartedJournal,
+            policy,
+            adapters: [wallet, vault, deposit],
+            feeCeilingAtomic: "10",
+          });
+          const completed = await restartedModule.recover(operationKey);
+          assert.equal(completed.state, "completed");
+          assert.equal(adapter.submitCalls, 1);
+          assert.equal(restartedJournal.treasuryPolicyCapacityUsed(), capacityUsed);
+        } finally {
+          restartedJournal.close();
+        }
+      },
+      { maxPerPaymentAtomic: "110", maxPerHourAtomic: "110" },
+    );
+  }
+});
+
+test("an exact submit result is never downgraded when Journal acceptance fails", async () => {
+  await withFixture(async ({ journal, module, wallet }) => {
+    const original = journal.recordTreasuryOperationSubmissionAccepted.bind(journal);
+    (journal as any).recordTreasuryOperationSubmissionAccepted = () => {
+      throw new Error("injected Journal acceptance failure");
+    };
+    await assert.rejects(
+      module.execute({
+        operationKey: "direct:journal-acceptance-failure",
+        kind: "wallet_send",
+        destination: DESTINATION,
+        amountAtomic: "100",
+      }),
+      /injected Journal acceptance failure/,
+    );
+    const fenced = journal.requireTreasuryOperation("direct:journal-acceptance-failure");
+    assert.equal(fenced.state, "submission_planned");
+    assert.equal(fenced.submissionInFlight, true);
+    assert.equal(wallet.observeCalls, 0);
+    assert.equal(journal.treasuryPolicyCapacityUsed(), 110n);
+
+    (journal as any).recordTreasuryOperationSubmissionAccepted = original;
+    wallet.probes.push(observed(wallet.transactionId));
+    const completed = await module.recover("direct:journal-acceptance-failure");
+    assert.equal(completed.state, "completed");
+    assert.equal(wallet.submitCalls, 1);
+  });
 });
 
 test("a waiter takeover drives its acquired generation instead of re-entering the coalescer", async () => {

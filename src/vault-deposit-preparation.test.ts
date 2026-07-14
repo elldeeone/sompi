@@ -22,7 +22,7 @@ test("initial fragmented deposit and singleton top-up use prepare/submit/observe
   vault.create(500_000_000n, generateOwnerKey().publicKey, 300n);
   const walletScript = payToAddressScript(wallet.address);
   let exhaustedVaultScript: ReturnType<typeof payToScriptHashScript> | undefined;
-  const simulator = new UtxoSimulator(wallet.networkId);
+  const simulator = new UtxoSimulator(wallet.networkId, wallet.address);
   simulator.add(wallet.address, {
     outpoint: { transactionId: "11".repeat(32), index: 0 },
     amount: 100_000_000n,
@@ -44,10 +44,40 @@ test("initial fragmented deposit and singleton top-up use prepare/submit/observe
     blockDaaScore: 3n,
     isCoinbase: false,
   });
-  (wallet as any).client = async () => simulator.rpc();
+  let failClient = false;
+  (wallet as any).client = async () => {
+    if (failClient) {
+      failClient = false;
+      throw new Error("injected pre-sign wallet.client timeout");
+    }
+    return simulator.rpc();
+  };
+  let signatures = 0;
+  const originalSign = wallet.signInput.bind(wallet);
+  (wallet as any).signInput = (...args: Parameters<KaspaWallet["signInput"]>) => {
+    signatures += 1;
+    return originalSign(...args);
+  };
 
   try {
     const original = vault.config();
+    failClient = true;
+    await assert.rejects(
+      vault.prepareDeposit(wallet, "max", 80_000_000n, 20_000_000n),
+      (error: unknown) =>
+        error instanceof VaultPreparationError && error.code === "rpc_unavailable",
+      "wallet.client must be a typed initial-deposit pre-sign failure",
+    );
+    for (const stage of ["wallet_utxos", "getFeeEstimate"] as const) {
+      simulator.failNext(stage);
+      await assert.rejects(
+        vault.prepareDeposit(wallet, "max", 80_000_000n, 20_000_000n),
+        (error: unknown) =>
+          error instanceof VaultPreparationError && error.code === "rpc_unavailable",
+        `${stage} must be a typed initial-deposit pre-sign failure`,
+      );
+      assert.equal(signatures, 0);
+    }
     const prepared = await vault.prepareDeposit(
       wallet,
       "max",
@@ -113,6 +143,22 @@ test("initial fragmented deposit and singleton top-up use prepare/submit/observe
       { mode: 0o600 }
     );
     simulator.virtualDaaScore = 1_000n;
+    const signaturesBeforeTopup = signatures;
+    for (const stage of [
+      "vault_utxos",
+      "wallet_utxos",
+      "getServerInfo",
+      "getFeeEstimate",
+    ] as const) {
+      simulator.failNext(stage);
+      await assert.rejects(
+        vault.prepareDeposit(wallet, 20_000_000n, 0n, 20_000_000n),
+        (error: unknown) =>
+          error instanceof VaultPreparationError && error.code === "rpc_unavailable",
+        `${stage} must be a typed top-up pre-sign failure`,
+      );
+      assert.equal(signatures, signaturesBeforeTopup);
+    }
     const topup = await vault.prepareDeposit(wallet, 20_000_000n, 0n, 20_000_000n);
     assert.equal(topup.depositKind, "topup");
     assert.equal(topup.configUpdate.spentInWindowSompi, "0");
@@ -155,7 +201,7 @@ test("deposit fee ceiling fails before any wallet signature", async () => {
   const vault = new VaultManager(directory, "testnet-10");
   vault.create(500_000_000n, generateOwnerKey().publicKey, 300n);
   const walletScript = payToAddressScript(wallet.address);
-  const simulator = new UtxoSimulator(wallet.networkId);
+  const simulator = new UtxoSimulator(wallet.networkId, wallet.address);
   simulator.add(wallet.address, {
     outpoint: { transactionId: "44".repeat(32), index: 0 },
     amount: 300_000_000n,
@@ -190,7 +236,7 @@ test("maximum deposit that cannot preserve keep-float is a typed no-effect termi
   const vault = new VaultManager(directory, "testnet-10");
   vault.create(500_000_000n, generateOwnerKey().publicKey, 300n);
   const walletScript = payToAddressScript(wallet.address);
-  const simulator = new UtxoSimulator(wallet.networkId);
+  const simulator = new UtxoSimulator(wallet.networkId, wallet.address);
   simulator.add(wallet.address, {
     outpoint: { transactionId: "55".repeat(32), index: 0 },
     amount: 100_000n,
@@ -256,11 +302,19 @@ class UtxoSimulator {
   virtualDaaScore = 100n;
   private readonly entries = new Map<string, SimulatedEntry[]>();
   private readonly transactions: Transaction[] = [];
+  private failure?: "vault_utxos" | "wallet_utxos" | "getFeeEstimate" | "getServerInfo";
 
-  constructor(private readonly networkId: string) {}
+  constructor(
+    private readonly networkId: string,
+    private readonly walletAddress: string,
+  ) {}
 
   add(address: string, entry: SimulatedEntry): void {
     this.entries.set(address, [...(this.entries.get(address) ?? []), entry]);
+  }
+
+  failNext(stage: "vault_utxos" | "wallet_utxos" | "getFeeEstimate" | "getServerInfo"): void {
+    this.failure = stage;
   }
 
   rebind(from: string, to: string, scriptPublicKey: unknown): void {
@@ -272,11 +326,29 @@ class UtxoSimulator {
 
   rpc() {
     return {
-      getUtxosByAddresses: async (addresses: string[]) => ({
-        entries: addresses.flatMap((address) => this.entries.get(address) ?? []),
-      }),
-      getFeeEstimate: async () => ({ estimate: { normalBuckets: [{ feerate: 100 }] } }),
-      getServerInfo: async () => ({ virtualDaaScore: this.virtualDaaScore.toString() }),
+      getUtxosByAddresses: async (addresses: string[]) => {
+        const walletRead = addresses.length === 1 && addresses[0] === this.walletAddress;
+        const expectedFailure = walletRead ? "wallet_utxos" : "vault_utxos";
+        if (this.failure === expectedFailure) {
+          this.failure = undefined;
+          throw new Error(`injected pre-sign ${expectedFailure} timeout`);
+        }
+        return { entries: addresses.flatMap((address) => this.entries.get(address) ?? []) };
+      },
+      getFeeEstimate: async () => {
+        if (this.failure === "getFeeEstimate") {
+          this.failure = undefined;
+          throw new Error("injected pre-sign getFeeEstimate timeout");
+        }
+        return { estimate: { normalBuckets: [{ feerate: 100 }] } };
+      },
+      getServerInfo: async () => {
+        if (this.failure === "getServerInfo") {
+          this.failure = undefined;
+          throw new Error("injected pre-sign getServerInfo timeout");
+        }
+        return { virtualDaaScore: this.virtualDaaScore.toString() };
+      },
       getBlockDagInfo: async () => ({ sink: "aa".repeat(32) }),
       getMempoolEntry: async () => {
         throw new Error("transaction not found");

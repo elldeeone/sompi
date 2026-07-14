@@ -93,6 +93,17 @@ export type TreasuryOperationObservationStatus =
   | "pending";
 
 /**
+ * Local submit completion is not itself proof of non-execution. The owning
+ * driver must distinguish a still-live call, an ambiguous call that settled
+ * without a result, and an exact result durably accepted by the Journal.
+ */
+export type TreasurySubmissionOutcome =
+  | "in_flight"
+  | "ambiguous"
+  | "accepted"
+  | "proven_not_executed";
+
+/**
  * Direct Treasury operations use the Purchase Journal implementation of this
  * interface. It is intentionally not a second store: Purchase and direct
  * capacity reservations must share one SQLite transaction and policy snapshot.
@@ -150,7 +161,7 @@ export interface TreasuryOperationJournal {
     status: TreasuryOperationObservationStatus,
     detail: Readonly<Record<string, unknown>>,
     driver?: TreasuryDriverLease,
-    submissionQuiescent?: boolean,
+    submissionOutcome?: TreasurySubmissionOutcome,
   ): TreasuryOperationRecord;
   completeTreasuryOperation(operationKey: string, driver?: TreasuryDriverLease): TreasuryOperationRecord;
   requireTreasuryOperation(operationKey: string): TreasuryOperationRecord;

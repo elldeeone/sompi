@@ -704,6 +704,7 @@ function treasuryObservationScenario(journal: PurchaseJournal): FaultBoundarySce
         "observed",
         setup.observationDetail,
         setup.driver,
+        "accepted",
       ),
     assertRolledBack(target) {
       assert.equal(target.requireTreasuryOperation(setup.intent.operationKey).state, "submitted");
@@ -1277,7 +1278,13 @@ function treasuryOperationSetup(
     journal.recordTreasuryOperationSubmissionAccepted(intent.operationKey, transactionId, driver);
   }
   if (target === "observed") {
-    journal.recordTreasuryOperationObservation(intent.operationKey, "observed", observationDetail, driver);
+    journal.recordTreasuryOperationObservation(
+      intent.operationKey,
+      "observed",
+      observationDetail,
+      driver,
+      "accepted",
+    );
   }
   return { intent, prepared, observationDetail, driver };
 }
