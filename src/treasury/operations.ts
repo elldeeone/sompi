@@ -76,7 +76,6 @@ export class TreasuryOperationModule {
   private readonly feeCeilingAtomic: string;
   private readonly directTreasuryRetries: number;
   /** Only an optimization; durable Journal driver generations are authoritative. */
-  private readonly preparing = new Set<string>();
   private readonly driverOwner = `treasury-driver:${process.pid}:${randomBytes(8).toString("hex")}`;
   private readonly activeDrivePromises = new Map<string, Promise<TreasuryOperationView>>();
 
@@ -147,10 +146,7 @@ export class TreasuryOperationModule {
   async cancel(operationKey: string): Promise<TreasuryOperationView> {
     const normalizedKey = requireOperationKey(operationKey);
     const current = this.journal.requireTreasuryOperation(normalizedKey);
-    if (
-      current.state === "intent" &&
-      (this.preparing.has(normalizedKey) || current.driverOwner !== undefined)
-    ) {
+    if (current.state === "intent" && current.driverOwner !== undefined) {
       return view(this.journal.requestTreasuryOperationCancellation(normalizedKey));
     }
     return view(
@@ -284,42 +280,37 @@ export class TreasuryOperationModule {
         );
       }
       let prepared;
-      this.preparing.add(operationKey);
       try {
-        try {
-          prepared = await adapter.prepare(record, (destination, amount) => {
-            this.authorize(operationKey, destination, amount);
-          });
-        } catch (error) {
-          if (isTerminalPreEffectFailure(error)) {
-            return view(this.journal.failTreasuryOperationPreparation(operationKey, error.code, driver));
-          }
-          if (isTransientPreparationFailure(error)) {
-            const updated = this.journal.recordTreasuryPreparationRetry(
-              operationKey,
-              "transient_preparation_failure",
-              driver,
-            );
-            if (updated.cancellationRequested) {
-              return view(this.journal.failTreasuryOperationPreparation(operationKey, "cancelled_before_effect", driver));
-            }
-            if (updated.retryCount >= updated.retryLimit) {
-              throw new TreasuryOperationError(
-                "direct Treasury preparation retry limit was reached; recover or replace the operation",
-                { cause: error }
-              );
-            }
-          } else {
-            this.journal.fenceTreasuryOperationPreparation(
-              operationKey,
-              "unknown_preparation_failure",
-              driver,
-            );
-          }
-          throw error;
+        prepared = await adapter.prepare(record, (destination, amount) => {
+          this.authorize(operationKey, destination, amount);
+        });
+      } catch (error) {
+        if (isTerminalPreEffectFailure(error)) {
+          return view(this.journal.failTreasuryOperationPreparation(operationKey, error.code, driver));
         }
-      } finally {
-        this.preparing.delete(operationKey);
+        if (isTransientPreparationFailure(error)) {
+          const updated = this.journal.recordTreasuryPreparationRetry(
+            operationKey,
+            "transient_preparation_failure",
+            driver,
+          );
+          if (updated.cancellationRequested) {
+            return view(this.journal.failTreasuryOperationPreparation(operationKey, "cancelled_before_effect", driver));
+          }
+          if (updated.retryCount >= updated.retryLimit) {
+            throw new TreasuryOperationError(
+              "direct Treasury preparation retry limit was reached; recover or replace the operation",
+              { cause: error }
+            );
+          }
+        } else {
+          this.journal.fenceTreasuryOperationPreparation(
+            operationKey,
+            "unknown_preparation_failure",
+            driver,
+          );
+        }
+        throw error;
       }
       if (!record.policyDigest) throw new TreasuryOperationError("Treasury operation has no durable policy snapshot");
       try {
