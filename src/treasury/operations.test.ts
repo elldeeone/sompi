@@ -384,7 +384,7 @@ test("Vault send and deposit takeovers are observation-only while a submit prede
       journal,
       policy,
       adapters: [
-        kind === "wallet_send" ? adapter : new FakeAdapter("wallet_send", "b"),
+        new FakeAdapter("wallet_send", "b"),
         kind === "vault_send" ? adapter : new FakeAdapter("vault_send", "c"),
         kind === "vault_deposit" ? adapter : new FakeAdapter("vault_deposit", "d"),
       ],
