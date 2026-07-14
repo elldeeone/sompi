@@ -231,6 +231,31 @@ test("submit requires one fresh observation proof and cross-checks the returned 
   });
 });
 
+test("readiness issued by another adapter instance cannot authorize recovery submission", async () => {
+  await withFixture(async (fixture) => {
+    const prepared = await fixture.prepare();
+    fixture.observeWith((request) => safeEvidence(request));
+    const observed = await fixture.module.observe(prepared.preparedBytes);
+    if (observed.status !== "safe_to_submit") throw new Error("expected readiness");
+
+    const unobservedAdapter = fixture.newModule();
+    await assert.rejects(
+      unobservedAdapter.submit(prepared.preparedBytes, observed.readiness),
+      /was not issued by this staging recovery observer/
+    );
+    assert.equal(fixture.submissionCalls.length, 0);
+
+    const reobserved = await unobservedAdapter.observe(prepared.preparedBytes);
+    if (reobserved.status !== "safe_to_submit") throw new Error("expected fresh readiness");
+    const accepted = await unobservedAdapter.submit(
+      prepared.preparedBytes,
+      reobserved.readiness
+    );
+    assert.equal(accepted.status, "accepted");
+    assert.equal(fixture.submissionCalls.length, 1);
+  });
+});
+
 test("ambiguous submit consumes readiness; a new proof is required before a proof-backed retry", async () => {
   await withFixture(async (fixture) => {
     const prepared = await fixture.prepare();

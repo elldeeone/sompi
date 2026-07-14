@@ -335,7 +335,10 @@ export class AbandonedStagingRecovery {
   private readonly operationTimeoutMs: number;
   private readonly readinessTtlMs: number;
   private readonly now: () => number;
-  private readonly consumedReadiness = new Set<string>();
+  private readonly readinessProofs = new Map<
+    string,
+    Readonly<{ state: "issued" | "consumed"; expiresAtMs: number }>
+  >();
   private readonly addressCodec = new KaspaTestnet10AddressCodec();
 
   constructor(options: AbandonedStagingRecoveryOptions) {
@@ -446,13 +449,24 @@ export class AbandonedStagingRecovery {
     const { envelope, preparedDigest } = this.requirePrepared(preparedBytes);
     const now = readClock(this.now);
     validateReadiness(readiness, envelope, preparedDigest, now);
-    if (this.consumedReadiness.has(readiness.proofDigest)) {
+    this.pruneReadinessProofs(now);
+    const issued = this.readinessProofs.get(readiness.proofDigest);
+    if (!issued) {
+      throw adapterError(
+        "readiness_required",
+        "staging recovery readiness was not issued by this staging recovery observer"
+      );
+    }
+    if (issued.state === "consumed") {
       throw adapterError(
         "readiness_replay",
         "staging recovery readiness proof was already consumed; observe the race again"
       );
     }
-    this.consumedReadiness.add(readiness.proofDigest);
+    this.readinessProofs.set(readiness.proofDigest, Object.freeze({
+      state: "consumed",
+      expiresAtMs: issued.expiresAtMs,
+    }));
     if (signal.aborted) throw abortError(signal);
     const deadlineAtMs = checkedDeadline(now, this.operationTimeoutMs);
     const submissionBase = {
@@ -817,6 +831,11 @@ export class AbandonedStagingRecovery {
           ...proofBase,
           proofDigest: digestCanonical(proofBase),
         });
+        this.pruneReadinessProofs(observedAtMs);
+        this.readinessProofs.set(readiness.proofDigest, Object.freeze({
+          state: "issued",
+          expiresAtMs: readiness.expiresAtMs,
+        }));
         return Object.freeze({ status: "safe_to_submit" as const, readiness, evidenceDigest });
       }
       return Object.freeze({ status: "pending" as const, evidenceDigest });
@@ -852,6 +871,12 @@ export class AbandonedStagingRecovery {
       return recoveryWon(envelope, recovery.finality, evidenceDigest);
     }
     return conflict("unknown_staging_spender", evidenceDigest);
+  }
+
+  private pruneReadinessProofs(now: number): void {
+    for (const [proofDigest, readiness] of this.readinessProofs) {
+      if (readiness.expiresAtMs <= now) this.readinessProofs.delete(proofDigest);
+    }
   }
 }
 
