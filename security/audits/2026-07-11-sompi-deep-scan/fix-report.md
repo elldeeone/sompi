@@ -1,6 +1,6 @@
 # Security remediation report
 
-Status: **verified — Phase 2D review remediation ready for independent re-review**
+Status: **verified — Phase 2D remediation round 2 ready for independent re-review**
 
 Target baseline: `4ebb82d4f82bac46ae3addd112c4752f29630a8a`
 
@@ -238,7 +238,7 @@ Ordered verification:
 
 ### Milestone 4: Phase 2D independent-review remediation
 
-Status: **verified — ready for independent re-review**
+Status: **superseded and reopened by the independent re-review of `6619813`**
 
 The independent review of the initial Phase 2D commits found ten reportable
 findings, three additional engineering blockers, and the deferred post-sign
@@ -333,7 +333,96 @@ durable report and its existing temporary mirror are byte-identical at:
 
 `/tmp/codex-security-scans-u5YlLn/sompi/4ebb82d4f82bac46ae3addd112c4752f29630a8a_20260711T145619Z_75jg_ull/artifacts/fix_report.md`
 
-Residual risk is limited to the intentionally testnet-only profile, evolving
-external AP2/x402 standards, the in-process Authority mode used by the live
-proof, and the stale legacy direct-Treasury PoC harness. The branch is ready
-for independent re-review; this report does not claim independent acceptance.
+Residual risk was reopened by the subsequent independent review and is
+recorded below. This milestone does not claim independent acceptance.
+
+### Milestone 5: Phase 2D stale-lifecycle remediation
+
+Status: **verified — ready for independent re-review**
+
+The independent re-review of `6619813135f78bfcfb5a9aceffca5a8959c337a0`
+reopened three reportable lifecycle findings and one transaction-safety blocker
+from the prior Phase 2D remediation. The repair was executed under the
+`codex-security:fix-finding` workflow and committed locally as:
+
+- `801df30` — amend ADR-0014 with the effect-possible fence, exact driver
+  ownership, compound count, and typed preparation contracts;
+- `2088348` — close the durable Journal, Treasury, compound-admission, and
+  takeover lifecycle defects;
+- `1df2f9c` — add stale-predecessor takeover regressions;
+- `91f85cd` — add Vault-send/deposit and cancellation takeover regressions;
+- `a3e5a20` — classify deterministic Vault preparation failures exhaustively.
+
+The four repaired defects are:
+
+1. `SOMPI-TREASURY-TAKEOVER-001`: submission enters a durable
+   `submission_in_flight` effect-possible fence before the external call;
+   expired successors observe only and never automatically submit a second
+   copy or release protected capacity.
+2. `SOMPI-REMEDIATION-ADMISSION-001`: a retained compound Purchase receives
+   the same durable completed count lease as an ordinary Purchase, and the
+   count reconstructs identically after restart.
+3. `SOMPI-TREASURY-001-RESIDUAL-VAULT`: deterministic Vault send, initial
+   deposit, top-up, fee, balance, and window failures use `VaultPreparationError`
+   codes; unknown exceptions are rethrown and remain fenced rather than being
+   guessed transient.
+4. `SOMPI-TREASURY-DRIVER-WAIT-001`: initial acquisition and waiter takeover
+   share `driveClaimed` with the exact acquired lease, heartbeat, abort, and
+   generation-scoped release; a successful claim never re-enters the same-key
+   coalescer.
+
+Baseline reproduction before the repairs recorded the compound count at zero
+after retaining three Purchases under a one-Purchase budget, three Vault
+retries retaining the Treasury slot across restart, a waiter takeover with no
+driver work and a poisoned promise, and a paused predecessor followed by a
+duplicate submit plus unsafe cancellation terminalization.
+
+Fixed-tree PoC dispositions are direct boundary evidence, not hash guards:
+
+- Compound: `used=1`, `saturated=true`, and both cap+1 attempts were rejected
+  before creating a second Purchase; restart preserved the same count. The
+  legacy vulnerable assertion exits nonzero because it still expects bypass.
+- Vault: the real `VaultDepositTreasuryOperationAdapter` produced a typed
+  `VaultPreparationError`, terminalized on attempt one with retry count 0,
+  capacity 0, no signature, and zero RPC/vault submissions; restart preserved
+  `failed_terminal` and a successor was admitted.
+- Waiter: both same-key callers fulfilled `completed` after takeover with
+  exactly one prepare, submit, observe, and commit; restart performed no
+  duplicate work.
+- Stale predecessor: generation 1 paused inside submit, generation 2
+  performed zero submits and remained `submission_planned` with capacity
+  retained, generation 1 resumed as the only submitter, and accepted evidence
+  completed the operation exactly once. Cancellation during the pause also
+  retained capacity and reconciliation until evidence resolved.
+
+Verification after the repairs:
+
+1. Focused lifecycle/admission/Vault/Treasury tests passed **36/36**. The
+   complete `npm test` passed **383 tests: 382 pass, 0 fail, 1 documented
+   root-only skip**. All **13/13** offline smoke checks passed.
+2. The clean-cutover Journal schema is epoch **10**. Epochs **1–9** are
+   rejected untouched; no compatibility reader or migration path was added.
+3. `npm pack --json` and the packed-artifact verifier passed; the generated
+   archive was removed after verification.
+4. The pinned live Testnet-10 harness used `ws://10.0.3.26:17210/` and the
+   existing funded wallet, reached `receipted`, and recorded Purchase
+   `pur_ET773zjA5c6gi7kcE3Fblg`, transaction
+   `4f5338ce357e68ab1878a1a163e5d7b8551c1860166b20afb1e6e93354c9a985`, and
+   report digest
+   `9413e3960dcdb483ff8c71d8055a892bac27a1c7c8ac3fdad0675e217d4349d2`.
+   This harness uses the repository's in-process auto-approved Authority
+   fixture and does not claim human-present or separate-UID Authority
+   conformance.
+5. The final adversarial diff review covered stale external-effect
+   capabilities, duplicate submit, cancellation/plan races, unsafe
+   terminalization, waiter promise cycles, quota drift, unknown-error
+   misclassification, evidence ownership, secret leakage, dead compatibility
+   paths, and AP2/x402 boundary drift.
+
+The four lifecycle findings are fixed in this remediation round. All 21 scan
+findings are accounted for: 4 Operator Provisioning, 13 Chain Evidence/
+finality, and 4 bounded lifecycle findings — **four, not eight**. ADR-0014 was
+amended; no additional accepted design decision changed. No sibling
+repository, AP2/x402 wire object, covenant rule, deployment, or remote branch
+was changed. The report is ready for independent re-review and does not claim
+independent acceptance.

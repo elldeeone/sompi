@@ -1,6 +1,6 @@
 # Sompi AP2 + Kaspa-x402 implementation plan
 
-Status: **Phase 2D review remediation complete — ready for independent re-review; Phase 3 not started**
+Status: **Phase 2D remediation round 2 verified — ready for independent re-review; Phase 3 not started**
 
 Architecture: [`docs/architecture/SOMPI_ARCHITECTURE.md`](architecture/SOMPI_ARCHITECTURE.md)
 
@@ -200,11 +200,14 @@ path.
   CAS, Authority abort propagation, prompt-before-replay admission, compound
   Purchase/evidence admission, digest-scoped publication ownership, and the
   three additional engineering blockers.
-- [x] Bump the clean-cutover Journal schema to epoch 9 and reject epochs 1–8
+- [x] Correct the follow-up review defects: stale Treasury predecessors cannot
+  outlive takeover, compound Purchases remain counted, Vault preparation
+  outcomes are exhaustive, and waiter takeover drives the lease it acquired.
+- [x] Bump the clean-cutover Journal schema to epoch 10 and reject epochs 1–9
   untouched; verify migration and restart behavior.
-- [x] Rerun all ten independent-review PoCs, the four original Phase 2D PoCs,
-  focused lifecycle suites, the complete npm test, offline smoke, package
-  verification, and the pinned live Testnet-10 proof.
+- [x] Rerun the three canonical follow-up PoCs, the Treasury takeover safety
+  PoC, focused lifecycle suites, the complete npm test, all 13 offline smoke
+  checks, package verification, and the pinned live Testnet-10 proof.
 
 Gate:
 

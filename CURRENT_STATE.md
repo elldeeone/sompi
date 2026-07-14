@@ -4,7 +4,7 @@ Last updated: **2026-07-14**
 
 ## Plain-English status
 
-**Phase 2D review remediation is complete and ready for independent re-review.**
+**Phase 2D remediation round 2 is verified and ready for independent re-review.**
 The first human-present AP2 + Kaspa-x402 exact vertical remains testnet-only;
 the post-scan hardening gates now pass through the bounded Authority,
 Purchase/Journal, Evidence, MCP, and direct-Treasury lifecycles. Phase 3 has
@@ -29,11 +29,10 @@ branch is ready for independent re-review and Phase 3 has not started.
   `ap2-kaspa-purchase-core` at the required
   `17cce287fb0006aee9dd5f36697b58d770054e2f`.
 - Required reviewed target: `082def29636fe0a6802240ee358f867c34667b4c`.
-- Phase 2D remediation commits: `9420aff` (`enforce bounded Phase 2D
-  lifecycle ownership`), `fdedcad` (`close review lifecycle race
-  boundaries`), `3664e76` (`preserve wallet chain observation bindings`),
-  and `7e2fa5a` (`remove in-memory Treasury lifecycle authority`). The
-  worktree is named and no remote branch was changed.
+- Phase 2D remediation commits through the independent-review repair round:
+  `9420aff`, `fdedcad`, `3664e76`, `7e2fa5a`, `801df30`, `2088348`,
+  `1df2f9c`, `91f85cd`, and `a3e5a20`. The worktree is named and no remote
+  branch was changed.
 - Latest implementation milestone: `4c6fc8f` (`Centralize trusted chain
   evidence`).
 - Untouched post-scan baseline: `npm test` passed with 339 tests, one privileged
@@ -120,8 +119,10 @@ Phase 2C is complete in `4c6fc8f`:
    `ws://10.0.3.26:17210/` plus `https://api-tn10.kaspa.org/`.
 
 The initial Phase 2D implementation was reviewed independently against
-`082def29636fe0a6802240ee358f867c34667b4c` and reopened. Review remediation is
-complete in local commits `9420aff`, `fdedcad`, `3664e76`, and `7e2fa5a`:
+`082def29636fe0a6802240ee358f867c34667b4c` and reopened. The first remediation
+round (`9420aff`, `fdedcad`, `3664e76`, `7e2fa5a`) was itself re-reviewed and
+the prior completion claim was withdrawn. The current repair round is recorded
+in local commits `801df30`, `2088348`, `1df2f9c`, `91f85cd`, and `a3e5a20`:
 
 1. Treasury now has a Journal-owned reducer/command boundary, durable driver
    owner and generation, bounded takeover, effect capabilities, typed
@@ -140,34 +141,32 @@ complete in local commits `9420aff`, `fdedcad`, `3664e76`, and `7e2fa5a`:
 4. The three additional engineering blockers are covered: production Authority
    uses the manifest socket cap, Journal startup is owner/deadline aware, and
    shared-digest reconstruction counts unique artifacts once.
-5. The clean-cutover Journal schema is epoch 9; epochs 1 through 8 are rejected
+5. The clean-cutover Journal schema is epoch 10; epochs 1 through 9 are rejected
    untouched. No central scheduler, AP2/x402 wire change, Kaspa-x402 change,
    sibling-repository change, deployment, or remote branch change was made.
-6. Focused remediation/config/lifecycle tests passed 81/81. The complete
-   suite passed 377 tests: 376 pass, 0 fail, 1 documented root-only skip.
-   Offline smoke passed all 13 checks. The package verifier passed for 173
-   entries, 5,034,044 packed bytes, and 14,347,715 unpacked file bytes.
+6. Focused lifecycle/admission/Vault/Treasury tests passed 36/36. The complete
+   suite passed 383 tests: 382 pass, 0 fail, 1 documented root-only skip.
+   Offline smoke passed all 13 checks. The final 173-entry package verifier
+   passed and the generated archive was removed.
 
-The ten review PoCs all stopped at repaired invariants: signal forwarding,
-bounded replay, compound admission, durable MCP cancellation, shared-digest
-ownership, cancel/plan CAS, exact absence release, single-driver execution,
-typed preparation failure, and preparation-fence ownership. The four original
-Phase 2D PoCs likewise stopped at fixed behavior; the direct-Treasury harness
-has only a stale reviewed-revision hash guard, so the current-boundary direct
-regressions are authoritative. The four validated lifecycle findings, not
-eight, are now fixed and all 21 scan findings are accounted for.
+The ten first-round review PoCs stopped at their repaired invariants, and the
+three follow-up finding PoCs plus Treasury takeover safety PoC now stop at the
+current repaired boundaries. The compound and Vault legacy assertions exit
+nonzero because they still expect the vulnerable outcome; their fixed output
+and direct current-boundary regressions are authoritative. The four validated
+lifecycle findings, not eight, are now fixed and all 21 scan findings are
+accounted for.
 
-Live Testnet-10 proof was run and resumed from an isolated bootstrap recovery
-state against the pinned `ws://10.0.3.26:17210/` node plus the independent
-HTTPS witness. The public-facts report is `/tmp/sompi-phase2d-live-evidence/report.json`
-with digest `c7e94f421414f30ec1c800951315319e76ba33ac74b6f82d4599b67fa0709257`;
-it reached `receipted` for Purchase `pur_sT4BfCHohfrU3mOMJ_GYsg`, exact
-transaction `c98749c8871f2c9e7d8aa38d7369149eef7c63d31a707ddb87acbbdae2ddf451`,
-Merchant outpoint `:1`, confirmed bootstrap/KIP-10/vault evidence, and one
-unique exact transaction across duplicate requests. This run used the
-repository's in-process auto-approved Authority fixture, so it does not claim
-human-present terminal or separate-UID Authority conformance; those seams have
-hermetic production-wrapper and abort regression coverage.
+Live Testnet-10 proof used the pinned `ws://10.0.3.26:17210/` node and the
+existing funded wallet. The report is
+`/tmp/sompi-phase2d-remediation-live-evidence/report.json` with digest
+`9413e3960dcdb483ff8c71d8055a892bac27a1c7c8ac3fdad0675e217d4349d2`; it
+reached `receipted` for Purchase `pur_ET773zjA5c6gi7kcE3Fblg` with exact
+transaction `4f5338ce357e68ab1878a1a163e5d7b8551c1860166b20afb1e6e93354c9a985`
+and Merchant outpoint `:1`. This run used the repository's in-process
+auto-approved Authority fixture, so it does not claim human-present terminal
+or separate-UID Authority conformance; those seams have hermetic
+production-wrapper and abort regression coverage.
 
 Phase 0 is complete:
 
@@ -226,6 +225,38 @@ review target.
 
 No remote push, package publish, deployment, or sibling-repository change was
 performed.
+
+## Phase 2D remediation round 2 verification
+
+The sealed re-review of `6619813135f78bfcfb5a9aceffca5a8959c337a0` identified
+three reportable defects and one Treasury safety blocker. The corrected
+boundaries now prove that a stale predecessor cannot be replaced by an
+automatic second submit, every retained compound Purchase consumes one count
+allocation across restart, deterministic Vault failures terminalize as typed
+no-effect outcomes, and waiter takeover drives the exact acquired lease.
+
+- Journal schema epoch: **10**. Epochs **1–9** are rejected without
+  compatibility readers or mutation.
+- Focused lifecycle/admission/Vault/Treasury suite: **36 pass, 0 fail, 0
+  skipped**. Complete `npm test`: **383 tests, 382 pass, 0 fail, 1 skip**;
+  the only skip is the root-only file-ownership test. Offline smoke: **13/13
+  checks pass**.
+- Fixed-tree PoCs: compound output is `used=1`, saturated, and cap+1 is
+  rejected after restart; Vault output is `failed_terminal` on attempt one
+  with retry count 0 and capacity 0; waiter takeover settles both same-key
+  callers with one prepare/submit/observe/commit; stale takeover performs one
+  submit, successor submit count 0, and retains capacity until observation.
+- Package verification passed for the final archive; the generated archive was
+  removed. The live Testnet-10 harness against the pinned
+  `ws://10.0.3.26:17210/` node reached `receipted` for Purchase
+  `pur_ET773zjA5c6gi7kcE3Fblg` with transaction
+  `4f5338ce357e68ab1878a1a163e5d7b8551c1860166b20afb1e6e93354c9a985` and
+  report digest
+  `9413e3960dcdb483ff8c71d8055a892bac27a1c7c8ac3fdad0675e217d4349d2`.
+  This live harness uses an in-process auto-approved Authority fixture and
+  does not claim separate-UID human-present Authority conformance.
+
+The next action is another independent review. Phase 3 has not started.
 
 ## Next action
 
