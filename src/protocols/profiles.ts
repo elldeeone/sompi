@@ -21,23 +21,23 @@ export const SUPPORTED_PROTOCOL_PROFILES = Object.freeze({
     allowMainnet: false,
     packages: Object.freeze({
       core: Object.freeze({
-        version: "0.1.0-alpha.6",
-        integrity: "sha512-LKlqnX6p3mZSNRimUEr0J5p5odcgoYK2n2STHi6pfnUNhUejqXmFJJNYz0Vo9f2Utas4vLAGO1KcsioBUIFhMg==",
+        version: "0.1.0-alpha.8",
+        integrity: "sha512-UBY4g9jBZrJyd44zbsla01L2wbN+UQeButAiuEeFUd4EdGwVyR2qxMf1B4hApXBSvrOeH9UZQzhWkBD+Z3WT4A==",
       }),
       covenant: Object.freeze({
-        version: "0.1.0-alpha.6",
-        integrity: "sha512-hZSmIMYD0AHGc+cROZ/OlAoHbooGcFmUYn3bvHWCMt1AK310mqKCVyCqWXd0dl2B4K6455UwGfAr1NHmgqWl8Q==",
+        version: "0.1.0-alpha.8",
+        integrity: "sha512-HWySEyuNpzFDH4vVZRsUCnMLWWt2ou3sp1XEU+gaycl3O/7fWJPzWo1MYosZzPkS2newL6lXQSr/OR/YQ4wSag==",
       }),
       client: Object.freeze({
-        version: "0.1.0-alpha.6",
-        integrity: "sha512-BEyiCDh7tdMJxOmtlKj/8yxnqskF5SbxcbdcSeTkjHXVTmzm7rBkgQ69Q56DWEvaevtoGVolBrBjcN/Sm7TTdQ==",
+        version: "0.1.0-alpha.8",
+        integrity: "sha512-n36rG2nYDrN7Dgu5jlh16390k/Z5sOnsj40a347ir8C9U/X/tlgPY24KB0YmUqVmxEOBYRAw2pAEKI/qDqIEwA==",
       }),
       server: Object.freeze({
-        version: "0.1.0-alpha.6",
-        integrity: "sha512-Wi84DBsbvxgszJxgw5afjkEDGPR4kdN1CvY/n32YRFRSmDbPup8TGf3m2GyyK2V4FQWcdwP9FsS07kOLthLfkA==",
+        version: "0.1.0-alpha.8",
+        integrity: "sha512-X5ax8oWGfJlxQqh2RaEQYHw0wQKbRR/iFoeJ9/2w93oNsOC++svNEA/MHlR4SSAiukdXI6PizcsYq0KwPi6jsA==",
       }),
     }),
-    npmGitCommit: "28ac222d3a375b9a2a56c11396f388086eeeae76",
+    npmGitCommit: "d3ef63ebfb72ef5139993e75804fcc846a1f9487",
   }),
   sqlite: Object.freeze({
     implementation: "better-sqlite3",

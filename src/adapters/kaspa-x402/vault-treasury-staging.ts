@@ -30,7 +30,7 @@ import type {
   FinalityFloor,
 } from "../../chain-evidence/types.js";
 import { serializeScriptPublicKey } from "./address-codec.js";
-import type { DurableTreasuryStagingSeam } from "./exact-payment-module.js";
+import type { TreasuryStagingDriver } from "./exact-payment-module.js";
 import { SOMPI_EXACT_FEE_POLICY } from "./exact-transaction-builder.js";
 import {
   StagingKeyStore,
@@ -56,9 +56,9 @@ export const TREASURY_STAGING_OBSERVATION_PROFILE = OBSERVATION_PROFILE;
 export const TREASURY_STAGING_OBSERVATION_MEDIA_TYPE = OBSERVATION_MEDIA_TYPE;
 export const TREASURY_STAGING_OBSERVATION_VERIFIER_ID = VERIFIER_ID;
 
-type PrepareInput = Parameters<DurableTreasuryStagingSeam["prepare"]>[0];
-type SubmitInput = Parameters<DurableTreasuryStagingSeam["submit"]>[0];
-type ObserveInput = Parameters<DurableTreasuryStagingSeam["observe"]>[0];
+type PrepareInput = Parameters<TreasuryStagingDriver["prepare"]>[0];
+type SubmitInput = Parameters<TreasuryStagingDriver["submit"]>[0];
+type ObserveInput = Parameters<TreasuryStagingDriver["observe"]>[0];
 
 export interface VaultTreasuryStagingEnvelope {
   readonly version: 1;
@@ -77,6 +77,7 @@ export interface VaultTreasuryStagingEnvelope {
     readonly network: typeof NETWORK;
     readonly payTo: string;
     readonly additionalCostCeilingAtomic: string;
+    readonly exactProfile: "standard-native" | "additive";
     readonly additiveThresholdAtomic: string;
     readonly exactFeeAtomic: string;
   };
@@ -219,7 +220,7 @@ export class VaultTreasuryStagingError extends Error {
 }
 
 /** Concrete durable Treasury staging adapter for the exact-only profile. */
-export class VaultTreasuryStaging implements DurableTreasuryStagingSeam {
+export class VaultTreasuryStaging implements TreasuryStagingDriver {
   private readonly vault: VaultManager;
   private readonly wallet: KaspaWallet;
   private readonly keyStore: StagingKeyStore;
@@ -393,9 +394,9 @@ export class VaultTreasuryStaging implements DurableTreasuryStagingSeam {
     facts: PreparationFacts
   ): Promise<PreparedVaultSpend> {
     const minimumExactFunding = checkedAdd(
-      checkedAdd(facts.price, facts.threshold, "price and KIP-10 threshold"),
+      facts.price,
       facts.exactFee,
-      "minimum exact staging amount"
+      "price and bounded exact fee"
     );
     const grossBound = checkedAdd(
       facts.price,
@@ -404,12 +405,12 @@ export class VaultTreasuryStaging implements DurableTreasuryStagingSeam {
     );
     if (minimumExactFunding > grossBound) {
       throw new VaultTreasuryStagingError(
-        "authorized additional-cost ceiling cannot fund the KIP-10 threshold and exact fee"
+        "authorized additional-cost ceiling cannot fund the exact fee"
       );
     }
 
     // `VaultManager.prepareSend` performs its own bounded fee-convergence
-    // loop. Stage only the exact amount required by the immutable KIP-10
+    // loop. Stage only the amount required by the immutable alpha.8 exact
     // transaction; an authorization ceiling is a bound, not spare value that
     // should be moved out of the vault into an ephemeral change address.
     const prepared = await this.vault.prepareSend(
@@ -470,6 +471,7 @@ interface PreparationFacts {
   readonly merchantId: string;
   readonly resourceFingerprint: Sha256Digest;
   readonly price: bigint;
+  readonly exactProfile: "standard-native" | "additive";
   readonly threshold: bigint;
   readonly exactFee: bigint;
   readonly additionalCostCeiling: bigint;
@@ -540,10 +542,10 @@ function preparationFacts(input: Readonly<PrepareInput>): PreparationFacts {
       "exact payment requirements do not match approved Checkout Terms"
     );
   }
-  const threshold = atomic(
-    parsed.extra.additiveThresholdSompi,
-    "KIP-10 additive threshold"
-  );
+  const exactProfile = parsed.extra.profile;
+  const threshold = exactProfile === "additive"
+    ? atomic(parsed.extra.additiveThresholdSompi, "KIP-10 additive threshold")
+    : 0n;
   const exactFee = atomic(SOMPI_EXACT_FEE_POLICY.feeSompi, "pinned exact fee");
   return Object.freeze({
     purchaseId,
@@ -555,6 +557,7 @@ function preparationFacts(input: Readonly<PrepareInput>): PreparationFacts {
     merchantId: execution.terms.merchant.id,
     resourceFingerprint: execution.terms.resourceFingerprint,
     price,
+    exactProfile,
     threshold,
     exactFee,
     additionalCostCeiling,
@@ -591,8 +594,10 @@ function parseExactRequirement(
   if (
     accepted.scheme !== "exact" ||
     accepted.network !== NETWORK ||
-    accepted.extra.binding !== "kaspa-exact-v1" ||
-    accepted.extra.templateId !== "kaspa-x402-kip10-additive-v1" ||
+    accepted.extra.binding !== "kaspa-exact-v2" ||
+    (accepted.extra.profile !== "standard-native" && accepted.extra.profile !== "additive") ||
+    (accepted.extra.profile === "additive" &&
+      accepted.extra.templateId !== "kaspa-x402-kip10-additive-v1") ||
     accepted.extra.transactionEncoding !== "kaspa-sdk-safe-json-v2.0.0" ||
     !isRecord(extension) ||
     !isRecord(extension.info) ||
@@ -628,6 +633,7 @@ function envelopeFromPrepared(
       network: NETWORK,
       payTo: facts.payTo,
       additionalCostCeilingAtomic: facts.additionalCostCeiling.toString(),
+      exactProfile: facts.exactProfile,
       additiveThresholdAtomic: facts.threshold.toString(),
       exactFeeAtomic: facts.exactFee.toString(),
     }),
@@ -692,6 +698,7 @@ export function decodeVaultTreasuryStagingEnvelope(
     "authorizationEvidenceDigest",
     "checkoutDigest",
     "exactFeeAtomic",
+    "exactProfile",
     "merchantId",
     "network",
     "payTo",
@@ -725,6 +732,13 @@ export function decodeVaultTreasuryStagingEnvelope(
   const price = atomic(binding.priceAtomic, "bound Merchant price", true);
   const ceiling = atomic(binding.additionalCostCeilingAtomic, "bound additional-cost ceiling");
   const threshold = atomic(binding.additiveThresholdAtomic, "bound KIP-10 threshold");
+  if (
+    (binding.exactProfile !== "standard-native" && binding.exactProfile !== "additive") ||
+    (binding.exactProfile === "standard-native" && threshold !== 0n) ||
+    (binding.exactProfile === "additive" && threshold === 0n)
+  ) {
+    throw new VaultTreasuryStagingError("staging exact profile and additive threshold disagree");
+  }
   const exactFee = atomic(binding.exactFeeAtomic, "bound exact fee");
   if (exactFee.toString() !== SOMPI_EXACT_FEE_POLICY.feeSompi) {
     throw new VaultTreasuryStagingError("staging envelope exact fee policy changed");
@@ -838,9 +852,9 @@ export function decodeVaultTreasuryStagingEnvelope(
   const gross = checkedAdd(amount, fee, "signed staging Treasury outflow");
   const grossBound = checkedAdd(price, ceiling, "bound staging Treasury outflow");
   const minimum = checkedAdd(
-    checkedAdd(price, threshold, "bound exact price and threshold"),
+    price,
     exactFee,
-    "bound exact funding requirement"
+    "bound exact price and fee"
   );
   if (gross > grossBound || amount < minimum) {
     throw new VaultTreasuryStagingError(
@@ -850,7 +864,7 @@ export function decodeVaultTreasuryStagingEnvelope(
   const change = amount - minimum;
   if (
     change > 0n &&
-    change < BigInt(SOMPI_EXACT_FEE_POLICY.minimumStandardOutputSompi)
+    change < BigInt(SOMPI_EXACT_FEE_POLICY.vaultChangeMinimumSompi)
   ) {
     throw new VaultTreasuryStagingError(
       "signed vault staging amount would create non-standard exact change"
@@ -882,6 +896,7 @@ export function decodeVaultTreasuryStagingEnvelope(
       network: NETWORK,
       payTo: binding.payTo as string,
       additionalCostCeilingAtomic: ceiling.toString(),
+      exactProfile: binding.exactProfile as "standard-native" | "additive",
       additiveThresholdAtomic: threshold.toString(),
       exactFeeAtomic: exactFee.toString(),
     }),
@@ -1175,7 +1190,12 @@ function decodeForContext(
     ["payee", context.execution.terms.payTo, envelope.binding.payTo],
     ["additional-cost ceiling", context.execution.authorizationRequest.additionalCostCeilingAtomic, envelope.binding.additionalCostCeilingAtomic],
     ["payment requirements", evidenceDigest(context.paymentRequirements), envelope.binding.paymentRequirementsDigest],
-    ["KIP-10 threshold", parsed.extra.additiveThresholdSompi, envelope.binding.additiveThresholdAtomic],
+    ["exact profile", parsed.extra.profile, envelope.binding.exactProfile],
+    [
+      "KIP-10 threshold",
+      parsed.extra.profile === "additive" ? parsed.extra.additiveThresholdSompi : "0",
+      envelope.binding.additiveThresholdAtomic,
+    ],
   ];
   for (const [field, actual, expected] of exact) {
     if (actual !== expected) {

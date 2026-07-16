@@ -32,6 +32,12 @@ import {
 } from "./identity.js";
 import { paymentFinalityMeets } from "./finality.js";
 import {
+  canonicalPurchaseExecutionPlan,
+  channelEpochDigest,
+  type CanonicalPurchaseExecutionPlan,
+  type PurchaseExecutionPlan,
+} from "./execution-plan.js";
+import {
   JournalNotFoundError,
   JournalEffectBusyError,
   PurchaseJournal,
@@ -43,7 +49,7 @@ import {
   type EffectRecord,
   type PolicyDefinition,
   type PurchaseRecord,
-  type RecordObservedSpendInput,
+  type RecordPurchaseSettlementInput,
   type RecordObservedTreasuryStagingInput,
   type RecordTreasuryStagingRecoveryObservationInput,
   type TreasuryStagingObservationRecord,
@@ -67,7 +73,7 @@ import type {
   Sha256Digest,
 } from "./types.js";
 
-const PAYMENT_EFFECT_KIND = "kaspa-x402-exact";
+const PAYMENT_EFFECT_KIND = "kaspa-x402-payment";
 export const COMMERCE_AUTHORIZATION_EFFECT_KIND = "merchant-authorization";
 const COMMERCE_AUTHORIZATION_EFFECT_PROFILE =
   "urn:sompi:commerce-authorization-effect:1";
@@ -96,6 +102,7 @@ export interface VerifiedCheckoutDiscovery {
   terms: CheckoutTerms;
   checkoutEvidence: VerifiedArtifact;
   paymentRequirements: VerifiedArtifact;
+  executionPlan: CanonicalPurchaseExecutionPlan;
 }
 
 const VERIFIED_CHECKOUT_DISCOVERIES = new WeakSet<object>();
@@ -108,9 +115,11 @@ export function certifyVerifiedCheckoutDiscovery(input: {
   terms: CheckoutTerms;
   checkoutEvidence: VerifiedArtifact;
   paymentRequirements: VerifiedArtifact;
+  executionPlan: PurchaseExecutionPlan;
 }): VerifiedCheckoutDiscovery {
   const checkoutDigest = evidenceDigest(input.checkoutEvidence.bytes);
   const requirementsDigest = evidenceDigest(input.paymentRequirements.bytes);
+  const executionPlan = canonicalPurchaseExecutionPlan(input.executionPlan);
   if (
     input.checkoutEvidence.declaredDigest !== checkoutDigest ||
     input.terms.checkoutDigest !== checkoutDigest ||
@@ -119,7 +128,9 @@ export function certifyVerifiedCheckoutDiscovery(input: {
     input.checkoutEvidence.verification.detailDigest !== checkoutTermsFactsDigest(input.terms) ||
     input.paymentRequirements.declaredDigest !== requirementsDigest ||
     input.paymentRequirements.issuer !== input.terms.merchant.id ||
-    input.paymentRequirements.profile !== input.paymentRequirements.verification.profile
+    input.paymentRequirements.profile !== input.paymentRequirements.verification.profile ||
+    executionPlan.requirementsDigest !== requirementsDigest ||
+    executionPlan.maximumChargeAtomic !== input.terms.amountAtomic
   ) {
     throw new PurchaseCoordinatorError(
       "verified Checkout result is not derived from its exact Merchant evidence",
@@ -130,6 +141,7 @@ export function certifyVerifiedCheckoutDiscovery(input: {
     terms: canonicalTermsCopy(input.terms),
     checkoutEvidence: freezeVerifiedArtifact(input.checkoutEvidence),
     paymentRequirements: freezeVerifiedArtifact(input.paymentRequirements),
+    executionPlan,
   }) as VerifiedCheckoutDiscovery;
   VERIFIED_CHECKOUT_DISCOVERIES.add(verified);
   return verified;
@@ -235,17 +247,50 @@ export interface TreasuryQuote {
   blockerCode?: string;
 }
 
-/** Treasury configuration/availability seam; accounting remains in PurchaseJournal. */
+/**
+ * Deep Purchase Treasury seam. It owns readiness, capacity policy, vault
+ * staging, and abandoned-stage recovery. The Purchase module chooses when a
+ * movement is required; it never calls the vault or recovery adapters itself.
+ */
 export interface TreasuryModule {
   currentPolicy(): Promise<PolicyDefinition>;
   quote(input: { purchaseId: PurchaseId; terms: CheckoutTerms }): Promise<TreasuryQuote>;
+  prepareStaging(input: {
+    execution: KaspaPreparedExecutionContext["execution"];
+    request: KaspaRequestContext;
+    paymentRequirements: Uint8Array;
+    additionalCostCeilingAtomic: string;
+  }): Promise<PreparedTreasuryStaging>;
+  submitStaging(input: {
+    context: KaspaTreasuryStagingContext;
+    effect: EffectRecord;
+    signal: AbortSignal;
+  }): Promise<TreasuryStagingSubmissionResult>;
+  observeStaging(input: {
+    context: KaspaTreasuryStagingContext;
+    effect: EffectRecord;
+  }): Promise<TreasuryStagingRecoveryObservation>;
+  prepareStagingRecovery(
+    input: Readonly<StagingRecoveryPreparationContext>
+  ): Promise<Readonly<PreparedStagingRecovery>>;
+  observeStagingRecovery(input: {
+    preparedBytes: Uint8Array;
+    signal?: AbortSignal;
+  }): Promise<Readonly<StagingRecoveryObservation>>;
+  submitStagingRecovery(input: {
+    preparedBytes: Uint8Array;
+    readiness: Readonly<StagingRecoveryReadiness>;
+    signal: AbortSignal;
+  }): Promise<Readonly<StagingRecoverySubmission>>;
 }
 
 export interface PreparedKaspaPayment extends PreparedPurchasePayment {
   preparedBytes: Uint8Array;
   requirementsDigest: Sha256Digest;
-  transactionId: string;
-  requiredFinality: string;
+  mechanism: "single-transaction" | "channel-voucher";
+  profile: string;
+  transactionId?: string;
+  requiredAssurance: "accepted" | "confirmed" | "channel-commitment";
 }
 
 export interface PreparedTreasuryStaging {
@@ -282,14 +327,18 @@ export type TreasuryStagingRecoveryObservation =
 
 export interface SettlementResult {
   evidence: VerifiedArtifact;
-  transactionId: string;
+  executionId: string;
+  mechanism: "single-transaction" | "channel-voucher";
+  profile: string;
+  transactionId?: string;
+  commitmentId?: string;
   outpoint?: string;
   amountAtomic: string;
   additionalCostAtomic: string;
   asset: string;
   network: string;
   payTo: string;
-  finality: string;
+  settlementAssurance: "accepted" | "confirmed" | "channel-commitment";
   fundingSource: "vault-treasury";
 }
 
@@ -325,7 +374,7 @@ export interface KaspaPreparedExecutionContext {
   };
   request: KaspaRequestContext;
   paymentRequirements: Uint8Array;
-  staging: {
+  staging?: {
     transactionId: string;
     outpoint: string;
     amountAtomic: string;
@@ -335,8 +384,11 @@ export interface KaspaPreparedExecutionContext {
   preparation: {
     preparedBytes: Uint8Array;
     preparedDigest: Sha256Digest;
-    transactionId: string;
-    requiredFinality: string;
+    executionId: string;
+    mechanism: "single-transaction" | "channel-voucher";
+    profile: string;
+    transactionId?: string;
+    requiredAssurance: "accepted" | "confirmed" | "channel-commitment";
     fundingSource: "vault-treasury";
   };
 }
@@ -356,21 +408,6 @@ export interface KaspaTreasuryStagingContext {
 }
 
 export interface KaspaPaymentModule {
-  prepareStaging(input: {
-    execution: KaspaPreparedExecutionContext["execution"];
-    request: KaspaRequestContext;
-    paymentRequirements: Uint8Array;
-    additionalCostCeilingAtomic: string;
-  }): Promise<PreparedTreasuryStaging>;
-  submitStaging(input: {
-    context: KaspaTreasuryStagingContext;
-    effect: EffectRecord;
-    signal: AbortSignal;
-  }): Promise<TreasuryStagingSubmissionResult>;
-  observeStaging(input: {
-    context: KaspaTreasuryStagingContext;
-    effect: EffectRecord;
-  }): Promise<TreasuryStagingRecoveryObservation>;
   prepare(input: {
     execution: {
       purchaseId: PurchaseId;
@@ -381,7 +418,7 @@ export interface KaspaPaymentModule {
     };
     request: KaspaRequestContext;
     paymentRequirements: Uint8Array;
-    staging: KaspaPreparedExecutionContext["staging"];
+    staging?: KaspaPreparedExecutionContext["staging"];
     additionalCostCeilingAtomic: string;
   }): Promise<PreparedKaspaPayment>;
   submit(input: {
@@ -552,7 +589,6 @@ export class PurchaseCoordinator implements PurchaseModule {
     private readonly commerceAuthorization: CommerceAuthorizationModule,
     private readonly treasury: TreasuryModule,
     private readonly payment: KaspaPaymentModule,
-    private readonly stagingRecovery: TreasuryStagingRecoveryModule,
     private readonly fulfilment: FulfilmentModule,
     options: PurchaseCoordinatorOptions = {}
   ) {
@@ -566,7 +602,8 @@ export class PurchaseCoordinator implements PurchaseModule {
     }
   }
 
-  async purchase(intent: PurchaseIntent): Promise<PurchaseView> {
+  async purchase(intent: PurchaseIntent, signal?: AbortSignal): Promise<PurchaseView> {
+    signal?.throwIfAborted();
     const canonicalIntent = canonicalIntentCopy(intent);
     // Egress policy is reversible local admission. It must run before the
     // Journal creates immutable Purchase or request-body evidence state.
@@ -599,6 +636,7 @@ export class PurchaseCoordinator implements PurchaseModule {
     if (!lease) return this.status(purchase.id);
     try {
       for (let step = 0; step < 16; step++) {
+        signal?.throwIfAborted();
         const current = this.journal.requirePurchase(purchase.id);
         switch (current.state) {
           case "created":
@@ -634,17 +672,33 @@ export class PurchaseCoordinator implements PurchaseModule {
         }
       }
       throw new PurchaseCoordinatorError("Purchase lifecycle exceeded its deterministic step bound", "step_bound");
+    } catch (error) {
+      if (
+        signal?.aborted &&
+        (error === signal.reason || (error instanceof Error && error.name === "AbortError"))
+      ) {
+        try {
+          this.journal.cancelPurchaseBeforeExternalEffect(purchase.id);
+        } catch (cancelError) {
+          if (!(cancelError instanceof JournalEffectBusyError)) throw cancelError;
+          // Once an external effect is possible, cancellation is only a caller
+          // concern. Durable state remains fenced for normal reconciliation.
+        }
+      }
+      throw error;
     } finally {
       this.journal.releaseLease(lease);
     }
   }
 
-  async status(id: PurchaseId): Promise<PurchaseView> {
+  async status(id: PurchaseId, signal?: AbortSignal): Promise<PurchaseView> {
+    signal?.throwIfAborted();
     const purchase = this.journal.requirePurchase(id);
     return projectPurchaseView(this.snapshot(purchase));
   }
 
-  async recover(id: PurchaseId): Promise<PurchaseView> {
+  async recover(id: PurchaseId, signal?: AbortSignal): Promise<PurchaseView> {
+    signal?.throwIfAborted();
     this.journal.requirePurchase(id);
     const reconciler = new PurchaseReconciler(
       this.journal,
@@ -664,6 +718,7 @@ export class PurchaseCoordinator implements PurchaseModule {
     this.applyRecoverySummary(id, summary);
     const intent = this.persistedIntent(id);
     for (let step = 0; step < 8; step++) {
+      signal?.throwIfAborted();
       const current = this.journal.requirePurchase(id);
       if (current.state === "failed_recoverable") {
         if (!this.resumeProofBackedState(current)) break;
@@ -730,6 +785,10 @@ export class PurchaseCoordinator implements PurchaseModule {
       "payment-requirements",
       discovered.paymentRequirements
     );
+    const executionPlanEvidence = this.journal.storeExecutionPlanEvidence(
+      purchase.id,
+      discovered.executionPlan
+    );
     this.journal.bindCheckoutTerms(purchase.id, {
       terms: canonicalTermsCopy(terms),
       checkoutEvidenceDigest: checkoutEvidence,
@@ -738,6 +797,8 @@ export class PurchaseCoordinator implements PurchaseModule {
       paymentRequirementsDigest: requirements,
       paymentRequirementsVerificationProfile: discovered.paymentRequirements.verification.profile,
       paymentRequirementsVerifierId: discovered.paymentRequirements.verification.verifierId,
+      executionPlan: executionPlanEvidence.plan,
+      executionPlanEvidenceDigest: executionPlanEvidence.evidenceDigest,
     });
   }
 
@@ -746,6 +807,7 @@ export class PurchaseCoordinator implements PurchaseModule {
     intent: PurchaseIntent
   ): Promise<boolean> {
     const terms = this.journal.requireCheckoutTerms(purchase.id);
+    const executionPlan = this.journal.requireExecutionPlan(purchase.id);
     if (terms.expiresAtMs <= this.now()) {
       this.journal.transitionPurchase(
         purchase.id,
@@ -756,7 +818,7 @@ export class PurchaseCoordinator implements PurchaseModule {
       );
       return true;
     }
-    const quote = await this.treasury.quote({ purchaseId: purchase.id, terms });
+    const quote = await this.executionQuote(purchase.id, terms, executionPlan);
     if (!quote.ready) return false;
     requireAtomicDecimal(quote.additionalCostCeilingAtomic, true, "Treasury additional-cost ceiling");
     const nonce = Buffer.from(this.entropy(32));
@@ -778,6 +840,17 @@ export class PurchaseCoordinator implements PurchaseModule {
       requestBodyDigest,
       additionalCostCeilingAtomic: quote.additionalCostCeilingAtomic,
       effectiveFinalityFloor: this.effectiveFinalityFloor,
+      executionPlanDigest: executionPlan.digest,
+      executionMechanism: executionPlan.mechanism,
+      executionProfile: executionPlan.profile,
+      settlementAssurance: executionPlan.settlementAssurance,
+      maximumAuthorizedChargeAtomic: executionPlan.maximumChargeAtomic,
+      ...(executionPlan.channelEpoch === undefined
+        ? {}
+        : {
+            channelId: executionPlan.channelEpoch.channelId,
+            channelEpochDigest: channelEpochDigest(executionPlan),
+          }),
       expiresAtMs: terms.expiresAtMs,
     };
     const bytes = Buffer.from(JSON.stringify(envelopeWithoutDigest), "utf8");
@@ -799,6 +872,22 @@ export class PurchaseCoordinator implements PurchaseModule {
       expiresAtMs: terms.expiresAtMs,
     });
     return true;
+  }
+
+  private async executionQuote(
+    purchaseId: PurchaseId,
+    terms: CheckoutTerms,
+    executionPlan: CanonicalPurchaseExecutionPlan
+  ): Promise<TreasuryQuote> {
+    if (executionPlan.mechanism === "channel-voucher") {
+      const remaining = Math.max(1, Date.parse(terms.expiresAt) - this.now());
+      return Object.freeze({
+        ready: true,
+        additionalCostCeilingAtomic: "0",
+        reservationTtlMs: remaining,
+      });
+    }
+    return this.treasury.quote({ purchaseId, terms });
   }
 
   private async requestAuthorization(purchase: PurchaseRecord): Promise<boolean> {
@@ -941,7 +1030,8 @@ export class PurchaseCoordinator implements PurchaseModule {
         );
       }
     } else {
-      const quote = await this.treasury.quote({ purchaseId: purchase.id, terms });
+      const executionPlan = this.journal.requireExecutionPlan(purchase.id);
+      const quote = await this.executionQuote(purchase.id, terms, executionPlan);
       if (!quote.ready) return false;
       requireAtomicDecimal(quote.additionalCostCeilingAtomic, true, "Treasury additional-cost ceiling");
       if (BigInt(quote.additionalCostCeilingAtomic) > BigInt(approvedRequest.additionalCostCeilingAtomic)) {
@@ -973,6 +1063,21 @@ export class PurchaseCoordinator implements PurchaseModule {
     if (!(await this.ensureCommerceAuthorization(purchase, attemptNumber))) {
       return false;
     }
+    const executionPlan = this.journal.requireExecutionPlan(purchase.id);
+    if (executionPlan.mechanism === "channel-voucher") {
+      const preparation = await this.preparePaymentExecution(
+        purchase,
+        attemptNumber
+      );
+      this.journal.transitionPurchase(
+        purchase.id,
+        "authorised",
+        "execution_prepared",
+        "batch_voucher_prepared",
+        preparation.payloadDigest
+      );
+      return true;
+    }
     const existingStaging = this.journal.treasuryStagingRecoveryContext(
       purchase.id,
       attemptNumber
@@ -994,7 +1099,7 @@ export class PurchaseCoordinator implements PurchaseModule {
       );
     }
     const execution = this.purchaseExecutionContext(purchase.id, attemptNumber);
-    const preparedCandidate = await this.payment.prepareStaging({
+    const preparedCandidate = await this.treasury.prepareStaging({
       execution: execution.execution,
       request: execution.request,
       paymentRequirements: execution.paymentRequirements,
@@ -1113,6 +1218,11 @@ export class PurchaseCoordinator implements PurchaseModule {
   private async submitExecution(purchase: PurchaseRecord): Promise<boolean> {
     const attempt = this.journal.paymentAttempts(purchase.id).at(-1);
     if (!attempt) throw new PurchaseCoordinatorError("prepared Purchase has no Payment Attempt", "payment_invariant");
+    const executionPlan = this.journal.requireExecutionPlan(purchase.id);
+    if (executionPlan.mechanism === "channel-voucher") {
+      this.journal.requirePaymentPreparation(purchase.id, attempt.attempt);
+      return this.submitPreparedPayment(purchase, attempt.attempt);
+    }
     const staging = this.journal.treasuryStagingRecoveryContext(purchase.id, attempt.attempt);
     if (!staging) {
       throw new PurchaseCoordinatorError(
@@ -1140,23 +1250,40 @@ export class PurchaseCoordinator implements PurchaseModule {
       return false;
     }
 
-    const preparation = await this.prepareExactExecution(
+    await this.preparePaymentExecution(
       purchase,
       attempt.attempt,
       staging.observation
     );
-    reservation = this.journal.requireReservation(preparation.reservationId);
+    return this.submitPreparedPayment(purchase, attempt.attempt);
+  }
+
+  private async submitPreparedPayment(
+    purchase: PurchaseRecord,
+    attemptNumber: number
+  ): Promise<boolean> {
+    const preparation = this.journal.requirePaymentPreparation(
+      purchase.id,
+      attemptNumber
+    );
+    this.journal.expireReservations();
+    const reservation = this.journal.requireReservation(preparation.reservationId);
     const effect = this.paymentEffect(purchase.id)!;
+    const executionPlan = this.journal.requireExecutionPlan(purchase.id);
     const preparedAttempt = this.journal.requirePaymentAttempt(
       purchase.id,
-      attempt.attempt
+      attemptNumber
     );
     if (
       this.executionAuthorizationExpired(purchase.id) &&
       preparedAttempt.state === "prepared" &&
       (effect.state === "planned" || effect.state === "retryable")
     ) {
-      this.journal.blockExpiredStagedPurchase(purchase.id);
+      if (executionPlan.mechanism === "single-transaction") {
+        this.journal.blockExpiredStagedPurchase(purchase.id);
+      } else if (effect.state === "planned" && reservation.state === "expired") {
+        this.journal.abandonExpiredPreparedPayment(effect.id, reservation.id);
+      }
       return false;
     }
     if (
@@ -1172,7 +1299,7 @@ export class PurchaseCoordinator implements PurchaseModule {
         "payment_submission_recovered",
         effect.submissionDigest ?? effect.payloadDigest
       );
-      const spend = this.journal.findSpendForPurchase(purchase.id);
+      const spend = this.journal.findSettlementForPurchase(purchase.id);
       if (spend) {
         this.journal.transitionPurchase(
           purchase.id,
@@ -1222,7 +1349,7 @@ export class PurchaseCoordinator implements PurchaseModule {
     heartbeat.unref();
     try {
       const result = await this.payment.submit({
-        context: this.preparedPaymentContext(purchase.id, attempt.attempt),
+        context: this.preparedPaymentContext(purchase.id, attemptNumber),
         effect: claim.effect,
         egress: await this.createEgressSession(this.persistedIntent(purchase.id)!),
         signal: abortController.signal,
@@ -1321,7 +1448,7 @@ export class PurchaseCoordinator implements PurchaseModule {
     }, Math.max(10, Math.floor(this.effectLeaseTtlMs / 3)));
     heartbeat.unref();
     try {
-      const result = await this.payment.submitStaging({
+      const result = await this.treasury.submitStaging({
         context: this.treasuryStagingContext(purchase.id, attemptNumber),
         effect: claim.effect,
         signal: abortController.signal,
@@ -1364,10 +1491,10 @@ export class PurchaseCoordinator implements PurchaseModule {
     }
   }
 
-  private async prepareExactExecution(
+  private async preparePaymentExecution(
     purchase: PurchaseRecord,
     attemptNumber: number,
-    staging: TreasuryStagingObservationRecord
+    staging?: TreasuryStagingObservationRecord
   ) {
     let existing;
     try {
@@ -1389,14 +1516,33 @@ export class PurchaseCoordinator implements PurchaseModule {
       return existing;
     }
     const terms = this.journal.requireCheckoutTerms(purchase.id);
-    const reservation = this.journal.requireReservation(staging.reservationId);
+    const reservation = this.journal.findReservationForPurchase(purchase.id);
+    if (!reservation) {
+      throw new PurchaseCoordinatorError(
+        "Purchase execution has no durable Treasury reservation",
+        "treasury_reservation_invariant"
+      );
+    }
+    const executionPlan = this.journal.requireExecutionPlan(purchase.id);
+    if (executionPlan.mechanism === "single-transaction" && !staging) {
+      throw new PurchaseCoordinatorError(
+        "single-transaction execution has no observed Treasury staging output",
+        "treasury_staging_invariant"
+      );
+    }
+    if (executionPlan.mechanism === "channel-voucher" && staging) {
+      throw new PurchaseCoordinatorError(
+        "channel voucher execution cannot consume per-Purchase Treasury staging",
+        "treasury_staging_invariant"
+      );
+    }
     const execution = this.purchaseExecutionContext(purchase.id, attemptNumber);
-    const stagedOutput = stagingOutput(staging);
+    const stagedOutput = staging ? stagingOutput(staging) : undefined;
     const preparedCandidate = await this.payment.prepare({
       execution: execution.execution,
       request: execution.request,
       paymentRequirements: execution.paymentRequirements,
-      staging: stagedOutput,
+      ...(stagedOutput === undefined ? {} : { staging: stagedOutput }),
       additionalCostCeilingAtomic: reservation.additionalCostCeilingAtomic,
     });
     const prepared = validatePreparedPayment(
@@ -1417,9 +1563,13 @@ export class PurchaseCoordinator implements PurchaseModule {
         "preparation_mismatch"
       );
     }
-    if (preparedCandidate.executionId !== preparedCandidate.transactionId) {
+    if (
+      preparedCandidate.mechanism !== executionPlan.mechanism ||
+      preparedCandidate.profile !== executionPlan.profile ||
+      preparedCandidate.requiredAssurance !== executionPlan.settlementAssurance
+    ) {
       throw new PurchaseCoordinatorError(
-        "prepared execution identity must be the Kaspa transaction identity",
+        "prepared execution does not match the authorized Purchase execution plan",
         "preparation_mismatch"
       );
     }
@@ -1436,12 +1586,15 @@ export class PurchaseCoordinator implements PurchaseModule {
       requirementsDigest: terms.paymentRequirementsDigest,
       payloadDigest: prepared.preparedDigest,
       preparedBytes,
+      executionId: preparedCandidate.executionId,
+      mechanism: preparedCandidate.mechanism,
+      profile: preparedCandidate.profile,
       transactionId: preparedCandidate.transactionId,
       amountAtomic: terms.amountAtomic,
       asset: terms.asset,
       network: terms.network,
       payee: terms.payTo,
-      requiredFinality: preparedCandidate.requiredFinality,
+      requiredAssurance: preparedCandidate.requiredAssurance,
       fundingSource: preparedCandidate.fundingSource,
     });
     this.journal.planEffect({
@@ -1472,7 +1625,7 @@ export class PurchaseCoordinator implements PurchaseModule {
 
   private recordSettlement(purchase: PurchaseRecord, claim: EffectClaim, settlement: SettlementResult): void {
     const input = this.validatedSettlementInput(purchase, claim.effect.id, settlement);
-    this.journal.recordObservedSpend(claim.lease, input);
+    this.journal.recordPurchaseSettlement(claim.lease, input);
     const digest = input.evidenceDigest;
     const current = this.journal.requirePurchase(purchase.id);
     if (current.state === "submitted" || current.state === "failed_recoverable") {
@@ -1490,14 +1643,16 @@ export class PurchaseCoordinator implements PurchaseModule {
     purchase: PurchaseRecord,
     effectId: string,
     settlement: SettlementResult
-  ): RecordObservedSpendInput {
+  ): RecordPurchaseSettlementInput {
     const effect = this.journal.requireEffect(effectId);
     if (effect.attempt === undefined) throw new PurchaseCoordinatorError("Settlement has no Payment Attempt", "settlement_invariant");
     const preparation = this.journal.requirePaymentPreparation(purchase.id, effect.attempt);
     const terms = this.journal.requireCheckoutTerms(purchase.id);
     const exact: ReadonlyArray<[string, string | undefined, string | undefined]> = [
+      ["execution", settlement.executionId, preparation.executionId],
+      ["mechanism", settlement.mechanism, preparation.mechanism],
+      ["profile", settlement.profile, preparation.profile],
       ["transaction", settlement.transactionId, preparation.transactionId],
-      ["amount", settlement.amountAtomic, terms.amountAtomic],
       ["asset", settlement.asset, terms.asset],
       ["network", settlement.network, terms.network],
       ["payee", settlement.payTo, terms.payTo],
@@ -1508,13 +1663,52 @@ export class PurchaseCoordinator implements PurchaseModule {
         throw new PurchaseCoordinatorError(`Settlement ${field} does not match immutable preparation`, "settlement_mismatch");
       }
     }
-    if (!paymentFinalityMeets(settlement.finality, preparation.requiredFinality)) {
+    const actualAmount = requireAtomicDecimal(
+      settlement.amountAtomic,
+      false,
+      "Settlement amount"
+    );
+    const maximumAmount = requireAtomicDecimal(
+      terms.amountAtomic,
+      false,
+      "authorized Purchase amount"
+    );
+    if (
+      (settlement.mechanism === "single-transaction" && actualAmount !== maximumAmount) ||
+      (settlement.mechanism === "channel-voucher" && actualAmount > maximumAmount)
+    ) {
       throw new PurchaseCoordinatorError(
-        "Settlement finality does not meet immutable preparation",
+        "Settlement charge exceeds or changes the authorized execution amount",
+        "settlement_mismatch"
+      );
+    }
+    if (
+      (settlement.mechanism === "single-transaction" &&
+        (settlement.transactionId === undefined || settlement.commitmentId !== undefined)) ||
+      (settlement.mechanism === "channel-voucher" &&
+        (settlement.transactionId !== undefined || settlement.commitmentId === undefined))
+    ) {
+      throw new PurchaseCoordinatorError(
+        "Settlement confirmation identity does not match its execution mechanism",
+        "settlement_mismatch"
+      );
+    }
+    if (!executionAssuranceMeets(settlement.settlementAssurance, preparation.requiredAssurance)) {
+      throw new PurchaseCoordinatorError(
+        "Settlement assurance does not meet immutable preparation",
         "settlement_mismatch"
       );
     }
     requireAtomicDecimal(settlement.additionalCostAtomic, true, "Settlement additional cost");
+    if (
+      settlement.mechanism === "channel-voucher" &&
+      settlement.additionalCostAtomic !== "0"
+    ) {
+      throw new PurchaseCoordinatorError(
+        "channel voucher Purchase cannot charge a per-Purchase network fee",
+        "settlement_mismatch"
+      );
+    }
     const digest = this.storeVerifiedArtifact(
       purchase.id,
       "kaspa-settlement",
@@ -1524,14 +1718,18 @@ export class PurchaseCoordinator implements PurchaseModule {
     return {
       effectId: effect.id,
       reservationId: preparation.reservationId,
+      executionId: settlement.executionId,
+      mechanism: settlement.mechanism,
+      profile: settlement.profile,
       transactionId: settlement.transactionId,
+      commitmentId: settlement.commitmentId,
       outpoint: settlement.outpoint,
       actualAmountAtomic: settlement.amountAtomic,
       actualAdditionalCostAtomic: settlement.additionalCostAtomic,
       asset: settlement.asset,
       payee: settlement.payTo,
       network: settlement.network,
-      finality: settlement.finality,
+      settlementAssurance: settlement.settlementAssurance,
       fundingSource: settlement.fundingSource,
       evidenceDigest: digest,
       evidenceVerificationProfile: settlement.evidence.verification.profile,
@@ -1659,7 +1857,7 @@ export class PurchaseCoordinator implements PurchaseModule {
         "treasury_staging_invariant"
       );
     }
-    const observation = await this.payment.observeStaging({
+    const observation = await this.treasury.observeStaging({
       context: this.treasuryStagingContext(effect.purchaseId, effect.attempt),
       effect,
     });
@@ -1679,7 +1877,7 @@ export class PurchaseCoordinator implements PurchaseModule {
   private async obtainFulfilment(purchase: PurchaseRecord, intent: PurchaseIntent): Promise<boolean> {
     const terms = this.journal.requireCheckoutTerms(purchase.id);
     const attempt = this.journal.paymentAttempts(purchase.id).at(-1);
-    const spend = this.journal.findSpendForPurchase(purchase.id);
+    const spend = this.journal.findSettlementForPurchase(purchase.id);
     if (!attempt || !spend) throw new PurchaseCoordinatorError("settled Purchase lacks payment facts", "settlement_invariant");
     const egress = await this.createEgressSession(intent);
     const replayed = this.payment.recoverFulfilment
@@ -1706,7 +1904,7 @@ export class PurchaseCoordinator implements PurchaseModule {
   ): boolean {
     const terms = this.journal.requireCheckoutTerms(purchase.id);
     const attempt = this.journal.paymentAttempts(purchase.id).at(-1);
-    const spend = this.journal.findSpendForPurchase(purchase.id);
+    const spend = this.journal.findSettlementForPurchase(purchase.id);
     if (!attempt || !spend) {
       throw new PurchaseCoordinatorError("settled Purchase lacks payment facts", "settlement_invariant");
     }
@@ -1775,7 +1973,7 @@ export class PurchaseCoordinator implements PurchaseModule {
     purchaseId: PurchaseId
   ): Promise<"none" | "pending" | "exact_payment_won" | "recovery_won" | "conflict"> {
     const attempts = this.journal.paymentAttempts(purchaseId);
-    if (attempts.length !== 1 || this.journal.findSpendForPurchase(purchaseId)) {
+    if (attempts.length !== 1 || this.journal.findSettlementForPurchase(purchaseId)) {
       return "none";
     }
     const attempt = attempts[0];
@@ -1822,20 +2020,22 @@ export class PurchaseCoordinator implements PurchaseModule {
               purchaseId,
               attempt.attempt
             );
-            exactPayment = {
-              preparedBytes: this.journal.readPreparedPayment(
-                purchaseId,
-                attempt.attempt
-              ),
-              preparedDigest: preparation.payloadDigest,
-              transactionId: preparation.transactionId,
-              requiredFinality: preparation.requiredFinality,
-            };
+            if (preparation.mechanism === "single-transaction" && preparation.transactionId) {
+              exactPayment = {
+                preparedBytes: this.journal.readPreparedPayment(
+                  purchaseId,
+                  attempt.attempt
+                ),
+                preparedDigest: preparation.payloadDigest,
+                transactionId: preparation.transactionId,
+                requiredFinality: preparation.requiredAssurance,
+              };
+            }
           } catch (error) {
             if (!(error instanceof JournalNotFoundError)) throw error;
           }
           const terms = this.journal.requireCheckoutTerms(purchaseId);
-          const prepared = await this.stagingRecovery.prepare({
+          const prepared = await this.treasury.prepareStagingRecovery({
             purchaseId,
             paymentIdentifier: attempt.identifier,
             terms: canonicalTermsCopy(terms),
@@ -1914,7 +2114,7 @@ export class PurchaseCoordinator implements PurchaseModule {
           recovery.plan.purchaseId,
           recovery.plan.attempt
         );
-        const observed = await this.stagingRecovery.observe({
+        const observed = await this.treasury.observeStagingRecovery({
           preparedBytes,
           signal: abortController.signal,
         });
@@ -1927,7 +2127,7 @@ export class PurchaseCoordinator implements PurchaseModule {
         if (observed.status !== "safe_to_submit") return outcome;
         // The readiness was observed and durably recorded under this exact
         // live Effect fence. The adapter token is intentionally never stored.
-        const submitted = await this.stagingRecovery.submit({
+        const submitted = await this.treasury.submitStagingRecovery({
           preparedBytes,
           readiness: observed.readiness,
           signal: abortController.signal,
@@ -1965,7 +2165,7 @@ export class PurchaseCoordinator implements PurchaseModule {
     if (!reconcileLease) return "pending";
     try {
       if (this.journal.effectClaimActive(recovery.effect.id)) return "pending";
-      const observed = await this.stagingRecovery.observe({
+      const observed = await this.treasury.observeStagingRecovery({
         preparedBytes: this.journal.readPreparedTreasuryStagingRecovery(
           recovery.plan.purchaseId,
           recovery.plan.attempt
@@ -2022,7 +2222,7 @@ export class PurchaseCoordinator implements PurchaseModule {
   }
 
   private resumeProofBackedState(purchase: PurchaseRecord): boolean {
-    const spend = this.journal.findSpendForPurchase(purchase.id);
+    const spend = this.journal.findSettlementForPurchase(purchase.id);
     if (spend) {
       this.journal.transitionPurchase(
         purchase.id,
@@ -2105,7 +2305,7 @@ export class PurchaseCoordinator implements PurchaseModule {
         effect?.submissionDigest
       );
     }
-    const spend = this.journal.findSpendForPurchase(id);
+    const spend = this.journal.findSettlementForPurchase(id);
     if (
       spend &&
       ["execution_prepared", "submitted", "failed_recoverable"].includes(purchase.state)
@@ -2303,11 +2503,12 @@ export class PurchaseCoordinator implements PurchaseModule {
   ): KaspaPreparedExecutionContext {
     const execution = this.purchaseExecutionContext(purchaseId, attemptNumber);
     const preparation = this.journal.requirePaymentPreparation(purchaseId, attemptNumber);
+    const executionPlan = this.journal.requireExecutionPlan(purchaseId);
     const staging = this.journal.findTreasuryStagingObservation(
       purchaseId,
       attemptNumber
     );
-    if (!staging) {
+    if (executionPlan.mechanism === "single-transaction" && !staging) {
       throw new PurchaseCoordinatorError(
         "prepared payment lost its observed Treasury staging output",
         "treasury_staging_invariant"
@@ -2315,12 +2516,17 @@ export class PurchaseCoordinator implements PurchaseModule {
     }
     return {
       ...execution,
-      staging: stagingOutput(staging),
+      ...(staging === undefined ? {} : { staging: stagingOutput(staging) }),
       preparation: {
         preparedBytes: this.journal.readPreparedPayment(purchaseId, attemptNumber),
         preparedDigest: preparation.payloadDigest,
-        transactionId: preparation.transactionId,
-        requiredFinality: preparation.requiredFinality,
+        executionId: preparation.executionId,
+        mechanism: preparation.mechanism,
+        profile: preparation.profile,
+        ...(preparation.transactionId === undefined
+          ? {}
+          : { transactionId: preparation.transactionId }),
+        requiredAssurance: preparation.requiredAssurance,
         fundingSource: "vault-treasury",
       },
     };
@@ -2340,6 +2546,13 @@ export class PurchaseCoordinator implements PurchaseModule {
       parsed.requestBodyDigest !== record.requestBodyDigest ||
       parsed.additionalCostCeilingAtomic !== record.additionalCostCeilingAtomic ||
       parsed.effectiveFinalityFloor !== record.effectiveFinalityFloor ||
+      parsed.executionPlanDigest !== record.executionPlanDigest ||
+      parsed.executionMechanism !== record.executionMechanism ||
+      parsed.executionProfile !== record.executionProfile ||
+      parsed.settlementAssurance !== record.settlementAssurance ||
+      parsed.maximumAuthorizedChargeAtomic !== record.maximumAuthorizedChargeAtomic ||
+      parsed.channelId !== record.channelId ||
+      parsed.channelEpochDigest !== record.channelEpochDigest ||
       evidenceDigest(Buffer.from(parsed.nonce, "base64url")) !== record.nonceDigest
     ) {
       throw new PurchaseCoordinatorError("authorization request artifact is inconsistent", "authorization_invariant");
@@ -2355,6 +2568,15 @@ export class PurchaseCoordinator implements PurchaseModule {
       nonceDigest: record.nonceDigest,
       additionalCostCeilingAtomic: record.additionalCostCeilingAtomic,
       effectiveFinalityFloor: record.effectiveFinalityFloor,
+      executionPlanDigest: record.executionPlanDigest,
+      executionMechanism: record.executionMechanism,
+      executionProfile: record.executionProfile,
+      settlementAssurance: record.settlementAssurance,
+      maximumAuthorizedChargeAtomic: record.maximumAuthorizedChargeAtomic,
+      ...(record.channelId === undefined ? {} : { channelId: record.channelId }),
+      ...(record.channelEpochDigest === undefined
+        ? {}
+        : { channelEpochDigest: record.channelEpochDigest }),
       createdAtMs: record.createdAtMs,
       expiresAtMs: record.expiresAtMs,
     };
@@ -2424,7 +2646,7 @@ export class PurchaseCoordinator implements PurchaseModule {
     const authorizationRequest = this.journal.findAuthorizationRequest(purchase.id);
     const reservation = this.journal.findReservationForPurchase(purchase.id);
     const links = this.journal.evidenceLinks(purchase.id);
-    const spend = this.journal.findSpendForPurchase(purchase.id);
+    const spend = this.journal.findSettlementForPurchase(purchase.id);
     const fulfilment = this.journal.findFulfilment(purchase.id);
     const receipts = this.journal.receipts(purchase.id);
     const recoveryRequired = this.journal.effectsForPurchase(purchase.id).some((effect) =>
@@ -2436,7 +2658,7 @@ export class PurchaseCoordinator implements PurchaseModule {
       try {
         const preparation = this.journal.requirePaymentPreparation(purchase.id, attempt.attempt);
         transactionId = preparation.transactionId;
-        finality = preparation.requiredFinality;
+        finality = preparation.requiredAssurance;
       } catch (error) {
         if (!(error instanceof JournalNotFoundError)) throw error;
       }
@@ -2502,6 +2724,13 @@ interface ParsedAuthorizationEnvelope {
   requestBodyDigest: string;
   additionalCostCeilingAtomic: string;
   effectiveFinalityFloor: string;
+  executionPlanDigest: string;
+  executionMechanism: string;
+  executionProfile: string;
+  settlementAssurance: string;
+  maximumAuthorizedChargeAtomic: string;
+  channelId?: string;
+  channelEpochDigest?: string;
 }
 
 function parseAuthorizationEnvelope(bytes: Uint8Array): ParsedAuthorizationEnvelope {
@@ -2528,10 +2757,22 @@ function parseAuthorizationEnvelope(bytes: Uint8Array): ParsedAuthorizationEnvel
     "requestBodyDigest",
     "additionalCostCeilingAtomic",
     "effectiveFinalityFloor",
+    "executionPlanDigest",
+    "executionMechanism",
+    "executionProfile",
+    "settlementAssurance",
+    "maximumAuthorizedChargeAtomic",
   ]) {
     if (typeof value[key] !== "string") {
       throw new PurchaseCoordinatorError("authorization request artifact is malformed", "authorization_invariant");
     }
+  }
+  if (
+    (value.channelId !== undefined && typeof value.channelId !== "string") ||
+    (value.channelEpochDigest !== undefined && typeof value.channelEpochDigest !== "string") ||
+    ((value.channelId === undefined) !== (value.channelEpochDigest === undefined))
+  ) {
+    throw new PurchaseCoordinatorError("authorization request artifact is malformed", "authorization_invariant");
   }
   return value as unknown as ParsedAuthorizationEnvelope;
 }
@@ -2764,6 +3005,16 @@ function requireAtomicDecimal(value: string, allowZero: boolean, label: string):
     throw new PurchaseCoordinatorError(`${label} is outside its allowed range`, "invalid_amount");
   }
   return amount;
+}
+
+function executionAssuranceMeets(
+  actual: "accepted" | "confirmed" | "channel-commitment",
+  required: "accepted" | "confirmed" | "channel-commitment"
+): boolean {
+  if (actual === "channel-commitment" || required === "channel-commitment") {
+    return actual === required;
+  }
+  return paymentFinalityMeets(actual, required);
 }
 
 function safeAdd(left: number, right: number): number {

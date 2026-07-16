@@ -1,6 +1,6 @@
 # Sompi AP2 + Kaspa-x402 implementation plan
 
-Status: **Phase 2D post-review hardening verified; Phase 3 not started**
+Status: **Alpha.8 clean cutover Phases 3-5 verified; Phase 6 in progress**
 
 Architecture: [`docs/architecture/SOMPI_ARCHITECTURE.md`](architecture/SOMPI_ARCHITECTURE.md)
 
@@ -230,150 +230,256 @@ Gate:
 - The exact remediation review completed with zero reportable findings, the
   post-review cleanup gates pass, and no Phase 3 implementation has started.
 
-## Phase 3: Deepen the Purchase module behind existing MCP UX
+## Phase 3: Canonical Purchase API and transport parity
 
-Purpose: move orchestration and recovery out of the agent-facing entrypoint.
+Purpose: audit the implemented pre-hardening Purchase vertical, make normal
+authenticated HTTP the canonical interface, and retain MCP only as a stateless
+compatibility adapter.
 
-- [ ] Implement canonical Purchase Intent and Checkout Terms binding.
-- [ ] Implement stable amount, asset, network, Merchant, resource, request,
-  expiry, and evidence digest invariants.
-- [ ] Implement separate Purchase Authorization and Treasury Movement checks.
-- [ ] Route payment preparation/execution/reconciliation through internal seams.
-- [ ] Replace the useful `paid_fetch` intent with the clean-cutover Purchase
-  interface; retain no compatibility tool or old payment path.
-- [ ] Add `purchase`, `purchase_status`, and `purchase_recover` interfaces or
-  settle the final minimal MCP surface using characterization evidence.
-- [ ] Project deterministic, secret-free summaries from canonical Purchase
-  state.
-- [ ] Add egress policy: scheme/host rules, redirect re-validation,
-  private/link-local/metadata denial, DNS-rebinding controls, response limits,
-  and request fingerprinting.
-
-Gate:
-
-- MCP handlers are thin callers of the Purchase module.
-- Purchase lifecycle tests do not import protocol adapters.
-- Egress negative tests cover direct and redirected unsafe targets.
-- Existing human-facing clarity and treasury recovery tools remain available.
-
-## Phase 4: Integrate Kaspa-x402 exact and perform the clean cutover
-
-Purpose: replace Sompi's bespoke x402 v1 implementation with the current Kaspa
-x402 payment mechanism.
-
-- [ ] Integrate the pinned Kaspa-x402 client without modifying the sibling
-  repository.
-- [ ] Implement Sompi wallet/vault-backed `FundingProvider`.
-- [ ] Implement the required `ChannelSigner` and `AddressCodec` adapters without
-  duplicating Kaspa-x402 transaction logic.
-- [ ] Implement durable `ChannelStore` behaviour using the journal or a
-  transactionally coordinated store.
-- [ ] Support `exact` on the selected Kaspa testnet only.
-- [ ] Persist payment identifier, requirements/payload digests, prepared
-  material, transaction identity, finality, and settlement evidence.
-- [ ] Verify Settlement against Purchase Authorization and Checkout Terms.
-- [ ] Add cross-repository adapter contract and pinned conformance fixtures.
-- [ ] Pass crash/replay/duplicate/tampered-settlement tests.
-- [ ] Delete all replaced Sompi x402 v1 source, contracts, fixtures, scripts,
-  state readers, examples, docs, package exports, commands, and fallbacks.
-- [ ] Update README/tool/config documentation to describe only the new runtime.
+- [x] Map the complete landed Kaspa-x402 alpha.8 contract, package provenance,
+  ownership, evidence, tests, and alpha.6 deletions.
+- [x] Accept ADR-0015 and align `CONTEXT.md`, target architecture, this plan,
+  and `CURRENT_STATE.md`.
+- [x] Audit the existing `purchase`, `status`, and `recover` implementation
+  against the accepted Phase 3 criteria; fix demonstrated gaps without
+  splitting the deep Purchase module merely because it is large.
+- [x] Define one canonical schema source for Purchase input, public view, and
+  structured errors.
+- [x] Expose `POST /purchases`, `GET /purchases/{purchaseId}`, and
+  `POST /purchases/{purchaseId}/recover` from `sompi-api`.
+- [x] Add OpenAPI 3.2 generated or verified from the same canonical schemas.
+- [x] Add operator-installed least-authority agent authentication and
+  loopback/operator-socket-safe binding defaults.
+- [x] Enforce idempotency, body/evidence limits, concurrency admission,
+  deadlines, cancellation, and secret-free errors at the HTTP seam.
+- [x] Reduce `sompi-mcp` to `purchase`, `purchase_status`, and
+  `purchase_recover` calls to the local API; give it no wallet, Journal,
+  Authority, AP2, or x402 capability.
+- [x] Prove HTTP and MCP parity through the same Purchase interface and
+  canonical projections.
+- [x] Retain egress scheme/host rules, redirect denial, private/link-local/
+  metadata denial, DNS-rebinding controls, response limits, and request
+  fingerprinting inside the Purchase implementation.
 
 Gate:
 
-- A testnet exact Purchase pays and reconciles through Kaspa-x402.
-- No runtime Sompi x402 v1 implementation or compatibility path remains.
-- Sompi does not define duplicate x402 wire types or Kaspa payment mechanics.
-- An interrupted submission reaches the correct state without double payment.
+- Purchase lifecycle tests remain protocol-neutral.
+- HTTP and MCP produce the same domain behavior and structured errors.
+- Direct and redirected unsafe egress fails closed.
+- Removing MCP would not change Purchase, recovery, Treasury, or protocol code.
 
-## Phase 5: Add the Trusted Authority and human-present AP2
+## Phase 4: Kaspa-x402 alpha.8 exact clean cutover
 
-Purpose: make exact User authorization deterministic, isolated, and linked to
-the Purchase.
+Purpose: replace the pre-hardening alpha.6 path with the complete landed
+`kaspa-exact-v2` contract and no compatibility state.
 
-- [ ] Add the `sompi-authority` executable.
-- [ ] Design authenticated local IPC, freshness, request/response binding, and
-  denial/unavailable behaviour.
-- [ ] Keep authority credentials inaccessible to `sompi-mcp`.
-- [ ] Display exact Merchant, resource/request, amount, asset, network, expiry,
-  Purchase identifier, and known additional-cost bounds.
-- [ ] Implement the pinned human-present AP2 profile behind the AP2 adapter.
-- [ ] Verify Merchant-signed Checkout Terms and construct/verify the required
-  closed mandates.
-- [ ] Store original AP2 artifacts as immutable Evidence Attachments.
-- [ ] Extract and compare canonical facts rather than trusting adapter output.
-- [ ] Fail closed on unknown profile, credential, issuer, key, expiry, or field
-  mismatch.
-- [ ] Add prompt-injection, replay, substitution, unavailable-authority, and
-  tampered-mandate tests.
-
-Gate:
-
-- The Agent cannot approve its own Purchase or access authority credentials.
-- Approval is bound to every canonical payment-relevant fact.
-- AP2 adapter removal leaves the Purchase model and Kaspa-x402 adapter intact.
-- No claim is made that the local AP2/x402 correlation is an official wire
-  extension.
-
-## Phase 6: Demo Merchant and complete end-to-end proof
-
-Purpose: prove the complete trust and recovery chain rather than isolated
-library behaviour.
-
-- [ ] Build an AP2-aware demo Merchant fixture.
-- [ ] Sign and serve exact Checkout Terms.
-- [ ] Verify required Purchase/Payment authorization evidence at the correct
-  Merchant stages.
-- [ ] Serve Kaspa-x402 exact payment requirements and verify settlement.
-- [ ] Deliver a deterministic resource with a verifiable digest.
-- [ ] Produce linked Merchant/AP2 receipts.
-- [ ] Verify Sompi's final canonical Receipt joins terms, authorization,
-  payment, Settlement, Fulfilment, and evidence digests.
-- [ ] Add one-command local testnet E2E setup and teardown.
-- [ ] Inject crashes after preparation, submission, Merchant acceptance,
-  Settlement, and Fulfilment.
-- [ ] Test duplicate calls, mismatched Merchant/resource/amount/network/payee,
-  expired terms, replay, prompt injection, DNS/redirect attacks, and authority
-  failure.
-- [ ] Write a reproducible evidence report with exact versions and transaction
-  identifiers.
+- [x] Pin the four public Kaspa-x402 packages at `0.1.0-alpha.8`, their npm
+  integrities, tarball source Git revision, immutable release tag, schemas, and
+  vectors.
+- [x] Start a new Purchase Journal epoch and reject every prior development
+  epoch unchanged.
+- [x] Delete alpha.6 package/profile pins, `kaspa-exact-v1` wire assumptions,
+  borrow reservations, exclusive inventory, threshold top-up accounting,
+  dual-benefit transaction construction, payment-output-index assumptions,
+  server stores, readers, fixtures, tests, commands, exports, and current docs.
+- [x] Implement the public alpha.8 `FundingProvider` and `AddressCodec` seams
+  with attempt-scoped Treasury capabilities and no duplicate protocol parser.
+- [x] Implement `standard-native` as the default version-0 exact profile.
+- [x] Enforce exact Merchant gain and amount-plus-bounded-fee payer cost.
+- [x] Implement `additive` with reusable heads, exact successor delta as the
+  only Merchant payment, no exclusive unpaid reservation, and no second
+  Merchant output.
+- [x] Handle additive challenge expiry, one-winner conflicts, bounded head
+  selection, independent shards, trusted lineage, unknown-lineage disablement,
+  and standard-native fallback.
+- [x] Persist selected profile, request/requirements/payload/authorization
+  digests, prepared artifact identity, transaction identity, protocol finality,
+  effective Finality Floor, settlement stages, and independent Chain Evidence.
+- [x] Reject paid redirects, request/payee/profile substitution, replay,
+  automatic corrective re-signing, excessive fees, malformed inputs,
+  finality downgrade, and ambiguous outcome reuse.
+- [x] Update the demo Merchant through public Kaspa-x402 server/store seams.
+- [x] Pass exact consensus/HTTP vectors and package conformance for both
+  profiles without modifying the sibling repository.
 
 Gate:
 
-- The success definition in `CONTEXT.md` passes end to end.
-- Every ambiguous crash point reconciles deterministically.
-- Negative tests fail closed without unauthorized spend or secret disclosure.
-- Build, offline suite, conformance suite, and testnet E2E suite pass.
+- Both exact profiles pay and reconcile on Testnet-10 through Kaspa-x402.
+- Merchant gain equals the advertised amount for both profiles.
+- Thousands of unanswered additive offers consume no head and concurrent
+  conflicts produce one winner plus a safe explicit retry.
+- No active alpha.6 code, state, schema, fixture, command, or documentation
+  remains.
+- Interrupted submission reaches the correct state without double payment or
+  fulfilment.
 
-## Phase 7: Release-readiness cleanup
+## Phase 5: Deepen Treasury Movement
 
-Purpose: make the new architecture the only documented and shipped product.
+Purpose: put capacity, attempt funding, effect fencing, and recovery behind one
+deep Treasury interface shared by exact and batch execution.
 
-- [ ] Audit package contents, exports, commands, examples, and generated files.
-- [ ] Remove stale Phase 6, old escrow/x402, and superseded architecture text.
-- [ ] Confirm logs/MCP output contain no keys, signed secrets, unsafe raw errors,
-  or unnecessary sensitive evidence.
-- [ ] Write operator backup, corruption, reconciliation, authority recovery, and
-  testnet reset runbooks.
-- [ ] Record known limitations without describing testnet evidence as mainnet
-  readiness.
-- [ ] Run dependency, licence, security, and secret scans.
-- [ ] Run a clean install/build/test/package smoke from the produced tarball.
-- [ ] Review every accepted ADR against the final implementation.
+- [x] Concentrate Reservation creation/finalization/release, vault-to-P2PK
+  staging, attempt-bound signing capability, fee ceilings, and external effect
+  fencing in Treasury.
+- [x] Reserve exact Merchant amount plus explicitly bounded staging, network,
+  and recovery fees only; never reserve an extra KIP-10 Merchant top-up.
+- [x] Give the Kaspa-x402 adapter only the selected attempt capability and
+  staged outpoint, never owner/recovery keys or unrestricted wallet authority.
+- [x] Persist prepared staging, exact, sweep, deposit, claim, and refund plans
+  before submission.
+- [x] Reconcile ambiguous staging/payment competition without rebuilding or
+  blind retry.
+- [x] Implement abandoned-stage sweep and capacity release as explicit
+  immutable Treasury Movements.
+- [x] Preserve Admission Leases and fencing generations across restart and
+  executor takeover.
+- [x] Prove cancellation before signing releases safely and cancellation after
+  possible effect enters Reconciliation.
 
 Gate:
 
-- A fresh operator can run and recover the testnet system from documented
-  steps.
-- The packed artifact contains only intended runtime/docs/assets.
-- `CURRENT_STATE.md` has no unowned blocker for the first E2E milestone.
+- Crash/takeover tests prove no lost or double capacity and no duplicate
+  submission.
+- No private key, Authority credential, or unrestricted wallet capability
+  crosses the Treasury seam.
+- Every exact funding/recovery action is bounded by the original authorized
+  Reservation.
 
-## Deferred tracks (not part of the initial E2E build)
+## Phase 6: Kaspa-x402 alpha.8 batch settlement
 
-### Batch settlement
+Purpose: add batch as a separate capital-backed channel lifecycle after both
+exact profiles and Treasury recovery pass.
 
-Begin only after exact-mode crash/replay evidence passes. Each charged resource
-still requires its own Purchase Authorization; a channel deposit is Treasury
-Movement only.
+- [x] Implement immutable channel identity and initial escrow deposit through
+  the public Kaspa-x402 channel interfaces.
+- [x] Add a durable `ChannelStore` transactionally coordinated with the
+  Purchase Journal.
+- [x] Keep deposit, top-up, voucher, claim, continuation, and refund as distinct
+  Treasury Movements and Evidence Attachments.
+- [x] Require a separate human-present Purchase Authorization and capacity
+  reservation for every voucher increment.
+- [x] Persist maximum authorized request charge separately from actual accepted
+  charge and cumulative signed voucher ceiling.
+- [x] Serialize concurrent channel updates and enforce monotonic cumulative
+  vouchers bound to the full active outpoint and script epoch.
+- [x] Preserve an explicit claim-fee reserve and require full-epoch claim with
+  continuation value equal to active funding minus authorized charge.
+- [x] Enforce the strict absolute DAA refund boundary and client authorization.
+- [x] Reconcile deposit/top-up, claim/refund races, ambiguous broadcasts,
+  continuation rotation, old-voucher replay, exhaustion, and cleanup.
+- [x] Stop signing and fail closed on overclaim, stale or cross-channel voucher,
+  unverified corrective state, or server inconsistency.
+
+Gate:
+
+- A funded channel never authorizes a Purchase.
+- Stale, rollback, overclaim, cross-channel, and cross-resource vouchers fail.
+- Claim/continuation/refund value equations and strict DAA boundaries pass
+  consensus-backed tests.
+- Funded TN10 evidence covers deposit, multiple individually authorized
+  purchases, full-epoch claim, continuation rotation, and refund.
+
+## Phase 7: Revalidate AP2, Authority, and Merchant
+
+Purpose: carry the existing human-present authorization and fulfilment proof
+across both alpha.8 exact profiles and every batch voucher increment.
+
+- [ ] Preserve `sompi-authority` as deterministic and non-agentic, with its
+  credential inaccessible to both API and MCP processes.
+- [ ] Bind Merchant, resource/request, amount or maximum charge, actual charge,
+  asset, network, expiry, Purchase identity, selected profile/channel epoch,
+  fee bounds, and effective Finality Floor.
+- [ ] Verify Merchant-signed Checkout Terms and construct/verify the pinned
+  human-present AP2 closed mandates.
+- [ ] Store original AP2 artifacts as immutable Evidence Attachments and compare
+  extracted canonical facts rather than trusting adapter output.
+- [ ] Extend the demo Merchant through public Kaspa-x402 server interfaces for
+  standard-native, additive, and batch.
+- [ ] Deliver deterministic resources and produce linked Merchant/AP2 receipts.
+- [ ] Fail closed on replay, substitution, expiry, issuer/profile mismatch,
+  unavailable Authority, prompt injection, tampered mandate, and unavailable
+  payment execution.
+
+Gate:
+
+- The Agent cannot approve its own Purchase or access Authority credentials.
+- Every exact payment and batch voucher is bound to all payment-relevant facts.
+- AP2 and Kaspa-x402 adapters remain separate and removable from the stable
+  Purchase model.
+- No local AP2/x402 correlation is presented as an official wire extension.
+
+## Phase 8: OpenAPI workflow description
+
+Purpose: describe the stable Purchase lifecycle for direct automation without
+adding another agent protocol.
+
+- [ ] Freeze the OpenAPI operation identifiers and terminal/recoverable states
+  after Phases 3–7 pass.
+- [ ] Add an Arazzo workflow for create -> status -> recover -> terminal
+  receipt.
+- [ ] Validate the Arazzo document against the canonical OpenAPI source.
+- [ ] Add one end-to-end workflow scenario covering a recoverable interruption.
+
+Gate:
+
+- The workflow uses only the canonical Purchase API.
+- No A2A, UCP, public OAuth infrastructure, or generic agent-protocol module is
+  introduced.
+
+## Phase 9: Complete crash and funded Testnet-10 proof
+
+Purpose: prove the full trust and recovery chain rather than isolated module
+behavior.
+
+- [ ] Run API and MCP -> Purchase -> human-present Authority -> Treasury ->
+  Kaspa-x402 -> Merchant -> Receipt.
+- [ ] Inject crashes before and after every irreversible staging, exact,
+  voucher, deposit, claim, refund, Merchant, and fulfilment effect.
+- [ ] Prove standard-native and additive exact settlement, additive conflict/
+  retry and trusted reconciliation, and batch deposit/multiple vouchers/claim/
+  refund on funded TN10.
+- [ ] Test duplicate calls, mismatched Merchant/resource/amount/network/payee/
+  profile, expired terms, replay, DNS/redirect attacks, and Authority failure.
+- [ ] Record exact package/source/node/DAA/transaction/fee/mass/finality and
+  evidence provenance without secret material.
+
+Gate:
+
+- The success definition in `CONTEXT.md` passes through both transports.
+- Every ambiguous crash point reconciles without duplicate payment or
+  fulfilment.
+- Build, offline, conformance, and funded TN10 suites pass.
+
+## Phase 10: Security and release-readiness closure
+
+Purpose: make the clean-cutover architecture the only documented and shipped
+testnet product.
+
+- [ ] Exercise request/Merchant substitution, paid redirects, automatic
+  corrective payment prevention, forged/duplicate inputs, cross-resource or
+  cross-server replay, ambiguous broadcast, finality downgrade, concurrent
+  head claims, voucher rollback/overclaim, claim/refund races, API/MCP abuse
+  limits, secret leakage, and every crash boundary.
+- [ ] Run a formal security diff scan over the complete branch, independently
+  validate candidates, fix every reportable issue and mandatory hardening
+  defect, rerun the complete matrix, and rescan until clean.
+- [ ] Audit package contents, exports, commands, examples, generated files,
+  dependency integrity, licences, secrets, and current-only documentation.
+- [ ] Write operator backup, corruption, reconciliation, Authority recovery,
+  channel recovery, and testnet reset runbooks.
+- [ ] Add Arazzo/OpenAPI and packed-artifact validation to the release gate.
+- [ ] Run clean install/build/test/package verification from the produced
+  tarball and review every accepted ADR against the final implementation.
+- [ ] Keep mainnet fail-closed and record remaining non-alpha readiness limits.
+
+Gate:
+
+- A fresh operator can run and recover the complete testnet system.
+- The packed artifact contains only intended runtime, docs, and assets.
+- The formal post-fix security scan is clean.
+- `CURRENT_STATE.md` has no unowned blocker for the supported testnet scope.
+
+## Deferred tracks (not part of the alpha.8 clean cutover)
 
 ### Autonomous AP2
 

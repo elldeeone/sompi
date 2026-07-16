@@ -391,6 +391,13 @@ async function withStagingJournal(
       expiresAt: "2099-01-01T00:00:00.000Z",
       checkoutDigest: checkoutEvidence,
     };
+    const executionPlan = journal.storeExecutionPlanEvidence(purchaseId, {
+      mechanism: "single-transaction",
+      profile: "kaspa-exact-v2:standard-native",
+      requirementsDigest: requirementsEvidence,
+      maximumChargeAtomic: PRICE,
+      settlementAssurance: "accepted",
+    });
     journal.bindCheckoutTerms(purchaseId, {
       terms,
       checkoutEvidenceDigest: checkoutEvidence,
@@ -399,6 +406,8 @@ async function withStagingJournal(
       paymentRequirementsDigest: requirementsEvidence,
       paymentRequirementsVerificationProfile: "test-payment-requirements-profile",
       paymentRequirementsVerifierId: "test-payment-requirements-verifier",
+      executionPlan: executionPlan.plan,
+      executionPlanEvidenceDigest: executionPlan.evidenceDigest,
     });
     const requestBody = journal.storeEvidence(purchaseId, {
       bytes: new Uint8Array(),
@@ -416,6 +425,17 @@ async function withStagingJournal(
     });
     const nonceDigest = evidenceDigest("authority-nonce");
     const expiresAtMs = Date.parse(terms.expiresAt);
+    journal.recordAuthorizationRequest(purchaseId, {
+      checkoutDigest: terms.checkoutDigest,
+      requestDigest,
+      nonceDigest,
+      requestMediaType: "",
+      requestBodyDigest: requestBody.digest,
+      additionalCostCeilingAtomic: ADDITIONAL_COST_CEILING,
+      effectiveFinalityFloor: "accepted",
+      expiresAtMs,
+    });
+    const storedAuthorizationRequest = journal.requireAuthorizationRequest(purchaseId);
     const authorizationRequest = {
       purchaseId,
       resourceUrl: purchase.resourceUrl,
@@ -427,19 +447,14 @@ async function withStagingJournal(
       nonceDigest,
       additionalCostCeilingAtomic: ADDITIONAL_COST_CEILING,
       effectiveFinalityFloor: "accepted" as const,
-      createdAtMs: NOW,
+      executionPlanDigest: storedAuthorizationRequest.executionPlanDigest,
+      executionMechanism: storedAuthorizationRequest.executionMechanism,
+      executionProfile: storedAuthorizationRequest.executionProfile,
+      settlementAssurance: storedAuthorizationRequest.settlementAssurance,
+      maximumAuthorizedChargeAtomic: storedAuthorizationRequest.maximumAuthorizedChargeAtomic,
+      createdAtMs: storedAuthorizationRequest.createdAtMs,
       expiresAtMs,
     };
-    journal.recordAuthorizationRequest(purchaseId, {
-      checkoutDigest: terms.checkoutDigest,
-      requestDigest,
-      nonceDigest,
-      requestMediaType: "",
-      requestBodyDigest: requestBody.digest,
-      additionalCostCeilingAtomic: ADDITIONAL_COST_CEILING,
-      effectiveFinalityFloor: "accepted",
-      expiresAtMs,
-    });
     const authorizationEvidence = storeVerifiedEvidence(journal, purchaseId, {
       bytes: Buffer.from("authority-decision", "utf8"),
       kind: "purchase-authorization",
@@ -727,18 +742,11 @@ function paymentRequiredBytes(resourceUrl: string): Buffer {
           payTo: MERCHANT_ADDRESS,
           maxTimeoutSeconds: 60,
           extra: {
-            binding: "kaspa-exact-v1",
+            binding: "kaspa-exact-v2",
+            profile: "standard-native",
             finality: "accepted",
-            templateId: "kaspa-x402-kip10-additive-v1",
             transactionEncoding: "kaspa-sdk-safe-json-v2.0.0",
-            borrowOutpoint: { txid: "22".repeat(32), index: 0 },
-            borrowAmount: "100000000",
-            borrowScriptPublicKey: "000051",
-            borrowRedeemScript: "51",
-            additiveThresholdSompi: THRESHOLD,
-            paymentOutputIndex: 1,
-            reservationId: "33".repeat(32),
-            reservationExpiresAt: "2099-01-01T00:00:00.000Z",
+            payToScriptPublicKey: "000051",
             assetKind: "native",
             assetDecimals: 8,
           },

@@ -121,6 +121,13 @@ async function verifiedRequest(): Promise<{
     purchaseAuthorizationFactsDigest: evidenceDigest("authorization-facts"),
     additionalCostCeilingAtomic: checkout.additionalCostCeilingAtomic,
     effectiveFinalityFloor: "accepted",
+    executionPlanDigest: evidenceDigest("execution-plan"),
+    executionMechanism: "single-transaction",
+    executionProfile: "kaspa-exact-v2:standard-native",
+    settlementAssurance: "accepted",
+    maximumAuthorizedChargeAtomic: checkout.terms.amountAtomic,
+    channelId: null,
+    channelEpochDigest: null,
   };
   const sealed = sealAuthorityApprovalRequest({
     kind: "approval_request",

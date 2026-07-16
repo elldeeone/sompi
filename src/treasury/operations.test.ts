@@ -799,6 +799,31 @@ test("permanent pre-effect preparation failure terminalizes and releases the sha
   });
 });
 
+test("an independently proven mutually exclusive chain winner terminally supersedes without adapter commit", async () => {
+  await withFixture(async ({ journal, module, wallet }) => {
+    wallet.probes.push({
+      status: "superseded",
+      detail: {
+        profile: "urn:sompi:treasury-operation:observation:1",
+        winningEffect: "merchant-claim",
+        winningTransactionId: "a".repeat(64),
+      },
+    });
+    const result = await module.execute({
+      operationKey: "direct:superseded",
+      kind: "wallet_send",
+      destination: DESTINATION,
+      amountAtomic: "100",
+    });
+    assert.equal(result.state, "failed_terminal");
+    assert.equal(result.recoveryRequired, false);
+    assert.equal(result.safeToRetry, false);
+    assert.equal(wallet.commitCalls, 0);
+    assert.equal(journal.unresolvedTreasuryOperationCount(), 0);
+    assert.equal(journal.treasuryPolicyCapacityUsed(), 0n);
+  });
+});
+
 test("typed transient preparation failures use durable bounded retries across restart", async () => {
   await withFixture(async ({ directory, journal, policy, wallet, vault, deposit }) => {
     wallet.typedPrepareErrors.push(
@@ -1120,6 +1145,13 @@ function authorizedPurchase(
     "payment-requirements",
     "merchant:test"
   );
+  const executionPlan = journal.storeExecutionPlanEvidence(id, {
+    mechanism: "single-transaction",
+    profile: "kaspa-exact-v2:standard-native",
+    requirementsDigest: requirements,
+    maximumChargeAtomic: amountAtomic,
+    settlementAssurance: "accepted",
+  });
   journal.bindCheckoutTerms(id, {
     terms: {
       merchant: { id: "merchant:test", name: "Test", origin: "https://merchant.example" },
@@ -1137,6 +1169,8 @@ function authorizedPurchase(
     paymentRequirementsDigest: requirements,
     paymentRequirementsVerificationProfile: "test-profile-v1",
     paymentRequirementsVerifierId: "test-verifier",
+    executionPlan: executionPlan.plan,
+    executionPlanEvidenceDigest: executionPlan.evidenceDigest,
   });
   const requestDigest = evidenceDigest(`auth-request-${seed}`);
   const requestBodyDigest = evidenceDigest(new Uint8Array());
@@ -1159,6 +1193,7 @@ function authorizedPurchase(
     effectiveFinalityFloor: "accepted",
     expiresAtMs,
   });
+  const storedAuthorizationRequest = journal.requireAuthorizationRequest(id);
   const authEvidence = verifiedEvidence(journal, id, `auth-${seed}`, "purchase-authorization");
   const terms = journal.requireCheckoutTerms(id);
   journal.recordAuthorizationDecision(id, {
@@ -1176,7 +1211,12 @@ function authorizedPurchase(
       nonceDigest,
       additionalCostCeilingAtomic: "10",
       effectiveFinalityFloor: "accepted",
-      createdAtMs: journal.requireAuthorizationRequest(id).createdAtMs,
+      executionPlanDigest: storedAuthorizationRequest.executionPlanDigest,
+      executionMechanism: storedAuthorizationRequest.executionMechanism,
+      executionProfile: storedAuthorizationRequest.executionProfile,
+      settlementAssurance: storedAuthorizationRequest.settlementAssurance,
+      maximumAuthorizedChargeAtomic: storedAuthorizationRequest.maximumAuthorizedChargeAtomic,
+      createdAtMs: storedAuthorizationRequest.createdAtMs,
       expiresAtMs,
     }),
     evidenceDigest: authEvidence,

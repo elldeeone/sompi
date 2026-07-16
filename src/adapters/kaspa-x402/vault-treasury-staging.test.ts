@@ -28,7 +28,6 @@ const PAYMENT_ID = createPaymentIdentifier(PURCHASE_ID, 1);
 const MERCHANT_ADDRESS =
   "kaspatest:qzlws9lm7uyt0tftzffshnyeu2zcqk4kf7hw5ghk6v0zh093vnkljcy2fl0fh";
 const PRICE = "20000000";
-const THRESHOLD = "10000000";
 const NOW = Date.parse("2030-01-01T00:00:00.000Z");
 const FIXED_STAGING_PRIVATE_KEY = "01".padStart(64, "0");
 
@@ -42,14 +41,14 @@ test("vault staging converges inside the complete cost cap and exposes canonical
     });
     const total = BigInt(envelope.spend.amountAtomic) + BigInt(envelope.spend.feeAtomic);
     assert.ok(total <= BigInt(PRICE) + 30_000_000n);
-    assert.ok(BigInt(envelope.spend.amountAtomic) >= 32_000_000n);
-    const exactChange = BigInt(envelope.spend.amountAtomic) - 32_000_000n;
+    assert.ok(BigInt(envelope.spend.amountAtomic) >= 22_000_000n);
+    const exactChange = BigInt(envelope.spend.amountAtomic) - 22_000_000n;
     assert.ok(exactChange === 0n || exactChange >= 10_000_000n);
     assert.equal(envelope.spend.destination, envelope.stagingKey.address);
     assert.equal(envelope.spend.destinationOutpoint.index, 0);
     assert.equal(envelope.spend.transactionId, prepared.transactionId);
     assert.equal(envelope.binding.additionalCostCeilingAtomic, "30000000");
-    assert.equal(envelope.binding.additiveThresholdAtomic, THRESHOLD);
+    assert.equal(envelope.binding.additiveThresholdAtomic, "0");
 
     const text = Buffer.from(prepared.preparedBytes).toString("utf8");
     assert.equal(stableStringify(JSON.parse(text)), text);
@@ -77,7 +76,7 @@ test("vault staging converges inside the complete cost cap and exposes canonical
 test("actual staging fee and signed transaction cap are fail-closed", async () => {
   await withFixture(async (fixture) => {
     await assert.rejects(
-      fixture.staging.prepare(fixture.prepareInput("12000000")),
+      fixture.staging.prepare(fixture.prepareInput("1000000")),
       /actual vault staging fee exceeds|authorized additional-cost ceiling/
     );
 
@@ -91,7 +90,7 @@ test("actual staging fee and signed transaction cap are fail-closed", async () =
     );
 
     changed.spend.feeAtomic = (BigInt(changed.spend.feeAtomic) - 1n).toString();
-    changed.binding.additionalCostCeilingAtomic = "10000000";
+    changed.binding.additionalCostCeilingAtomic = "1000000";
     const narrowed = Buffer.from(stableStringify(changed), "utf8");
     assert.throws(
       () => decodeVaultTreasuryStagingEnvelope(narrowed),
@@ -352,18 +351,11 @@ async function withFixture(action: (fixture: Fixture) => Promise<void>): Promise
           payTo: MERCHANT_ADDRESS,
           maxTimeoutSeconds: 60,
           extra: {
-            binding: "kaspa-exact-v1",
+            binding: "kaspa-exact-v2",
+            profile: "standard-native",
             finality: "accepted",
-            templateId: "kaspa-x402-kip10-additive-v1",
             transactionEncoding: "kaspa-sdk-safe-json-v2.0.0",
-            borrowOutpoint: { txid: "22".repeat(32), index: 0 },
-            borrowAmount: "100000000",
-            borrowScriptPublicKey: "000051",
-            borrowRedeemScript: "51",
-            additiveThresholdSompi: THRESHOLD,
-            paymentOutputIndex: 1,
-            reservationId: "33".repeat(32),
-            reservationExpiresAt: "2099-01-01T00:00:00.000Z",
+            payToScriptPublicKey: "000051",
             assetKind: "native",
             assetDecimals: 8,
           },

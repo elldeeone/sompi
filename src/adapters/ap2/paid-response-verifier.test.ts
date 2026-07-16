@@ -312,6 +312,9 @@ async function makeFixture(): Promise<Fixture> {
   const settlementEvidence = artifact(SETTLEMENT_BYTES, "test-exact-settlement");
   const settlement: SettlementResult = {
     evidence: settlementEvidence,
+    executionId: TRANSACTION_ID,
+    mechanism: "single-transaction",
+    profile: "kaspa-exact-v2:standard-native",
     transactionId: TRANSACTION_ID,
     outpoint: `${TRANSACTION_ID}:1`,
     amountAtomic: checkout.terms.amountAtomic,
@@ -319,7 +322,7 @@ async function makeFixture(): Promise<Fixture> {
     asset: checkout.terms.asset,
     network: checkout.terms.network,
     payTo: checkout.terms.payTo,
-    finality: "accepted",
+    settlementAssurance: "accepted",
     fundingSource: "vault-treasury",
   };
   const authorizationRequest = {
@@ -333,6 +336,11 @@ async function makeFixture(): Promise<Fixture> {
     nonceDigest: evidenceDigest("authority-nonce"),
     additionalCostCeilingAtomic: checkout.additionalCostCeilingAtomic,
     effectiveFinalityFloor: "accepted" as const,
+    executionPlanDigest: evidenceDigest("execution-plan"),
+    executionMechanism: "single-transaction" as const,
+    executionProfile: "kaspa-exact-v2:standard-native",
+    settlementAssurance: "accepted" as const,
+    maximumAuthorizedChargeAtomic: checkout.terms.amountAtomic,
     createdAtMs: FIXED_NOW * 1_000,
     expiresAtMs: Date.parse(checkout.terms.expiresAt),
   };
@@ -365,6 +373,11 @@ async function makeFixture(): Promise<Fixture> {
         nonceDigest: authorizationRequest.nonceDigest,
         additionalCostCeilingAtomic: checkout.additionalCostCeilingAtomic,
         effectiveFinalityFloor: "accepted",
+        executionPlanDigest: authorizationRequest.executionPlanDigest,
+        executionMechanism: authorizationRequest.executionMechanism,
+        executionProfile: authorizationRequest.executionProfile,
+        settlementAssurance: authorizationRequest.settlementAssurance,
+        maximumAuthorizedChargeAtomic: authorizationRequest.maximumAuthorizedChargeAtomic,
       },
     },
     paymentIdentifier,
@@ -374,7 +387,7 @@ async function makeFixture(): Promise<Fixture> {
       requestFingerprint: checkout.terms.resourceFingerprint,
     },
     paymentRequirements: Buffer.from("fixed-payment-requirements", "utf8"),
-    preparedTransactionId: TRANSACTION_ID,
+    preparedExecutionId: TRANSACTION_ID,
   };
   const evidence: VerifiedAp2CommerceEvidence = Object.freeze({
     checkout,

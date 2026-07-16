@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 
 export const JOURNAL_APPLICATION_ID = 0x534f4d50; // SOMP
-export const JOURNAL_SCHEMA_VERSION = 10;
+export const JOURNAL_SCHEMA_VERSION = 12;
 
 export const JOURNAL_SCHEMA_V1_SQL = `
   CREATE TABLE schema_migrations (
@@ -139,16 +139,23 @@ export const JOURNAL_SCHEMA_V1_SQL = `
     payload_digest TEXT NOT NULL,
     prepared_ref TEXT NOT NULL,
     prepared_byte_length INTEGER NOT NULL CHECK (prepared_byte_length >= 0),
-    transaction_id TEXT NOT NULL,
+    execution_id TEXT NOT NULL UNIQUE,
+    mechanism TEXT NOT NULL CHECK (mechanism IN ('single-transaction', 'channel-voucher')),
+    profile TEXT NOT NULL,
+    transaction_id TEXT UNIQUE,
     amount_atomic TEXT NOT NULL,
     asset TEXT NOT NULL,
     network TEXT NOT NULL,
     payee TEXT NOT NULL,
-    required_finality TEXT NOT NULL,
+    required_assurance TEXT NOT NULL CHECK (required_assurance IN ('accepted', 'confirmed', 'channel-commitment')),
     created_at_ms INTEGER NOT NULL,
     PRIMARY KEY (purchase_id, attempt),
     FOREIGN KEY (purchase_id, attempt)
-      REFERENCES payment_attempts(purchase_id, attempt) ON DELETE RESTRICT
+      REFERENCES payment_attempts(purchase_id, attempt) ON DELETE RESTRICT,
+    CHECK (
+      (mechanism = 'single-transaction' AND transaction_id IS NOT NULL AND required_assurance <> 'channel-commitment') OR
+      (mechanism = 'channel-voucher' AND transaction_id IS NULL AND required_assurance = 'channel-commitment')
+    )
   ) STRICT;
 
   CREATE TABLE evidence_links (
@@ -243,20 +250,24 @@ export const JOURNAL_SCHEMA_V1_SQL = `
       COALESCE(detail_digest, '')
     );
 
-  CREATE TABLE treasury_spends (
+  CREATE TABLE purchase_settlements (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     effect_id TEXT NOT NULL UNIQUE REFERENCES effects(id) ON DELETE RESTRICT,
     reservation_id TEXT NOT NULL UNIQUE REFERENCES treasury_reservations(id) ON DELETE RESTRICT,
     purchase_id TEXT NOT NULL,
     attempt INTEGER NOT NULL,
-    transaction_id TEXT NOT NULL UNIQUE,
+    execution_id TEXT NOT NULL UNIQUE,
+    mechanism TEXT NOT NULL CHECK (mechanism IN ('single-transaction', 'channel-voucher')),
+    profile TEXT NOT NULL,
+    transaction_id TEXT UNIQUE,
+    commitment_id TEXT UNIQUE,
     outpoint TEXT,
     actual_amount_atomic TEXT NOT NULL,
     actual_fee_atomic TEXT NOT NULL,
     asset TEXT NOT NULL,
     payee TEXT NOT NULL,
     network TEXT NOT NULL,
-    finality TEXT NOT NULL,
+    settlement_assurance TEXT NOT NULL CHECK (settlement_assurance IN ('accepted', 'confirmed', 'channel-commitment')),
     evidence_digest TEXT NOT NULL REFERENCES evidence_artifacts(digest) ON DELETE RESTRICT,
     evidence_verification_profile TEXT NOT NULL,
     evidence_verifier_id TEXT NOT NULL,
@@ -264,7 +275,11 @@ export const JOURNAL_SCHEMA_V1_SQL = `
     FOREIGN KEY (purchase_id, attempt)
       REFERENCES payment_attempts(purchase_id, attempt) ON DELETE RESTRICT,
     FOREIGN KEY (reservation_id, purchase_id)
-      REFERENCES treasury_reservations(id, purchase_id) ON DELETE RESTRICT
+      REFERENCES treasury_reservations(id, purchase_id) ON DELETE RESTRICT,
+    CHECK (
+      (mechanism = 'single-transaction' AND transaction_id IS NOT NULL AND commitment_id IS NULL AND settlement_assurance <> 'channel-commitment') OR
+      (mechanism = 'channel-voucher' AND transaction_id IS NULL AND commitment_id IS NOT NULL AND settlement_assurance = 'channel-commitment')
+    )
   ) STRICT;
 
   CREATE TABLE reconciliation_runs (
@@ -318,10 +333,10 @@ export const JOURNAL_SCHEMA_V1_SQL = `
     BEGIN SELECT RAISE(ABORT, 'effect_transitions is immutable'); END;
   CREATE TRIGGER immutable_effect_transitions_delete BEFORE DELETE ON effect_transitions
     BEGIN SELECT RAISE(ABORT, 'effect_transitions is immutable'); END;
-  CREATE TRIGGER immutable_treasury_spends_update BEFORE UPDATE ON treasury_spends
-    BEGIN SELECT RAISE(ABORT, 'treasury_spends is immutable'); END;
-  CREATE TRIGGER immutable_treasury_spends_delete BEFORE DELETE ON treasury_spends
-    BEGIN SELECT RAISE(ABORT, 'treasury_spends is immutable'); END;
+  CREATE TRIGGER immutable_purchase_settlements_update BEFORE UPDATE ON purchase_settlements
+    BEGIN SELECT RAISE(ABORT, 'purchase_settlements is immutable'); END;
+  CREATE TRIGGER immutable_purchase_settlements_delete BEFORE DELETE ON purchase_settlements
+    BEGIN SELECT RAISE(ABORT, 'purchase_settlements is immutable'); END;
 `;
 
 /**
@@ -332,7 +347,7 @@ export const JOURNAL_SCHEMA_V1_SQL = `
 export const JOURNAL_SCHEMA_V2_MIGRATION_SQL = `
   ALTER TABLE treasury_reservations
     RENAME COLUMN fee_ceiling_atomic TO additional_cost_ceiling_atomic;
-  ALTER TABLE treasury_spends
+  ALTER TABLE purchase_settlements
     RENAME COLUMN actual_fee_atomic TO actual_additional_cost_atomic;
   ALTER TABLE evidence_links ADD COLUMN media_type TEXT NOT NULL DEFAULT 'application/octet-stream';
   ALTER TABLE evidence_links ADD COLUMN profile TEXT NOT NULL DEFAULT 'urn:sompi:evidence:legacy-v1';
@@ -344,7 +359,7 @@ export const JOURNAL_SCHEMA_V2_MIGRATION_SQL = `
   ALTER TABLE payment_preparations
     ADD COLUMN funding_source TEXT NOT NULL DEFAULT 'vault-treasury'
       CHECK (funding_source = 'vault-treasury');
-  ALTER TABLE treasury_spends
+  ALTER TABLE purchase_settlements
     ADD COLUMN funding_source TEXT NOT NULL DEFAULT 'vault-treasury'
       CHECK (funding_source = 'vault-treasury');
 
@@ -521,7 +536,7 @@ export const JOURNAL_SCHEMA_V3_MIGRATION_SQL = `
   CREATE TABLE treasury_operations (
     operation_key TEXT PRIMARY KEY,
     request_digest TEXT NOT NULL UNIQUE,
-    kind TEXT NOT NULL CHECK (kind IN ('wallet_send', 'vault_send', 'vault_deposit')),
+    kind TEXT NOT NULL CHECK (kind IN ('wallet_send', 'vault_send', 'vault_deposit', 'batch_refund')),
     destination TEXT NOT NULL,
     requested_amount_atomic TEXT NOT NULL,
     keep_float_atomic TEXT,
@@ -569,7 +584,7 @@ export const JOURNAL_SCHEMA_V3_MIGRATION_SQL = `
   CREATE TABLE treasury_operation_observations (
     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
     operation_key TEXT NOT NULL REFERENCES treasury_operations(operation_key) ON DELETE RESTRICT,
-    status TEXT NOT NULL CHECK (status IN ('observed', 'not_submitted', 'pending')),
+    status TEXT NOT NULL CHECK (status IN ('observed', 'not_submitted', 'pending', 'superseded')),
     detail_digest TEXT NOT NULL,
     detail_json TEXT NOT NULL,
     observed_at_ms INTEGER NOT NULL,
@@ -866,6 +881,161 @@ export const JOURNAL_SCHEMA_V9_MIGRATION_SQL = `
     ADD COLUMN submission_in_flight INTEGER NOT NULL DEFAULT 0 CHECK (submission_in_flight IN (0, 1));
 `;
 
+/**
+ * Clean-cutover epoch for alpha.8 batch channel state and its distinct
+ * Treasury Movements. Channel private keys are deliberately absent: they live
+ * in the owner-only channel-key store and are addressed only by public key.
+ */
+export const JOURNAL_SCHEMA_V10_MIGRATION_SQL = `
+  ALTER TABLE authorization_requests
+    ADD COLUMN execution_plan_digest TEXT NOT NULL
+      REFERENCES evidence_artifacts(digest) ON DELETE RESTRICT;
+  ALTER TABLE authorization_requests
+    ADD COLUMN execution_mechanism TEXT NOT NULL
+      CHECK (execution_mechanism IN ('single-transaction', 'channel-voucher'));
+  ALTER TABLE authorization_requests
+    ADD COLUMN execution_profile TEXT NOT NULL;
+  ALTER TABLE authorization_requests
+    ADD COLUMN settlement_assurance TEXT NOT NULL
+      CHECK (settlement_assurance IN ('accepted', 'confirmed', 'channel-commitment'));
+  ALTER TABLE authorization_requests
+    ADD COLUMN maximum_authorized_charge_atomic TEXT NOT NULL;
+  ALTER TABLE authorization_requests ADD COLUMN channel_id TEXT;
+  ALTER TABLE authorization_requests ADD COLUMN channel_epoch_digest TEXT;
+
+  CREATE TABLE purchase_execution_plans (
+    purchase_id TEXT PRIMARY KEY REFERENCES checkout_terms(purchase_id) ON DELETE RESTRICT,
+    plan_digest TEXT NOT NULL UNIQUE REFERENCES evidence_artifacts(digest) ON DELETE RESTRICT,
+    mechanism TEXT NOT NULL CHECK (mechanism IN ('single-transaction', 'channel-voucher')),
+    profile TEXT NOT NULL,
+    requirements_digest TEXT NOT NULL REFERENCES evidence_artifacts(digest) ON DELETE RESTRICT,
+    maximum_charge_atomic TEXT NOT NULL,
+    settlement_assurance TEXT NOT NULL CHECK (settlement_assurance IN ('accepted', 'confirmed', 'channel-commitment')),
+    channel_id TEXT,
+    active_txid TEXT,
+    active_output_index INTEGER CHECK (active_output_index IS NULL OR active_output_index >= 0),
+    active_script_public_key TEXT,
+    channel_funding_amount_atomic TEXT,
+    refund_timeout_daa TEXT,
+    claim_fee_reserve_atomic TEXT,
+    created_at_ms INTEGER NOT NULL,
+    CHECK (
+      (mechanism = 'single-transaction' AND channel_id IS NULL AND active_txid IS NULL AND
+       active_output_index IS NULL AND active_script_public_key IS NULL AND
+       channel_funding_amount_atomic IS NULL AND refund_timeout_daa IS NULL AND
+       claim_fee_reserve_atomic IS NULL AND settlement_assurance <> 'channel-commitment') OR
+      (mechanism = 'channel-voucher' AND channel_id IS NOT NULL AND active_txid IS NOT NULL AND
+       active_output_index IS NOT NULL AND active_script_public_key IS NOT NULL AND
+       channel_funding_amount_atomic IS NOT NULL AND refund_timeout_daa IS NOT NULL AND
+       claim_fee_reserve_atomic IS NOT NULL AND settlement_assurance = 'channel-commitment')
+    )
+  ) STRICT;
+
+  CREATE TRIGGER immutable_purchase_execution_plans_update
+    BEFORE UPDATE ON purchase_execution_plans
+    BEGIN SELECT RAISE(ABORT, 'purchase_execution_plans is immutable'); END;
+  CREATE TRIGGER immutable_purchase_execution_plans_delete
+    BEFORE DELETE ON purchase_execution_plans
+    BEGIN SELECT RAISE(ABORT, 'purchase_execution_plans is immutable'); END;
+
+  CREATE TABLE batch_channels (
+    channel_id TEXT PRIMARY KEY,
+    origin TEXT NOT NULL,
+    resource_url TEXT,
+    network TEXT NOT NULL CHECK (network = 'kaspa:testnet-10'),
+    asset TEXT NOT NULL CHECK (asset = 'KAS'),
+    template_id TEXT NOT NULL CHECK (template_id = 'kaspa-x402-escrow-v1'),
+    client_public_key TEXT NOT NULL,
+    server_public_key TEXT NOT NULL,
+    pay_to TEXT NOT NULL,
+    refund_address TEXT NOT NULL,
+    refund_timeout_daa TEXT NOT NULL,
+    salt TEXT NOT NULL,
+    active_txid TEXT NOT NULL,
+    active_output_index INTEGER NOT NULL CHECK (active_output_index >= 0),
+    active_script_public_key TEXT NOT NULL,
+    escrow_address TEXT NOT NULL,
+    funding_source TEXT NOT NULL CHECK (funding_source = 'vault-treasury'),
+    funding_amount_atomic TEXT NOT NULL,
+    charged_cumulative_atomic TEXT NOT NULL,
+    claimed_cumulative_atomic TEXT NOT NULL,
+    signed_cumulative_atomic TEXT NOT NULL,
+    latest_voucher_amount_atomic TEXT,
+    latest_voucher_signature TEXT,
+    status TEXT NOT NULL CHECK (status IN ('active', 'retired', 'refundable', 'refunded', 'suspicious')),
+    epoch INTEGER NOT NULL DEFAULT 0 CHECK (epoch >= 0),
+    version INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
+    retired_reason TEXT,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    CHECK ((latest_voucher_amount_atomic IS NULL) = (latest_voucher_signature IS NULL))
+  ) STRICT;
+
+  CREATE INDEX batch_channel_lookup
+    ON batch_channels(origin, network, status, resource_url);
+  CREATE INDEX batch_channel_refunds
+    ON batch_channels(status, refund_timeout_daa);
+
+  CREATE TABLE batch_channel_transitions (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    channel_id TEXT NOT NULL REFERENCES batch_channels(channel_id) ON DELETE RESTRICT,
+    from_status TEXT,
+    to_status TEXT NOT NULL,
+    epoch INTEGER NOT NULL CHECK (epoch >= 0),
+    active_txid TEXT NOT NULL,
+    active_output_index INTEGER NOT NULL CHECK (active_output_index >= 0),
+    funding_amount_atomic TEXT NOT NULL,
+    charged_cumulative_atomic TEXT NOT NULL,
+    claimed_cumulative_atomic TEXT NOT NULL,
+    signed_cumulative_atomic TEXT NOT NULL,
+    reason_code TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL
+  ) STRICT;
+
+  CREATE TABLE batch_treasury_movements (
+    movement_id TEXT PRIMARY KEY,
+    -- Initial deposit intent must predate the channel's accepted on-chain
+    -- outpoint, so deposit Movements intentionally precede batch_channels.
+    -- Journal methods require an existing channel for every other kind.
+    channel_id TEXT NOT NULL,
+    purchase_id TEXT REFERENCES purchases(id) ON DELETE RESTRICT,
+    kind TEXT NOT NULL CHECK (kind IN ('deposit', 'topup', 'voucher', 'claim', 'refund')),
+    state TEXT NOT NULL CHECK (state IN ('planned', 'submitted', 'ambiguous', 'accepted', 'failed_terminal')),
+    request_digest TEXT NOT NULL UNIQUE,
+    active_txid_before TEXT,
+    active_output_index_before INTEGER CHECK (active_output_index_before IS NULL OR active_output_index_before >= 0),
+    active_txid_after TEXT,
+    active_output_index_after INTEGER CHECK (active_output_index_after IS NULL OR active_output_index_after >= 0),
+    maximum_authorized_atomic TEXT,
+    actual_charge_atomic TEXT,
+    voucher_ceiling_atomic TEXT,
+    transaction_id TEXT,
+    prepared_digest TEXT,
+    evidence_digest TEXT REFERENCES evidence_artifacts(digest) ON DELETE RESTRICT,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    UNIQUE (purchase_id, kind),
+    CHECK (kind = 'voucher' OR purchase_id IS NULL),
+    CHECK (kind <> 'voucher' OR (maximum_authorized_atomic IS NOT NULL AND voucher_ceiling_atomic IS NOT NULL))
+  ) STRICT;
+
+  CREATE INDEX batch_movement_recovery
+    ON batch_treasury_movements(state, kind, channel_id);
+
+  CREATE TRIGGER immutable_batch_channel_transitions_update
+    BEFORE UPDATE ON batch_channel_transitions
+    BEGIN SELECT RAISE(ABORT, 'batch_channel_transitions is immutable'); END;
+  CREATE TRIGGER immutable_batch_channel_transitions_delete
+    BEFORE DELETE ON batch_channel_transitions
+    BEGIN SELECT RAISE(ABORT, 'batch_channel_transitions is immutable'); END;
+  CREATE TRIGGER immutable_batch_channels_delete
+    BEFORE DELETE ON batch_channels
+    BEGIN SELECT RAISE(ABORT, 'batch channel history is immutable'); END;
+  CREATE TRIGGER immutable_batch_treasury_movements_delete
+    BEFORE DELETE ON batch_treasury_movements
+    BEGIN SELECT RAISE(ABORT, 'batch Treasury Movement history is immutable'); END;
+`;
+
 export const JOURNAL_SCHEMA_V2_SQL = `${JOURNAL_SCHEMA_V1_SQL}\n${JOURNAL_SCHEMA_V2_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V3_SQL = `${JOURNAL_SCHEMA_V2_SQL}\n${JOURNAL_SCHEMA_V3_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V4_SQL = `${JOURNAL_SCHEMA_V3_SQL}\n${JOURNAL_SCHEMA_V4_MIGRATION_SQL}`;
@@ -874,7 +1044,8 @@ export const JOURNAL_SCHEMA_V6_SQL = `${JOURNAL_SCHEMA_V5_SQL}\n${JOURNAL_SCHEMA
 export const JOURNAL_SCHEMA_V7_SQL = `${JOURNAL_SCHEMA_V6_SQL}\n${JOURNAL_SCHEMA_V7_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V8_SQL = `${JOURNAL_SCHEMA_V7_SQL}\n${JOURNAL_SCHEMA_V8_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V9_SQL = `${JOURNAL_SCHEMA_V8_SQL}\n${JOURNAL_SCHEMA_V9_MIGRATION_SQL}`;
-export const JOURNAL_SCHEMA_SQL = JOURNAL_SCHEMA_V9_SQL;
+export const JOURNAL_SCHEMA_V10_SQL = `${JOURNAL_SCHEMA_V9_SQL}\n${JOURNAL_SCHEMA_V10_MIGRATION_SQL}`;
+export const JOURNAL_SCHEMA_SQL = JOURNAL_SCHEMA_V10_SQL;
 
 export const JOURNAL_SCHEMA_V1_CHECKSUM = sha256Text(JOURNAL_SCHEMA_V1_SQL);
 export const JOURNAL_SCHEMA_V2_CHECKSUM = sha256Text(JOURNAL_SCHEMA_V2_SQL);

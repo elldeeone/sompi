@@ -242,6 +242,9 @@ test("SIGKILL during spend finalization rolls back spend, effect, Attempt, and R
     const spend = {
       effectId: flow.effectId,
       reservationId: flow.reservationId,
+      executionId: flow.transactionId,
+      mechanism: "single-transaction",
+      profile: "kaspa-exact-v2:standard-native",
       transactionId: flow.transactionId,
       actualAmountAtomic: "60",
       actualAdditionalCostAtomic: "2",
@@ -249,7 +252,7 @@ test("SIGKILL during spend finalization rolls back spend, effect, Attempt, and R
       asset: "KAS",
       payee: "kaspatest:merchant",
       network: "kaspa:testnet-10",
-      finality: "confirmed",
+      settlementAssurance: "confirmed",
       evidenceDigest: settlement,
       evidenceVerificationProfile: "test-v1",
       evidenceVerifierId: "test-verifier",
@@ -263,10 +266,10 @@ test("SIGKILL during spend finalization rolls back spend, effect, Attempt, and R
           now: () => Number(process.env.NOW),
           evidenceDirectory: process.env.EVIDENCE,
           faultInjector(point) {
-            if (point === "spend.after_insert") process.kill(process.pid, "SIGKILL");
+            if (point === "settlement.after_insert") process.kill(process.pid, "SIGKILL");
           }
         });
-        journal.recordObservedSpend(JSON.parse(process.env.LEASE), JSON.parse(process.env.SPEND));
+        journal.recordPurchaseSettlement(JSON.parse(process.env.LEASE), JSON.parse(process.env.SPEND));
       `,
       {
         DB: filename,
@@ -278,7 +281,7 @@ test("SIGKILL during spend finalization rolls back spend, effect, Attempt, and R
     );
     assert.equal(child.signal, "SIGKILL");
     const recovered = new PurchaseJournal(filename, { now: clock.now, evidenceDirectory });
-    assert.throws(() => recovered.requireSpend(flow.reservationId), JournalNotFoundError);
+    assert.throws(() => recovered.requireSettlement(flow.reservationId), JournalNotFoundError);
     assert.equal(recovered.requireReservation(flow.reservationId).state, "in_flight");
     assert.equal(recovered.requirePaymentAttempt(flow.purchaseId, 1).state, "submitted");
     assert.equal(recovered.requireEffect(flow.effectId).state, "submitted");
@@ -606,6 +609,13 @@ function authorizedPurchase(journal: PurchaseJournal, seed: number): PurchaseId 
     "merchant:test"
   );
   const checkoutDigest = checkoutEvidence;
+  const executionPlan = journal.storeExecutionPlanEvidence(purchase.id, {
+    mechanism: "single-transaction",
+    profile: "kaspa-exact-v2:standard-native",
+    requirementsDigest: requirementsEvidence,
+    maximumChargeAtomic: "60",
+    settlementAssurance: "accepted",
+  });
   journal.bindCheckoutTerms(purchase.id, {
     terms: {
       merchant: { id: "merchant:test", name: "Test Merchant", origin: "https://merchant.example" },
@@ -623,6 +633,8 @@ function authorizedPurchase(journal: PurchaseJournal, seed: number): PurchaseId 
     paymentRequirementsDigest: requirementsEvidence,
     paymentRequirementsVerificationProfile: "test-v1",
     paymentRequirementsVerifierId: "test-verifier",
+    executionPlan: executionPlan.plan,
+    executionPlanEvidenceDigest: executionPlan.evidenceDigest,
   });
   const requestDigest = evidenceDigest(`authorization-request-${seed}`);
   verifiedFixtureEvidence(journal, purchase.id, `authorization-request-${seed}`, "authorization-request");
@@ -644,6 +656,7 @@ function authorizedPurchase(journal: PurchaseJournal, seed: number): PurchaseId 
     effectiveFinalityFloor: "accepted",
     expiresAtMs,
   });
+  const storedAuthorizationRequest = journal.requireAuthorizationRequest(purchase.id);
   const authorizationEvidence = verifiedFixtureEvidence(
     journal,
     purchase.id,
@@ -662,7 +675,12 @@ function authorizedPurchase(journal: PurchaseJournal, seed: number): PurchaseId 
     nonceDigest,
     additionalCostCeilingAtomic: "10",
     effectiveFinalityFloor: "accepted",
-    createdAtMs: journal.requireAuthorizationRequest(purchase.id).createdAtMs,
+    executionPlanDigest: storedAuthorizationRequest.executionPlanDigest,
+    executionMechanism: storedAuthorizationRequest.executionMechanism,
+    executionProfile: storedAuthorizationRequest.executionProfile,
+    settlementAssurance: storedAuthorizationRequest.settlementAssurance,
+    maximumAuthorizedChargeAtomic: storedAuthorizationRequest.maximumAuthorizedChargeAtomic,
+    createdAtMs: storedAuthorizationRequest.createdAtMs,
     expiresAtMs,
   });
   journal.recordAuthorizationDecision(purchase.id, {
@@ -727,6 +745,7 @@ function preparedSetup(journal: PurchaseJournal, seed: number, now: number) {
     identifier: createPaymentIdentifier(purchaseId, 1),
   });
   const preparedBytes = Buffer.from(`payload-${seed}`);
+  const transactionId = seed.toString(16).padStart(2, "0").repeat(32);
   const preparation: PreparePaymentAttemptInput = {
     purchaseId,
     attempt: 1,
@@ -734,12 +753,15 @@ function preparedSetup(journal: PurchaseJournal, seed: number, now: number) {
     requirementsDigest: evidenceDigest(`requirements-${seed}`),
     payloadDigest: evidenceDigest(preparedBytes),
     preparedBytes,
-    transactionId: seed.toString(16).padStart(2, "0").repeat(32),
+    executionId: transactionId,
+    mechanism: "single-transaction",
+    profile: "kaspa-exact-v2:standard-native",
+    transactionId,
     amountAtomic: "60",
     asset: "KAS",
     network: "kaspa:testnet-10",
     payee: "kaspatest:merchant",
-    requiredFinality: "accepted",
+    requiredAssurance: "accepted",
     fundingSource: "vault-treasury",
   };
   return { purchaseId, reservation, preparation };

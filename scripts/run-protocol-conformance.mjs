@@ -78,7 +78,7 @@ try {
   ]);
   run(process.execPath, [
     "--test",
-    path.join(root, "dist/conformance/kaspa-x402-alpha6.js"),
+    path.join(root, "dist/conformance/kaspa-x402-alpha8.js"),
   ], { cwd: root });
 } finally {
   fs.rmSync(work, { recursive: true, force: true });
@@ -88,7 +88,7 @@ process.stdout.write(
   [
     "Protocol conformance passed.",
     `AP2: v0.2.0 @ ${ap2.commit} (Python 3.12, closed Human Present round trip and receipts).`,
-    `Kaspa-x402: 0.1.0-alpha.6 @ ${provenance.kaspaX402.sourceCommit} (offline exact HTTP/adapter contract).`,
+    `Kaspa-x402: 0.1.0-alpha.8 @ ${provenance.kaspaX402.sourceCommit} (offline exact HTTP and full-consensus profile vectors).`,
     "Claim boundary: no live testnet, general AP2, standardized native-KAS AP2, or mainnet claim.",
     "",
   ].join("\n")

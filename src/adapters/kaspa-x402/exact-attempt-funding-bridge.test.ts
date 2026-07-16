@@ -27,7 +27,7 @@ import {
   KaspaX402ExactPaymentModule,
   type ExactAttemptFundingContext,
 } from "./exact-payment-module.js";
-import { Kip10ExactTransactionBuilder } from "./exact-transaction-builder.js";
+import { ExactTransactionBuilder } from "./exact-transaction-builder.js";
 import { StagingKeyStore } from "./staging-key-store.js";
 import type { TreasuryStagingMetadata } from "./vault-treasury-staging.js";
 
@@ -36,15 +36,13 @@ const OWNER_PUBLIC_KEY =
   "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
 const PURCHASE_ID = assertPurchaseId("pur_AAAAAAAAAAAAAAAAAAAAAA");
 const PAYMENT_ID = createPaymentIdentifier(PURCHASE_ID, 1);
-const MERCHANT_ADDRESS =
-  "kaspatest:qzlws9lm7uyt0tftzffshnyeu2zcqk4kf7hw5ghk6v0zh093vnkljcy2fl0fh";
 const STAGING_TXID = "33".repeat(32);
 const BORROW_TXID = "22".repeat(32);
 const PRICE = "20000000";
 const THRESHOLD = "10000000";
-const STAGING_AMOUNT = "32000000";
+const STAGING_AMOUNT = "22000000";
 const STAGING_FEE = "50000";
-const COST_CEILING = "12050000";
+const COST_CEILING = "2050000";
 const REQUEST_HASH = "44".repeat(32);
 const EVIDENCE_DIGEST = digest("observed-staging");
 const NOW = Date.parse("2030-01-01T00:00:00.000Z");
@@ -68,7 +66,7 @@ test("fresh attempt providers expose only the joined journal-observed staging ou
       },
     ]);
     await assert.rejects(
-      first.getUtxos([MERCHANT_ADDRESS]),
+      first.getUtxos([fixture.request.payTo]),
       /only its journal-observed staging address/
     );
     assert.deepEqual(
@@ -80,11 +78,12 @@ test("fresh attempt providers expose only the joined journal-observed staging ou
       { feeSompi: "2000000" }
     );
 
+    await first.authorizeExactPayment!(fixture.request);
     const built = await first.payExactTransaction!(fixture.request);
     const replay = await first.payExactTransaction!(structuredClone(fixture.request));
     assert.equal(replay.transactionId, built.transactionId);
     assert.equal(built.fundingSource, "vault-treasury");
-    assert.equal(built.paymentOutputIndex, 1);
+    assert.equal(built.paymentOutputIndex, 0);
     const transaction = JSON.parse(built.transaction) as {
       inputs: Array<{ transactionId: string }>;
       outputs: Array<{ value: string }>;
@@ -95,7 +94,7 @@ test("fresh attempt providers expose only the joined journal-observed staging ou
     );
     assert.deepEqual(
       transaction.outputs.map((output) => output.value),
-      ["110000000", PRICE]
+      ["120000000"]
     );
   });
 });
@@ -131,7 +130,7 @@ test("outpoint, script, key, DAA, fee, and ceiling substitutions fail closed", a
       },
       {
         name: "ceiling",
-        metadata: { additionalCostCeilingAtomic: "11050001" },
+        metadata: { additionalCostCeilingAtomic: "2050001" },
         pattern: /ceiling differs/,
       },
       {
@@ -152,7 +151,7 @@ test("outpoint, script, key, DAA, fee, and ceiling substitutions fail closed", a
     const tooExpensive = fixture.makeBridge({ stagingFeeAtomic: "50001" });
     const provider = await tooExpensive.createProvider(fixture.context);
     await assert.rejects(
-      provider.payExactTransaction!(fixture.request),
+      provider.authorizeExactPayment!(fixture.request),
       /complete exact additional cost exceeds/
     );
 
@@ -194,7 +193,7 @@ test("ExactPaymentModule prepares through the concrete provider and KIP-10 build
       amountAtomic: PRICE,
       asset: "KAS",
       network: "kaspa:testnet-10",
-      payTo: MERCHANT_ADDRESS,
+      payTo: fixture.request.payTo,
       expiresAt: "2099-01-01T00:00:00.000Z",
       checkoutDigest,
     };
@@ -222,7 +221,7 @@ test("ExactPaymentModule prepares through the concrete provider and KIP-10 build
       amountAtomic: PRICE,
       asset: "KAS",
       network: "kaspa:testnet-10",
-      payTo: MERCHANT_ADDRESS,
+      payTo: fixture.request.payTo,
       expiresAt: terms.expiresAt,
       checkoutDigest,
       requestDigest,
@@ -262,15 +261,6 @@ test("ExactPaymentModule prepares through the concrete provider and KIP-10 build
     };
     const bridge = fixture.makeBridge(integrationMetadata);
     const module = new KaspaX402ExactPaymentModule({
-      staging: {
-        prepare: async () => {
-          throw new Error("staging already observed");
-        },
-        submit: async () => {
-          throw new Error("staging already observed");
-        },
-        observe: async () => ({ status: "pending" }),
-      },
       funding: bridge,
       channelSigner: {
         generateChannelKey: async () => {
@@ -326,7 +316,8 @@ test("ExactPaymentModule prepares through the concrete provider and KIP-10 build
       },
       additionalCostCeilingAtomic: COST_CEILING,
     });
-    assert.match(prepared.transactionId, /^[a-f0-9]{64}$/);
+    assert.equal(typeof prepared.transactionId, "string");
+    assert.match(prepared.transactionId!, /^[a-f0-9]{64}$/);
     const exactEnvelope = JSON.parse(Buffer.from(prepared.preparedBytes).toString("utf8"));
     assert.equal(exactEnvelope.paymentPayload.payload.type, "exact-transaction");
     assert.equal(
@@ -366,10 +357,7 @@ async function withBridgeFixture(
       purchaseId: PURCHASE_ID,
       paymentIdentifier: PAYMENT_ID,
     });
-    const builder = new Kip10ExactTransactionBuilder({
-      keyStore,
-      now: () => NOW,
-    });
+    const builder = new ExactTransactionBuilder({ keyStore });
     const borrowRedeemScript = buildKip10AdditiveRedeemScript({
       ownerPublicKey: OWNER_PUBLIC_KEY,
       amount: THRESHOLD,
@@ -380,24 +368,35 @@ async function withBridgeFixture(
         amount: THRESHOLD,
       })
     ).toLowerCase();
+    const payTo = new KaspaTestnet10AddressCodec().encodeScriptAddress({
+      network: "kaspa:testnet-10",
+      scriptPublicKey: { version: 0, script: borrowScriptPublicKey.slice(4) },
+      serializedScriptPublicKey: borrowScriptPublicKey,
+    });
     const request: ExactTransactionPaymentRequest = {
       network: "kaspa:testnet-10",
+      profile: "additive",
+      origin: "https://merchant.example",
+      resourceUrl: "https://merchant.example/resource",
       amount: PRICE,
-      payTo: MERCHANT_ADDRESS,
+      payTo,
+      payToScriptPublicKey: borrowScriptPublicKey,
+      paymentOutputIndex: 0,
       requestHash: REQUEST_HASH,
+      paymentRequirementsHash: "45".repeat(32),
+      authorizationExpiresAt: "2099-01-01T00:00:00.000Z",
       requiredFinality: "accepted",
       fundingSource: "vault-treasury",
-      reservation: {
-        templateId: "kaspa-x402-kip10-additive-v1",
-        transactionEncoding: "kaspa-sdk-safe-json-v2.0.0",
-        borrowOutpoint: { txid: BORROW_TXID, index: 0 },
-        borrowAmount: "100000000",
-        borrowScriptPublicKey,
-        borrowRedeemScript,
+      head: {
+        headId: "55".repeat(32),
+        headVersion: "0",
+        expectedHeadOutpoint: { txid: BORROW_TXID, index: 0 },
+        headAmount: "100000000",
+        headScriptPublicKey: borrowScriptPublicKey,
+        headRedeemScript: borrowRedeemScript,
         additiveThresholdSompi: THRESHOLD,
-        paymentOutputIndex: 1,
-        reservationId: "55".repeat(32),
-        reservationExpiresAt: "2099-01-01T00:00:00.000Z",
+        challengeId: "56".repeat(32),
+        challengeExpiresAt: "2099-01-01T00:00:00.000Z",
       },
     };
     const metadata: TreasuryStagingMetadata = {
@@ -447,7 +446,7 @@ async function withBridgeFixture(
       paymentIdentifier: PAYMENT_ID,
       requestHash: REQUEST_HASH,
       amountAtomic: PRICE,
-      payTo: MERCHANT_ADDRESS,
+      payTo,
       staging: {
         transactionId: STAGING_TXID,
         outpoint: `${STAGING_TXID}:0`,
@@ -486,9 +485,26 @@ function paymentRequiredWire(
         payTo: request.payTo,
         maxTimeoutSeconds: 60,
         extra: {
-          binding: "kaspa-exact-v1",
+          binding: "kaspa-exact-v2",
+          profile: request.profile,
+          transactionEncoding: "kaspa-sdk-safe-json-v2.0.0",
+          payToScriptPublicKey: request.payToScriptPublicKey,
+          paymentOutputIndex: 0,
           finality: request.requiredFinality,
-          ...request.reservation,
+          ...(request.head === undefined
+            ? {}
+            : {
+                templateId: "kaspa-x402-kip10-additive-v1",
+                headId: request.head.headId,
+                headVersion: request.head.headVersion,
+                expectedHeadOutpoint: request.head.expectedHeadOutpoint,
+                headAmount: request.head.headAmount,
+                headScriptPublicKey: request.head.headScriptPublicKey,
+                headRedeemScript: request.head.headRedeemScript,
+                additiveThresholdSompi: request.head.additiveThresholdSompi,
+                challengeId: request.head.challengeId,
+                challengeExpiresAt: request.head.challengeExpiresAt,
+              }),
           assetKind: "native",
           assetDecimals: 8,
         },

@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-11
+- Amended by: ADR-0015 (`sompi-api` runtime and MCP compatibility process)
 
 ## Context
 

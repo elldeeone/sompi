@@ -4,6 +4,7 @@
   "chainMode": "deterministic-in-memory-testnet10",
   "liveNetworkConformanceClaimed": false,
   "authorityMode": "real-unix-framed-service-in-process-fixture",
+  "initiationMode": "direct-purchase-module",
   "adapterTransport": "sompi-demo-local-ap2-presentation-endpoints",
   "protocolPins": {
     "ap2": {
@@ -30,23 +31,23 @@
       "allowMainnet": false,
       "packages": {
         "core": {
-          "version": "0.1.0-alpha.6",
-          "integrity": "sha512-LKlqnX6p3mZSNRimUEr0J5p5odcgoYK2n2STHi6pfnUNhUejqXmFJJNYz0Vo9f2Utas4vLAGO1KcsioBUIFhMg=="
+          "version": "0.1.0-alpha.8",
+          "integrity": "sha512-UBY4g9jBZrJyd44zbsla01L2wbN+UQeButAiuEeFUd4EdGwVyR2qxMf1B4hApXBSvrOeH9UZQzhWkBD+Z3WT4A=="
         },
         "covenant": {
-          "version": "0.1.0-alpha.6",
-          "integrity": "sha512-hZSmIMYD0AHGc+cROZ/OlAoHbooGcFmUYn3bvHWCMt1AK310mqKCVyCqWXd0dl2B4K6455UwGfAr1NHmgqWl8Q=="
+          "version": "0.1.0-alpha.8",
+          "integrity": "sha512-HWySEyuNpzFDH4vVZRsUCnMLWWt2ou3sp1XEU+gaycl3O/7fWJPzWo1MYosZzPkS2newL6lXQSr/OR/YQ4wSag=="
         },
         "client": {
-          "version": "0.1.0-alpha.6",
-          "integrity": "sha512-BEyiCDh7tdMJxOmtlKj/8yxnqskF5SbxcbdcSeTkjHXVTmzm7rBkgQ69Q56DWEvaevtoGVolBrBjcN/Sm7TTdQ=="
+          "version": "0.1.0-alpha.8",
+          "integrity": "sha512-n36rG2nYDrN7Dgu5jlh16390k/Z5sOnsj40a347ir8C9U/X/tlgPY24KB0YmUqVmxEOBYRAw2pAEKI/qDqIEwA=="
         },
         "server": {
-          "version": "0.1.0-alpha.6",
-          "integrity": "sha512-Wi84DBsbvxgszJxgw5afjkEDGPR4kdN1CvY/n32YRFRSmDbPup8TGf3m2GyyK2V4FQWcdwP9FsS07kOLthLfkA=="
+          "version": "0.1.0-alpha.8",
+          "integrity": "sha512-X5ax8oWGfJlxQqh2RaEQYHw0wQKbRR/iFoeJ9/2w93oNsOC++svNEA/MHlR4SSAiukdXI6PizcsYq0KwPi6jsA=="
         }
       },
-      "npmGitCommit": "28ac222d3a375b9a2a56c11396f388086eeeae76"
+      "npmGitCommit": "d3ef63ebfb72ef5139993e75804fcc846a1f9487"
     },
     "sqlite": {
       "implementation": "better-sqlite3",
@@ -77,20 +78,20 @@
     "id": "pur_QUFBQUFBQUFBQUFBQUFBQQ",
     "state": "receipted",
     "paymentIdentifier": "pay_G-65DChbE33IuFTud_GkHWq29QcCKlSEB95e5ZtYu_I",
-    "checkoutDigest": "sha256:Fa_uEzUR-jT7JWYrfHPolQYXVIxcn30HJcR96dPlLyM",
-    "authorizationEvidenceDigest": "sha256:AmXL0bA2B5KNkpBaLGqdRzmPszcc08G3_DwxBKWuLPM",
-    "settlementEvidenceDigest": "sha256:9pWEQRtMHTjx2kgNYHtLXJFFWylH8tehV3AEcHA6-l8",
+    "checkoutDigest": "sha256:EgWz44XGYfmO0B1VmLC0ky-Kg4GPbFB9X9P6dmCCGKs",
+    "authorizationEvidenceDigest": "sha256:3Hlt_I2rdMbyCeRv2Zv8-zet5uPGaGFW7xgU0b6P8rw",
+    "settlementEvidenceDigest": "sha256:eKxQxDf16PWzLUoXyeRaS5aHk436Xlb32tuB_Zbpw7Q",
     "fulfilmentDigest": "sha256:jtetvqEDFfwlEYv57dfdb3_xDswN8OJ7uKzmUj93p9E",
     "receiptEvidenceDigests": [
-      "sha256:7Wnx6K4yZlNItQgwGYS2ve9l25khwo_0SYXYRo3MgOU",
-      "sha256:YlGkn78SpH2dhxuPu09uMNT_36X3PY7vj9odWX8Y9fE"
+      "sha256:ctpWLOc13hhc6iIC56oFW7JT1nnAvlKegVsZfAW8ZbM",
+      "sha256:dlUkDNZw6UBEa_-zktVyAeY7-QQOf33hVNWJBz_JttM"
     ]
   },
   "transactions": {
-    "stagingTransactionId": "300e349773a925633041b4bd8301f4d41c3b2d6458882b86a2b9549d4d4e7109",
-    "stagingOutpoint": "300e349773a925633041b4bd8301f4d41c3b2d6458882b86a2b9549d4d4e7109:0",
-    "exactTransactionId": "42ec835391ab58327cf14b8e46523b2604497ac8eba384c44fd8f0088c4e72f7",
-    "merchantOutpoint": "42ec835391ab58327cf14b8e46523b2604497ac8eba384c44fd8f0088c4e72f7:1"
+    "stagingTransactionId": "468a86b11d2ed4d45abc6368dd71e6aece75fefd9946645bf4e2706f8c4a4c30",
+    "stagingOutpoint": "468a86b11d2ed4d45abc6368dd71e6aece75fefd9946645bf4e2706f8c4a4c30:0",
+    "exactTransactionId": "f6b811398e65537c27e5bd4a5785b8d294d7699b12f4b836df48565532aa3afd",
+    "merchantOutpoint": "f6b811398e65537c27e5bd4a5785b8d294d7699b12f4b836df48565532aa3afd:0"
   },
   "idempotency": {
     "duplicatePurchaseReturnedSameId": true,

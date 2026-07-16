@@ -61,6 +61,7 @@ export interface SompiPurchaseRuntimeConfig {
   readonly merchantReceiptIssuer: string;
   readonly paymentReceiptIssuer: string;
   readonly additionalCostCeilingAtomic: string;
+  readonly batchClaimFeeReserveAtomic: string;
   readonly treasuryOperationFeeCeilingAtomic: string;
   readonly egressAllowRules: readonly EgressAllowRule[];
 }
@@ -165,6 +166,8 @@ export function purchaseRuntimeConfigFromEnv(
   const paymentReceiptIssuer = operatorManifest.manifest.merchant.paymentReceiptIssuer;
   const additionalCostCeilingAtomic =
     operatorManifest.manifest.treasury.additionalCostCeilingAtomic;
+  const batchClaimFeeReserveAtomic =
+    operatorManifest.manifest.batch.claimFeeReserveAtomic;
   const treasuryOperationFeeCeilingAtomic =
     operatorManifest.manifest.treasury.operationFeeCeilingAtomic;
   const egressAllowRules = operatorManifest.manifest.merchant.allowRules;
@@ -201,6 +204,7 @@ export function purchaseRuntimeConfigFromEnv(
     merchantReceiptIssuer,
     paymentReceiptIssuer,
     additionalCostCeilingAtomic,
+    batchClaimFeeReserveAtomic,
     treasuryOperationFeeCeilingAtomic,
     egressAllowRules,
   });
@@ -232,6 +236,7 @@ export function assertSompiPurchaseRuntimeConfig(
       "merchantReceiptIssuer",
       "paymentReceiptIssuer",
       "additionalCostCeilingAtomic",
+      "batchClaimFeeReserveAtomic",
       "treasuryOperationFeeCeilingAtomic",
       "egressAllowRules",
     ],
@@ -335,6 +340,10 @@ export function assertSompiPurchaseRuntimeConfig(
     "Purchase additional-cost ceiling"
   );
   positiveAtomic(
+    requireString(value.batchClaimFeeReserveAtomic, "batch claim-fee reserve"),
+    "batch claim-fee reserve"
+  );
+  positiveAtomic(
     requireString(
       value.treasuryOperationFeeCeilingAtomic,
       "direct Treasury operation fee ceiling"
@@ -357,6 +366,7 @@ export function assertSompiPurchaseRuntimeConfig(
     value.merchantReceiptIssuer !== manifest.merchant.merchantReceiptIssuer ||
     value.paymentReceiptIssuer !== manifest.merchant.paymentReceiptIssuer ||
     value.additionalCostCeilingAtomic !== manifest.treasury.additionalCostCeilingAtomic ||
+    value.batchClaimFeeReserveAtomic !== manifest.batch.claimFeeReserveAtomic ||
     value.treasuryOperationFeeCeilingAtomic !== manifest.treasury.operationFeeCeilingAtomic
   ) {
     throw new SompiRuntimeConfigError("runtime configuration is not an exact Operator Manifest projection");

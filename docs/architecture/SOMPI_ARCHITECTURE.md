@@ -2,7 +2,7 @@
 
 Status: **Accepted for implementation**
 
-Accepted: **2026-07-11**
+Accepted: **2026-07-11**; amended by ADR-0015 on **2026-07-16**
 
 Applies to: the clean cutover after `ux-agent-native-payments`
 
@@ -11,13 +11,14 @@ Applies to: the clean cutover after `ux-agent-native-payments`
 Sompi will become a modular monolith centred on one deep Purchase module. Its
 stable interface is expressed in Sompi domain terms. AP2 and Kaspa-x402 sit at
 separate seams so either can change without spreading protocol knowledge
-through the wallet, policy, MCP tools, journal, or receipts.
+through the wallet, policy, agent transports, journal, or receipts.
 
-The initial repository remains one TypeScript package with two long-running
+The repository remains one TypeScript package with three long-running
 production executables, one short-lived administrative command, and one
 development fixture:
 
-- `sompi-mcp`: the agent-facing MCP executable;
+- `sompi-api`: the canonical authenticated Purchase API and runtime;
+- `sompi-mcp`: the untrusted compatibility executable that calls `sompi-api`;
 - `sompi-authority`: the deterministic Trusted Authority executable;
 - `sompi-operator`: the non-agentic Operator Provisioning command;
 - demo Merchant: an end-to-end/conformance fixture, not a third production
@@ -30,8 +31,10 @@ not a compatibility-preserving migration.
 
 ```mermaid
 flowchart TD
-    Agent["Agent / MCP client"] --> MCP["sompi-mcp"]
-    MCP --> Purchase["Deep Purchase module"]
+    Agent["Agent / API client"] --> API["sompi-api\nauthenticated Purchase API"]
+    MCPClient["MCP client"] --> MCP["sompi-mcp\ncompatibility adapter"]
+    MCP --> API
+    API --> Purchase["Deep Purchase module"]
     Authority["sompi-authority\ndeterministic and non-agentic"] --> Purchase
     Operator["sompi-operator\nshort-lived"] --> Manifest["Immutable Operator Manifest"]
     Manifest --> Purchase
@@ -56,13 +59,15 @@ flowchart TD
 The Purchase module earns its depth by owning discovery, term binding,
 authorization, policy reservation, payment preparation, execution,
 reconciliation, fulfilment, receipt construction, and status projection behind
-one small interface. MCP tools remain thin projections of this interface.
+one small interface. HTTP and MCP are adapters at that same seam. MCP has no
+direct wallet, Journal, Authority, AP2, or Kaspa-x402 access.
 
 ## 3. Ownership
 
 | Concern | Owner | Must not leak into |
 |---|---|---|
-| Agent-facing tools and explanations | Sompi MCP module | AP2 or x402 adapters |
+| Canonical agent Purchase interface | Sompi API module | AP2 or x402 adapters |
+| MCP compatibility tools and explanations | Sompi MCP adapter | Purchase implementation or credentials |
 | Canonical Purchase lifecycle | Purchase module | Protocol SDK objects |
 | Durable workflow and recovery | Purchase Journal | Ad-hoc JSON files |
 | Purchase Authorization | Trusted Authority + AP2 adapter | Agent/LLM process |
@@ -163,24 +168,43 @@ Kaspa, Kaspa-x402, and Merchant identities.
 
 ## 6. Module shape
 
-### 6.1 MCP module
+### 6.1 Purchase API module
+
+Responsibilities:
+
+- expose `POST /purchases`, `GET /purchases/{purchaseId}`, and
+  `POST /purchases/{purchaseId}/recover`;
+- authenticate an operator-installed least-authority agent credential;
+- validate the shared canonical request and result schemas;
+- enforce request size, concurrency, deadline, cancellation, and structured
+  error limits;
+- call the Purchase module and return deterministic secret-free projections;
+- bind to loopback or an operator-controlled local socket by default;
+- publish the canonical OpenAPI 3.2 description.
+
+It owns transport authentication and projection only. It does not implement
+Purchase transitions, AP2, x402, Treasury, or recovery logic.
+
+### 6.2 MCP module
 
 Responsibilities:
 
 - accept agent requests and validate tool input;
-- call the Purchase module;
+- call the authenticated local Purchase API;
 - project deterministic Purchase state into concise agent/human responses;
-- expose purchase initiation, status, recovery, and existing treasury tools;
-- enforce outbound request/redirect policy before commerce discovery.
+- expose only purchase initiation, status, and recovery.
 
 It does not sign authorization, construct AP2 credentials, parse x402 wire
-objects, or directly advance payment state.
+objects, access wallet/Treasury capabilities, enforce Merchant egress, or
+directly advance payment state. Its credential can invoke only the three
+Purchase operations and is not an Authority credential.
 
 The clean-cutover MCP surface exposes `purchase`, `purchase_status`, and
 `purchase_recover`. The former `paid_fetch` tool, x402 v1 implementation, and
 state do not remain; their useful intent is represented directly by Purchase.
+HTTP/MCP parity tests prove both adapters produce the same canonical behavior.
 
-### 6.2 Purchase module
+### 6.3 Purchase module
 
 Responsibilities:
 
@@ -192,12 +216,12 @@ Responsibilities:
 - drive the Kaspa-x402 adapter;
 - reconcile ambiguous external outcomes;
 - distinguish Settlement from Fulfilment;
-- construct canonical receipts and MCP-safe status projections.
+- construct canonical receipts and transport-safe status projections.
 
 Its external interface should remain narrow. Protocol-specific seams are
 internal implementation details, exercised through adapter contract tests.
 
-### 6.3 Purchase Journal
+### 6.4 Purchase Journal
 
 SQLite is the authoritative workflow store from the first cutover. It owns:
 
@@ -210,11 +234,12 @@ SQLite is the authoritative workflow store from the first cutover. It owns:
 - receipt facts;
 - recovery leases or equivalent single-writer coordination.
 
-SQLite should use transactions and crash-safe settings appropriate to local
-payments. Schema migrations begin with this new architecture; no reader for old
-Sompi x402 JSON state is required.
+SQLite uses transactions and crash-safe settings appropriate to local
+payments. The alpha.8 clean cutover starts a new Journal epoch and rejects all
+prior development epochs unchanged. There is no migration or compatibility
+reader for old Sompi payment state.
 
-### 6.4 Trusted Authority
+### 6.5 Trusted Authority
 
 `sompi-authority` is a separate executable/process and security context. Its
 interface accepts canonical, display-ready approval facts and returns approval
@@ -224,7 +249,7 @@ evidence or denial. It must:
 - display exact Merchant, resource/request, amount, asset, network, expiry,
   additional treasury costs when known, and Purchase identifier;
 - validate all approval inputs independently of MCP prose;
-- keep signing authority inaccessible to `sompi-mcp`;
+- keep signing authority inaccessible to `sompi-api` and `sompi-mcp`;
 - authenticate and bind local IPC requests and responses;
 - prevent replay and cross-Purchase substitution.
 
@@ -232,12 +257,12 @@ The first correct authority need not use WebAuthn. The signer is an internal
 seam so a passkey adapter may be added after RP identity, origin, enrolment,
 recovery, and credential portability are designed and threat-modelled.
 
-### 6.5 Operator Provisioning
+### 6.6 Operator Provisioning
 
 `sompi-operator` is a short-lived, non-agentic administrative command. It owns
 the complete Operator Manifest ceremony: preview, exact validation, explicit
 confirmation, secure installation, vault bootstrap, and status. It is not a
-daemon and no installer capability is composed into `sompi-mcp`.
+daemon and no installer capability is composed into either agent transport.
 
 The Operator Manifest is canonical, versioned, digest-addressed, monotonic, and
 restart-activated. It supplies immutable typed projections for Treasury policy,
@@ -246,10 +271,11 @@ Lease budgets. Runtime modules record its revision/digest but do not parse its
 storage representation.
 
 Production provisioning uses distinct OS principals: an operator/root installer
-publishes a manifest readable by a fixed runtime group but not writable by MCP.
-The generated Agent signing key may be owned by the MCP runtime, but its public
-key, template, derived address, and exact vault-configuration digest are bound
-by the operator-owned manifest. Same-UID injection exists only in hermetic tests.
+publishes a manifest readable by a fixed runtime group but not writable by an
+agent transport. The generated Agent payment key may be owned by the API
+runtime, but its public key, template, derived address, and exact
+vault-configuration digest are bound by the operator-owned manifest. Same-UID
+injection exists only in hermetic tests.
 
 Static vault parameters are part of covenant identity. A manifest that changes
 the owner key, Agent key, cap, window, network, or template cannot be applied to
@@ -260,7 +286,7 @@ regular-file identity, link count, descriptor stability, canonical bytes, and
 crash-safe publication. Runtime access is read-only under a principal that
 cannot replace the operator-owned file.
 
-### 6.6 AP2 adapter
+### 6.7 AP2 adapter
 
 The AP2 adapter owns:
 
@@ -282,7 +308,7 @@ interface.
 Human-present closed mandates are first. Autonomous/open mandates are a later
 capability with separate policy and threat-model acceptance gates.
 
-### 6.7 Kaspa-x402 adapter
+### 6.8 Kaspa-x402 adapter
 
 The adapter consumes Kaspa-x402 through its real implementation seams,
 including `FundingProvider`, `ChannelSigner`, `ChannelStore`, and
@@ -293,22 +319,29 @@ Kaspa-x402 continues to own:
 
 - x402 v2 wire parsing and validation;
 - scheme selection;
-- Kaspa `exact` and later `batch-settlement` mechanics;
+- both `kaspa-exact-v2` profiles and the separately gated
+  `batch-settlement` mechanics;
 - transaction/voucher construction;
 - settlement validation;
 - its store contracts and recovery invariants.
 
-Sompi does not copy these types or implementations. The complete existing
-`src/x402/` v1 implementation, associated contracts, fixtures, scripts, state
-readers, service examples, and documentation are deleted after the new exact
-flow passes the cutover gate.
+`standard-native` is the default version-0 exact payment. `additive` is the
+optional version-1 KIP-10-based profile whose successor delta is the entire
+Merchant payment. It has no separate Merchant output and no exclusive unpaid
+reservation. Batch remains a separate channel lifecycle, and every voucher
+increase requires its own Purchase Authorization.
+
+Sompi does not copy these types or implementations. Every alpha.6 package pin,
+`kaspa-exact-v1` type, borrow reservation, inventory store, threshold top-up,
+dual-benefit builder, exact-only channel fake, fixture, script, state reader,
+example, export, and current document is deleted in the same cutover.
 
 No Kaspa-x402 change is required for initial AP2 integration. AP2 evidence is
 linked at the Purchase layer through canonical identifiers and digests.
 Kaspa-x402's possible future registration beneath official x402 core is an
 independent upstream-alignment task, not a Sompi dependency.
 
-### 6.8 Chain Evidence module
+### 6.9 Chain Evidence module
 
 The Chain Evidence module is the sole interpreter of Kaspa observation and
 finality for privileged Sompi state transitions. Consumers request evidence in
@@ -324,9 +357,9 @@ Continuation evidence is mechanism-specific:
 
 - a SompiVault continuation binds a native covenant ID, authorizing input,
   expected output index, script, amount, and decoded state;
-- a KIP-10 exact continuation binds its source outpoint, same-index output
-  script, threshold/value rule, and transaction facts without inventing a
-  native covenant ID;
+- a KIP-10 additive head binds its source outpoint, same-index successor
+  script, exact Purchase-value delta, proved lineage, and transaction facts
+  without inventing a native covenant ID;
 - owner recovery is a valid terminating vault branch.
 
 The Merchant's requested protocol finality and Sompi's effective Finality Floor
@@ -342,7 +375,7 @@ missing, contradictory, or unavailable history never becomes proof of absence.
 A public/mainnet profile requires an independently verified evidence plane or
 equivalent locally verified inclusion/finality source.
 
-### 6.9 Bounded operational lifecycles
+### 6.10 Bounded operational lifecycles
 
 Scarce work acquires an Admission Lease at the owning module's interface before
 it consumes sockets, prompts, Purchase/evidence capacity, or the direct-Treasury
@@ -372,13 +405,13 @@ The initial composition does not invent a proprietary AP2-in-x402 wire format:
 
 ```mermaid
 sequenceDiagram
-    participant A as Agent
+    participant A as Agent/API or MCP client
     participant S as Sompi Purchase module
     participant M as Merchant
     participant T as Trusted Authority
     participant X as Kaspa-x402
 
-    A->>S: Purchase Intent
+    A->>S: purchase / status / recover
     S->>M: Request Checkout Terms
     M-->>S: Merchant-signed terms
     S->>T: Exact canonical approval request
@@ -398,6 +431,7 @@ The binding includes at least:
 - Merchant identity;
 - resource URL, method, and canonical request fingerprint;
 - exact amount, asset, network, payee, and expiry;
+- selected exact profile or batch authorization ceiling and actual charge;
 - Checkout Terms digest;
 - authorization evidence digest;
 - x402 requirements and payment payload digests;
@@ -430,7 +464,7 @@ and does not reproduce its extension lifecycle.
 
 ### Untrusted
 
-- Agent/LLM output and MCP prose;
+- Agent/LLM output, API input, and MCP prose;
 - Merchant responses until cryptographically and semantically verified;
 - URLs, redirects, DNS results, response bodies, and extension data;
 - AP2/x402 artifacts before pinned-profile validation;
@@ -454,7 +488,9 @@ and does not reproduce its extension lifecycle.
 - explicit per-operation Finality Floors with mempool never terminal;
 - durable accepted history and mechanism-specific continuation validation;
 - bounded Admission Leases before scarce work is retained;
-- secrets excluded from logs, MCP results, journal plaintext, and evidence;
+- API authentication with least-authority credentials, local-safe binding,
+  request/deadline/concurrency limits, and structured errors;
+- secrets excluded from logs, API/MCP results, journal plaintext, and evidence;
 - negative tests for every cross-artifact field mismatch.
 
 ## 9. Versioning and change containment
@@ -476,7 +512,7 @@ and does not reproduce its extension lifecycle.
 
 This creates locality: AP2 churn changes the AP2 adapter; x402/Kaspa-x402 churn
 changes the execution adapter; neither requires edits throughout policy,
-wallet, MCP, journal, or canonical receipts.
+wallet, agent transports, journal, or canonical receipts.
 
 ## 10. Delivery scope
 
@@ -485,10 +521,12 @@ wallet, MCP, journal, or canonical receipts.
 - current working Sompi behaviour characterized;
 - SQLite Purchase Journal and reconciliation;
 - deep Purchase module;
+- authenticated OpenAPI-described Purchase API and thin MCP compatibility
+  adapter;
 - immutable Operator Provisioning and bounded Admission Leases;
 - typed Chain Evidence with retained accepted history and explicit finality
   floors;
-- Kaspa-x402 `exact` on testnet;
+- both Kaspa-x402 `kaspa-exact-v2` profiles on testnet;
 - clean deletion of Sompi x402 v1;
 - separate deterministic Trusted Authority;
 - pinned human-present AP2 profile;
@@ -496,10 +534,10 @@ wallet, MCP, journal, or canonical receipts.
 - linked evidence and receipts;
 - crash, replay, tampering, SSRF, and end-to-end tests.
 
-### Deferred behind evidence gates
+### Subsequent gated phases
 
 - `batch-settlement`: after exact recovery and per-Purchase authorization are
-  proven;
+  proven, then implemented and live-proven as a separate lifecycle;
 - autonomous/open AP2 mandates: after human-present verification, escalation,
   revocation, and policy semantics are proven;
 - passkeys: after authority deployment/recovery design;

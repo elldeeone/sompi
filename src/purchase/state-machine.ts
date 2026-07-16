@@ -5,7 +5,7 @@ const ALLOWED_TRANSITIONS = {
   terms_bound: ["awaiting_authority", "expired", "cancelled"],
   awaiting_authority: ["authorised", "denied", "expired", "cancelled"],
   authorised: ["execution_prepared", "expired", "cancelled"],
-  execution_prepared: ["submitted", "expired", "failed_recoverable"],
+  execution_prepared: ["submitted", "expired", "cancelled", "failed_recoverable"],
   submitted: ["settled", "failed_recoverable"],
   settled: ["fulfilled", "failed_recoverable"],
   fulfilled: ["receipted"],

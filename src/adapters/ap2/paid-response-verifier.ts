@@ -209,20 +209,20 @@ export class Ap2PaidResponseVerifier implements PaidResourceResponseVerifier {
       );
     }
 
-    const transactionId = requireTransactionId(settlement.transactionId);
+    const executionConfirmationId = requireSettlementExecutionId(settlement);
     assertReceiptJoins(
       checkoutReceipt,
       paymentReceipt,
       purchaseId,
       paymentIdentifier,
-      transactionId,
+      executionConfirmationId,
       evidence.mandates
     );
     const settlementEvidenceDigest = verifiedArtifactDigest(
       settlement.evidence,
       "Settlement evidence"
     );
-    assertSettlementJoins(settlement, context, transactionId);
+    assertSettlementJoins(settlement, context, executionConfirmationId);
     const checkoutDigest = requireDigest(context.terms.checkoutDigest);
     const authorizationEvidenceDigest = requireDigest(
       evidence.authorizationEvidenceDigest
@@ -235,7 +235,7 @@ export class Ap2PaidResponseVerifier implements PaidResourceResponseVerifier {
       fulfilmentIdentity: fulfilment.identity,
       fulfilmentDigest,
       paymentIdentifier,
-      transactionId,
+      executionConfirmationId,
     });
 
     const merchantEvidence = verifiedArtifact({
@@ -359,7 +359,7 @@ function assertReceiptJoins(
   paymentReceipt: VerifiedAp2Receipt,
   purchaseId: PurchaseId,
   paymentIdentifier: string,
-  transactionId: string,
+  executionConfirmationId: string,
   mandates: VerifiedHumanPresentMandates
 ): void {
   if (
@@ -374,7 +374,7 @@ function assertReceiptJoins(
     paymentReceipt.reference !== mandates.payment.issuerJwtReference ||
     paymentReceipt.paymentId !== paymentIdentifier ||
     paymentReceipt.pspConfirmationId !== paymentIdentifier ||
-    paymentReceipt.networkConfirmationId !== transactionId
+    paymentReceipt.networkConfirmationId !== executionConfirmationId
   ) {
     throw new Ap2PaidResponseVerificationError(
       "receipt_invalid",
@@ -386,12 +386,20 @@ function assertReceiptJoins(
 function assertSettlementJoins(
   settlement: PaidResourceResponse["settlement"],
   context: PaidResourceResponse["context"],
-  transactionId: string
+  executionConfirmationId: string
 ): void {
   const terms = context.terms;
+  const amount = requireAtomic(settlement.amountAtomic, "Settlement amount");
+  const maximum = requireAtomic(terms.amountAtomic, "authorized Purchase amount");
+  const amountMatches = settlement.mechanism === "single-transaction"
+    ? amount === maximum
+    : amount > 0n && amount <= maximum;
   if (
-    transactionId !== context.preparedTransactionId ||
-    settlement.amountAtomic !== terms.amountAtomic ||
+    settlement.executionId !== context.preparedExecutionId ||
+    settlement.mechanism !== context.authorizationRequest.executionMechanism ||
+    settlement.profile !== context.authorizationRequest.executionProfile ||
+    settlement.settlementAssurance !== context.authorizationRequest.settlementAssurance ||
+    !amountMatches ||
     settlement.asset !== terms.asset ||
     settlement.network !== terms.network ||
     settlement.payTo !== terms.payTo ||
@@ -399,7 +407,7 @@ function assertSettlementJoins(
   ) {
     throw new Ap2PaidResponseVerificationError(
       "binding_mismatch",
-      "Settlement does not match the exact paid Purchase"
+      "Settlement does not match the paid Purchase execution"
     );
   }
 }
@@ -590,14 +598,31 @@ function requirePaymentIdentifier(value: unknown): string {
   return value;
 }
 
-function requireTransactionId(value: unknown): string {
-  if (typeof value !== "string" || !HASH32_PATTERN.test(value)) {
+function requireSettlementExecutionId(
+  settlement: PaidResourceResponse["settlement"]
+): string {
+  const value = settlement.mechanism === "single-transaction"
+    ? settlement.transactionId
+    : settlement.commitmentId;
+  if (
+    typeof value !== "string" ||
+    !HASH32_PATTERN.test(value) ||
+    (settlement.mechanism === "single-transaction" && settlement.commitmentId !== undefined) ||
+    (settlement.mechanism === "channel-voucher" && settlement.transactionId !== undefined)
+  ) {
     throw new Ap2PaidResponseVerificationError(
       "binding_mismatch",
-      "paid response transaction ID is invalid"
+      "paid response execution confirmation is invalid"
     );
   }
   return value;
+}
+
+function requireAtomic(value: unknown, label: string): bigint {
+  if (typeof value !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(value)) {
+    throw new Ap2PaidResponseVerificationError("binding_mismatch", `${label} is invalid`);
+  }
+  return BigInt(value);
 }
 
 function requireDigest(value: unknown): Sha256Digest {

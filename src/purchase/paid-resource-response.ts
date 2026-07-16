@@ -25,7 +25,7 @@ export interface PaidResourcePurchaseContext {
     requestFingerprint: Sha256Digest;
   }>;
   readonly paymentRequirements: Uint8Array;
-  readonly preparedTransactionId: string;
+  readonly preparedExecutionId: string;
 }
 
 /** Bounded paid HTTP response plus the canonical Purchase facts it must join. */

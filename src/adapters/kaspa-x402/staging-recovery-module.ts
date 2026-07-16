@@ -290,15 +290,20 @@ function exactCandidate(
   }
   if (
     payload.value.payload.transactionEncoding !== ABANDONED_STAGING_RECOVERY_ENCODING ||
-    payload.value.payload.paymentOutputIndex !== 1
+    payload.value.payload.paymentOutputIndex !== 0
   ) {
     throw new Error("exact payment envelope is outside the pinned transaction profile");
   }
+  const profile = payload.value.accepted.extra.profile;
+  if (profile !== "standard-native" && profile !== "additive") {
+    throw new Error("exact payment envelope has an unsupported alpha.8 profile");
+  }
   return Object.freeze({
+    profile,
     transaction: payload.value.payload.transaction,
     transactionEncoding: ABANDONED_STAGING_RECOVERY_ENCODING,
     transactionId: prepared.transactionId,
-    merchantOutputIndex: 1 as const,
+    merchantOutputIndex: 0 as const,
   });
 }
 

@@ -27,6 +27,25 @@ test("MCP help and invalid commands terminate before runtime state", () => {
   }
 });
 
+test("API help and invalid commands terminate before runtime or credential state", () => {
+  const directory = temporaryDirectory("sompi-api-cli-");
+  try {
+    const help = run(path.join(DIST_ROOT, "api-main.js"), ["--help"], directory);
+    assert.equal(help.status, 0);
+    assert.equal(help.stdout, "usage: sompi-api [start]\n");
+    assert.equal(help.stderr, "");
+    assert.deepEqual(fs.readdirSync(directory), []);
+
+    const invalid = run(path.join(DIST_ROOT, "api-main.js"), ["not-a-command"], directory);
+    assert.equal(invalid.status, 2);
+    assert.match(invalid.stderr, /usage: sompi-api/);
+    assert.equal(invalid.stderr.includes("not-a-command"), false);
+    assert.deepEqual(fs.readdirSync(directory), []);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("authority help and invalid commands terminate before authority path creation", () => {
   const directory = temporaryDirectory("sompi-authority-cli-");
   try {

@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-11
+- Amended by: ADR-0015 (both alpha.8 exact profiles; separately gated batch)
 
 ## Context
 

@@ -35,6 +35,16 @@ export interface AuthorityApprovalDisplay {
   readonly checkoutDigest: string;
   readonly termsExpiresAt: string;
   readonly additionalCostCeilingAtomic: string;
+  readonly effectiveFinalityFloor: "accepted" | "depth-confirmed";
+  readonly execution: Readonly<{
+    planDigest: string;
+    mechanism: "single-transaction" | "channel-voucher";
+    profile: string;
+    settlementAssurance: "accepted" | "confirmed" | "channel-commitment";
+    maximumChargeAtomic: string;
+    channelId: string | null;
+    channelEpochDigest: string | null;
+  }>;
   readonly recoveryRetry: boolean;
 }
 
@@ -275,6 +285,15 @@ function displayFacts(facts: AuthorityApprovalFacts, recoveryRetry: boolean): Au
     termsExpiresAt: facts.termsExpiresAt,
     additionalCostCeilingAtomic: facts.additionalCostCeilingAtomic,
     effectiveFinalityFloor: facts.effectiveFinalityFloor,
+    execution: Object.freeze({
+      planDigest: facts.executionPlanDigest,
+      mechanism: facts.executionMechanism,
+      profile: facts.executionProfile,
+      settlementAssurance: facts.settlementAssurance,
+      maximumChargeAtomic: facts.maximumAuthorizedChargeAtomic,
+      channelId: facts.channelId,
+      channelEpochDigest: facts.channelEpochDigest,
+    }),
     recoveryRetry,
   });
 }

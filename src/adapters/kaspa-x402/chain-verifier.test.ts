@@ -8,6 +8,8 @@ import test from "node:test";
 import {
   encodePaymentResponseHeader,
   paymentIdentifierExtension,
+  sha256Hex,
+  stableStringify,
   type PaymentPayload,
   type PaymentRequired,
   type SettlementResponse,
@@ -31,7 +33,7 @@ import {
   type ChainObservation,
   type ChainObservationRequest,
 } from "./chain-verifier.js";
-import { Kip10ExactTransactionBuilder } from "./exact-transaction-builder.js";
+import { ExactTransactionBuilder } from "./exact-transaction-builder.js";
 import { StagingKeyStore } from "./staging-key-store.js";
 
 const NOW = Date.parse("2030-01-01T00:00:00.000Z");
@@ -40,7 +42,6 @@ const PAYMENT_IDENTIFIER = createPaymentIdentifier(PURCHASE_ID, 1);
 const MERCHANT_ID = "merchant:test";
 const MERCHANT_ORIGIN = "https://merchant.example";
 const RESOURCE_URL = `${MERCHANT_ORIGIN}/resource`;
-const MERCHANT_ADDRESS = "kaspatest:qzlws9lm7uyt0tftzffshnyeu2zcqk4kf7hw5ghk6v0zh093vnkljcy2fl0fh";
 const OWNER_PUBLIC_KEY = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
 const FIXED_PRIVATE_KEY = "01".padStart(64, "0");
 const BORROW_TXID = "22".repeat(32);
@@ -49,10 +50,10 @@ const AMOUNT = "20000000";
 const BORROW_AMOUNT = "100000000";
 const THRESHOLD = "10000000";
 const STAGING_FEE = "50000";
-const ADDITIONAL_COST = "12050000";
+const ADDITIONAL_COST = "2050000";
 const REQUEST_BODY = Buffer.from("request-body", "utf8");
 
-test("Settlement verifier independently binds alpha.6 safe JSON, chain output, and full Treasury cost", async () => {
+test("Settlement verifier binds alpha.8 additive safe JSON, successor output, and Treasury cost", async () => {
   const fixture = await makeFixture();
   const calls: string[] = [];
   const verifier = fixture.verifier({
@@ -61,7 +62,7 @@ test("Settlement verifier independently binds alpha.6 safe JSON, chain output, a
       assert.equal(request.purchaseId, PURCHASE_ID);
       assert.equal(request.paymentIdentifier, PAYMENT_IDENTIFIER);
       assert.equal(request.outpoint, `${STAGING_TXID}:1`);
-      assert.equal(request.amountAtomic, "32000000");
+      assert.equal(request.amountAtomic, "22000000");
       return STAGING_FEE;
     },
     chain: async (request) => {
@@ -77,9 +78,9 @@ test("Settlement verifier independently binds alpha.6 safe JSON, chain output, a
         },
         {
           transactionId: fixture.transactionId,
-          outpoint: `${fixture.transactionId}:1`,
-          outputIndex: 1,
-          amount: AMOUNT,
+          outpoint: `${fixture.transactionId}:0`,
+          outputIndex: 0,
+          amount: "120000000",
           script: fixture.merchantScript,
           minimumFinality: "accepted",
         }
@@ -90,23 +91,23 @@ test("Settlement verifier independently binds alpha.6 safe JSON, chain output, a
 
   const result = await verifier.verify(fixture.verificationInput());
   assert.equal(result.additionalCostAtomic, ADDITIONAL_COST);
-  assert.equal(result.outpoint, `${fixture.transactionId}:1`);
-  assert.equal(result.verification.profile, "kaspa-x402-0.1.0-alpha.6-exact-settlement");
+  assert.equal(result.outpoint, `${fixture.transactionId}:0`);
+  assert.equal(result.verification.profile, "kaspa-x402-0.1.0-alpha.8-exact-settlement");
   assert.match(result.verification.detailDigest, /^sha256:[A-Za-z0-9_-]{43}$/);
   assert.deepEqual(calls, ["staging", "chain"]);
 });
 
-test("fixed-v2 construction rejects optional staging change", async () => {
+test("exact construction rejects optional staging change", async () => {
   await assert.rejects(
     makeFixture({
-      stagingAmountAtomic: "42000000",
-      additionalCostCeilingAtomic: "22050000",
+      stagingAmountAtomic: "22000001",
+      additionalCostCeilingAtomic: "2050001",
     }),
-    /fixed-v2 exact staging/
+    /must equal price plus the bounded fee/
   );
 });
 
-test("verifier fails closed on transaction, request, reservation, chain, cost, and finality substitutions", async () => {
+test("verifier fails closed on transaction, request, head, chain, cost, and finality substitutions", async () => {
   const fixture = await makeFixture();
   const cases: Array<{
     name: string;
@@ -118,7 +119,7 @@ test("verifier fails closed on transaction, request, reservation, chain, cost, a
   const changedStaging = fixture.verificationInput();
   changedStaging.context = {
     ...changedStaging.context,
-    staging: { ...changedStaging.context.staging, amountAtomic: "32000001" },
+    staging: { ...changedStaging.context.staging, amountAtomic: "22000001" },
   };
   cases.push({ name: "staging amount", input: changedStaging, pattern: /input facts changed/ });
 
@@ -131,9 +132,9 @@ test("verifier fails closed on transaction, request, reservation, chain, cost, a
   const changedReservation = fixture.verificationInput();
   changedReservation.paymentRequired = structuredClone(changedReservation.paymentRequired);
   changedReservation.paymentPayload = structuredClone(changedReservation.paymentPayload);
-  (changedReservation.paymentRequired.accepts[0] as any).extra.reservationId = "66".repeat(32);
-  (changedReservation.paymentPayload.accepted as any).extra.reservationId = "66".repeat(32);
-  cases.push({ name: "reservation", input: changedReservation, pattern: /reservation|artifact|retry/i });
+  (changedReservation.paymentRequired.accepts[0] as any).extra.headId = "66".repeat(32);
+  (changedReservation.paymentPayload.accepted as any).extra.headId = "66".repeat(32);
+  cases.push({ name: "head", input: changedReservation, pattern: /head|artifact|retry|authorization/i });
 
   const unknownFinality = fixture.verificationInput();
   unknownFinality.response = structuredClone(unknownFinality.response);
@@ -295,11 +296,11 @@ test("recovery rejects malformed Merchant evidence rather than falling back to c
       return { status: "pending" };
     },
   });
-  await assert.rejects(verifier.observe(fixture.recoveryInput()), /canonical ASCII base64url/);
+  await assert.rejects(verifier.observe(fixture.recoveryInput()), /canonical ASCII base64/);
   assert.equal(chainCalls, 0);
 });
 
-test("alpha.6 Merchant-store lookup returns only the response durably bound to the payment identifier", async () => {
+test("alpha.8 Merchant-store lookup returns only the response durably bound to the payment identifier", async () => {
   const fixture = await makeFixture();
   const settlement = structuredClone(fixture.response);
   const responseHeader = Buffer.from(fixture.paymentResponseHeader).toString("ascii");
@@ -315,7 +316,7 @@ test("alpha.6 Merchant-store lookup returns only the response durably bound to t
     settlement,
     paymentScopeId: "33".repeat(32),
     transactionId: fixture.transactionId,
-    paymentOutputIndex: 1,
+    paymentOutputIndex: 0,
   };
   const lookup = new KaspaX402ServerStorePaymentResponseLookup({
     store: {
@@ -381,7 +382,7 @@ async function makeFixture(options: FixtureOptions = {}): Promise<Fixture> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-chain-verifier-"));
   try {
     const stagingTransactionId = options.stagingTransactionId ?? STAGING_TXID;
-    const stagingAmountAtomic = options.stagingAmountAtomic ?? "32000000";
+    const stagingAmountAtomic = options.stagingAmountAtomic ?? "22000000";
     const additionalCostCeilingAtomic = options.additionalCostCeilingAtomic ?? ADDITIONAL_COST;
     const keyStore = new StagingKeyStore({
       directory: path.join(root, "keys"),
@@ -396,6 +397,12 @@ async function makeFixture(options: FixtureOptions = {}): Promise<Fixture> {
     const borrowScriptPublicKey = serializedScriptPublicKey(
       kip10AdditiveScriptPublicKey({ ownerPublicKey: OWNER_PUBLIC_KEY, amount: THRESHOLD })
     ).toLowerCase();
+    const codec = new KaspaTestnet10AddressCodec();
+    const merchantAddress = codec.encodeScriptAddress({
+      network: "kaspa:testnet-10",
+      scriptPublicKey: { version: 0, script: borrowScriptPublicKey.slice(4) },
+      serializedScriptPublicKey: borrowScriptPublicKey,
+    });
     const body = Uint8Array.from(REQUEST_BODY);
     const fingerprint = requestFingerprint({
       url: RESOURCE_URL,
@@ -404,30 +411,63 @@ async function makeFixture(options: FixtureOptions = {}): Promise<Fixture> {
       body,
     });
     const requestHash = Buffer.from(fingerprint.slice("sha256:".length), "base64url").toString("hex");
-    const reservation = {
-      templateId: "kaspa-x402-kip10-additive-v1" as const,
-      transactionEncoding: "kaspa-sdk-safe-json-v2.0.0" as const,
-      borrowOutpoint: { txid: BORROW_TXID, index: 0 },
-      borrowAmount: BORROW_AMOUNT,
-      borrowScriptPublicKey,
-      borrowRedeemScript,
-      additiveThresholdSompi: THRESHOLD,
-      paymentOutputIndex: 1,
-      reservationId: "55".repeat(32),
-      reservationExpiresAt: "2099-01-01T00:00:00.000Z",
+    const accepted = {
+      scheme: "exact" as const,
+      network: "kaspa:testnet-10" as const,
+      amount: AMOUNT,
+      asset: "KAS" as const,
+      payTo: merchantAddress,
+      maxTimeoutSeconds: 60,
+      extra: {
+        binding: "kaspa-exact-v2" as const,
+        profile: "additive" as const,
+        transactionEncoding: "kaspa-sdk-safe-json-v2.0.0" as const,
+        payToScriptPublicKey: borrowScriptPublicKey,
+        paymentOutputIndex: 0 as const,
+        finality: "accepted" as const,
+        templateId: "kaspa-x402-kip10-additive-v1" as const,
+        headId: "55".repeat(32),
+        headVersion: "0",
+        expectedHeadOutpoint: { txid: BORROW_TXID, index: 0 },
+        headAmount: BORROW_AMOUNT,
+        headScriptPublicKey: borrowScriptPublicKey,
+        headRedeemScript: borrowRedeemScript,
+        challengeId: "56".repeat(32),
+        challengeExpiresAt: "2099-01-01T00:00:00.000Z",
+        additiveThresholdSompi: THRESHOLD,
+        assetKind: "native" as const,
+        assetDecimals: 8 as const,
+      },
     };
-    const builder = new Kip10ExactTransactionBuilder({ keyStore, now: () => NOW });
+    const builder = new ExactTransactionBuilder({ keyStore, now: () => NOW });
     const built = await builder.build({
       purchaseId: PURCHASE_ID,
       paymentIdentifier: PAYMENT_IDENTIFIER,
       request: {
         network: "kaspa:testnet-10",
+        profile: "additive",
+        origin: MERCHANT_ORIGIN,
+        resourceUrl: RESOURCE_URL,
         amount: AMOUNT,
-        payTo: MERCHANT_ADDRESS,
+        payTo: merchantAddress,
+        payToScriptPublicKey: borrowScriptPublicKey,
+        paymentOutputIndex: 0,
         requestHash,
+        paymentRequirementsHash: sha256Hex(stableStringify(accepted)),
+        authorizationExpiresAt: "2099-01-01T00:00:00.000Z",
         requiredFinality: "accepted",
         fundingSource: "vault-treasury",
-        reservation,
+        head: {
+          headId: accepted.extra.headId,
+          headVersion: accepted.extra.headVersion,
+          expectedHeadOutpoint: accepted.extra.expectedHeadOutpoint,
+          headAmount: accepted.extra.headAmount,
+          headScriptPublicKey: accepted.extra.headScriptPublicKey,
+          headRedeemScript: accepted.extra.headRedeemScript,
+          additiveThresholdSompi: accepted.extra.additiveThresholdSompi,
+          challengeId: accepted.extra.challengeId,
+          challengeExpiresAt: accepted.extra.challengeExpiresAt,
+        },
       },
       staging: {
         outpoint: { txid: stagingTransactionId, index: 1 },
@@ -440,21 +480,6 @@ async function makeFixture(options: FixtureOptions = {}): Promise<Fixture> {
       additionalCostCeilingAtomic,
       stagingTransactionFeeAtomic: STAGING_FEE,
     });
-    const accepted = {
-      scheme: "exact" as const,
-      network: "kaspa:testnet-10" as const,
-      amount: AMOUNT,
-      asset: "KAS" as const,
-      payTo: MERCHANT_ADDRESS,
-      maxTimeoutSeconds: 60,
-      extra: {
-        binding: "kaspa-exact-v1" as const,
-        finality: "accepted" as const,
-        ...reservation,
-        assetKind: "native" as const,
-        assetDecimals: 8 as const,
-      },
-    };
     const paymentRequired: PaymentRequired = {
       x402Version: 2,
       resource: { url: RESOURCE_URL, mimeType: "application/octet-stream" },
@@ -468,11 +493,14 @@ async function makeFixture(options: FixtureOptions = {}): Promise<Fixture> {
       accepted: structuredClone(accepted),
       payload: {
         type: "exact-transaction",
+        profile: "additive",
+        challengeId: accepted.extra.challengeId,
         payerAddress: built.payerAddress,
         transaction: built.transaction,
         transactionEncoding: built.transactionEncoding,
         paymentOutputIndex: built.paymentOutputIndex,
         requestHash,
+        authorization: built.authorization,
       },
       extensions: {
         "payment-identifier": paymentIdentifierExtension({
@@ -489,13 +517,15 @@ async function makeFixture(options: FixtureOptions = {}): Promise<Fixture> {
       amount: AMOUNT,
       extensions: {
         kaspa: {
-          paymentOutputIndex: 1,
+          paymentOutputIndex: 0,
           finality: "accepted",
           requestHash,
           transactionEncoding: "kaspa-sdk-safe-json-v2.0.0",
+          exactProfile: "additive",
           templateId: "kaspa-x402-kip10-additive-v1",
-          reservationId: reservation.reservationId,
-          borrowOutpoint: reservation.borrowOutpoint,
+          headId: accepted.extra.headId,
+          headVersion: accepted.extra.headVersion,
+          headOutpoint: accepted.extra.expectedHeadOutpoint,
         },
       },
     };
@@ -507,7 +537,7 @@ async function makeFixture(options: FixtureOptions = {}): Promise<Fixture> {
       amountAtomic: AMOUNT,
       asset: "KAS",
       network: "kaspa:testnet-10",
-      payTo: MERCHANT_ADDRESS,
+      payTo: merchantAddress,
       expiresAt: "2099-01-01T00:00:00.000Z",
       checkoutDigest,
     };
@@ -521,6 +551,13 @@ async function makeFixture(options: FixtureOptions = {}): Promise<Fixture> {
       requestDigest: digest("authority-request"),
       nonceDigest: digest("authority-nonce"),
       additionalCostCeilingAtomic,
+      executionPlanDigest: digest("additive-execution-plan"),
+      executionMechanism: "single-transaction" as const,
+      executionProfile: "additive",
+      settlementAssurance: "accepted" as const,
+      maximumAuthorizedChargeAtomic: (
+        BigInt(AMOUNT) + BigInt(additionalCostCeilingAtomic)
+      ).toString(10),
       expiresAtMs: Date.parse(terms.expiresAt),
     };
     const facts = {
@@ -535,12 +572,17 @@ async function makeFixture(options: FixtureOptions = {}): Promise<Fixture> {
       amountAtomic: AMOUNT,
       asset: "KAS",
       network: "kaspa:testnet-10",
-      payTo: MERCHANT_ADDRESS,
+      payTo: merchantAddress,
       expiresAt: terms.expiresAt,
       checkoutDigest,
       requestDigest: authorizationRequest.requestDigest,
       nonceDigest: authorizationRequest.nonceDigest,
       additionalCostCeilingAtomic,
+      executionPlanDigest: authorizationRequest.executionPlanDigest,
+      executionMechanism: authorizationRequest.executionMechanism,
+      executionProfile: authorizationRequest.executionProfile,
+      settlementAssurance: authorizationRequest.settlementAssurance,
+      maximumAuthorizedChargeAtomic: authorizationRequest.maximumAuthorizedChargeAtomic,
     };
     const context = {
       execution: {
@@ -575,14 +617,16 @@ async function makeFixture(options: FixtureOptions = {}): Promise<Fixture> {
       preparation: {
         preparedBytes: Buffer.from("unused-in-verifier"),
         preparedDigest: digest("prepared"),
+        executionId: built.transactionId,
+        mechanism: "single-transaction" as const,
+        profile: "additive",
         transactionId: built.transactionId,
-        requiredFinality: "accepted",
+        requiredAssurance: "accepted" as const,
         fundingSource: "vault-treasury",
       },
     };
-    const codec = new KaspaTestnet10AddressCodec();
     const merchantScript = codec.scriptPublicKeyForAddress(
-      MERCHANT_ADDRESS,
+      merchantAddress,
       "kaspa:testnet-10"
     ).toLowerCase();
     const paymentResponseHeader = Buffer.from(encodePaymentResponseHeader(response), "ascii");
@@ -616,8 +660,8 @@ async function makeFixture(options: FixtureOptions = {}): Promise<Fixture> {
           status: "observed",
           network: "kaspa:testnet-10",
           transactionId: built.transactionId,
-          outpoint: `${built.transactionId}:1`,
-          amountAtomic: AMOUNT,
+          outpoint: `${built.transactionId}:0`,
+          amountAtomic: "120000000",
           scriptPublicKey: merchantScript,
           finality,
           observedAtMs: NOW,
@@ -641,7 +685,7 @@ async function makeFixture(options: FixtureOptions = {}): Promise<Fixture> {
             id: "effect-payment",
             purchaseId: PURCHASE_ID,
             attempt: 1,
-            kind: "kaspa-x402-exact",
+            kind: "kaspa-x402-payment",
             idempotencyKey: `payment:${PAYMENT_IDENTIFIER}`,
             state: "ambiguous",
             version: 1,
@@ -661,10 +705,10 @@ async function makeFixture(options: FixtureOptions = {}): Promise<Fixture> {
         return {
           network: "kaspa:testnet-10",
           transactionId: built.transactionId,
-          outpoint: `${built.transactionId}:1`,
-          outputIndex: 1,
-          merchantAddress: MERCHANT_ADDRESS,
-          expectedAmountAtomic: AMOUNT,
+          outpoint: `${built.transactionId}:0`,
+          outputIndex: 0,
+          merchantAddress,
+          expectedAmountAtomic: "120000000",
           expectedScriptPublicKey: merchantScript,
           minimumFinality,
           deadlineAtMs: NOW + 10_000,

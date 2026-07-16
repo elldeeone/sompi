@@ -26,9 +26,10 @@ Authority.
 
 ### Agent
 
-Requests purchases through MCP and receives structured status and receipts.
-The Agent is untrusted for authorization, key custody, evidence validation,
-policy enforcement, and payment state transitions.
+Requests purchases through the authenticated Purchase API or its MCP
+compatibility adapter and receives structured status and receipts. The Agent is
+untrusted for authorization, key custody, evidence validation, policy
+enforcement, and payment state transitions.
 
 ### Merchant
 
@@ -71,6 +72,14 @@ Sompi's durable record of one acquisition from intent through authorization,
 payment, fulfilment, receipt, failure, and recovery. `PurchaseId` is the
 canonical correlation identifier inside Sompi.
 
+### Purchase API
+
+The canonical authenticated HTTP projection of the Purchase module's
+`purchase`, `status`, and `recover` operations. Its OpenAPI description and
+runtime validation share the same schemas. MCP is a stateless compatibility
+projection over the same operations, not a separate lifecycle or authority
+surface.
+
 ### Purchase Authorization
 
 The decision that this Agent may buy this exact resource from this exact
@@ -80,8 +89,11 @@ Merchant under these exact Checkout Terms. AP2 belongs here.
 
 The durable reservation of spending capacity required before signing or
 submitting a payment. It covers the Merchant price plus explicitly bounded
-additional treasury costs, including KIP-10 inventory top-up and transaction
-fees. It is not Purchase Authorization.
+additional treasury costs, including network, vault-staging, claim, refund, or
+recovery fees. For batch, it may also reserve an authorized channel ceiling.
+The KIP-10 additive successor delta is the Merchant price itself; there is no
+additional Merchant top-up. A Treasury Reservation is not Purchase
+Authorization.
 
 ### Treasury Movement
 
@@ -91,7 +103,8 @@ Authorization.
 
 ### Payment Attempt
 
-One idempotent attempt to execute an authorized Purchase through Kaspa-x402.
+One idempotent attempt to execute an authorized Purchase through Kaspa-x402,
+either as one exact transaction authorization or one batch voucher increment.
 It has a stable payment identifier and enough persisted material to determine
 whether an interrupted external action occurred.
 
@@ -198,6 +211,14 @@ possible external effect always enters Reconciliation.
     finality are never treated as interchangeable.
 16. Scarce work acquires a bounded Admission Lease before consuming sockets,
     prompts, evidence bytes, Purchase rows, or exclusive Treasury preparation.
+17. HTTP and MCP call the same Purchase interface; neither transport owns
+    lifecycle or recovery state.
+18. Every exact payment uses `kaspa-exact-v2` with an explicitly supported
+    `standard-native` or `additive` profile.
+19. An additive successor delta is the entire Merchant payment and no separate
+    Merchant output is allowed.
+20. A batch voucher ceiling never replaces the individual Purchase
+    Authorization or the separately recorded actual charge.
 
 ## Non-goals for the first end-to-end release
 
@@ -210,13 +231,21 @@ possible external effect always enters Reconciliation.
 - Making WebAuthn/passkeys mandatory before the authority threat model and
   recovery requirements are understood.
 - A generic multi-rail plugin marketplace.
+- Public OAuth, A2A, or another generic agent protocol before the local
+  Purchase API proves its lifecycle.
+- Compatibility readers or migrations for pre-cutover development Journal
+  epochs.
 - Mainnet production claims.
 
 ## Success for the first end-to-end release
 
-A human-present testnet Purchase can be initiated over MCP, bound to verified
-Merchant terms, deterministically approved outside the agent process, reserved
-in the Purchase Journal, paid through Kaspa-x402 `exact`, reconciled after
-injected crashes, fulfilled by a demo Merchant, and returned with linked AP2,
-x402, and Kaspa evidence. Replays, substitutions, unknown versions, unsafe
-egress, and state mismatches are rejected.
+A human-present testnet Purchase can be initiated through the authenticated
+Purchase API or its MCP compatibility adapter, bound to verified Merchant
+terms, deterministically approved outside the agent process, reserved in the
+Purchase Journal, paid through either Kaspa-x402 `kaspa-exact-v2` profile,
+reconciled after injected crashes, fulfilled by a demo Merchant, and returned
+with linked AP2, x402, and Kaspa evidence. The separately gated batch proof
+demonstrates deposit, individually authorized voucher increments, claim,
+continuation, and strict-boundary refund without treating the channel as
+authorization. Replays, substitutions, unknown versions, unsafe egress, and
+state mismatches are rejected.

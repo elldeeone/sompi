@@ -16,18 +16,6 @@ test("MCP CLI accepts only its closed command surface", () => {
   assert.deepEqual(parseMcpArguments(["start"]), { kind: "start" });
   assert.deepEqual(parseMcpArguments(["--help"]), { kind: "help" });
   assert.deepEqual(parseMcpArguments(["help"]), { kind: "help" });
-  assert.deepEqual(parseMcpArguments(["gen-wallet-key"]), {
-    kind: "generate-wallet-key",
-    network: "testnet-10",
-  });
-  assert.deepEqual(parseMcpArguments(["gen-wallet-key", "testnet-10"]), {
-    kind: "generate-wallet-key",
-    network: "testnet-10",
-  });
-  assert.deepEqual(parseMcpArguments(["gen-wallet-key"], "testnet-10"), {
-    kind: "generate-wallet-key",
-    network: "testnet-10",
-  });
   for (const args of [
     ["unknown"],
     ["start", "extra"],
@@ -35,6 +23,7 @@ test("MCP CLI accepts only its closed command surface", () => {
     ["gen-owner-key"],
     ["gen-owner-key", "extra"],
     ["gen-wallet-key", "mainnet"],
+    ["gen-wallet-key"],
     ["gen-wallet-key", "testnet-10", "extra"],
   ]) {
     assert.throws(() => parseMcpArguments(args), CliArgumentError);
@@ -49,8 +38,11 @@ test("operator CLI exposes only preview, provision, install, status, and offline
     kind: "install", bundle: "candidate", manifest: "manifest.json", digest: "sha256:x", operatorUid: 0, runtimeUid: 1000, runtimeGid: 1000,
   });
   assert.deepEqual(parseOperatorArguments(["status", "manifest.json", "0", "1000"]), { kind: "status", manifest: "manifest.json", operatorUid: 0, runtimeGid: 1000 });
+  assert.deepEqual(parseOperatorArguments(["agent-credential", "agent.json", "0", "1000"]), {
+    kind: "agent-credential", filename: "agent.json", operatorUid: 0, runtimeGid: 1000,
+  });
   assert.deepEqual(parseOperatorArguments(["owner-key"]), { kind: "owner-key" });
-  for (const args of [[], ["install"], ["status", "x", "-1", "1"], ["owner-key", "extra"], ["start"]]) {
+  for (const args of [[], ["install"], ["status", "x", "-1", "1"], ["agent-credential", "x", "-1", "1"], ["owner-key", "extra"], ["start"]]) {
     assert.throws(() => parseOperatorArguments(args), CliArgumentError);
   }
   assert.match(OPERATOR_USAGE, /^usage: sompi-operator/);

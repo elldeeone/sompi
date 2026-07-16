@@ -160,6 +160,16 @@ function display(purchaseId: string): AuthorityApprovalDisplay {
     checkoutDigest: "sha256:CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
     termsExpiresAt: "2099-01-01T00:00:00.000Z",
     additionalCostCeilingAtomic: "100",
+    effectiveFinalityFloor: "accepted",
+    execution: Object.freeze({
+      planDigest: "sha256:DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
+      mechanism: "single-transaction",
+      profile: "kaspa-exact-v2:standard-native",
+      settlementAssurance: "accepted",
+      maximumChargeAtomic: "1000",
+      channelId: null,
+      channelEpochDigest: null,
+    }),
     recoveryRetry: false,
   });
 }

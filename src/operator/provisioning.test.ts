@@ -96,6 +96,7 @@ function fixtureSpec(dataDirectory: string) {
       allowRules: [{ hostname: "merchant.example", ports: [443] }],
       merchantReceiptIssuer: "receipt:merchant", paymentReceiptIssuer: "receipt:payment",
     },
+    batch: { claimFeeReserveAtomic: "100000" },
     chainEvidence: {
       operatorNodeUrl: "ws://10.0.3.26:17210/", witnessBaseUrl: "https://api-tn10.kaspa.org/",
       depthConfirmationDaa: "10",

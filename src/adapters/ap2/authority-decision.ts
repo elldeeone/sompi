@@ -428,6 +428,13 @@ function canonicalFacts(facts: AuthorityApprovalFacts): AuthorityApprovalFacts {
     purchaseAuthorizationFactsDigest: facts.purchaseAuthorizationFactsDigest,
     additionalCostCeilingAtomic: facts.additionalCostCeilingAtomic,
     effectiveFinalityFloor: facts.effectiveFinalityFloor,
+    executionPlanDigest: facts.executionPlanDigest,
+    executionMechanism: facts.executionMechanism,
+    executionProfile: facts.executionProfile,
+    settlementAssurance: facts.settlementAssurance,
+    maximumAuthorizedChargeAtomic: facts.maximumAuthorizedChargeAtomic,
+    channelId: facts.channelId,
+    channelEpochDigest: facts.channelEpochDigest,
   });
 }
 

@@ -71,7 +71,7 @@ const AUTHORIZATION_KIND = "purchase-authorization";
 const SUPPORT_KIND = "authorization-supporting-evidence";
 const CHECKOUT_MEDIA_TYPE = "application/jwt";
 const MANDATE_MEDIA_TYPE = "application/sd-jwt";
-const PAYMENT_REQUIREMENTS_PROFILE = "kaspa-x402-alpha.6-exact-test";
+const PAYMENT_REQUIREMENTS_PROFILE = "kaspa-x402-alpha.8-exact-test";
 const AUTHORIZATION_PROFILE = "sompi-ap2-authority-decision-test";
 const VERIFIER_ID = "journal-source-test-verifier";
 
@@ -160,20 +160,18 @@ test("expired AP2 evidence remains historical evidence but cannot start new paym
       {
         currentPolicy: unexpected("Treasury policy"),
         quote: unexpected("Treasury quote"),
-      } as TreasuryModule,
-      {
         prepareStaging: unexpected("Treasury staging preparation/signing"),
         submitStaging: unexpected("Treasury staging submission"),
         observeStaging: unexpected("Treasury staging observation"),
+        prepareStagingRecovery: unexpected("staging recovery preparation"),
+        observeStagingRecovery: unexpected("staging recovery observation"),
+        submitStagingRecovery: unexpected("staging recovery submission"),
+      } as TreasuryModule,
+      {
         prepare: unexpected("exact payment preparation/signing"),
         submit: unexpected("exact payment submission"),
         observe: unexpected("exact payment observation"),
       } as KaspaPaymentModule,
-      {
-        prepare: unexpected("staging recovery preparation"),
-        observe: unexpected("staging recovery observation"),
-        submit: unexpected("staging recovery submission"),
-      },
       { obtain: unexpected("Fulfilment") } as FulfilmentModule,
       {
         now: () => POST_EXPIRY_MS,
@@ -455,6 +453,13 @@ async function createFixture(
   });
   assert.equal(checkoutEvidence, checkout.checkoutDigest);
   assert.equal(paymentRequirements, checkout.paymentRequirementsDigest);
+  const executionPlan = journal.storeExecutionPlanEvidence(checkout.purchaseId, {
+    mechanism: "single-transaction",
+    profile: "kaspa-exact-v2:standard-native",
+    requirementsDigest: paymentRequirements,
+    maximumChargeAtomic: checkout.terms.amountAtomic,
+    settlementAssurance: "accepted",
+  });
   journal.bindCheckoutTerms(checkout.purchaseId, {
     terms: checkout.terms,
     checkoutEvidenceDigest: checkoutEvidence,
@@ -463,6 +468,8 @@ async function createFixture(
     paymentRequirementsDigest: paymentRequirements,
     paymentRequirementsVerificationProfile: PAYMENT_REQUIREMENTS_PROFILE,
     paymentRequirementsVerifierId: VERIFIER_ID,
+    executionPlan: executionPlan.plan,
+    executionPlanEvidenceDigest: executionPlan.evidenceDigest,
   });
 
   const requestBytes = Buffer.from("journal-source-authorization-request", "utf8");
@@ -491,6 +498,7 @@ async function createFixture(
     effectiveFinalityFloor: "accepted",
     expiresAtMs,
   });
+  const storedAuthorizationRequest = journal.requireAuthorizationRequest(checkout.purchaseId);
 
   const decisionBytes = Buffer.from("journal-source-authority-decision", "utf8");
   const authorizationEvidenceDigest = verifiedEvidence(journal, checkout.purchaseId, {
@@ -512,7 +520,12 @@ async function createFixture(
     nonceDigest,
     additionalCostCeilingAtomic: checkout.additionalCostCeilingAtomic,
     effectiveFinalityFloor: "accepted" as const,
-    createdAtMs: journal.requireAuthorizationRequest(checkout.purchaseId).createdAtMs,
+    executionPlanDigest: storedAuthorizationRequest.executionPlanDigest,
+    executionMechanism: storedAuthorizationRequest.executionMechanism,
+    executionProfile: storedAuthorizationRequest.executionProfile,
+    settlementAssurance: storedAuthorizationRequest.settlementAssurance,
+    maximumAuthorizedChargeAtomic: storedAuthorizationRequest.maximumAuthorizedChargeAtomic,
+    createdAtMs: storedAuthorizationRequest.createdAtMs,
     expiresAtMs,
   };
   if (options.authorization !== "none") {
@@ -666,6 +679,17 @@ async function postExpiryPaidResponse(
     additionalCostCeilingAtomic:
       authorizationRecord.additionalCostCeilingAtomic,
     effectiveFinalityFloor: authorizationRecord.effectiveFinalityFloor,
+    executionPlanDigest: authorizationRecord.executionPlanDigest,
+    executionMechanism: authorizationRecord.executionMechanism,
+    executionProfile: authorizationRecord.executionProfile,
+    settlementAssurance: authorizationRecord.settlementAssurance,
+    maximumAuthorizedChargeAtomic: authorizationRecord.maximumAuthorizedChargeAtomic,
+    ...(authorizationRecord.channelId === undefined
+      ? {}
+      : { channelId: authorizationRecord.channelId }),
+    ...(authorizationRecord.channelEpochDigest === undefined
+      ? {}
+      : { channelEpochDigest: authorizationRecord.channelEpochDigest }),
     createdAtMs: authorizationRecord.createdAtMs,
     expiresAtMs: authorizationRecord.expiresAtMs,
   };
@@ -688,7 +712,7 @@ async function postExpiryPaidResponse(
       requestFingerprint: fixture.checkout.terms.resourceFingerprint,
     },
     paymentRequirements: Buffer.from("fixed-payment-requirements", "utf8"),
-    preparedTransactionId: TRANSACTION_ID,
+    preparedExecutionId: TRANSACTION_ID,
   };
   const settlementEvidence = protocolArtifact(
     Buffer.from("historical-settlement", "utf8"),
@@ -697,6 +721,9 @@ async function postExpiryPaidResponse(
   );
   const settlement: SettlementResult = {
     evidence: settlementEvidence,
+    executionId: TRANSACTION_ID,
+    mechanism: "single-transaction",
+    profile: "kaspa-exact-v2:standard-native",
     transactionId: TRANSACTION_ID,
     outpoint: `${TRANSACTION_ID}:1`,
     amountAtomic: fixture.checkout.terms.amountAtomic,
@@ -704,7 +731,7 @@ async function postExpiryPaidResponse(
     asset: fixture.checkout.terms.asset,
     network: fixture.checkout.terms.network,
     payTo: fixture.checkout.terms.payTo,
-    finality: "accepted",
+    settlementAssurance: "accepted",
     fundingSource: "vault-treasury",
   };
   return {

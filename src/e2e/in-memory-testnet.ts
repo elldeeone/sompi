@@ -2,6 +2,7 @@ import type {
   ExactTransactionVerificationRequest,
   ExactTransactionVerifier,
 } from "@kaspa-x402/server";
+import { exactRequestAuthorizationId } from "@kaspa-x402/core";
 
 import { Transaction, type ScriptPublicKey } from "../kaspa-wasm.js";
 import type {
@@ -118,7 +119,7 @@ implements ChainObservationSource, ExactTransactionVerifier {
     if (
       request.network !== NETWORK ||
       request.transactionEncoding !== "kaspa-sdk-safe-json-v2.0.0" ||
-      request.paymentOutputIndex !== 1
+      request.paymentOutputIndex !== 0
     ) {
       throw new Error("Merchant exact verifier received an unsupported transaction profile");
     }
@@ -135,10 +136,10 @@ implements ChainObservationSource, ExactTransactionVerifier {
         output.scriptPublicKey.version,
         output.scriptPublicKey.script
       );
-      if (
-        amountAtomic !== request.amount ||
-        scriptPublicKey !== request.payToScriptPublicKey
-      ) {
+      const expectedOutputAmount = request.profile === "additive"
+        ? (BigInt(request.head!.headAmount) + BigInt(request.amount)).toString()
+        : request.amount;
+      if (amountAtomic !== expectedOutputAmount || scriptPublicKey !== request.payToScriptPublicKey) {
         throw new Error("Merchant exact payment output differs from its requirement");
       }
       const record = Object.freeze({
@@ -159,11 +160,26 @@ implements ChainObservationSource, ExactTransactionVerifier {
       return {
         transactionId,
         paymentOutput: {
-          amount: amountAtomic,
+          amount: request.amount,
           scriptPublicKey,
           address: request.payTo,
         },
         finality: "accepted" as const,
+        requestAuthorization: {
+          authorizationId: exactRequestAuthorizationId(request.authorization),
+          digest: request.authorization.digest,
+          inputIndex: request.authorization.inputIndex,
+          publicKey: payerPublicKey(transaction, request.authorization.inputIndex),
+        },
+        ...(request.profile === "additive"
+          ? {
+              continuation: {
+                outpoint: { txid: transactionId, index: 0 },
+                amount: amountAtomic,
+                scriptPublicKey,
+              },
+            }
+          : {}),
       };
     } finally {
       transaction.free();
@@ -212,4 +228,16 @@ implements ChainObservationSource, ExactTransactionVerifier {
     this.submittedStaging = undefined;
     this.initialVaultScript.free();
   }
+}
+
+function payerPublicKey(transaction: Transaction, inputIndex: number): string {
+  const input = transaction.inputs[inputIndex];
+  if (!input) throw new Error("request authorization input is missing");
+  const serialized = serializeScriptPublicKey(
+    input.utxo!.scriptPublicKey.version,
+    input.utxo!.scriptPublicKey.script
+  );
+  const match = /^000020([0-9a-f]{64})ac$/.exec(serialized);
+  if (!match) throw new Error("request authorization input is not Schnorr P2PK");
+  return match[1]!;
 }

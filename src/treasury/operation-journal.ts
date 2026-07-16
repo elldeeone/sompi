@@ -1,4 +1,4 @@
-export type TreasuryOperationKind = "wallet_send" | "vault_send" | "vault_deposit";
+export type TreasuryOperationKind = "wallet_send" | "vault_send" | "vault_deposit" | "batch_refund";
 export type TreasuryOperationState =
   | "intent"
   | "prepared"
@@ -90,7 +90,9 @@ export interface PreparedTreasuryOperation extends PreparedTreasuryOperationMate
 export type TreasuryOperationObservationStatus =
   | "observed"
   | "not_submitted"
-  | "pending";
+  | "pending"
+  /** A mutually exclusive, independently proven chain effect won first. */
+  | "superseded";
 
 /**
  * Local submit completion is not itself proof of non-execution. The owning

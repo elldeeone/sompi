@@ -28,6 +28,7 @@ export interface OperatorProvisioningSpec {
   readonly windowSizeDaa: string;
   readonly treasury: OperatorManifest["treasury"];
   readonly merchant: OperatorManifest["merchant"];
+  readonly batch: OperatorManifest["batch"];
   readonly chainEvidence: OperatorManifest["chainEvidence"];
   readonly admission: OperatorManifest["admission"];
 }
@@ -96,7 +97,7 @@ export function parseOperatorProvisioningSpec(value: unknown): OperatorProvision
   const candidate = requireRecord(value, "operator provisioning spec");
   requireExactKeys(candidate, [
     "schema", "revision", "dataDirectory", "ownerPublic", "maxOutflowSompi",
-    "windowSizeDaa", "treasury", "merchant", "chainEvidence", "admission",
+    "windowSizeDaa", "treasury", "merchant", "batch", "chainEvidence", "admission",
   ]);
   if (candidate.schema !== OPERATOR_PROVISIONING_SCHEMA) {
     throw new OperatorProvisioningError("operator provisioning schema is unsupported");
@@ -122,6 +123,7 @@ export function parseOperatorProvisioningSpec(value: unknown): OperatorProvision
     },
     treasury: candidate.treasury,
     merchant: candidate.merchant,
+    batch: candidate.batch,
     chainEvidence: candidate.chainEvidence,
     admission: candidate.admission,
   });
@@ -134,6 +136,7 @@ export function parseOperatorProvisioningSpec(value: unknown): OperatorProvision
     windowSizeDaa: manifest.vault.windowSizeDaa,
     treasury: manifest.treasury,
     merchant: manifest.merchant,
+    batch: manifest.batch,
     chainEvidence: manifest.chainEvidence,
     admission: manifest.admission,
   });
@@ -191,6 +194,7 @@ export function provisionOperatorCandidate(
       },
       treasury: spec.treasury,
       merchant: spec.merchant,
+      batch: spec.batch,
       chainEvidence: spec.chainEvidence,
       admission: spec.admission,
     });

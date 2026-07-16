@@ -15,16 +15,25 @@ import { AUTHORITY_DECISION_TRANSPORT_TIMEOUT_MS } from "../authority/transport.
 import { AuthorityMacKeyFile } from "../authority/key-provider.js";
 import { SqliteAuthorityReplayStore } from "../authority/replay-store.js";
 import {
-  ExactOnlyChannelSigner,
-  ExactOnlyChannelStore,
+  JournalBatchChannelStore,
+  JournalBatchVoucherAuthorizer,
+  KaspaX402BatchCapitalModule,
+  BatchRefundTreasuryOperationAdapter,
+  HttpsBatchClaimRaceSource,
+  KaspaX402BatchRefundModule,
+  SecureBatchChannelSigner,
   KaspaTestnet10AddressCodec,
+  KaspaX402BatchPaymentModule,
   KaspaX402ExactPaymentModule,
+  KaspaX402PaymentModule,
+  KaspaX402TreasuryStagingAdapter,
   KaspaX402PaymentRequirementsVerifier,
   AbandonedStagingRecovery,
-  Kip10ExactTransactionBuilder,
+  ExactTransactionBuilder,
   KaspaStagingRecoveryModule,
   RpcStagingRecoveryTransactionSubmitter,
   StagingKeyStore,
+  WalletBatchChainSource,
 } from "../adapters/kaspa-x402/index.js";
 import {
   KaspaExactChainVerifier,
@@ -52,6 +61,12 @@ import {
 import { PurchaseJournal } from "../purchase/journal.js";
 import type { PurchaseModule } from "../purchase/types.js";
 import { VaultTreasuryModule } from "../treasury/vault-treasury.js";
+import { TreasuryOperationModule } from "../treasury/operations.js";
+import {
+  VaultDepositTreasuryOperationAdapter,
+  VaultSendTreasuryOperationAdapter,
+  WalletTreasuryOperationAdapter,
+} from "../treasury/operation-adapters.js";
 import { VaultManager, vaultStaticConfigurationDigest } from "../vault.js";
 import { KaspaWallet } from "../wallet.js";
 import {
@@ -73,6 +88,9 @@ export interface SompiPurchaseRuntime {
   readonly vault: VaultManager;
   readonly policy: PolicyEngine;
   readonly chainEvidence: ChainEvidenceModule;
+  readonly treasuryOperations: TreasuryOperationModule;
+  readonly batchCapital: KaspaX402BatchCapitalModule;
+  readonly batchRefund: KaspaX402BatchRefundModule;
   close(): Promise<void>;
 }
 
@@ -142,13 +160,70 @@ export function createSompiPurchaseRuntime(
       new JournalChainEvidenceStore(journal),
       now
     );
+    const channelStore = new JournalBatchChannelStore(journal, now);
+    const channelSigner = new SecureBatchChannelSigner(
+      `${config.dataDirectory}/batch-channel-keys`,
+      now
+    );
+    const addressCodec = new KaspaTestnet10AddressCodec();
+    const batchChain = new WalletBatchChainSource(wallet);
+    const treasuryOperations = new TreasuryOperationModule({
+      journal,
+      policy,
+      adapters: [
+        new WalletTreasuryOperationAdapter(
+          wallet,
+          chainEvidence,
+          config.finalityFloors.settlement,
+        ),
+        new VaultSendTreasuryOperationAdapter(
+          vault,
+          wallet,
+          chainEvidence,
+          config.finalityFloors.settlement,
+        ),
+        new VaultDepositTreasuryOperationAdapter(
+          vault,
+          wallet,
+          chainEvidence,
+          config.finalityFloors.settlement,
+        ),
+        new BatchRefundTreasuryOperationAdapter(
+          journal,
+          wallet,
+          batchChain,
+          channelSigner,
+          chainEvidence,
+          config.finalityFloors.recoveryRelease,
+          config.batchClaimFeeReserveAtomic,
+          new HttpsBatchClaimRaceSource(
+            config.witnessBaseUrl,
+            batchChain,
+            chainEvidence,
+            config.finalityFloors.recoveryRelease,
+          ),
+        ),
+      ],
+      feeCeilingAtomic: config.additionalCostCeilingAtomic,
+    });
+    const batchCapital = new KaspaX402BatchCapitalModule(
+      journal,
+      treasuryOperations,
+      channelSigner,
+      channelStore,
+      now,
+    );
+    const batchRefund = new KaspaX402BatchRefundModule(journal, treasuryOperations);
     const checkout = new SompiCheckoutTermsModule({
       transport,
       merchantCheckout: new Ap2MerchantCheckoutVerifier({
         trust,
         authorityAudience: config.authority.issuer,
       }),
-      paymentRequirements: new KaspaX402PaymentRequirementsVerifier(),
+      paymentRequirements: new KaspaX402PaymentRequirementsVerifier({
+        channelStore,
+        claimFeeReserveAtomic: config.batchClaimFeeReserveAtomic,
+      }),
       now,
     });
     const authorityVerifier = new Ap2AuthorityDecisionEvidenceVerifier({
@@ -178,12 +253,6 @@ export function createSompiPurchaseRuntime(
       verifier: authorityVerifier,
       now,
     });
-    const treasury = new VaultTreasuryModule({
-      vault,
-      policy: () => purchasePolicy(policy),
-      additionalCostCeilingAtomic: config.additionalCostCeilingAtomic,
-    });
-
     const keyStore = new StagingKeyStore({
       directory: config.stagingKeyDirectory,
       now,
@@ -200,7 +269,7 @@ export function createSompiPurchaseRuntime(
     const funding = new VaultExactAttemptFundingBridge({
       metadataSource: canonicalStaging,
       observedStagingSource: observedStaging,
-      builder: new Kip10ExactTransactionBuilder({ keyStore, now }),
+      builder: new ExactTransactionBuilder({ keyStore, now }),
     });
     const chainVerifier = new KaspaExactChainVerifier({
       stagingMetadata: new JournalChainTreasuryMetadataSource(
@@ -233,18 +302,36 @@ export function createSompiPurchaseRuntime(
       expectedPaymentReceiptIssuer: config.paymentReceiptIssuer,
       now,
     });
-    const payment = new KaspaX402ExactPaymentModule({
-      staging,
+    const treasuryStaging = new KaspaX402TreasuryStagingAdapter({
+      driver: staging,
+      now,
+    });
+    const exactPayment = new KaspaX402ExactPaymentModule({
       funding,
-      channelSigner: new ExactOnlyChannelSigner(),
-      channelStore: new ExactOnlyChannelStore(),
-      addressCodec: new KaspaTestnet10AddressCodec(),
+      channelSigner,
+      channelStore,
+      addressCodec,
       transport,
       settlementVerifier: chainVerifier,
       recoveryObserver: chainVerifier,
       paidResponseVerifier,
       now,
     });
+    const batchPayment = new KaspaX402BatchPaymentModule({
+      store: channelStore,
+      signer: channelSigner,
+      addressCodec,
+      chain: batchChain,
+      authorizer: new JournalBatchVoucherAuthorizer(
+        journal,
+        config.batchClaimFeeReserveAtomic
+      ),
+      claimFeeReserveAtomic: config.batchClaimFeeReserveAtomic,
+      transport,
+      paidResponseVerifier,
+      now,
+    });
+    const payment = new KaspaX402PaymentModule(exactPayment, batchPayment);
     const stagingRecovery = new KaspaStagingRecoveryModule({
       recovery: new AbandonedStagingRecovery({
         keyStore,
@@ -261,6 +348,13 @@ export function createSompiPurchaseRuntime(
       observedStaging,
       finalityFloor: config.finalityFloors.recoveryRelease,
     });
+    const treasury = new VaultTreasuryModule({
+      vault,
+      policy: () => purchasePolicy(policy),
+      additionalCostCeilingAtomic: config.additionalCostCeilingAtomic,
+      staging: treasuryStaging,
+      stagingRecovery,
+    });
     const purchase = new PurchaseCoordinator(
       journal,
       egress,
@@ -269,7 +363,6 @@ export function createSompiPurchaseRuntime(
       commerceAuthorization,
       treasury,
       payment,
-      stagingRecovery,
       new PendingFulfilmentModule(),
       { now, effectiveFinalityFloor: config.finalityFloors.settlement }
     );
@@ -281,6 +374,9 @@ export function createSompiPurchaseRuntime(
       vault,
       policy,
       chainEvidence,
+      treasuryOperations,
+      batchCapital,
+      batchRefund,
       close() {
         closePromise ??= closeRuntimeResources(
           wallet,

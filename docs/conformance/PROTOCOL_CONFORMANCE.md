@@ -15,7 +15,7 @@ SOMPI_CONFORMANCE_OFFLINE=1 npm run test:conformance
 ```
 
 The same command is included in the packed npm artifact with the minimal
-runner, fixed fixtures, Python lock, and exact Kaspa-x402 vector it needs.
+runner, fixed fixtures, Python lock, and exact Kaspa-x402 vectors it needs.
 `git` and `uv` must be installed. The first run needs network access to fetch
 the exact AP2 commit and locked Python wheels into a private external cache;
 set `SOMPI_CONFORMANCE_OFFLINE=1` to require an already warmed cache.
@@ -29,11 +29,11 @@ Python dependencies and all transitives exactly; the runner applies it with
 TypeScript/Python mandate test and verifies Sompi's two receipt roles plus their
 issuer-JWT references in the pinned Python `ReceiptClient`.
 
-For Kaspa-x402, the gate checks all published alpha.6 package versions and npm
-lockfile SRI values, validates the one unmodified vendored exact HTTP vector,
-and drives its requirements through Sompi's exact adapter preparation seam. A
-Payment Identifier is added with the official alpha.6 extension API because
-Sompi deliberately rejects the upstream vector's uncorrelated raw form.
+For Kaspa-x402, the gate checks all four published alpha.8 package versions and
+npm lockfile SRI values, package source and release identities, the unmodified
+additive exact HTTP vector, and the full-consensus standard-native v0/additive
+v1 vector. Sompi's adapter suites separately prove the required official
+Payment Identifier correlation and Purchase bindings.
 
 Exact machine-readable provenance and claim boundaries are in
 [`test/conformance/provenance.json`](../../test/conformance/provenance.json).

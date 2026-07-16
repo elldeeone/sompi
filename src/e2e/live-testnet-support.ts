@@ -2,6 +2,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
+import { schnorr } from "@noble/curves/secp256k1.js";
+import {
+  exactRequestAuthorizationDigest,
+  exactRequestAuthorizationId,
+  hexToBytes,
+} from "@kaspa-x402/core";
+
 import {
   buildKip10AdditiveRedeemScript,
   kip10AdditiveScriptPublicKey,
@@ -16,9 +23,9 @@ import type {
 import {
   KaspaTestnet10AddressCodec,
   SOMPI_EXACT_FEE_POLICY,
-  minimumRequiredExactFeeSompi,
 } from "../adapters/kaspa-x402/index.js";
 import {
+  calculateTransactionFee,
   Keypair,
   PrivateKey,
   ScriptPublicKey,
@@ -48,7 +55,7 @@ import { KaspaWallet } from "../wallet.js";
 export const LIVE_NETWORK = "kaspa:testnet-10" as const;
 export const LIVE_SDK_NETWORK = "testnet-10" as const;
 export const LIVE_BOOTSTRAP_AMOUNT_ATOMIC = "500000000" as const;
-export const LIVE_BORROW_AMOUNT_ATOMIC = "100000000" as const;
+export const LIVE_ADDITIVE_HEAD_AMOUNT_ATOMIC = "100000000" as const;
 export const LIVE_VAULT_DEPOSIT_AMOUNT_ATOMIC = "300000000" as const;
 export const LIVE_PRICE_ATOMIC = "20000000" as const;
 export const LIVE_ADDITIVE_THRESHOLD_ATOMIC = "10000000" as const;
@@ -70,13 +77,12 @@ const MAX_SECRET_FILE_BYTES = 4096;
 const MAX_DURABLE_FILE_BYTES = 16 * 1024 * 1024;
 
 export interface LiveProofConfig {
-  readonly version: 1;
+  readonly version: 2;
   readonly runId: string;
   readonly createdAt: string;
   readonly nodeUrl: string;
   readonly sourceWalletDirectory: string;
   readonly purchaseEntropyHex: string;
-  readonly reservationExpiresAt: string;
   readonly authorityMacKeyId: string;
   readonly wallets: {
     readonly treasuryDirectory: string;
@@ -92,18 +98,18 @@ export interface LiveProofConfig {
     readonly ownerPublicKey: string;
     readonly ownerKeyPath: string;
   };
-  readonly borrow: {
+  readonly additiveHead: {
     readonly address: string;
     readonly ownerPublicKey: string;
     readonly ownerKeyPath: string;
     readonly redeemScript: string;
     readonly scriptPublicKey: string;
-    readonly amountAtomic: typeof LIVE_BORROW_AMOUNT_ATOMIC;
+    readonly amountAtomic: typeof LIVE_ADDITIVE_HEAD_AMOUNT_ATOMIC;
     readonly additiveThresholdAtomic: typeof LIVE_ADDITIVE_THRESHOLD_ATOMIC;
   };
   readonly operationKeys: {
     readonly bootstrap: string;
-    readonly borrowInventory: string;
+    readonly additiveHead: string;
     readonly vaultDeposit: string;
   };
 }
@@ -130,7 +136,7 @@ export interface LiveProofProgress {
   readonly runId: string;
   readonly updatedAt: string;
   readonly bootstrap?: LiveChainMilestone;
-  readonly borrowInventory?: LiveChainMilestone;
+  readonly additiveHead?: LiveChainMilestone;
   readonly vaultDeposit?: LiveChainMilestone & {
     readonly covenantId: string;
   };
@@ -151,23 +157,23 @@ export interface LiveRecoveryRecord {
   readonly startedOperations: readonly LiveFundingOperation[];
   readonly intendedAmountsAtomic: {
     readonly bootstrap: typeof LIVE_BOOTSTRAP_AMOUNT_ATOMIC;
-    readonly borrowInventory: typeof LIVE_BORROW_AMOUNT_ATOMIC;
+    readonly additiveHead: typeof LIVE_ADDITIVE_HEAD_AMOUNT_ATOMIC;
     readonly vaultDeposit: typeof LIVE_VAULT_DEPOSIT_AMOUNT_ATOMIC;
     readonly purchasePrice: typeof LIVE_PRICE_ATOMIC;
     readonly additiveThreshold: typeof LIVE_ADDITIVE_THRESHOLD_ATOMIC;
   };
   readonly milestones: Readonly<Partial<{
     bootstrap: LiveChainMilestone;
-    borrowInventory: LiveChainMilestone;
+    additiveHead: LiveChainMilestone;
     vaultDeposit: LiveChainMilestone & { readonly covenantId: string };
   }>>;
 }
 
-export type LiveFundingOperation = "bootstrap" | "borrowInventory" | "vaultDeposit";
+export type LiveFundingOperation = "bootstrap" | "additiveHead" | "vaultDeposit";
 
 const LIVE_FUNDING_OPERATION_ORDER = Object.freeze([
   "bootstrap",
-  "borrowInventory",
+  "additiveHead",
   "vaultDeposit",
 ] as const satisfies readonly LiveFundingOperation[]);
 
@@ -285,13 +291,13 @@ export function initializeLiveProof(
   });
 
   const vaultOwnerKeyPath = path.join(layout.root, "secrets", "vault-owner.key");
-  const borrowOwnerKeyPath = path.join(layout.root, "secrets", "borrow-owner.key");
+  const additiveHeadOwnerKeyPath = path.join(layout.root, "secrets", "additiveHead-owner.key");
   const runIdPath = path.join(layout.root, "secrets", "run-id");
   const entropyPath = path.join(layout.root, "secrets", "purchase-entropy");
   const runId = loadOrCreateHex(runIdPath, 12);
   const purchaseEntropyHex = loadOrCreateHex(entropyPath, 16);
   const vaultOwner = loadOrCreateOwnerKey(vaultOwnerKeyPath);
-  const borrowOwner = loadOrCreateOwnerKey(borrowOwnerKeyPath);
+  const additiveHeadOwner = loadOrCreateOwnerKey(additiveHeadOwnerKeyPath);
 
   const vault = new VaultManager(vaultDataDirectory, LIVE_SDK_NETWORK);
   if (!vault.configured) {
@@ -302,28 +308,27 @@ export function initializeLiveProof(
     throw new Error("live proof vault owner key does not match its durable vault configuration");
   }
 
-  const borrowTemplate = {
-    ownerPublicKey: borrowOwner.publicKey,
+  const additiveHeadTemplate = {
+    ownerPublicKey: additiveHeadOwner.publicKey,
     amount: LIVE_ADDITIVE_THRESHOLD_ATOMIC,
   } as const;
-  const borrowRedeemScript = buildKip10AdditiveRedeemScript(borrowTemplate).toLowerCase();
-  const borrowSpk = kip10AdditiveScriptPublicKey(borrowTemplate);
-  const borrowScriptPublicKey = serializedScriptPublicKey(borrowSpk).toLowerCase();
+  const additiveHeadRedeemScript = buildKip10AdditiveRedeemScript(additiveHeadTemplate).toLowerCase();
+  const additiveHeadSpk = kip10AdditiveScriptPublicKey(additiveHeadTemplate);
+  const additiveHeadScriptPublicKey = serializedScriptPublicKey(additiveHeadSpk).toLowerCase();
   const addressCodec = new KaspaTestnet10AddressCodec();
-  const borrowAddress = addressCodec.encodeScriptAddress({
+  const additiveHeadAddress = addressCodec.encodeScriptAddress({
     network: LIVE_NETWORK,
-    scriptPublicKey: borrowSpk,
-    serializedScriptPublicKey: borrowScriptPublicKey,
+    scriptPublicKey: additiveHeadSpk,
+    serializedScriptPublicKey: additiveHeadScriptPublicKey,
   });
 
   const created = Object.freeze({
-    version: 1 as const,
+    version: 2 as const,
     runId,
     createdAt: new Date().toISOString(),
     nodeUrl,
     sourceWalletDirectory: path.resolve(sourceWalletDirectory),
     purchaseEntropyHex,
-    reservationExpiresAt: new Date(Date.now() + 2 * 60 * 60_000).toISOString(),
     authorityMacKeyId: `live-proof-${runId}`,
     wallets: Object.freeze({
       treasuryDirectory,
@@ -339,18 +344,18 @@ export function initializeLiveProof(
       ownerPublicKey: vaultOwner.publicKey,
       ownerKeyPath: vaultOwnerKeyPath,
     }),
-    borrow: Object.freeze({
-      address: borrowAddress,
-      ownerPublicKey: borrowOwner.publicKey,
-      ownerKeyPath: borrowOwnerKeyPath,
-      redeemScript: borrowRedeemScript,
-      scriptPublicKey: borrowScriptPublicKey,
-      amountAtomic: LIVE_BORROW_AMOUNT_ATOMIC,
+    additiveHead: Object.freeze({
+      address: additiveHeadAddress,
+      ownerPublicKey: additiveHeadOwner.publicKey,
+      ownerKeyPath: additiveHeadOwnerKeyPath,
+      redeemScript: additiveHeadRedeemScript,
+      scriptPublicKey: additiveHeadScriptPublicKey,
+      amountAtomic: LIVE_ADDITIVE_HEAD_AMOUNT_ATOMIC,
       additiveThresholdAtomic: LIVE_ADDITIVE_THRESHOLD_ATOMIC,
     }),
     operationKeys: Object.freeze({
       bootstrap: `live:${runId}:bootstrap`,
-      borrowInventory: `live:${runId}:borrow-inventory`,
+      additiveHead: `live:${runId}:additive-head`,
       vaultDeposit: `live:${runId}:vault-deposit`,
     }),
   }) satisfies LiveProofConfig;
@@ -403,14 +408,14 @@ export async function bootstrapLiveProof(input: {
   writePolicyOnce(layout.purchasePolicyPath, {
     maxSompiPerTx: "500000000",
     maxSompiPerHour: "1000000000",
-    allowlist: [config.borrow.address, config.vault.address],
+    allowlist: [config.additiveHead.address, config.vault.address],
     requireApprovalAboveSompi: "0",
   });
 
   let progress = readProgress(layout.progressPath, config.runId);
   if (
-    (progress.vaultDeposit && !progress.borrowInventory) ||
-    (progress.borrowInventory && !progress.bootstrap)
+    (progress.vaultDeposit && !progress.additiveHead) ||
+    (progress.additiveHead && !progress.bootstrap)
   ) {
     throw new Error("live proof milestones are not a complete ordered prefix");
   }
@@ -424,7 +429,7 @@ export async function bootstrapLiveProof(input: {
     JSON.stringify(recovery.operationKeys) !== JSON.stringify(config.operationKeys) ||
     JSON.stringify(recovery.intendedAmountsAtomic) !== JSON.stringify({
       bootstrap: LIVE_BOOTSTRAP_AMOUNT_ATOMIC,
-      borrowInventory: LIVE_BORROW_AMOUNT_ATOMIC,
+      additiveHead: LIVE_ADDITIVE_HEAD_AMOUNT_ATOMIC,
       vaultDeposit: LIVE_VAULT_DEPOSIT_AMOUNT_ATOMIC,
       purchasePrice: LIVE_PRICE_ATOMIC,
       additiveThreshold: LIVE_ADDITIVE_THRESHOLD_ATOMIC,
@@ -446,13 +451,13 @@ export async function bootstrapLiveProof(input: {
     !purchaseJournalExists ||
     (progress.bootstrap && !bootstrapJournalExists) ||
     (startedOperations.has("bootstrap") && !bootstrapJournalExists) ||
-    ((startedOperations.has("borrowInventory") || startedOperations.has("vaultDeposit")) &&
+    ((startedOperations.has("additiveHead") || startedOperations.has("vaultDeposit")) &&
       !purchaseJournalExists) ||
-    (startedOperations.has("borrowInventory") && !progress.bootstrap) ||
-    (startedOperations.has("vaultDeposit") && !progress.borrowInventory) ||
-    ((progress.borrowInventory || progress.vaultDeposit || purchaseJournalExists || merchantDownstreamExists) &&
+    (startedOperations.has("additiveHead") && !progress.bootstrap) ||
+    (startedOperations.has("vaultDeposit") && !progress.additiveHead) ||
+    ((progress.additiveHead || progress.vaultDeposit || purchaseJournalExists || merchantDownstreamExists) &&
       !bootstrapJournalExists) ||
-    ((progress.borrowInventory || progress.vaultDeposit || merchantDownstreamExists) &&
+    ((progress.additiveHead || progress.vaultDeposit || merchantDownstreamExists) &&
       !purchaseJournalExists)
   ) {
     throw new Error("live proof journal continuity is missing; refusing to create a replacement operation");
@@ -467,7 +472,7 @@ export async function bootstrapLiveProof(input: {
     admission: LIVE_ADMISSION,
   });
   const purchaseHasDownstreamState = Boolean(
-    purchaseJournal.findTreasuryOperation(config.operationKeys.borrowInventory) ||
+    purchaseJournal.findTreasuryOperation(config.operationKeys.additiveHead) ||
     purchaseJournal.findTreasuryOperation(config.operationKeys.vaultDeposit) ||
     purchaseJournal.findPurchaseByRequestKey(assertLivePurchaseRequestKey(config.runId))
   );
@@ -561,28 +566,28 @@ export async function bootstrapLiveProof(input: {
       wallet: treasuryWallet,
       vault,
     });
-    const borrowRequest = {
-      operationKey: config.operationKeys.borrowInventory,
+    const additiveHeadRequest = {
+      operationKey: config.operationKeys.additiveHead,
       kind: "wallet_send" as const,
-      destination: config.borrow.address,
-      amountAtomic: LIVE_BORROW_AMOUNT_ATOMIC,
+      destination: config.additiveHead.address,
+      amountAtomic: LIVE_ADDITIVE_HEAD_AMOUNT_ATOMIC,
     };
     writeRecoveryRecord(layout, config, progress);
     assertPreSpendDurability(initialized, config.sourceWalletDirectory);
     input.onProgress?.("recovering durable KIP-10 inventory operation");
-    if (progress.borrowInventory) {
+    if (progress.additiveHead) {
       const milestone = await revalidateOperationMilestone({
         journal: purchaseJournal,
-        request: borrowRequest,
-        milestone: progress.borrowInventory,
+        request: additiveHeadRequest,
+        milestone: progress.additiveHead,
         wallet: treasuryWallet,
       });
-      if (milestone !== progress.borrowInventory) {
-        progress = updateProgress(layout, progress, { borrowInventory: milestone });
+      if (milestone !== progress.additiveHead) {
+        progress = updateProgress(layout, progress, { additiveHead: milestone });
         writeRecoveryRecord(layout, config, progress);
       }
     } else {
-      const existing = assertOperationRequestMatches(purchaseJournal, borrowRequest);
+      const existing = assertOperationRequestMatches(purchaseJournal, additiveHeadRequest);
       const depositExists = Boolean(
         purchaseJournal.findTreasuryOperation(config.operationKeys.vaultDeposit)
       );
@@ -592,34 +597,34 @@ export async function bootstrapLiveProof(input: {
         )
       );
       if (depositExists || purchaseExists || merchantDownstreamExists) {
-        throw new Error("borrow milestone is missing after downstream state; manual reconciliation is required");
+        throw new Error("additive head milestone is missing after downstream state; manual reconciliation is required");
       }
-      writeRecoveryRecord(layout, config, progress, "borrowInventory");
+      writeRecoveryRecord(layout, config, progress, "additiveHead");
       assertPreSpendDurability(initialized, config.sourceWalletDirectory);
-      const borrowView = await driveLiveTreasuryOperation(
+      const additiveHeadView = await driveLiveTreasuryOperation(
         mainModule,
-        borrowRequest,
+        additiveHeadRequest,
         input.onProgress,
         existing
       );
       const detail = purchaseJournal.readObservedTreasuryOperationDetail(
-        config.operationKeys.borrowInventory
+        config.operationKeys.additiveHead
       );
-      const outpoint = requireOutpoint(detail.destinationOutpoint, "borrow inventory outpoint");
+      const outpoint = requireOutpoint(detail.destinationOutpoint, "additive head outpoint");
       const milestone = await observeAddressOutpoint({
         wallet: treasuryWallet,
-        address: config.borrow.address,
+        address: config.additiveHead.address,
         outpoint,
-        amountAtomic: LIVE_BORROW_AMOUNT_ATOMIC,
+        amountAtomic: LIVE_ADDITIVE_HEAD_AMOUNT_ATOMIC,
         observationStartHash: preparedObservationStartHash(
           purchaseJournal,
-          config.operationKeys.borrowInventory
+          config.operationKeys.additiveHead
         ),
       });
-      if (borrowView.transactionId !== milestone.transactionId) {
-        throw new Error("borrow inventory operation and observed transaction differ");
+      if (additiveHeadView.transactionId !== milestone.transactionId) {
+        throw new Error("additive head operation and observed transaction differ");
       }
-      progress = updateProgress(layout, progress, { borrowInventory: milestone });
+      progress = updateProgress(layout, progress, { additiveHead: milestone });
       writeRecoveryRecord(layout, config, progress);
     }
 
@@ -740,13 +745,15 @@ export class LiveMerchantExactVerifier implements ExactTransactionVerifier {
         request.paymentOutputIndex
       );
       if (!observation) {
-        await this.assertInputExists(
-          request.reservation!.borrowOutpoint.txid,
-          request.reservation!.borrowOutpoint.index,
-          request.reservation!.borrowAmount,
-          request.reservation!.borrowScriptPublicKey,
-          parsed.borrowAddress
-        );
+        if (parsed.headInput) {
+          await this.assertInputExists(
+            parsed.headInput.transactionId,
+            parsed.headInput.index,
+            parsed.headInput.amountAtomic,
+            parsed.headInput.scriptPublicKey,
+            parsed.headInput.address
+          );
+        }
         await this.assertInputExists(
           parsed.stagingOutpoint.transactionId,
           parsed.stagingOutpoint.index,
@@ -761,7 +768,9 @@ export class LiveMerchantExactVerifier implements ExactTransactionVerifier {
           transactionId: parsed.transactionId,
           transactionDigest,
           paymentOutpoint: `${parsed.transactionId}:${request.paymentOutputIndex}`,
-          continuationOutpoint: `${parsed.transactionId}:0`,
+          ...(request.profile === "additive"
+            ? { continuationOutpoint: `${parsed.transactionId}:0` }
+            : {}),
           state: "planned",
           plannedAt: new Date(this.now()).toISOString(),
         } satisfies MerchantVerifierState);
@@ -789,25 +798,10 @@ export class LiveMerchantExactVerifier implements ExactTransactionVerifier {
         );
       }
       if (
-        observation.amountAtomic !== request.amount ||
+        observation.amountAtomic !== parsed.outputAmountAtomic ||
         observation.scriptPublicKey !== request.payToScriptPublicKey.toLowerCase()
       ) {
         throw new Error("Merchant live RPC observation changed the exact payment output");
-      }
-      const continuation = await waitForRpcOutpoint(
-        this.wallet,
-        parsed.borrowAddress,
-        parsed.transactionId,
-        0,
-        OBSERVATION_TIMEOUT_MS
-      );
-      if (
-        continuation.amountAtomic !==
-          (BigInt(request.reservation!.borrowAmount) +
-            BigInt(request.reservation!.additiveThresholdSompi)).toString() ||
-        continuation.scriptPublicKey !== request.reservation!.borrowScriptPublicKey.toLowerCase()
-      ) {
-        throw new Error("Merchant live RPC observation changed the additive continuation output");
       }
       const info = await this.wallet.serverInfo();
       const state = Object.freeze({
@@ -815,7 +809,9 @@ export class LiveMerchantExactVerifier implements ExactTransactionVerifier {
         transactionId: parsed.transactionId,
         transactionDigest,
         paymentOutpoint: `${parsed.transactionId}:${request.paymentOutputIndex}`,
-        continuationOutpoint: `${parsed.transactionId}:0`,
+        ...(request.profile === "additive"
+          ? { continuationOutpoint: `${parsed.transactionId}:0` }
+          : {}),
         state: "observed" as const,
         plannedAt:
           existing?.plannedAt ??
@@ -836,6 +832,16 @@ export class LiveMerchantExactVerifier implements ExactTransactionVerifier {
         }),
         finality: "accepted" as const,
         payerAddress: parsed.payerAddress,
+        requestAuthorization: parsed.requestAuthorization,
+        ...(request.profile === "additive"
+          ? {
+              continuation: Object.freeze({
+                outpoint: Object.freeze({ txid: parsed.transactionId, index: 0 }),
+                amount: parsed.outputAmountAtomic,
+                scriptPublicKey: request.payToScriptPublicKey.toLowerCase(),
+              }),
+            }
+          : {}),
       });
     } finally {
       parsed.transaction.free();
@@ -858,57 +864,41 @@ export class LiveMerchantExactVerifier implements ExactTransactionVerifier {
     if (
       request.network !== LIVE_NETWORK ||
       request.transactionEncoding !== "kaspa-sdk-safe-json-v2.0.0" ||
-      request.paymentOutputIndex !== 1 ||
+      request.paymentOutputIndex !== 0 ||
       request.requiredFinality !== "accepted" ||
+      (request.profile !== "standard-native" && request.profile !== "additive") ||
       !ADDRESS.test(request.payTo) ||
-      !HASH32.test(String(request.requestHash ?? "").toLowerCase())
+      !HASH32.test(String(request.requestHash ?? "").toLowerCase()) ||
+      !HASH32.test(String(request.paymentRequirementsHash ?? "").toLowerCase())
     ) {
       throw new Error("Merchant exact verifier received an unsupported or unbound profile");
     }
-    const reservation = request.reservation;
-    if (
-      !reservation ||
-      reservation.templateId !== "kaspa-x402-kip10-additive-v1" ||
-      reservation.transactionEncoding !== "kaspa-sdk-safe-json-v2.0.0" ||
-      reservation.paymentOutputIndex !== 1 ||
-      !HASH32.test(reservation.reservationId.toLowerCase()) ||
-      !HASH32.test(reservation.borrowOutpoint.txid.toLowerCase()) ||
-      !Number.isSafeInteger(reservation.borrowOutpoint.index) ||
-      reservation.borrowOutpoint.index < 0 ||
-      reservation.borrowOutpoint.index > 0xffff_ffff ||
-      reservation.borrowAmount !== LIVE_BORROW_AMOUNT_ATOMIC ||
-      reservation.additiveThresholdSompi !== LIVE_ADDITIVE_THRESHOLD_ATOMIC
-    ) {
-      throw new Error("Merchant exact verifier received an invalid KIP-10 reservation");
-    }
     if (
       request.payTo !== this.expected.payTo ||
-      request.payToScriptPublicKey.toLowerCase() !== this.expected.payToScriptPublicKey ||
-      reservation.reservationId.toLowerCase() !== this.expected.reservationId ||
-      reservation.borrowOutpoint.txid.toLowerCase() !== this.expected.borrowTransactionId ||
-      reservation.borrowOutpoint.index !== this.expected.borrowIndex ||
-      reservation.borrowAmount !== this.expected.borrowAmountAtomic ||
-      reservation.borrowScriptPublicKey.toLowerCase() !== this.expected.borrowScriptPublicKey ||
-      reservation.borrowRedeemScript.toLowerCase() !== this.expected.borrowRedeemScript ||
-      reservation.additiveThresholdSompi !== this.expected.additiveThresholdAtomic
+      request.profile !== this.expected.profile ||
+      request.payToScriptPublicKey.toLowerCase() !== this.expected.payToScriptPublicKey
     ) {
-      throw new Error("Merchant exact verifier request differs from configured live inventory");
+      throw new Error("Merchant exact verifier request differs from the configured profile");
     }
-    const recomputedRedeem = buildKip10AdditiveRedeemScript({
-      ownerPublicKey: ownerPublicKeyFromRedeemScript(reservation.borrowRedeemScript),
-      amount: reservation.additiveThresholdSompi,
-    }).toLowerCase();
-    const recomputedSpk = serializedScriptPublicKey(
-      kip10AdditiveScriptPublicKey({
-        ownerPublicKey: ownerPublicKeyFromRedeemScript(reservation.borrowRedeemScript),
-        amount: reservation.additiveThresholdSompi,
-      })
-    ).toLowerCase();
+    const configuredHead = this.expected.head;
+    const requestedHead = request.head;
     if (
-      recomputedRedeem !== reservation.borrowRedeemScript.toLowerCase() ||
-      recomputedSpk !== reservation.borrowScriptPublicKey.toLowerCase()
+      request.profile === "additive" &&
+      (!configuredHead ||
+        !requestedHead ||
+        requestedHead.headId !== configuredHead.headId ||
+        requestedHead.headVersion !== configuredHead.headVersion ||
+        requestedHead.expectedHeadOutpoint.txid.toLowerCase() !== configuredHead.transactionId ||
+        requestedHead.expectedHeadOutpoint.index !== configuredHead.index ||
+        requestedHead.headAmount !== configuredHead.amountAtomic ||
+        requestedHead.headScriptPublicKey.toLowerCase() !== configuredHead.scriptPublicKey ||
+        requestedHead.headRedeemScript.toLowerCase() !== configuredHead.redeemScript ||
+        requestedHead.additiveThresholdSompi !== configuredHead.additiveThresholdAtomic)
     ) {
-      throw new Error("Merchant exact verifier rejected a changed KIP-10 covenant");
+      throw new Error("Merchant additive head differs from the configured profile");
+    }
+    if (request.profile === "standard-native" && (configuredHead || requestedHead)) {
+      throw new Error("Merchant standard-native exact must not include additive head facts");
     }
 
     let transaction: Transaction;
@@ -924,7 +914,7 @@ export class LiveMerchantExactVerifier implements ExactTransactionVerifier {
         !HASH32.test(transactionId) ||
         transaction.serializeToSafeJSON() !== request.transaction ||
         document.id !== transactionId ||
-        document.version !== 1 ||
+        document.version !== (request.profile === "additive" ? 1 : 0) ||
         document.lockTime !== "0" ||
         document.subnetworkId !== "00".repeat(20) ||
         document.gas !== "0" ||
@@ -934,59 +924,117 @@ export class LiveMerchantExactVerifier implements ExactTransactionVerifier {
       }
       const inputs = transaction.inputs;
       const outputs = transaction.outputs;
-      if (inputs.length !== 2 || outputs.length !== 2) {
+      if (
+        (request.profile === "standard-native" && (inputs.length !== 1 || outputs.length !== 1)) ||
+        (request.profile === "additive" && (inputs.length !== 2 || outputs.length !== 1))
+      ) {
         throw new Error("Merchant exact transaction input/output shape changed");
       }
-      const borrowInput = inputs[0];
-      const stagingInput = inputs[1];
-      if (
-        String(borrowInput.previousOutpoint.transactionId).toLowerCase() !==
-          reservation.borrowOutpoint.txid.toLowerCase() ||
-        borrowInput.previousOutpoint.index !== reservation.borrowOutpoint.index ||
-        BigInt(borrowInput.utxo?.amount ?? -1n).toString() !== reservation.borrowAmount ||
-        sdkSerializedScript(borrowInput.utxo?.scriptPublicKey) !==
-          reservation.borrowScriptPublicKey.toLowerCase() ||
-        (String(stagingInput.previousOutpoint.transactionId).toLowerCase() ===
-          reservation.borrowOutpoint.txid.toLowerCase() &&
-          stagingInput.previousOutpoint.index === reservation.borrowOutpoint.index)
-      ) {
-        throw new Error("Merchant exact transaction changed its borrow input");
+      const head = request.head;
+      if ((request.profile === "additive") !== (head !== undefined)) {
+        throw new Error("Merchant exact profile and head challenge disagree");
       }
+      const stagingInput = inputs[request.profile === "additive" ? 1 : 0]!;
       const stagingUtxo = stagingInput.utxo;
       if (!stagingUtxo) throw new Error("Merchant exact transaction omitted staging UTXO facts");
       const stagingScriptPublicKey = sdkSerializedScript(stagingUtxo.scriptPublicKey);
       const payerAddress = addressForSerializedScript(stagingScriptPublicKey);
       const stagingAmount = BigInt(stagingUtxo.amount);
       const merchantScript = this.codec.scriptPublicKeyForAddress(request.payTo, LIVE_NETWORK).toLowerCase();
+      let headInput: ParsedExactTransaction["headInput"];
+      let outputAmount = BigInt(request.amount);
+      let inputTotal = stagingAmount;
+      if (request.profile === "additive") {
+        if (!head || !this.expected.head) {
+          throw new Error("Merchant additive exact is missing its configured head");
+        }
+        const expected = this.expected.head;
+        const chainInput = inputs[0]!;
+        if (
+          head.headId !== expected.headId ||
+          head.headVersion !== expected.headVersion ||
+          head.expectedHeadOutpoint.txid.toLowerCase() !== expected.transactionId ||
+          head.expectedHeadOutpoint.index !== expected.index ||
+          head.headAmount !== expected.amountAtomic ||
+          head.headScriptPublicKey.toLowerCase() !== expected.scriptPublicKey ||
+          head.headRedeemScript.toLowerCase() !== expected.redeemScript ||
+          head.additiveThresholdSompi !== expected.additiveThresholdAtomic ||
+          String(chainInput.previousOutpoint.transactionId).toLowerCase() !== expected.transactionId ||
+          chainInput.previousOutpoint.index !== expected.index ||
+          BigInt(chainInput.utxo?.amount ?? -1n).toString() !== expected.amountAtomic ||
+          sdkSerializedScript(chainInput.utxo?.scriptPublicKey) !== expected.scriptPublicKey
+        ) {
+          throw new Error("Merchant additive exact changed its challenged head");
+        }
+        const recomputedRedeem = buildKip10AdditiveRedeemScript({
+          ownerPublicKey: ownerPublicKeyFromRedeemScript(expected.redeemScript),
+          amount: expected.additiveThresholdAtomic,
+        }).toLowerCase();
+        const recomputedSpk = serializedScriptPublicKey(
+          kip10AdditiveScriptPublicKey({
+            ownerPublicKey: ownerPublicKeyFromRedeemScript(expected.redeemScript),
+            amount: expected.additiveThresholdAtomic,
+          })
+        ).toLowerCase();
+        if (recomputedRedeem !== expected.redeemScript || recomputedSpk !== expected.scriptPublicKey) {
+          throw new Error("Merchant additive exact rejected a changed KIP-10 covenant");
+        }
+        outputAmount = BigInt(expected.amountAtomic) + BigInt(request.amount);
+        inputTotal += BigInt(expected.amountAtomic);
+        headInput = {
+          transactionId: expected.transactionId,
+          index: expected.index,
+          amountAtomic: expected.amountAtomic,
+          scriptPublicKey: expected.scriptPublicKey,
+          address: request.payTo,
+        };
+      } else if (this.expected.head || request.head) {
+        throw new Error("Merchant standard-native exact must not include additive head facts");
+      }
       if (
-        BigInt(outputs[0].value) !==
-          BigInt(reservation.borrowAmount) + BigInt(reservation.additiveThresholdSompi) ||
-        sdkSerializedScript(outputs[0].scriptPublicKey) !== reservation.borrowScriptPublicKey.toLowerCase() ||
-        BigInt(outputs[1].value).toString() !== request.amount ||
-        sdkSerializedScript(outputs[1].scriptPublicKey) !== merchantScript ||
+        BigInt(outputs[0]!.value) !== outputAmount ||
+        sdkSerializedScript(outputs[0]!.scriptPublicKey) !== merchantScript ||
         request.payToScriptPublicKey.toLowerCase() !== merchantScript
       ) {
-        throw new Error("Merchant exact transaction changed its continuation or payment output");
+        throw new Error("Merchant exact transaction changed its sole merchant output");
       }
-      const outputTotal = BigInt(outputs[0].value) + BigInt(outputs[1].value);
-      const inputTotal = BigInt(reservation.borrowAmount) + stagingAmount;
+      const outputTotal = BigInt(outputs[0]!.value);
       const exactFee = inputTotal - outputTotal;
       if (
         exactFee !== BigInt(SOMPI_EXACT_FEE_POLICY.feeSompi) ||
-        exactFee < minimumRequiredExactFeeSompi(transaction)
+        exactFee < (calculateTransactionFee(LIVE_SDK_NETWORK, transaction) ?? -1n)
       ) {
         throw new Error("Merchant exact transaction changed the pinned exact fee");
       }
-      const expectedChange =
-        stagingAmount -
-        BigInt(request.amount) -
-        BigInt(reservation.additiveThresholdSompi) -
-        BigInt(SOMPI_EXACT_FEE_POLICY.feeSompi);
+      if (stagingAmount !== BigInt(request.amount) + BigInt(SOMPI_EXACT_FEE_POLICY.feeSompi)) {
+        throw new Error("Merchant exact transaction requires exact staging without change");
+      }
+      const publicKey = publicKeyFromP2pkScript(stagingScriptPublicKey);
+      const authorizationDigest = exactRequestAuthorizationDigest({
+        network: request.network,
+        profile: request.profile,
+        transactionId,
+        paymentOutputIndex: 0,
+        amount: request.amount,
+        payTo: request.payTo,
+        payToScriptPublicKey: request.payToScriptPublicKey,
+        paymentRequirementsHash: request.paymentRequirementsHash,
+        requestHash: request.requestHash,
+        ...(head === undefined ? {} : { challengeId: head.challengeId }),
+        inputIndex: request.authorization.inputIndex,
+        expiresAt: request.authorization.expiresAt,
+      });
       if (
-        expectedChange < 0n ||
-        expectedChange !== 0n
+        request.authorization.digest !== authorizationDigest ||
+        request.authorization.inputIndex !== (request.profile === "additive" ? 1 : 0) ||
+        Date.parse(request.authorization.expiresAt) <= this.now() ||
+        !schnorr.verify(
+          hexToBytes(request.authorization.signature, { expectedLength: 64 }),
+          hexToBytes(authorizationDigest, { expectedLength: 32 }),
+          hexToBytes(publicKey, { expectedLength: 32 })
+        )
       ) {
-        throw new Error("Merchant fixed-v2 transaction requires exact staging without change");
+        throw new Error("Merchant exact request authorization is invalid");
       }
       return Object.freeze({
         transaction,
@@ -998,7 +1046,14 @@ export class LiveMerchantExactVerifier implements ExactTransactionVerifier {
           transactionId: String(stagingInput.previousOutpoint.transactionId).toLowerCase(),
           index: stagingInput.previousOutpoint.index,
         }),
-        borrowAddress: addressForSerializedScript(reservation.borrowScriptPublicKey),
+        outputAmountAtomic: outputAmount.toString(),
+        ...(headInput === undefined ? {} : { headInput }),
+        requestAuthorization: Object.freeze({
+          authorizationId: exactRequestAuthorizationId(request.authorization),
+          digest: authorizationDigest,
+          inputIndex: request.authorization.inputIndex,
+          publicKey,
+        }),
       });
     } catch (error) {
       transaction.free();
@@ -1029,7 +1084,7 @@ export interface MerchantVerifierState {
   readonly transactionId: string;
   readonly transactionDigest: string;
   readonly paymentOutpoint: string;
-  readonly continuationOutpoint: string;
+  readonly continuationOutpoint?: string;
   readonly state: "planned" | "observed";
   readonly plannedAt: string;
   readonly observedAt?: string;
@@ -1039,15 +1094,19 @@ export interface MerchantVerifierState {
 }
 
 export interface LiveMerchantExactExpectation {
+  readonly profile: "standard-native" | "additive";
   readonly payTo: string;
   readonly payToScriptPublicKey: string;
-  readonly reservationId: string;
-  readonly borrowTransactionId: string;
-  readonly borrowIndex: number;
-  readonly borrowAmountAtomic: string;
-  readonly borrowScriptPublicKey: string;
-  readonly borrowRedeemScript: string;
-  readonly additiveThresholdAtomic: string;
+  readonly head?: {
+    readonly headId: string;
+    readonly headVersion: string;
+    readonly transactionId: string;
+    readonly index: number;
+    readonly amountAtomic: string;
+    readonly scriptPublicKey: string;
+    readonly redeemScript: string;
+    readonly additiveThresholdAtomic: string;
+  };
 }
 
 interface ParsedExactTransaction {
@@ -1057,7 +1116,21 @@ interface ParsedExactTransaction {
   readonly stagingAmountAtomic: string;
   readonly stagingScriptPublicKey: string;
   readonly stagingOutpoint: { readonly transactionId: string; readonly index: number };
-  readonly borrowAddress: string;
+  readonly outputAmountAtomic: string;
+  readonly headInput?: {
+    readonly transactionId: string;
+    readonly index: number;
+    readonly amountAtomic: string;
+    readonly scriptPublicKey: string;
+    readonly address: string;
+  };
+  readonly requestAuthorization: ExactTransactionVerification["requestAuthorization"];
+}
+
+function publicKeyFromP2pkScript(serialized: string): string {
+  const match = /^000020([a-f0-9]{64})ac$/.exec(serialized);
+  if (!match) throw new Error("Merchant exact staging input is not canonical Schnorr P2PK");
+  return match[1]!;
 }
 
 export function readProgress(filename: string, runId: string): LiveProofProgress {
@@ -1075,8 +1148,8 @@ export function readProgress(filename: string, runId: string): LiveProofProgress
       ...(recovery.milestones.bootstrap
         ? { bootstrap: recovery.milestones.bootstrap }
         : {}),
-      ...(recovery.milestones.borrowInventory
-        ? { borrowInventory: recovery.milestones.borrowInventory }
+      ...(recovery.milestones.additiveHead
+        ? { additiveHead: recovery.milestones.additiveHead }
         : {}),
       ...(recovery.milestones.vaultDeposit
         ? { vaultDeposit: recovery.milestones.vaultDeposit }
@@ -1135,8 +1208,8 @@ export function sha256Hex(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-export function reservationId(config: LiveProofConfig, borrowOutpoint: string): string {
-  return sha256Hex(`sompi-live-borrow-reservation:${config.runId}:${borrowOutpoint}`);
+export function additiveHeadId(config: LiveProofConfig, headOutpoint: string): string {
+  return sha256Hex(`sompi-live-additive-head:${config.runId}:${headOutpoint}`);
 }
 
 export function assertPublicReportExcludesPrivateState(
@@ -1149,7 +1222,7 @@ export function assertPublicReportExcludesPrivateState(
     path.join(initialized.config.wallets.merchantDirectory, "wallet-key"),
     path.join(initialized.config.wallets.observerDirectory, "wallet-key"),
     initialized.config.vault.ownerKeyPath,
-    initialized.config.borrow.ownerKeyPath,
+    initialized.config.additiveHead.ownerKeyPath,
     path.join(initialized.config.vault.dataDirectory, "vault", "agent-key"),
     path.join(initialized.layout.authorityRoot, "server-private", "ipc-mac.key"),
     path.join(initialized.layout.authorityRoot, "client-runtime", "ipc-mac.key"),
@@ -1488,7 +1561,7 @@ export async function verifyLiveChainMilestoneInclusion(
 function updateProgress(
   layout: LiveProofLayout,
   current: LiveProofProgress,
-  patch: Partial<Pick<LiveProofProgress, "bootstrap" | "borrowInventory" | "vaultDeposit">>
+  patch: Partial<Pick<LiveProofProgress, "bootstrap" | "additiveHead" | "vaultDeposit">>
 ): LiveProofProgress {
   const next = Object.freeze({
     ...current,
@@ -1530,7 +1603,7 @@ function writeRecoveryRecord(
       path.join(config.wallets.merchantDirectory, "wallet-key"),
       path.join(config.wallets.observerDirectory, "wallet-key"),
       config.vault.ownerKeyPath,
-      config.borrow.ownerKeyPath,
+      config.additiveHead.ownerKeyPath,
       path.join(config.vault.dataDirectory, "vault", "agent-key"),
       layout.authorityRoot,
       layout.stagingKeyDirectory,
@@ -1548,14 +1621,14 @@ function writeRecoveryRecord(
     startedOperations: Object.freeze(startedOperations),
     intendedAmountsAtomic: Object.freeze({
       bootstrap: LIVE_BOOTSTRAP_AMOUNT_ATOMIC,
-      borrowInventory: LIVE_BORROW_AMOUNT_ATOMIC,
+      additiveHead: LIVE_ADDITIVE_HEAD_AMOUNT_ATOMIC,
       vaultDeposit: LIVE_VAULT_DEPOSIT_AMOUNT_ATOMIC,
       purchasePrice: LIVE_PRICE_ATOMIC,
       additiveThreshold: LIVE_ADDITIVE_THRESHOLD_ATOMIC,
     }),
     milestones: Object.freeze({
       ...(progress.bootstrap ? { bootstrap: progress.bootstrap } : {}),
-      ...(progress.borrowInventory ? { borrowInventory: progress.borrowInventory } : {}),
+      ...(progress.additiveHead ? { additiveHead: progress.additiveHead } : {}),
       ...(progress.vaultDeposit ? { vaultDeposit: progress.vaultDeposit } : {}),
     }),
   }) satisfies LiveRecoveryRecord;
@@ -1595,7 +1668,7 @@ function assertPreSpendDurability(
     path.join(initialized.config.wallets.merchantDirectory, "wallet-key"),
     path.join(initialized.config.wallets.observerDirectory, "wallet-key"),
     initialized.config.vault.ownerKeyPath,
-    initialized.config.borrow.ownerKeyPath,
+    initialized.config.additiveHead.ownerKeyPath,
     path.join(initialized.config.vault.dataDirectory, "vault", "agent-key"),
     path.join(initialized.config.vault.dataDirectory, "vault", "config.json"),
     initialized.layout.bootstrapPolicyPath,
@@ -1639,23 +1712,19 @@ function writePolicyOnce(filename: string, policy: Record<string, unknown>): voi
 function readLiveProofConfig(filename: string): LiveProofConfig {
   const value = readPrivateJson<LiveProofConfig>(filename);
   const createdAtMs = canonicalIsoMilliseconds(value.createdAt);
-  const reservationExpiresAtMs = canonicalIsoMilliseconds(value.reservationExpiresAt);
   if (
-    value.version !== 1 ||
+    value.version !== 2 ||
     !RUN_ID.test(value.runId) ||
     requireLiveNodeUrl(value.nodeUrl) !== value.nodeUrl ||
     path.resolve(value.sourceWalletDirectory) !== value.sourceWalletDirectory ||
     !Number.isFinite(createdAtMs) ||
-    !Number.isFinite(reservationExpiresAtMs) ||
     createdAtMs > Date.now() + 5 * 60_000 ||
-    reservationExpiresAtMs - createdAtMs < 2 * 60 * 60_000 ||
-    reservationExpiresAtMs - createdAtMs > 2 * 60 * 60_000 + 60_000 ||
     !/^[a-f0-9]{32}$/.test(value.purchaseEntropyHex) ||
     !ADDRESS.test(value.wallets.treasuryAddress) ||
     !ADDRESS.test(value.wallets.merchantAddress) ||
     !ADDRESS.test(value.wallets.observerAddress) ||
     !ADDRESS.test(value.vault.address) ||
-    !ADDRESS.test(value.borrow.address)
+    !ADDRESS.test(value.additiveHead.address)
   ) {
     throw new Error("live proof configuration is invalid");
   }
@@ -1696,7 +1765,6 @@ function assertSameConfig(actual: LiveProofConfig, expected: LiveProofConfig): v
   const stableActual = {
     ...actual,
     createdAt: expected.createdAt,
-    reservationExpiresAt: expected.reservationExpiresAt,
   };
   if (JSON.stringify(stableActual) !== JSON.stringify(expected)) {
     throw new Error("live proof configuration does not match its disposable keys and paths");

@@ -3,19 +3,11 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
-import {
-  encodePaymentRequiredHeader,
-  encodePaymentSignatureHeader,
-  paymentIdentifierExtension,
-  type ExactPaymentRequirements,
-  type PaymentPayload,
-  type PaymentRequired,
-} from "@kaspa-x402/core";
 import type { ExactTransactionVerificationRequest } from "@kaspa-x402/server";
 
 import {
   LIVE_ADDITIVE_THRESHOLD_ATOMIC,
-  LIVE_BORROW_AMOUNT_ATOMIC,
+  LIVE_ADDITIVE_HEAD_AMOUNT_ATOMIC,
   LIVE_NETWORK,
   LiveMerchantExactVerifier,
   assertPrivateFile,
@@ -42,7 +34,7 @@ import {
 import { KaspaTestnet10AddressCodec } from "../adapters/kaspa-x402/index.js";
 import { SUPPORTED_PROTOCOL_PROFILES } from "../protocols/profiles.js";
 import { assertPurchaseId, createPaymentIdentifier } from "../purchase/identity.js";
-import { SqliteExactServerStateStore } from "../demo/exact-server-store.js";
+import { SqliteMerchantServerStateStore } from "../demo/merchant-server-store.js";
 import { SqliteDemoCommerceAuthorizationStore } from "../demo/commerce-authorization-store.js";
 import type { KaspaWallet } from "../wallet.js";
 import type {
@@ -68,7 +60,7 @@ test("live proof initialization is owner-only, fresh, and restart-stable before 
       path.join(first.config.wallets.merchantDirectory, "wallet-key"),
       path.join(first.config.wallets.observerDirectory, "wallet-key"),
       first.config.vault.ownerKeyPath,
-      first.config.borrow.ownerKeyPath,
+      first.config.additiveHead.ownerKeyPath,
     ]) {
       assertPrivateFile(filename);
     }
@@ -83,7 +75,7 @@ test("live proof initialization is owner-only, fresh, and restart-stable before 
     const sensitiveBytes = [
       fs.readFileSync(path.join(first.config.wallets.treasuryDirectory, "wallet-key"), "utf8").trim(),
       fs.readFileSync(first.config.vault.ownerKeyPath, "utf8").trim(),
-      fs.readFileSync(first.config.borrow.ownerKeyPath, "utf8").trim(),
+      fs.readFileSync(first.config.additiveHead.ownerKeyPath, "utf8").trim(),
     ];
     const recovery = fs.readFileSync(first.layout.recoveryPath, "utf8");
     for (const bytes of sensitiveBytes) assert.equal(recovery.includes(bytes), false);
@@ -416,7 +408,7 @@ test("live bootstrap capacity and Treasury dispatch preserve restart idempotency
   assert.equal(recoverCalls, 1);
 });
 
-test("Merchant verifier rejects a valid-shaped reservation outside configured live inventory before RPC", async () => {
+test("Merchant verifier rejects an additive head outside configured live state before RPC", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-live-proof-merchant-pin-"));
   try {
     const initialized = initializeLiveProof(
@@ -425,54 +417,70 @@ test("Merchant verifier rejects a valid-shaped reservation outside configured li
       TEST_NODE_URL
     );
     const codec = new KaspaTestnet10AddressCodec();
-    const expectedReservation = "31".repeat(32);
-    const borrowTransactionId = "32".repeat(32);
+    const expectedHead = "31".repeat(32);
+    const headTransactionId = "32".repeat(32);
     const verifier = new LiveMerchantExactVerifier({
       wallet: initialized.merchantWallet,
       statePath: initialized.layout.merchantVerifierStatePath,
       expected: {
-        payTo: initialized.config.wallets.merchantAddress,
+        profile: "additive",
+        payTo: initialized.config.additiveHead.address,
         payToScriptPublicKey: codec.scriptPublicKeyForAddress(
-          initialized.config.wallets.merchantAddress,
+          initialized.config.additiveHead.address,
           LIVE_NETWORK
         ).toLowerCase(),
-        reservationId: expectedReservation,
-        borrowTransactionId,
-        borrowIndex: 0,
-        borrowAmountAtomic: LIVE_BORROW_AMOUNT_ATOMIC,
-        borrowScriptPublicKey: initialized.config.borrow.scriptPublicKey,
-        borrowRedeemScript: initialized.config.borrow.redeemScript,
-        additiveThresholdAtomic: LIVE_ADDITIVE_THRESHOLD_ATOMIC,
+        head: {
+          headId: expectedHead,
+          headVersion: "0",
+          transactionId: headTransactionId,
+          index: 0,
+          amountAtomic: LIVE_ADDITIVE_HEAD_AMOUNT_ATOMIC,
+          scriptPublicKey: initialized.config.additiveHead.scriptPublicKey,
+          redeemScript: initialized.config.additiveHead.redeemScript,
+          additiveThresholdAtomic: LIVE_ADDITIVE_THRESHOLD_ATOMIC,
+        },
       },
     });
     const request = {
       network: LIVE_NETWORK,
+      profile: "additive",
       transaction: "{}",
       transactionEncoding: "kaspa-sdk-safe-json-v2.0.0",
-      paymentOutputIndex: 1,
+      paymentOutputIndex: 0,
       amount: "20000000",
-      payTo: initialized.config.wallets.merchantAddress,
+      payTo: initialized.config.additiveHead.address,
       payToScriptPublicKey: codec.scriptPublicKeyForAddress(
-        initialized.config.wallets.merchantAddress,
+        initialized.config.additiveHead.address,
         LIVE_NETWORK
       ),
       requiredFinality: "accepted",
       requestHash: "33".repeat(32),
-      reservation: {
-        reservationId: "34".repeat(32),
+      paymentRequirementsHash: "34".repeat(32),
+      authorization: {
+        version: "kaspa-x402-exact-request-authorization-v1",
+        inputIndex: 1,
+        expiresAt: "2099-01-01T00:00:00.000Z",
+        digest: "35".repeat(32),
+        signature: "36".repeat(64),
+      },
+      head: {
         templateId: "kaspa-x402-kip10-additive-v1",
         transactionEncoding: "kaspa-sdk-safe-json-v2.0.0",
-        borrowOutpoint: { txid: borrowTransactionId, index: 0 },
-        borrowAmount: LIVE_BORROW_AMOUNT_ATOMIC,
-        borrowScriptPublicKey: initialized.config.borrow.scriptPublicKey,
-        borrowRedeemScript: initialized.config.borrow.redeemScript,
+        headId: "37".repeat(32),
+        headVersion: "0",
+        expectedHeadOutpoint: { txid: headTransactionId, index: 0 },
+        headAmount: LIVE_ADDITIVE_HEAD_AMOUNT_ATOMIC,
+        headScriptPublicKey: initialized.config.additiveHead.scriptPublicKey,
+        headRedeemScript: initialized.config.additiveHead.redeemScript,
         additiveThresholdSompi: LIVE_ADDITIVE_THRESHOLD_ATOMIC,
-        paymentOutputIndex: 1,
+        paymentOutputIndex: 0,
+        challengeId: "38".repeat(32),
+        expiresAt: "2099-01-01T00:00:00.000Z",
       },
     } satisfies ExactTransactionVerificationRequest;
     await assert.rejects(
       verifier.verifyExactPayment(request),
-      /differs from configured live inventory/
+      /differs from the configured profile/
     );
     await closeInitialized(initialized);
   } finally {
@@ -482,7 +490,7 @@ test("Merchant verifier rejects a valid-shaped reservation outside configured li
 
 test("live Merchant composition validates before any funded Purchase begins", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-live-merchant-compose-"));
-  const exactStore = new SqliteExactServerStateStore(":memory:");
+  const exactStore = new SqliteMerchantServerStateStore(":memory:");
   const authorizationStore = new SqliteDemoCommerceAuthorizationStore(":memory:");
   try {
     const initialized = initializeLiveProof(
@@ -490,10 +498,10 @@ test("live Merchant composition validates before any funded Purchase begins", as
       path.join(root, "source"),
       TEST_NODE_URL
     );
-    const borrow = chainMilestone(
+    const additiveHead = chainMilestone(
       "35".repeat(32),
-      initialized.config.borrow.address,
-      LIVE_BORROW_AMOUNT_ATOMIC
+      initialized.config.additiveHead.address,
+      LIVE_ADDITIVE_HEAD_AMOUNT_ATOMIC
     );
     await createLiveMerchant(
       initialized,
@@ -501,7 +509,7 @@ test("live Merchant composition validates before any funded Purchase begins", as
         version: 1,
         runId: initialized.config.runId,
         updatedAt: new Date().toISOString(),
-        borrowInventory: borrow,
+        additiveHead: additiveHead,
       },
       exactStore,
       authorizationStore,
@@ -519,98 +527,22 @@ test("live Merchant composition validates before any funded Purchase begins", as
   }
 });
 
-test("Merchant ingress consumes an observed exact reservation before expired alpha6 recovery", async () => {
+test("Merchant ingress durably retries the same paid request without protocol-side recovery logic", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-live-merchant-recovery-"));
   try {
     const purchaseId = assertPurchaseId("pur_AAAAAAAAAAAAAAAAAAAAAA");
     const paymentIdentifier = createPaymentIdentifier(purchaseId, 1);
-    const transactionId = "51".repeat(32);
-    const reservationId = "52".repeat(32);
-    const payTo = "kaspatest:qpumuen7l8wthtz45p3ftn58pvrs9xlumvkuu2xet8egzkcklqtes5z8rkmpd";
-    const accepted: ExactPaymentRequirements = {
-      scheme: "exact",
-      network: LIVE_NETWORK,
-      amount: "20000000",
-      asset: "KAS",
-      payTo,
-      maxTimeoutSeconds: 60,
-      extra: {
-        binding: "kaspa-exact-v1",
-        finality: "accepted",
-        templateId: "kaspa-x402-kip10-additive-v1",
-        transactionEncoding: "kaspa-sdk-safe-json-v2.0.0",
-        borrowOutpoint: { txid: "53".repeat(32), index: 0 },
-        borrowAmount: LIVE_BORROW_AMOUNT_ATOMIC,
-        borrowScriptPublicKey: "000051",
-        borrowRedeemScript: "51",
-        additiveThresholdSompi: LIVE_ADDITIVE_THRESHOLD_ATOMIC,
-        paymentOutputIndex: 1,
-        reservationId,
-        reservationExpiresAt: "2000-01-01T00:00:00.000Z",
-        assetKind: "native",
-        assetDecimals: 8,
-      },
-    };
-    const required: PaymentRequired = {
-      x402Version: 2,
-      resource: { url: "https://merchant.example/paid-resource", mimeType: "text/plain" },
-      accepts: [accepted],
-      extensions: {
-        "payment-identifier": paymentIdentifierExtension({ required: true }),
-      },
-    };
-    const payload: PaymentPayload = {
-      x402Version: 2,
-      accepted,
-      payload: {
-        type: "exact-transaction",
-        transaction: "prepared-safe-json",
-        transactionEncoding: "kaspa-sdk-safe-json-v2.0.0",
-        paymentOutputIndex: 1,
-        requestHash: "54".repeat(32),
-      },
-      extensions: {
-        "payment-identifier": paymentIdentifierExtension({
-          required: true,
-          id: paymentIdentifier,
-        }),
-      },
-    };
     const request = {
       purchaseId,
       merchantCheckout: "merchant-checkout-artifact",
-      paymentRequiredHeader: encodePaymentRequiredHeader(required),
+      paymentRequiredHeader: "payment-required-artifact",
       paymentIdentifier,
-      headers: { "PAYMENT-SIGNATURE": encodePaymentSignatureHeader(payload) },
+      headers: { "PAYMENT-SIGNATURE": "payment-signature-artifact" },
     };
     const calls: string[] = [];
     let merchantAttempts = 0;
     const endpoint = new LiveMerchantPaidEndpoint({
       ingressPath: path.join(root, "merchant", "paid-ingress.json"),
-      verifier: {
-        hasDurablePaymentPlan: () => true,
-        verifyExactPayment: async (verification) => {
-          calls.push("verify");
-          assert.equal(verification.reservation?.reservationId, reservationId);
-          return {
-            transactionId,
-            paymentOutput: {
-              amount: verification.amount,
-              scriptPublicKey: verification.payToScriptPublicKey,
-              address: verification.payTo,
-            },
-            finality: "accepted" as const,
-          };
-        },
-      },
-      store: {
-        loadPaymentIdentifier: async () => undefined,
-        consumeExactReservation: async (actualReservation, actualTransaction) => {
-          calls.push("consume");
-          assert.equal(actualReservation, reservationId);
-          assert.equal(actualTransaction, transactionId);
-        },
-      },
       merchant: {
         handlePaid: async () => {
           calls.push("merchant");
@@ -624,10 +556,7 @@ test("Merchant ingress consumes an observed exact reservation before expired alp
     const recovered = await endpoint.resumeDurableIngress(purchaseId);
     assert.ok(recovered);
     assert.equal(recovered.response.status, 200);
-    assert.deepEqual(calls, [
-      "verify", "consume", "merchant",
-      "verify", "consume", "merchant",
-    ]);
+    assert.deepEqual(calls, ["merchant", "merchant"]);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -776,9 +705,9 @@ function fakeReport(
     initialized.config.wallets.treasuryAddress,
     "500000000"
   );
-  const borrow = chainMilestone(
+  const additiveHead = chainMilestone(
     "42".repeat(32),
-    initialized.config.borrow.address,
+    initialized.config.additiveHead.address,
     "100000000"
   );
   const deposit = chainMilestone(
@@ -799,12 +728,12 @@ function fakeReport(
     merchantMode: "in-process-local-merchant-independent-wrpc-verifier",
     protocolPins: SUPPORTED_PROTOCOL_PROFILES,
     bootstrapFunding: bootstrap,
-    borrowInventory: {
-      created: borrow,
+    additiveHead: {
+      created: additiveHead,
       additiveContinuation: {
         transactionId: "44".repeat(32),
         outpoint: `${"44".repeat(32)}:0`,
-        address: initialized.config.borrow.address,
+        address: initialized.config.additiveHead.address,
         amountAtomic: "110000000",
         blockDaaScore: "130",
         virtualDaaScore: "140",
@@ -832,7 +761,7 @@ function fakeReport(
       stagingObservedAtDaa: "150",
       stagingFinality: "confirmed" as const,
       exactTransactionId: "47".repeat(32),
-      merchantOutpoint: `${"47".repeat(32)}:1`,
+      merchantOutpoint: `${"47".repeat(32)}:0`,
     },
     exactFinality: {
       merchantVerifier: "accepted" as const,
@@ -859,7 +788,7 @@ function fakeReport(
         "current-virtual-chain-accepting-block-header-daa" as const,
     },
     lifecycleLimitations: {
-      reservationExpiresAt: initialized.config.reservationExpiresAt,
+      additiveChallenges: "offer-scoped-read-only-until-paid" as const,
       expiredRunAction:
         "fail-closed-recover-staging-and-require-new-explicit-run" as const,
       missingStateAction:

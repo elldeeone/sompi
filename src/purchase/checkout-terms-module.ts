@@ -8,6 +8,7 @@ import {
 import { evidenceDigest } from "./identity.js";
 import type { SafeTransportHop } from "./egress-policy.js";
 import type { CheckoutTerms, PurchaseId, Sha256Digest } from "./types.js";
+import type { PurchaseExecutionPlan } from "./execution-plan.js";
 
 export interface CheckoutArtifactHeader {
   readonly name: string;
@@ -44,7 +45,10 @@ export interface PaymentRequirementsArtifactVerifier {
     additionalCostCeilingAtomic: string;
     finalHop: SafeTransportHop;
     nowMs: number;
-  }>): Promise<VerifiedArtifact>;
+  }>): Promise<Readonly<{
+    artifact: VerifiedArtifact;
+    executionPlan: PurchaseExecutionPlan;
+  }>>;
 }
 
 export interface SompiCheckoutTermsModuleOptions {
@@ -111,7 +115,7 @@ export class SompiCheckoutTermsModule implements CheckoutTermsModule {
     if (checkout.paymentRequirementsDigest !== paymentRequirementsDigest) {
       throw new Error("Merchant Checkout did not bind the exact payment requirements");
     }
-    const requirementsEvidence = await this.options.paymentRequirements.verify({
+    const verifiedRequirements = await this.options.paymentRequirements.verify({
       artifact: paymentRequirements,
       expectedDigest: paymentRequirementsDigest,
       terms: checkout.terms,
@@ -120,15 +124,16 @@ export class SompiCheckoutTermsModule implements CheckoutTermsModule {
       nowMs,
     });
     if (
-      requirementsEvidence.declaredDigest !== paymentRequirementsDigest ||
-      evidenceDigest(requirementsEvidence.bytes) !== paymentRequirementsDigest
+      verifiedRequirements.artifact.declaredDigest !== paymentRequirementsDigest ||
+      evidenceDigest(verifiedRequirements.artifact.bytes) !== paymentRequirementsDigest
     ) {
       throw new Error("payment-requirements verifier returned substituted evidence");
     }
     return certifyVerifiedCheckoutDiscovery({
       terms: checkout.terms,
       checkoutEvidence: checkout.checkoutEvidence,
-      paymentRequirements: requirementsEvidence,
+      paymentRequirements: verifiedRequirements.artifact,
+      executionPlan: verifiedRequirements.executionPlan,
     });
   }
 

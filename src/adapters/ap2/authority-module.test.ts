@@ -91,6 +91,15 @@ test("the human display is exactly the independently signed Purchase decision", 
       termsExpiresAt: facts.termsExpiresAt,
       additionalCostCeilingAtomic: facts.additionalCostCeilingAtomic,
       effectiveFinalityFloor: "accepted",
+      execution: {
+        planDigest: facts.executionPlanDigest,
+        mechanism: facts.executionMechanism,
+        profile: facts.executionProfile,
+        settlementAssurance: facts.settlementAssurance,
+        maximumChargeAtomic: facts.maximumAuthorizedChargeAtomic,
+        channelId: facts.channelId,
+        channelEpochDigest: facts.channelEpochDigest,
+      },
       recoveryRetry: false,
     });
     assert.equal(
@@ -253,6 +262,11 @@ async function authoritySystem(approve: boolean) {
     nonceDigest: evidenceDigest("purchase-authorization-nonce"),
     additionalCostCeilingAtomic: checkout.additionalCostCeilingAtomic,
     effectiveFinalityFloor: "accepted",
+    executionPlanDigest: evidenceDigest("execution-plan"),
+    executionMechanism: "single-transaction",
+    executionProfile: "kaspa-exact-v2:standard-native",
+    settlementAssurance: "accepted",
+    maximumAuthorizedChargeAtomic: checkout.terms.amountAtomic,
     createdAtMs: nowMs,
     expiresAtMs: checkout.expiresAtSec * 1_000,
   };

@@ -13,7 +13,7 @@ import type {
   ExactAttemptFundingContext,
 } from "./exact-payment-module.js";
 import {
-  Kip10ExactTransactionBuilder,
+  ExactTransactionBuilder,
   SOMPI_EXACT_FEE_POLICY,
   type ObservedStagingOutput,
 } from "./exact-transaction-builder.js";
@@ -64,7 +64,7 @@ export interface JournalObservedStagingSource {
 export interface VaultExactAttemptFundingBridgeOptions {
   readonly metadataSource: TreasuryStagingMetadataSource;
   readonly observedStagingSource: JournalObservedStagingSource;
-  readonly builder: Kip10ExactTransactionBuilder;
+  readonly builder: ExactTransactionBuilder;
 }
 
 export class ExactAttemptFundingBridgeError extends Error {
@@ -75,14 +75,14 @@ export class ExactAttemptFundingBridgeError extends Error {
 }
 
 /**
- * Creates one context-bound alpha.6 provider for one exact preparation.
+ * Creates one context-bound kaspa-exact-v2 provider for one exact preparation.
  * Submission and recovery never call this bridge and therefore receive no
  * route to the attempt-scoped staging key.
  */
 export class VaultExactAttemptFundingBridge implements ExactAttemptFundingBridge {
   private readonly metadataSource: TreasuryStagingMetadataSource;
   private readonly observedStagingSource: JournalObservedStagingSource;
-  private readonly builder: Kip10ExactTransactionBuilder;
+  private readonly builder: ExactTransactionBuilder;
 
   constructor(options: VaultExactAttemptFundingBridgeOptions) {
     if (
@@ -156,6 +156,9 @@ export class VaultExactAttemptFundingBridge implements ExactAttemptFundingBridge
           );
         }
         return { feeSompi: SOMPI_EXACT_FEE_POLICY.feeSompi };
+      },
+      authorizeExactPayment: async (request) => {
+        assertRequestContext(request, normalized, metadata, stagingFee, ceiling);
       },
       buildExactTransactionDurably: async (request) => {
         assertRequestContext(request, normalized, metadata, stagingFee, ceiling);
@@ -318,20 +321,18 @@ function assertRequestContext(
     request.fundingSource !== FUNDING_SOURCE ||
     request.amount !== context.amountAtomic ||
     request.payTo !== context.payTo ||
-    request.requestHash?.toLowerCase() !== context.requestHash ||
-    metadata.additiveThresholdAtomic !== request.reservation.additiveThresholdSompi
+    request.requestHash.toLowerCase() !== context.requestHash ||
+    (request.profile === "additive" &&
+      metadata.additiveThresholdAtomic !== request.head?.additiveThresholdSompi) ||
+    (request.profile === "standard-native" && request.head !== undefined)
   ) {
     throw new ExactAttemptFundingBridgeError(
-      "alpha.6 exact request is not bound to the prepared Purchase context"
+      "kaspa-exact-v2 request is not bound to the prepared Purchase context"
     );
   }
-  const threshold = atomic(
-    request.reservation.additiveThresholdSompi,
-    "KIP-10 additive threshold"
-  );
   const exactFee = atomic(SOMPI_EXACT_FEE_POLICY.feeSompi, "pinned exact fee");
   const actualAdditionalCost = checkedAdd(
-    checkedAdd(threshold, exactFee, "threshold and exact fee"),
+    exactFee,
     stagingFee,
     "complete exact additional cost"
   );

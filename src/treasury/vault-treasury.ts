@@ -1,4 +1,8 @@
-import type { TreasuryModule, TreasuryQuote } from "../purchase/coordinator.js";
+import type {
+  TreasuryModule,
+  TreasuryQuote,
+  TreasuryStagingRecoveryModule,
+} from "../purchase/coordinator.js";
 import type { PolicyDefinition } from "../purchase/journal.js";
 import type { CheckoutTerms } from "../purchase/types.js";
 
@@ -17,6 +21,12 @@ export interface VaultTreasuryModuleOptions {
   /** Complete threshold + exact fee + staging fee authorization bound. */
   readonly additionalCostCeilingAtomic: string;
   readonly reservationTtlMs?: number;
+  /** Protocol-aware preparation remains an adapter behind the Treasury seam. */
+  readonly staging: Pick<
+    TreasuryModule,
+    "prepareStaging" | "submitStaging" | "observeStaging"
+  >;
+  readonly stagingRecovery: TreasuryStagingRecoveryModule;
 }
 
 /** Stable Purchase-facing policy/availability seam for the consensus vault. */
@@ -27,6 +37,12 @@ export class VaultTreasuryModule implements TreasuryModule {
 
   constructor(private readonly options: VaultTreasuryModuleOptions) {
     if (!options.vault) throw new Error("vault Treasury requires a vault backend");
+    requireMethod(options.staging?.prepareStaging, "staging preparation");
+    requireMethod(options.staging?.submitStaging, "staging submission");
+    requireMethod(options.staging?.observeStaging, "staging observation");
+    requireMethod(options.stagingRecovery?.prepare, "staging recovery preparation");
+    requireMethod(options.stagingRecovery?.observe, "staging recovery observation");
+    requireMethod(options.stagingRecovery?.submit, "staging recovery submission");
     const configuredPolicy = options.policy;
     this.policyProvider = typeof configuredPolicy === "function"
       ? configuredPolicy
@@ -92,6 +108,48 @@ export class VaultTreasuryModule implements TreasuryModule {
       ready: Boolean(configured.covenantId),
       ...(configured.covenantId ? {} : { blockerCode: "vault_not_covenant_funded" }),
     });
+  }
+
+  async prepareStaging(
+    input: Parameters<TreasuryModule["prepareStaging"]>[0]
+  ): ReturnType<TreasuryModule["prepareStaging"]> {
+    return this.options.staging.prepareStaging(input);
+  }
+
+  async submitStaging(
+    input: Parameters<TreasuryModule["submitStaging"]>[0]
+  ): ReturnType<TreasuryModule["submitStaging"]> {
+    return this.options.staging.submitStaging(input);
+  }
+
+  async observeStaging(
+    input: Parameters<TreasuryModule["observeStaging"]>[0]
+  ): ReturnType<TreasuryModule["observeStaging"]> {
+    return this.options.staging.observeStaging(input);
+  }
+
+  async prepareStagingRecovery(
+    input: Parameters<TreasuryModule["prepareStagingRecovery"]>[0]
+  ): ReturnType<TreasuryModule["prepareStagingRecovery"]> {
+    return this.options.stagingRecovery.prepare(input);
+  }
+
+  async observeStagingRecovery(
+    input: Parameters<TreasuryModule["observeStagingRecovery"]>[0]
+  ): ReturnType<TreasuryModule["observeStagingRecovery"]> {
+    return this.options.stagingRecovery.observe(input);
+  }
+
+  async submitStagingRecovery(
+    input: Parameters<TreasuryModule["submitStagingRecovery"]>[0]
+  ): ReturnType<TreasuryModule["submitStagingRecovery"]> {
+    return this.options.stagingRecovery.submit(input);
+  }
+}
+
+function requireMethod(value: unknown, label: string): asserts value is (...args: never[]) => unknown {
+  if (typeof value !== "function") {
+    throw new Error(`vault Treasury ${label} adapter is required`);
   }
 }
 

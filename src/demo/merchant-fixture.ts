@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomBytes } from "node:crypto";
 
 import {
@@ -7,24 +8,33 @@ import {
   encodePaymentRequiredHeader,
   encodePaymentResponseHeader,
   encodePaymentSignatureHeader,
+  readKaspaSettlementExtension,
   sha256Hex,
   stableStringify,
+  type BatchPaymentRequirements,
   type ExactPaymentRequirements,
+  type ExactProfile,
   type Hash32Hex,
   type PaymentPayload,
   type PaymentRequired,
+  type PaymentRequirements,
+  type PaymentScheme,
   type SompiString,
 } from "@kaspa-x402/core";
 import type {
   AddressCodec,
+  ClaimTransactionBuilder,
+  ClaimExecutionResult,
+  ClaimPreview,
+  ClaimRecoveryInput,
   DirectModeServer,
   DirectModeServerConfig,
-  ExactBorrowReservationProvider,
   ExactTransactionVerifier,
   PaymentIdentifierRecord,
   ServerChainProvider,
   ServerResponse,
   ServerStateStore,
+  SettlementCommit,
   VoucherVerifier,
 } from "@kaspa-x402/server";
 
@@ -117,7 +127,7 @@ export interface DemoMerchantPaidRequest {
   readonly headers: Record<string, string>;
 }
 
-export interface DemoMerchantEvidenceJoins {
+interface DemoMerchantEvidenceJoinsCommon {
   readonly purchaseId: PurchaseId;
   readonly requestFingerprint: Sha256Digest;
   readonly merchantCheckoutDigest: Sha256Digest;
@@ -129,13 +139,29 @@ export interface DemoMerchantEvidenceJoins {
   readonly paymentIdentifier: string;
   readonly x402PaymentRequirementsHash: Hash32Hex;
   readonly x402PaymentPayloadHash: Hash32Hex;
-  readonly transactionId: Hash32Hex;
-  readonly paymentOutputIndex: number;
+  readonly networkConfirmationId: Hash32Hex;
   readonly settlementDigest: Sha256Digest;
   readonly resourceDigest: Sha256Digest;
   readonly checkoutReceiptDigest: Sha256Digest;
   readonly paymentReceiptDigest: Sha256Digest;
 }
+
+export type DemoMerchantEvidenceJoins = DemoMerchantEvidenceJoinsCommon & (
+  | Readonly<{
+    paymentScheme: "exact";
+    transactionId: Hash32Hex;
+    paymentOutputIndex: number;
+    commitmentId?: never;
+    channelId?: never;
+  }>
+  | Readonly<{
+    paymentScheme: "batch-settlement";
+    commitmentId: Hash32Hex;
+    channelId: Hash32Hex;
+    transactionId?: never;
+    paymentOutputIndex?: never;
+  }>
+);
 
 export interface DemoMerchantPaidResult {
   readonly response: ServerResponse;
@@ -170,8 +196,12 @@ export interface DemoMerchantFixtureConfig {
   readonly addressCodec: AddressCodec;
   readonly chainProvider: ServerChainProvider;
   readonly voucherVerifier: VoucherVerifier;
-  readonly exactTransactionVerifier: ExactTransactionVerifier;
-  readonly exactReservationProvider: ExactBorrowReservationProvider;
+  readonly paymentScheme: PaymentScheme;
+  readonly exactTransactionVerifier?: ExactTransactionVerifier;
+  readonly exactProfile?: ExactProfile;
+  readonly batchMinDepositSompi?: SompiString;
+  readonly batchRefundTimeoutDaa?: SompiString;
+  readonly claimBuilder?: ClaimTransactionBuilder;
   readonly serverPublicKey: string;
   readonly merchantCheckoutSigner: Ap2SigningIdentity;
   readonly merchantReceiptSigner: Ap2SigningIdentity;
@@ -189,6 +219,27 @@ export interface DemoMerchantFixtureConfig {
   }>;
   readonly now?: () => number;
 }
+
+interface BatchReceiptContext {
+  readonly issuePaymentReceipt: (commitmentId: Hash32Hex) => Promise<string>;
+  paymentReceiptArtifact?: string;
+}
+
+type PaymentEvidence = Readonly<{
+  scheme: "exact";
+  networkConfirmationId: Hash32Hex;
+  paymentRequirementsHash: Hash32Hex;
+  paymentPayloadHash: Hash32Hex;
+  transactionId: Hash32Hex;
+  paymentOutputIndex: number;
+}> | Readonly<{
+  scheme: "batch-settlement";
+  networkConfirmationId: Hash32Hex;
+  paymentRequirementsHash: Hash32Hex;
+  paymentPayloadHash: Hash32Hex;
+  commitmentId: Hash32Hex;
+  channelId: Hash32Hex;
+}>;
 
 export class DemoMerchantError extends Error {
   readonly code:
@@ -217,10 +268,12 @@ export class DemoMerchantFixture {
   private readonly resourceBytes: Uint8Array;
   private readonly resourceDigest: Sha256Digest;
   private readonly resourceFingerprint: Sha256Digest;
+  private readonly batchReceiptContext: AsyncLocalStorage<BatchReceiptContext>;
 
   private constructor(
     private readonly config: DemoMerchantFixtureConfig,
-    private readonly server: DirectModeServer
+    private readonly server: DirectModeServer,
+    batchReceiptContext: AsyncLocalStorage<BatchReceiptContext>
   ) {
     validateConfiguration(config);
     this.now = config.now ?? Date.now;
@@ -231,6 +284,7 @@ export class DemoMerchantFixture {
       url: config.resource.url,
       method: config.resource.method,
     });
+    this.batchReceiptContext = batchReceiptContext;
   }
 
   static async create(config: DemoMerchantFixtureConfig): Promise<DemoMerchantFixture> {
@@ -241,26 +295,34 @@ export class DemoMerchantFixture {
     } catch {
       throw new DemoMerchantError("invalid_configuration");
     }
+    const batchReceiptContext = new AsyncLocalStorage<BatchReceiptContext>();
     const serverConfig: DirectModeServerConfig = {
       network: DEMO_NETWORK,
       asset: KAS_ASSET,
       payTo: config.payTo,
       serverPublicKey: config.serverPublicKey,
-      minDepositSompi: "1",
+      minDepositSompi: config.batchMinDepositSompi ?? "1",
       amount: config.amountAtomic,
-      refundTimeoutDaa: "1",
+      refundTimeoutDaa: config.batchRefundTimeoutDaa ?? "1",
       maxTimeoutSeconds: 60,
-      store: config.store,
+      store: receiptEnrichingStore(config.store, batchReceiptContext),
       chainProvider: config.chainProvider,
       addressCodec: config.addressCodec,
       voucherVerifier: config.voucherVerifier,
-      exactTransactionVerifier: config.exactTransactionVerifier,
-      exactReservationProvider: config.exactReservationProvider,
+      ...(config.exactTransactionVerifier
+        ? { exactTransactionVerifier: config.exactTransactionVerifier }
+        : {}),
+      exactProfile: config.exactProfile ?? "standard-native",
+      ...(config.claimBuilder ? { claimBuilder: config.claimBuilder } : {}),
       requirePaymentIdentifier: true,
       allowMainnet: false,
       acceptedFinality: "accepted",
     };
-    return new DemoMerchantFixture(config, new module.DirectModeServer(serverConfig));
+    return new DemoMerchantFixture(
+      config,
+      new module.DirectModeServer(serverConfig),
+      batchReceiptContext
+    );
   }
 
   async offer(purchaseIdValue: PurchaseId): Promise<DemoMerchantOffer> {
@@ -280,7 +342,7 @@ export class DemoMerchantFixture {
       "invalid_configuration"
     );
     const parsed = canonicalPaymentRequired(paymentRequiredHeader, "invalid_configuration");
-    assertExactPaymentRequired(parsed, this.config, this.resourceFingerprint);
+    assertPaymentRequired(parsed, this.config, this.resourceFingerprint);
     if (paymentRequired.status !== 402) {
       throw new DemoMerchantError("invalid_configuration");
     }
@@ -378,7 +440,7 @@ export class DemoMerchantFixture {
       paymentRequiredHeader,
       "invalid_checkout"
     );
-    assertExactPaymentRequired(paymentRequiredValue, this.config, this.resourceFingerprint);
+    assertPaymentRequired(paymentRequiredValue, this.config, this.resourceFingerprint);
     const paymentRequirementsDigest = evidenceDigest(
       Buffer.from(paymentRequiredHeader, "utf8")
     );
@@ -564,6 +626,34 @@ export class DemoMerchantFixture {
     });
   }
 
+  async listClaimableBatchChannels() {
+    this.assertBatchMerchant();
+    return this.server.listClaimableChannels();
+  }
+
+  async previewBatchClaim(channelId: Hash32Hex): Promise<ClaimPreview> {
+    this.assertBatchMerchant();
+    return this.server.previewClaim(channelId);
+  }
+
+  async executeBatchClaim(channelId: Hash32Hex): Promise<ClaimExecutionResult> {
+    this.assertBatchMerchant();
+    return this.server.executeClaim(channelId);
+  }
+
+  async recoverBatchClaim(
+    channelId: Hash32Hex,
+    input?: ClaimRecoveryInput
+  ): Promise<ClaimExecutionResult> {
+    this.assertBatchMerchant();
+    return this.server.recoverAcceptedClaim(channelId, input);
+  }
+
+  async abandonBatchClaim(channelId: Hash32Hex, reason?: string): Promise<void> {
+    this.assertBatchMerchant();
+    await this.server.abandonClaimAttempt(channelId, reason);
+  }
+
   async handlePaid(request: DemoMerchantPaidRequest): Promise<DemoMerchantPaidResult> {
     const purchaseId = exactPurchaseId(request?.purchaseId, "invalid_checkout");
     const paymentIdentifier = requirePaymentIdentifier(request?.paymentIdentifier);
@@ -574,7 +664,7 @@ export class DemoMerchantFixture {
     const paymentRequirementsDigest = evidenceDigest(
       Buffer.from(request.paymentRequiredHeader, "utf8")
     );
-    assertExactPaymentRequired(paymentRequired, this.config, this.resourceFingerprint);
+    assertPaymentRequired(paymentRequired, this.config, this.resourceFingerprint);
 
     const nowSec = clockSeconds(this.now);
     const paymentSignature = requireHeader(
@@ -636,46 +726,62 @@ export class DemoMerchantFixture {
       paymentIdentifier
     );
     let handlerFailure: DemoMerchantError | undefined;
-    const response = await this.server.handlePaidRequest(
-      this.serverRequest(request.headers, requestHash),
-      async ({ payment, requestFingerprint: paidFingerprint, paymentIdentifier: paidId }) => {
-        try {
-          if (
-            payment.scheme !== "exact" ||
-            paidId !== paymentIdentifier ||
-            paidFingerprint !== requestHash ||
-            stableStringify(payment.accepted) !== stableStringify(paymentRequired.accepts[0]) ||
-            payment.accepted.network !== checkout.terms.network ||
-            payment.accepted.amount !== checkout.terms.amountAtomic ||
-            payment.accepted.payTo !== checkout.terms.payTo ||
-            payment.finality !== "accepted"
-          ) {
-            throw new DemoMerchantError("payment_mismatch");
+    const receiptContext: BatchReceiptContext = {
+      issuePaymentReceipt: (commitmentId) => this.issuePaymentReceipt(
+        mandates,
+        paymentIdentifier,
+        commitmentId,
+        nowSec
+      ),
+    };
+    const response = await this.batchReceiptContext.run(receiptContext, () =>
+      this.server.handlePaidRequest(
+        this.serverRequest(request.headers, requestHash),
+        async ({ payment, requestFingerprint: paidFingerprint, paymentIdentifier: paidId }) => {
+          try {
+            if (
+              payment.scheme !== this.config.paymentScheme ||
+              paidId !== paymentIdentifier ||
+              paidFingerprint !== requestHash ||
+              stableStringify(payment.accepted) !== stableStringify(paymentRequired.accepts[0]) ||
+              payment.accepted.network !== checkout.terms.network ||
+              payment.accepted.amount !== checkout.terms.amountAtomic ||
+              payment.accepted.payTo !== checkout.terms.payTo ||
+              (payment.scheme === "exact" && payment.finality !== "accepted")
+            ) {
+              throw new DemoMerchantError("payment_mismatch");
+            }
+            const checkoutReceipt = await this.issueCheckoutReceipt(
+              mandates,
+              purchaseId,
+              nowSec
+            );
+            const paymentReceipt = payment.scheme === "exact"
+              ? await this.issuePaymentReceipt(
+                  mandates,
+                  paymentIdentifier,
+                  payment.transactionId,
+                  nowSec
+                )
+              : undefined;
+            return {
+              status: 200,
+              headers: {
+                "content-type": this.config.resource.mediaType,
+                [CHECKOUT_RECEIPT_HEADER]: checkoutReceipt,
+                ...(paymentReceipt ? { [PAYMENT_RECEIPT_HEADER]: paymentReceipt } : {}),
+              },
+              body: Buffer.from(this.resourceBytes).toString("base64url"),
+              chargedAmount: checkout.terms.amountAtomic,
+            };
+          } catch (error) {
+            handlerFailure = error instanceof DemoMerchantError
+              ? error
+              : new DemoMerchantError("receipt_failure");
+            throw handlerFailure;
           }
-          const receipts = await this.issueReceipts(
-            mandates,
-            purchaseId,
-            paymentIdentifier,
-            payment.transactionId,
-            nowSec
-          );
-          return {
-            status: 200,
-            headers: {
-              "content-type": this.config.resource.mediaType,
-              [CHECKOUT_RECEIPT_HEADER]: receipts.checkout,
-              [PAYMENT_RECEIPT_HEADER]: receipts.payment,
-            },
-            body: Buffer.from(this.resourceBytes).toString("base64url"),
-            chargedAmount: checkout.terms.amountAtomic,
-          };
-        } catch (error) {
-          handlerFailure = error instanceof DemoMerchantError
-            ? error
-            : new DemoMerchantError("receipt_failure");
-          throw handlerFailure;
         }
-      }
+      )
     );
     if (handlerFailure) throw handlerFailure;
     if (response.status < 200 || response.status >= 300) {
@@ -687,12 +793,9 @@ export class DemoMerchantFixture {
     }
 
     const payment = await this.config.store.loadPaymentIdentifier(paymentIdentifier);
-    if (!payment?.transactionId) throw new DemoMerchantError("payment_mismatch");
-    const exact = await this.config.store.loadExactPayment(payment.transactionId);
-    if (!exact) throw new DemoMerchantError("payment_mismatch");
-    assertPaymentJoinsCheckout({
+    if (!payment) throw new DemoMerchantError("payment_mismatch");
+    const paymentEvidence = await this.paymentEvidence({
       payment,
-      exact,
       response,
       checkout,
       paymentIdentifier,
@@ -741,7 +844,7 @@ export class DemoMerchantFixture {
       paymentReceipt.status !== "Success" ||
       paymentReceipt.paymentId !== paymentIdentifier ||
       paymentReceipt.pspConfirmationId !== paymentIdentifier ||
-      paymentReceipt.networkConfirmationId !== exact.transactionId
+      paymentReceipt.networkConfirmationId !== paymentEvidence.networkConfirmationId
     ) {
       throw new DemoMerchantError("receipt_failure");
     }
@@ -756,10 +859,20 @@ export class DemoMerchantFixture {
       paymentMandateDigest: evidenceDigest(mandates.payment.artifact),
       paymentMandateReference: mandates.payment.issuerJwtReference,
       paymentIdentifier,
-      x402PaymentRequirementsHash: exact.paymentRequirementsHash,
-      x402PaymentPayloadHash: exact.paymentPayloadHash,
-      transactionId: exact.transactionId,
-      paymentOutputIndex: exact.paymentOutputIndex,
+      x402PaymentRequirementsHash: paymentEvidence.paymentRequirementsHash,
+      x402PaymentPayloadHash: paymentEvidence.paymentPayloadHash,
+      networkConfirmationId: paymentEvidence.networkConfirmationId,
+      ...(paymentEvidence.scheme === "exact"
+        ? {
+            paymentScheme: "exact" as const,
+            transactionId: paymentEvidence.transactionId,
+            paymentOutputIndex: paymentEvidence.paymentOutputIndex,
+          }
+        : {
+            paymentScheme: "batch-settlement" as const,
+            commitmentId: paymentEvidence.commitmentId,
+            channelId: paymentEvidence.channelId,
+          }),
       settlementDigest: evidenceDigest(stableStringify(payment.settlement)),
       resourceDigest: this.resourceDigest,
       checkoutReceiptDigest: evidenceDigest(checkoutReceiptArtifact),
@@ -815,34 +928,101 @@ export class DemoMerchantFixture {
     }
   }
 
-  private async issueReceipts(
+  private assertBatchMerchant(): void {
+    if (this.config.paymentScheme !== "batch-settlement" || !this.config.claimBuilder) {
+      throw new DemoMerchantError("invalid_configuration");
+    }
+  }
+
+  private async issueCheckoutReceipt(
     mandates: VerifiedHumanPresentMandates,
     purchaseId: PurchaseId,
-    paymentIdentifier: string,
-    transactionId: Hash32Hex,
     nowSec: number
-  ): Promise<{ checkout: string; payment: string }> {
+  ): Promise<string> {
     try {
-      const [checkout, payment] = await Promise.all([
-        issueCheckoutReceipt({
-          status: "Success",
-          mandate: mandates.checkout,
-          orderId: purchaseId,
-          issuedAtSec: nowSec,
-        }, this.config.merchantReceiptSigner),
-        issuePaymentReceipt({
-          status: "Success",
-          mandate: mandates.payment,
-          paymentId: paymentIdentifier,
-          pspConfirmationId: paymentIdentifier,
-          networkConfirmationId: transactionId,
-          issuedAtSec: nowSec,
-        }, this.config.paymentReceiptSigner),
-      ]);
-      return Object.freeze({ checkout, payment });
+      return await issueCheckoutReceipt({
+        status: "Success",
+        mandate: mandates.checkout,
+        orderId: purchaseId,
+        issuedAtSec: nowSec,
+      }, this.config.merchantReceiptSigner);
     } catch {
       throw new DemoMerchantError("receipt_failure");
     }
+  }
+
+  private async issuePaymentReceipt(
+    mandates: VerifiedHumanPresentMandates,
+    paymentIdentifier: string,
+    networkConfirmationId: Hash32Hex,
+    nowSec: number
+  ): Promise<string> {
+    try {
+      return await issuePaymentReceipt({
+        status: "Success",
+        mandate: mandates.payment,
+        paymentId: paymentIdentifier,
+        pspConfirmationId: paymentIdentifier,
+        networkConfirmationId,
+        issuedAtSec: nowSec,
+      }, this.config.paymentReceiptSigner);
+    } catch {
+      throw new DemoMerchantError("receipt_failure");
+    }
+  }
+
+  private async paymentEvidence(input: {
+    payment: PaymentIdentifierRecord;
+    response: ServerResponse;
+    checkout: VerifiedMerchantCheckout;
+    paymentIdentifier: string;
+    requestHash: Hash32Hex;
+    paymentRequirement: PaymentRequirements;
+    paymentPayload: PaymentPayload;
+    resourceBody: Uint8Array;
+  }): Promise<PaymentEvidence> {
+    if (this.config.paymentScheme === "exact") {
+      if (!input.payment.transactionId || input.paymentRequirement.scheme !== "exact") {
+        throw new DemoMerchantError("payment_mismatch");
+      }
+      const exact = await this.config.store.loadExactPayment(input.payment.transactionId);
+      if (!exact) throw new DemoMerchantError("payment_mismatch");
+      assertExactPaymentJoinsCheckout({ ...input, paymentRequirement: input.paymentRequirement, exact });
+      return Object.freeze({
+        scheme: "exact",
+        networkConfirmationId: exact.transactionId,
+        paymentRequirementsHash: exact.paymentRequirementsHash,
+        paymentPayloadHash: exact.paymentPayloadHash,
+        transactionId: exact.transactionId,
+        paymentOutputIndex: exact.paymentOutputIndex,
+      });
+    }
+
+    if (!input.payment.channelId || input.paymentRequirement.scheme !== "batch-settlement") {
+      throw new DemoMerchantError("payment_mismatch");
+    }
+    const extension = readKaspaSettlementExtension(input.payment.settlement);
+    if (
+      !extension?.commitmentId ||
+      extension.channelState?.channelId !== input.payment.channelId
+    ) {
+      throw new DemoMerchantError("payment_mismatch");
+    }
+    const commitment = await this.config.store.loadCommitment(extension.commitmentId);
+    if (!commitment) throw new DemoMerchantError("payment_mismatch");
+    assertBatchPaymentJoinsCheckout({
+      ...input,
+      paymentRequirement: input.paymentRequirement,
+      commitment,
+    });
+    return Object.freeze({
+      scheme: "batch-settlement",
+      networkConfirmationId: commitment.commitmentId,
+      paymentRequirementsHash: commitment.paymentRequirementsHash,
+      paymentPayloadHash: input.payment.paymentPayloadHash,
+      commitmentId: commitment.commitmentId,
+      channelId: commitment.channelId,
+    });
   }
 
   private serverRequest(headers: Record<string, string>, requestHash: Hash32Hex) {
@@ -856,35 +1036,54 @@ export class DemoMerchantFixture {
         mimeType: this.config.resource.mediaType,
       },
       paymentAmount: this.config.amountAtomic,
-      paymentScheme: "exact" as const,
-      paymentSchemes: ["exact" as const],
+      paymentScheme: this.config.paymentScheme,
+      paymentSchemes: [this.config.paymentScheme],
       requestHash,
     };
   }
 }
 
-function assertExactPaymentRequired(
+function assertPaymentRequired(
   required: PaymentRequired,
   config: DemoMerchantFixtureConfig,
   fingerprint: Sha256Digest
-): asserts required is PaymentRequired & { accepts: [ExactPaymentRequirements] } {
+): void {
   const accepted = required.accepts[0];
   if (
     required.x402Version !== X402_VERSION ||
     required.accepts.length !== 1 ||
     !accepted ||
-    accepted.scheme !== X402_SCHEME ||
+    accepted.scheme !== config.paymentScheme ||
     accepted.network !== DEMO_NETWORK ||
     accepted.asset !== KAS_ASSET ||
     accepted.amount !== config.amountAtomic ||
     accepted.payTo !== config.payTo ||
-    accepted.extra.binding !== "kaspa-exact-v1" ||
-    accepted.extra.templateId !== "kaspa-x402-kip10-additive-v1" ||
-    accepted.extra.transactionEncoding !== "kaspa-sdk-safe-json-v2.0.0" ||
-    accepted.extra.paymentOutputIndex !== 1 ||
     required.resource.url !== config.resource.url ||
     (required.resource.mimeType !== undefined && required.resource.mimeType !== config.resource.mediaType) ||
     requestHashHex(fingerprint).length !== 64
+  ) {
+    throw new DemoMerchantError("invalid_checkout");
+  }
+  if (accepted.scheme === "exact") {
+    if (
+      X402_SCHEME !== "exact" ||
+      accepted.extra.binding !== "kaspa-exact-v2" ||
+      accepted.extra.profile !== (config.exactProfile ?? "standard-native") ||
+      accepted.extra.transactionEncoding !== "kaspa-sdk-safe-json-v2.0.0" ||
+      ((config.exactProfile ?? "standard-native") === "additive"
+        ? accepted.extra.paymentOutputIndex !== 0
+        : accepted.extra.paymentOutputIndex !== undefined)
+    ) {
+      throw new DemoMerchantError("invalid_checkout");
+    }
+    return;
+  }
+  if (
+    accepted.extra.binding !== "kaspa-escrow-v1" ||
+    accepted.extra.templateId !== "kaspa-x402-escrow-v1" ||
+    accepted.extra.serverPublicKey !== config.serverPublicKey ||
+    accepted.extra.minDepositSompi !== config.batchMinDepositSompi ||
+    accepted.extra.refundTimeoutDaa !== config.batchRefundTimeoutDaa
   ) {
     throw new DemoMerchantError("invalid_checkout");
   }
@@ -922,7 +1121,7 @@ function assertCheckoutMatchesConfiguration(
 
 function assertPaymentSignatureJoins(
   headers: Record<string, string>,
-  accepted: ExactPaymentRequirements,
+  accepted: PaymentRequirements,
   requestHash: Hash32Hex,
   paymentIdentifier: string
 ): PaymentPayload | undefined {
@@ -941,9 +1140,14 @@ function assertPaymentSignatureJoins(
   const paymentIdentifierInfo = payload.extensions?.["payment-identifier"]?.info;
   if (
     stableStringify(payload.accepted) !== stableStringify(accepted) ||
-    payload.accepted.scheme !== "exact" ||
-    payload.payload.type !== "exact-transaction" ||
-    payload.payload.requestHash !== requestHash ||
+    payload.accepted.scheme !== accepted.scheme ||
+    (accepted.scheme === "exact" && (
+      payload.payload.type !== "exact-transaction" ||
+      payload.payload.requestHash !== requestHash
+    )) ||
+    (accepted.scheme === "batch-settlement" &&
+      payload.payload.type !== "deposit-voucher" &&
+      payload.payload.type !== "voucher") ||
     extensionKeys.length !== 1 ||
     extensionKeys[0] !== "payment-identifier" ||
     paymentIdentifierInfo?.required !== true ||
@@ -954,7 +1158,7 @@ function assertPaymentSignatureJoins(
   return payload;
 }
 
-function assertPaymentJoinsCheckout(input: {
+function assertExactPaymentJoinsCheckout(input: {
   payment: PaymentIdentifierRecord;
   exact: NonNullable<Awaited<ReturnType<ServerStateStore["loadExactPayment"]>>>;
   response: ServerResponse;
@@ -1012,6 +1216,73 @@ function assertPaymentJoinsCheckout(input: {
     stableStringify(wireSettlement) !== stableStringify(payment.settlement) ||
     response.body !== Buffer.from(resourceBody).toString("base64url")
   ) {
+    throw new DemoMerchantError("payment_mismatch");
+  }
+}
+
+function assertBatchPaymentJoinsCheckout(input: {
+  payment: PaymentIdentifierRecord;
+  commitment: NonNullable<Awaited<ReturnType<ServerStateStore["loadCommitment"]>>>;
+  response: ServerResponse;
+  checkout: VerifiedMerchantCheckout;
+  paymentIdentifier: string;
+  requestHash: Hash32Hex;
+  paymentRequirement: BatchPaymentRequirements;
+  paymentPayload: PaymentPayload;
+  resourceBody: Uint8Array;
+}): void {
+  const {
+    payment,
+    commitment,
+    response,
+    checkout,
+    paymentIdentifier,
+    requestHash,
+    paymentRequirement,
+    paymentPayload,
+    resourceBody,
+  } = input;
+  const wireSettlement = canonicalSettlement(response);
+  const payloadHash = sha256Hex(stableStringify(paymentPayload));
+  const extension = readKaspaSettlementExtension(payment.settlement);
+  if (
+    payment.id !== paymentIdentifier ||
+    payment.fingerprint !== requestHash ||
+    payment.paymentPayloadHash !== payloadHash ||
+    payment.channelId !== commitment.channelId ||
+    payment.transactionId !== undefined ||
+    payment.paymentOutputIndex !== undefined ||
+    payment.settlement.success !== true ||
+    payment.settlement.transaction !== commitment.commitmentId ||
+    payment.settlement.network !== checkout.terms.network ||
+    payment.settlement.amount !== checkout.terms.amountAtomic ||
+    extension?.commitmentId !== commitment.commitmentId ||
+    extension.channelState?.channelId !== commitment.channelId ||
+    commitment.requestFingerprint !== requestHash ||
+    commitment.paymentIdentifier !== paymentIdentifier ||
+    commitment.chargedAmount !== checkout.terms.amountAtomic ||
+    stableStringify(commitment.response) !== stableStringify(response) ||
+    stableStringify(payment.response) !== stableStringify(response) ||
+    stableStringify(wireSettlement) !== stableStringify(payment.settlement) ||
+    response.body !== Buffer.from(resourceBody).toString("base64url")
+  ) {
+    throw new DemoMerchantError("payment_mismatch");
+  }
+}
+
+function canonicalSettlement(response: ServerResponse): unknown {
+  const settlementHeader = requireHeader(
+    response.headers,
+    PAYMENT_RESPONSE_HEADER,
+    "payment_mismatch"
+  );
+  try {
+    const wireSettlement = decodePaymentResponseHeader(settlementHeader);
+    if (encodePaymentResponseHeader(wireSettlement) !== settlementHeader) {
+      throw new Error("non-canonical PAYMENT-RESPONSE");
+    }
+    return wireSettlement;
+  } catch {
     throw new DemoMerchantError("payment_mismatch");
   }
 }
@@ -1155,8 +1426,20 @@ function validateConfiguration(config: DemoMerchantFixtureConfig): void {
     !config.addressCodec ||
     !config.chainProvider ||
     !config.voucherVerifier ||
-    !config.exactTransactionVerifier ||
-    !config.exactReservationProvider ||
+    (config.paymentScheme !== "exact" && config.paymentScheme !== "batch-settlement") ||
+    (config.paymentScheme === "exact" && !config.exactTransactionVerifier) ||
+    (config.paymentScheme === "batch-settlement" && config.exactTransactionVerifier !== undefined) ||
+    (config.paymentScheme === "batch-settlement" && config.exactProfile !== undefined) ||
+    (config.paymentScheme === "batch-settlement" && !config.claimBuilder) ||
+    (config.paymentScheme === "exact" && config.claimBuilder !== undefined) ||
+    (config.paymentScheme === "batch-settlement" &&
+      (!POSITIVE_SOMPI_PATTERN.test(config.batchMinDepositSompi ?? "") ||
+        !POSITIVE_SOMPI_PATTERN.test(config.batchRefundTimeoutDaa ?? ""))) ||
+    (config.paymentScheme === "exact" &&
+      (config.batchMinDepositSompi !== undefined || config.batchRefundTimeoutDaa !== undefined)) ||
+    (config.exactProfile !== undefined &&
+      config.exactProfile !== "standard-native" &&
+      config.exactProfile !== "additive") ||
     !config.serverPublicKey ||
     config.merchantCheckoutSigner?.role !== "merchant-checkout" ||
     config.merchantCheckoutSigner.issuer !== config.merchantOrigin ||
@@ -1166,6 +1449,30 @@ function validateConfiguration(config: DemoMerchantFixtureConfig): void {
   ) {
     throw new DemoMerchantError("invalid_configuration");
   }
+}
+
+function receiptEnrichingStore(
+  store: ServerStateStore,
+  context: AsyncLocalStorage<BatchReceiptContext>
+): ServerStateStore {
+  const commitSettlement = async (record: SettlementCommit): Promise<void> => {
+    const active = context.getStore();
+    if (!active) throw new DemoMerchantError("receipt_failure");
+    const artifact = await active.issuePaymentReceipt(record.commitment.commitmentId);
+    record.commitment.response.headers[PAYMENT_RECEIPT_HEADER] = artifact;
+    if (record.paymentIdentifier && record.paymentIdentifier.response !== record.commitment.response) {
+      record.paymentIdentifier.response.headers[PAYMENT_RECEIPT_HEADER] = artifact;
+    }
+    await store.commitSettlement(record);
+    active.paymentReceiptArtifact = artifact;
+  };
+  return new Proxy(store, {
+    get(target, property) {
+      if (property === "commitSettlement") return commitSettlement;
+      const value = Reflect.get(target, property, target) as unknown;
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
 }
 
 function requirePaymentIdentifier(value: unknown): string {

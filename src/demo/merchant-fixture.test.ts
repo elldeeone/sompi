@@ -5,15 +5,30 @@ import * as path from "node:path";
 import test from "node:test";
 
 import {
+  DirectModeClient,
+  MemoryChannelStore,
+  type DirectModeChannel,
+  type FundingProvider,
+} from "@kaspa-x402/client";
+import {
+  channelId,
   decodePaymentRequiredHeader,
+  decodePaymentResponseHeader,
   decodePaymentSignatureHeader,
+  encodePaymentRequiredHeader,
   encodePaymentSignatureHeader,
+  exactRequestAuthorizationDigest,
+  exactRequestAuthorizationId,
   paymentIdentifierExtension,
+  sha256Hex,
+  stableStringify,
   type PaymentPayload,
+  type ChannelConfig,
+  type Hash32Hex,
+  type SignatureHex,
 } from "@kaspa-x402/core";
 import type {
   AddressCodec,
-  ExactBorrowReservationProvider,
   ExactTransactionVerifier,
   ServerChainProvider,
   VoucherVerifier,
@@ -43,7 +58,7 @@ import {
   evidenceDigest,
 } from "../purchase/identity.js";
 import type { PurchaseId, Sha256Digest } from "../purchase/types.js";
-import { SqliteExactServerStateStore } from "./exact-server-store.js";
+import { SqliteMerchantServerStateStore } from "./merchant-server-store.js";
 import { SqliteDemoCommerceAuthorizationStore } from "./commerce-authorization-store.js";
 import {
   DEMO_NETWORK,
@@ -57,14 +72,20 @@ import {
 const NOW_MS = FIXED_NOW * 1000;
 const PAY_TO = "kaspatest:qpumuen7l8wthtz45p3ftn58pvrs9xlumvkuu2xet8egzkcklqtes5z8rkmpd";
 const TRANSACTION_ID = "44".repeat(32);
-const BORROW_TXID = "66".repeat(32);
 const PURCHASE_ID = assertPurchaseId("pur_AAAAAAAAAAAAAAAAAAAAAA");
 const SECOND_PURCHASE_ID = assertPurchaseId("pur_AQEBAQEBAQEBAQEBAQEBAQ");
 const PAYMENT_IDENTIFIER = createPaymentIdentifier(PURCHASE_ID, 1);
 const RESOURCE_BODY = Buffer.from("deterministic paid resource\n", "utf8");
+const CLIENT_PUBLIC_KEY = "22".repeat(32) as Hash32Hex;
+const BATCH_SERVER_PUBLIC_KEY = "11".repeat(32) as Hash32Hex;
+const ACTIVE_TX = "33".repeat(32) as Hash32Hex;
+const CLAIM_TX = "88".repeat(32) as Hash32Hex;
+const ACTIVE_SCRIPT = `000020${"55".repeat(32)}`;
+const BATCH_TIMEOUT_DAA = "5000";
+const BATCH_FUNDING = "100000000";
 
 test("demo Merchant joins real AP2 Checkout, mandates, exact settlement, resource, and receipts", async () => {
-  const store = new SqliteExactServerStateStore(":memory:");
+  const store = new SqliteMerchantServerStateStore(":memory:");
   const merchant = await DemoMerchantFixture.create(config(store));
   try {
     const offer = await merchant.offer(PURCHASE_ID);
@@ -126,7 +147,7 @@ test("demo Merchant joins real AP2 Checkout, mandates, exact settlement, resourc
     );
     assert.equal(paid.evidence?.paymentIdentifier, PAYMENT_IDENTIFIER);
     assert.equal(paid.evidence?.transactionId, TRANSACTION_ID);
-    assert.equal(paid.evidence?.paymentOutputIndex, 1);
+    assert.equal(paid.evidence?.paymentOutputIndex, 0);
     assert.equal(paid.evidence?.resourceDigest, paid.resource?.digest);
     assert.match(paid.evidence!.x402PaymentRequirementsHash, /^[a-f0-9]{64}$/);
     assert.match(paid.evidence!.x402PaymentPayloadHash, /^[a-f0-9]{64}$/);
@@ -141,8 +162,80 @@ test("demo Merchant joins real AP2 Checkout, mandates, exact settlement, resourc
   }
 });
 
+test("demo Merchant joins AP2 authorization to one durable batch commitment and receipt", async () => {
+  const store = new SqliteMerchantServerStateStore(":memory:");
+  const channel = batchChannel();
+  await store.saveChannel(serverChannel(channel));
+  const merchant = await DemoMerchantFixture.create(batchConfig(store));
+  try {
+    const offer = await merchant.offer(PURCHASE_ID);
+    const requiredHeader = offer.paymentRequired.headers["PAYMENT-REQUIRED"];
+    const required = decodePaymentRequiredHeader(requiredHeader);
+    assert.equal(required.accepts.length, 1);
+    assert.equal(required.accepts[0]?.scheme, "batch-settlement");
+    assert.equal(required.accepts[0]?.extra.binding, "kaspa-escrow-v1");
+
+    const commerceEvidence = await authorise(offer.checkout);
+    await presentAuthorization(merchant, offer, commerceEvidence, PAYMENT_IDENTIFIER);
+    const clientStore = new MemoryChannelStore([channel]);
+    const client = batchClient(clientStore);
+    const payment = await client.createPayment(requiredHeader, {
+      url: offer.checkout.resourceUrl,
+      method: offer.checkout.method,
+      origin: new URL(offer.checkout.resourceUrl).origin,
+      paymentIdentifier: PAYMENT_IDENTIFIER,
+      requestHash: requestHashHex(offer.checkout.terms.resourceFingerprint),
+    });
+    assert.equal(payment.scheme, "batch-settlement");
+    const paid = await merchant.handlePaid({
+      purchaseId: offer.purchaseId,
+      merchantCheckout: offer.checkout.artifact,
+      paymentRequiredHeader: requiredHeader,
+      paymentIdentifier: PAYMENT_IDENTIFIER,
+      headers: {
+        "PAYMENT-SIGNATURE": encodePaymentSignatureHeader(payment.paymentPayload),
+      },
+    });
+
+    assert.equal(paid.response.status, 200);
+    assert.equal(paid.evidence?.paymentScheme, "batch-settlement");
+    assert.equal(paid.evidence?.channelId, channel.id);
+    assert.equal(paid.evidence?.commitmentId, paid.evidence?.networkConfirmationId);
+    assert.equal(
+      paid.ap2Receipts?.payment.networkConfirmationId,
+      paid.evidence?.commitmentId
+    );
+    const settlement = decodePaymentResponseHeader(paid.response.headers["PAYMENT-RESPONSE"]);
+    await client.applySettlement(payment, settlement);
+    assert.equal((await clientStore.loadChannels({}))[0]?.chargedCumulativeAmount, "20000000");
+
+    const preview = await merchant.previewBatchClaim(channel.id);
+    assert.equal(preview.claimable, true);
+    assert.equal(preview.claimAmount, "20000000");
+    const claim = await merchant.executeBatchClaim(channel.id);
+    assert.equal(claim.accepted, true);
+    assert.equal(claim.transactionId, CLAIM_TX);
+    assert.equal(claim.channel.claimedCumulativeAmount, "20000000");
+    assert.deepEqual(claim.channel.activeOutpoint, { txid: CLAIM_TX, index: 1 });
+
+    const replay = await merchant.handlePaid({
+      purchaseId: offer.purchaseId,
+      merchantCheckout: offer.checkout.artifact,
+      paymentRequiredHeader: requiredHeader,
+      paymentIdentifier: PAYMENT_IDENTIFIER,
+      headers: {
+        "PAYMENT-SIGNATURE": encodePaymentSignatureHeader(payment.paymentPayload),
+      },
+    });
+    assert.deepEqual(replay.response, paid.response);
+    assert.deepEqual(replay.evidence, paid.evidence);
+  } finally {
+    store.close();
+  }
+});
+
 test("demo Merchant rejects Checkout, Payment Requirements, and mandate substitution or replay", async () => {
-  const store = new SqliteExactServerStateStore(":memory:");
+  const store = new SqliteMerchantServerStateStore(":memory:");
   const merchant = await DemoMerchantFixture.create(config(store));
   try {
     const first = await merchant.offer(PURCHASE_ID);
@@ -164,7 +257,13 @@ test("demo Merchant rejects Checkout, Payment Requirements, and mandate substitu
     await assert.rejects(
       merchant.handlePaid({
         ...paidRequest(first, firstEvidence, PAYMENT_IDENTIFIER),
-        paymentRequiredHeader: second.paymentRequired.headers["PAYMENT-REQUIRED"],
+        paymentRequiredHeader: encodePaymentRequiredHeader({
+          ...decodePaymentRequiredHeader(first.paymentRequired.headers["PAYMENT-REQUIRED"]),
+          accepts: [{
+            ...decodePaymentRequiredHeader(first.paymentRequired.headers["PAYMENT-REQUIRED"]).accepts[0],
+            amount: "20000001",
+          }],
+        }),
       }),
       isDemoError("invalid_checkout")
     );
@@ -195,7 +294,7 @@ test("demo Merchant rejects Checkout, Payment Requirements, and mandate substitu
 
 test("demo Merchant rejects missing and expired closed mandate evidence before fulfilment", async () => {
   const clock = { now: NOW_MS };
-  const store = new SqliteExactServerStateStore(":memory:");
+  const store = new SqliteMerchantServerStateStore(":memory:");
   const merchant = await DemoMerchantFixture.create(config(store, () => clock.now));
   try {
     const offer = await merchant.offer(PURCHASE_ID);
@@ -250,7 +349,7 @@ test("demo Merchant durably replays the exact response and AP2 Receipt bytes aft
   const directory = fixtureDirectory();
   const filename = path.join(directory, "merchant.sqlite");
   const authorizationFilename = path.join(directory, "merchant-authorization.sqlite");
-  let store = new SqliteExactServerStateStore(filename);
+  let store = new SqliteMerchantServerStateStore(filename);
   let authorizationStore = new SqliteDemoCommerceAuthorizationStore(
     authorizationFilename,
     { now: () => NOW_MS }
@@ -264,7 +363,7 @@ test("demo Merchant durably replays the exact response and AP2 Receipt bytes aft
   store.close();
   authorizationStore.close();
 
-  store = new SqliteExactServerStateStore(filename);
+  store = new SqliteMerchantServerStateStore(filename);
   authorizationStore = new SqliteDemoCommerceAuthorizationStore(
     authorizationFilename,
     { now: () => NOW_MS }
@@ -292,7 +391,7 @@ test("demo Merchant durably replays the exact response and AP2 Receipt bytes aft
 
 test("demo Merchant restores exact offer bytes and continues one durably-started paid request after expiry", async () => {
   const clock = { now: NOW_MS };
-  const store = new SqliteExactServerStateStore(":memory:");
+  const store = new SqliteMerchantServerStateStore(":memory:");
   const authorizationStore = new SqliteDemoCommerceAuthorizationStore(":memory:", {
     now: () => clock.now,
   });
@@ -412,15 +511,37 @@ function paymentPayload(
   requestHash: string,
   paymentIdentifier: string
 ): PaymentPayload {
+  const expiresAt = new Date((FIXED_NOW + 120) * 1000).toISOString();
+  const authorizationDigest = exactRequestAuthorizationDigest({
+    network: accepted.network,
+    profile: "standard-native",
+    transactionId: TRANSACTION_ID,
+    paymentOutputIndex: 0,
+    amount: accepted.amount,
+    payTo: accepted.payTo,
+    payToScriptPublicKey: String(accepted.extra.payToScriptPublicKey),
+    paymentRequirementsHash: sha256Hex(stableStringify(accepted)),
+    requestHash,
+    inputIndex: 0,
+    expiresAt,
+  });
   return {
     x402Version: 2,
     accepted,
     payload: {
       type: "exact-transaction",
+      profile: "standard-native",
       transaction: "prepared-exact-transaction",
       transactionEncoding: "kaspa-sdk-safe-json-v2.0.0",
-      paymentOutputIndex: 1,
+      paymentOutputIndex: 0,
       requestHash,
+      authorization: {
+        version: "kaspa-x402-exact-request-authorization-v1",
+        inputIndex: 0,
+        expiresAt,
+        digest: authorizationDigest,
+        signature: "cd".repeat(64),
+      },
     },
     extensions: {
       "payment-identifier": paymentIdentifierExtension({
@@ -432,7 +553,7 @@ function paymentPayload(
 }
 
 function config(
-  store: SqliteExactServerStateStore,
+  store: SqliteMerchantServerStateStore,
   now: () => number = () => NOW_MS,
   authorizationStore = new SqliteDemoCommerceAuthorizationStore(":memory:", { now })
 ): DemoMerchantFixtureConfig {
@@ -440,32 +561,26 @@ function config(
     scriptPublicKeyForAddress: () => "000051",
     encodeScriptAddress: () => PAY_TO,
   };
-  let reservationSequence = 0;
-  const exactReservationProvider: ExactBorrowReservationProvider = {
-    reserveExactPayment: () => ({
-      reservationId: (++reservationSequence).toString(16).padStart(64, "0"),
-      templateId: "kaspa-x402-kip10-additive-v1",
-      transactionEncoding: "kaspa-sdk-safe-json-v2.0.0",
-      borrowOutpoint: { txid: BORROW_TXID, index: 0 },
-      borrowAmount: "30000000",
-      borrowScriptPublicKey: "000051",
-      borrowRedeemScript: "51",
-      additiveThresholdSompi: "10000000",
-      paymentOutputIndex: 1,
-      expiresAt: new Date((FIXED_NOW + 240) * 1000).toISOString(),
-    }),
-  };
   const exactTransactionVerifier: ExactTransactionVerifier = {
-    verifyExactPayment: (request) => ({
-      transactionId: TRANSACTION_ID,
-      paymentOutput: {
-        amount: request.amount,
-        scriptPublicKey: request.payToScriptPublicKey,
-        address: request.payTo,
-      },
-      finality: "accepted",
-      payerAddress: PAY_TO,
-    }),
+    verifyExactPayment: (request) => {
+      const authorizationId = exactRequestAuthorizationId(request.authorization);
+      return {
+        transactionId: TRANSACTION_ID,
+        paymentOutput: {
+          amount: request.amount,
+          scriptPublicKey: request.payToScriptPublicKey,
+          address: request.payTo,
+        },
+        finality: "accepted",
+        payerAddress: PAY_TO,
+        requestAuthorization: {
+          authorizationId,
+          digest: request.authorization.digest,
+          inputIndex: request.authorization.inputIndex,
+          publicKey: "11".repeat(32),
+        },
+      };
+    },
   };
   const chainProvider: ServerChainProvider = {
     getUtxo: async () => null,
@@ -480,8 +595,10 @@ function config(
     merchantOrigin: "https://merchant.example",
     merchantWebsite: "https://merchant.example/store",
     payTo: PAY_TO,
+    paymentScheme: "exact",
+    exactProfile: "standard-native",
     amountAtomic: "20000000",
-    additionalCostCeilingAtomic: "12050000",
+    additionalCostCeilingAtomic: "2050000",
     checkoutTtlMs: 2 * 60_000,
     authorityAudience: FIXED_AUDIENCE,
     expectedAuthorityIssuer: FIXED_AUTHORITY_ISSUER,
@@ -499,7 +616,6 @@ function config(
     chainProvider,
     voucherVerifier,
     exactTransactionVerifier,
-    exactReservationProvider,
     serverPublicKey: `02${"11".repeat(32)}`,
     merchantCheckoutSigner: MERCHANT_SIGNER,
     merchantReceiptSigner: MERCHANT_RECEIPT_SIGNER,
@@ -507,6 +623,144 @@ function config(
     ap2Trust: fixedTrustStore(),
     now,
   };
+}
+
+function batchConfig(
+  store: SqliteMerchantServerStateStore,
+  now: () => number = () => NOW_MS,
+  authorizationStore = new SqliteDemoCommerceAuthorizationStore(":memory:", { now })
+): DemoMerchantFixtureConfig {
+  const base = config(store, now, authorizationStore);
+  const { exactProfile: _exactProfile, exactTransactionVerifier: _exactVerifier, ...shared } = base;
+  return {
+    ...shared,
+    paymentScheme: "batch-settlement",
+    serverPublicKey: BATCH_SERVER_PUBLIC_KEY,
+    batchMinDepositSompi: "1",
+    batchRefundTimeoutDaa: BATCH_TIMEOUT_DAA,
+    voucherVerifier: { verifyVoucher: () => true },
+    chainProvider: {
+      ...base.chainProvider,
+      getUtxo: async (outpoint) => {
+        if (outpoint.txid === ACTIVE_TX && outpoint.index === 0) {
+          return {
+            outpoint,
+            amount: BATCH_FUNDING,
+            scriptPublicKey: ACTIVE_SCRIPT,
+            finality: "accepted" as const,
+          };
+        }
+        if (outpoint.txid === CLAIM_TX && outpoint.index === 1) {
+          return {
+            outpoint,
+            amount: "80000000",
+            scriptPublicKey: ACTIVE_SCRIPT,
+            finality: "accepted" as const,
+          };
+        }
+        return null;
+      },
+      getVirtualDaaScore: async () => "1",
+      sendTransaction: async () => ({ transactionId: CLAIM_TX, finality: "accepted" }),
+    },
+    claimBuilder: {
+      buildClaimTransaction: async (request) => ({
+        transaction: "prepared-merchant-claim",
+        claimAmount: request.claimAmount,
+        continuationOutpoint: { txid: CLAIM_TX, index: 1 },
+        continuationScriptPublicKey: request.channel.activeScriptPublicKey,
+        continuationFundingAmount: String(
+          BigInt(request.channel.fundingAmount) - BigInt(request.claimAmount)
+        ),
+      }),
+    },
+  };
+}
+
+function batchChannelConfig(): ChannelConfig {
+  return {
+    network: DEMO_NETWORK,
+    asset: "KAS",
+    templateId: "kaspa-x402-escrow-v1",
+    clientPublicKey: CLIENT_PUBLIC_KEY,
+    serverPublicKey: BATCH_SERVER_PUBLIC_KEY,
+    payTo: PAY_TO,
+    refundAddress: "kaspatest:refund",
+    refundTimeoutDaa: BATCH_TIMEOUT_DAA,
+    salt: "77".repeat(32),
+  };
+}
+
+function batchChannel(): DirectModeChannel {
+  const config = batchChannelConfig();
+  return {
+    id: channelId(config),
+    origin: "https://merchant.example",
+    resourceUrl: "https://merchant.example/paid-resource",
+    config,
+    clientPublicKey: CLIENT_PUBLIC_KEY,
+    serverPublicKey: config.serverPublicKey,
+    activeOutpoint: { txid: ACTIVE_TX, index: 0 },
+    activeScriptPublicKey: ACTIVE_SCRIPT,
+    escrowAddress: "kaspatest:escrow",
+    fundingSource: "vault-treasury",
+    fundingAmount: BATCH_FUNDING,
+    chargedCumulativeAmount: "0",
+    claimedCumulativeAmount: "0",
+    signedCumulativeAmount: "0",
+    refundTimeoutDaa: BATCH_TIMEOUT_DAA,
+    templateId: "kaspa-x402-escrow-v1",
+    status: "active",
+  };
+}
+
+function serverChannel(channel: DirectModeChannel) {
+  return {
+    channelId: channel.id,
+    channelConfig: channel.config,
+    escrowAddress: channel.escrowAddress,
+    activeOutpoint: channel.activeOutpoint,
+    activeScriptPublicKey: channel.activeScriptPublicKey,
+    fundingAmount: channel.fundingAmount,
+    chargedCumulativeAmount: channel.chargedCumulativeAmount,
+    claimedCumulativeAmount: channel.claimedCumulativeAmount,
+    signedMaxClaimable: "0",
+    status: "active" as const,
+  };
+}
+
+function batchClient(store: MemoryChannelStore): DirectModeClient {
+  const fundingProvider: FundingProvider = {
+    networkId: DEMO_NETWORK,
+    sourceKind: "vault-treasury",
+    getPublicIdentity: async () => ({ address: "kaspatest:refund", publicKey: CLIENT_PUBLIC_KEY }),
+    authorizeExactPayment: async () => { throw new Error("exact is disabled"); },
+    fundEscrowDeposit: async () => { throw new Error("implicit deposit is disabled"); },
+    getUtxos: async () => [{
+      outpoint: { txid: ACTIVE_TX, index: 0 },
+      amount: BATCH_FUNDING,
+      scriptPublicKey: ACTIVE_SCRIPT,
+      address: "kaspatest:escrow",
+    }],
+    getVirtualDaaScore: async () => "1",
+    sendTransaction: async () => { throw new Error("client broadcast is disabled"); },
+    estimateFees: async () => ({ feeSompi: "1" }),
+  };
+  return new DirectModeClient({
+    fundingProvider,
+    signer: {
+      generateChannelKey: async () => ({ publicKey: CLIENT_PUBLIC_KEY }),
+      randomSalt: async () => "77".repeat(32) as Hash32Hex,
+      signVoucher: async () => "99".repeat(64) as SignatureHex,
+    },
+    store,
+    addressCodec: {
+      scriptPublicKeyForAddress: () => ACTIVE_SCRIPT,
+      encodeScriptAddress: () => "kaspatest:escrow",
+    },
+    refundAddress: "kaspatest:refund",
+    supportedSchemes: ["batch-settlement"],
+  });
 }
 
 function requestHashHex(value: Sha256Digest): string {

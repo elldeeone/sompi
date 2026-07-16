@@ -98,7 +98,7 @@ async function main(): Promise<void> {
   );
 
   check(
-    "protocol profile is AP2 v0.2 human-present plus Kaspa-x402 alpha.6 exact",
+    "protocol profile is AP2 v0.2 human-present plus Kaspa-x402 alpha.8 exact",
     SUPPORTED_PROTOCOL_PROFILES.ap2.release === "v0.2.0" &&
       SUPPORTED_PROTOCOL_PROFILES.ap2.mode === "human-present" &&
       SUPPORTED_PROTOCOL_PROFILES.ap2.nativeKasStrictlyStandardized === false &&
@@ -106,7 +106,7 @@ async function main(): Promise<void> {
       SUPPORTED_PROTOCOL_PROFILES.x402.scheme === "exact" &&
       SUPPORTED_PROTOCOL_PROFILES.x402.network === "kaspa:testnet-10" &&
       SUPPORTED_PROTOCOL_PROFILES.x402.packages.client.version ===
-        "0.1.0-alpha.6" &&
+        "0.1.0-alpha.8" &&
       SUPPORTED_PROTOCOL_PROFILES.x402.allowMainnet === false &&
       PURCHASE_STATES.includes("failed_recoverable")
   );

@@ -33,6 +33,14 @@ import type {
   Sha256Digest,
 } from "./types.js";
 import { paymentFinalityMeets, requirePaymentFinality } from "./finality.js";
+import {
+  canonicalPurchaseExecutionPlan,
+  channelEpochDigest,
+  type CanonicalPurchaseExecutionPlan,
+  type PurchaseExecutionAssurance,
+  type PurchaseExecutionMechanism,
+  type PurchaseExecutionPlan,
+} from "./execution-plan.js";
 import type {
   PreparedTreasuryOperation,
   TreasuryOperationIntent,
@@ -104,7 +112,7 @@ export const JOURNAL_FAULT_POINTS = Object.freeze([
   "treasury_staging_recovery_accounting.after_insert",
   "effect.after_insert",
   "effect_claim.after_effect_update",
-  "spend.after_insert",
+  "settlement.after_insert",
   "checkout_terms.after_insert",
   "authorization_request.after_insert",
   "authorization_decision.after_insert",
@@ -115,6 +123,9 @@ export const JOURNAL_FAULT_POINTS = Object.freeze([
   "treasury_operation.after_submission_plan",
   "treasury_operation.after_observation_insert",
   "treasury_operation.after_complete_update",
+  "batch_channel.after_insert",
+  "batch_channel.after_update",
+  "batch_movement.after_insert",
 ] as const);
 
 export type JournalFaultPoint = (typeof JOURNAL_FAULT_POINTS)[number];
@@ -130,6 +141,326 @@ export interface PurchaseJournalOptions {
   admission?: AdmissionBudgetProjection;
 }
 
+function batchChannelFromRow(row: BatchChannelRow): BatchChannelJournalRecord {
+  return Object.freeze({
+    channelId: row.channel_id,
+    origin: row.origin,
+    ...(row.resource_url === null ? {} : { resourceUrl: row.resource_url }),
+    network: row.network,
+    asset: row.asset,
+    templateId: row.template_id,
+    clientPublicKey: row.client_public_key,
+    serverPublicKey: row.server_public_key,
+    payTo: row.pay_to,
+    refundAddress: row.refund_address,
+    refundTimeoutDaa: row.refund_timeout_daa,
+    salt: row.salt,
+    activeOutpoint: Object.freeze({ txid: row.active_txid, index: row.active_output_index }),
+    activeScriptPublicKey: row.active_script_public_key,
+    escrowAddress: row.escrow_address,
+    fundingSource: row.funding_source,
+    fundingAmountAtomic: row.funding_amount_atomic,
+    chargedCumulativeAtomic: row.charged_cumulative_atomic,
+    claimedCumulativeAtomic: row.claimed_cumulative_atomic,
+    signedCumulativeAtomic: row.signed_cumulative_atomic,
+    ...(row.latest_voucher_amount_atomic === null || row.latest_voucher_signature === null
+      ? {}
+      : { latestVoucher: Object.freeze({
+          amountAtomic: row.latest_voucher_amount_atomic,
+          signature: row.latest_voucher_signature,
+        }) }),
+    status: row.status,
+    epoch: row.epoch,
+    version: row.version,
+    ...(row.retired_reason === null ? {} : { retiredReason: row.retired_reason }),
+    createdAtMs: row.created_at_ms,
+    updatedAtMs: row.updated_at_ms,
+  });
+}
+
+function normalizeBatchChannel(
+  value: Readonly<BatchChannelJournalRecord>,
+  now: number
+): BatchChannelJournalRecord {
+  if (!value || typeof value !== "object") throw new JournalInvariantError("batch channel is invalid");
+  requireBatchHash(value.channelId, "batch channel ID");
+  requireBatchText(value.origin, "batch channel origin", 2048);
+  if (value.resourceUrl !== undefined) requireBatchText(value.resourceUrl, "batch resource URL", 4096);
+  if (value.network !== "kaspa:testnet-10" || value.asset !== "KAS" || value.templateId !== "kaspa-x402-escrow-v1") {
+    throw new JournalInvariantError("batch channel profile is unsupported");
+  }
+  requireBatchHash(value.clientPublicKey, "batch client public key");
+  requireBatchHash(value.serverPublicKey, "batch server public key");
+  requireBatchText(value.payTo, "batch payee", 512);
+  requireBatchText(value.refundAddress, "batch refund address", 512);
+  requireBatchAtomic(value.refundTimeoutDaa, "batch refund DAA");
+  requireBatchHash(value.salt, "batch channel salt");
+  requireBatchHash(value.activeOutpoint?.txid, "batch active transaction ID");
+  if (!Number.isSafeInteger(value.activeOutpoint?.index) || value.activeOutpoint.index < 0 || value.activeOutpoint.index > 0xffff_ffff) {
+    throw new JournalInvariantError("batch active output index is invalid");
+  }
+  requireBatchHex(value.activeScriptPublicKey, "batch active script public key", 8192);
+  requireBatchText(value.escrowAddress, "batch escrow address", 512);
+  if (value.fundingSource !== "vault-treasury") throw new JournalInvariantError("batch funding source is unsupported");
+  const funding = requireBatchAtomic(value.fundingAmountAtomic, "batch funding amount", true);
+  const charged = requireBatchAtomic(value.chargedCumulativeAtomic, "batch charged amount");
+  const claimed = requireBatchAtomic(value.claimedCumulativeAtomic, "batch claimed amount");
+  const signed = requireBatchAtomic(value.signedCumulativeAtomic, "batch signed amount");
+  if (charged < claimed || signed < charged - claimed || funding < charged - claimed) {
+    throw new JournalInvariantError("batch channel accounting is inconsistent");
+  }
+  if (value.latestVoucher) {
+    if (requireBatchAtomic(value.latestVoucher.amountAtomic, "batch voucher amount") !== signed) {
+      throw new JournalInvariantError("latest batch voucher does not match signed ceiling");
+    }
+    requireBatchSignature(value.latestVoucher.signature, "batch voucher signature");
+  } else if (signed !== 0n) {
+    throw new JournalInvariantError("signed batch channel has no latest voucher");
+  }
+  if (!["active", "retired", "refundable", "refunded", "suspicious"].includes(value.status)) {
+    throw new JournalInvariantError("batch channel status is invalid");
+  }
+  if (!Number.isSafeInteger(value.epoch) || value.epoch < 0 || !Number.isSafeInteger(value.version) || value.version < 1) {
+    throw new JournalInvariantError("batch channel generation is invalid");
+  }
+  if (value.retiredReason !== undefined) requireBatchReason(value.retiredReason);
+  const createdAtMs = requireBatchTime(value.createdAtMs, "batch channel creation time");
+  const updatedAtMs = requireBatchTime(value.updatedAtMs, "batch channel update time");
+  if (updatedAtMs < createdAtMs || updatedAtMs > now + 60_000) {
+    throw new JournalInvariantError("batch channel timestamps are inconsistent");
+  }
+  return Object.freeze({
+    ...value,
+    activeOutpoint: Object.freeze({ ...value.activeOutpoint }),
+    ...(value.latestVoucher ? { latestVoucher: Object.freeze({ ...value.latestVoucher }) } : {}),
+  });
+}
+
+function batchChannelSqlValues(value: BatchChannelJournalRecord): unknown[] {
+  return [
+    value.channelId, value.origin, value.resourceUrl ?? null, value.network,
+    value.asset, value.templateId, value.clientPublicKey, value.serverPublicKey,
+    value.payTo, value.refundAddress, value.refundTimeoutDaa, value.salt,
+    value.activeOutpoint.txid, value.activeOutpoint.index,
+    value.activeScriptPublicKey, value.escrowAddress, value.fundingSource,
+    value.fundingAmountAtomic, value.chargedCumulativeAtomic,
+    value.claimedCumulativeAtomic, value.signedCumulativeAtomic,
+    value.latestVoucher?.amountAtomic ?? null,
+    value.latestVoucher?.signature ?? null, value.status, value.epoch,
+    value.version, value.retiredReason ?? null, value.createdAtMs,
+    value.updatedAtMs,
+  ];
+}
+
+function assertBatchChannelIdentity(
+  previous: BatchChannelJournalRecord,
+  next: BatchChannelJournalRecord
+): void {
+  for (const [label, left, right] of [
+    ["origin", previous.origin, next.origin],
+    ["network", previous.network, next.network],
+    ["asset", previous.asset, next.asset],
+    ["template", previous.templateId, next.templateId],
+    ["client key", previous.clientPublicKey, next.clientPublicKey],
+    ["server key", previous.serverPublicKey, next.serverPublicKey],
+    ["payee", previous.payTo, next.payTo],
+    ["refund address", previous.refundAddress, next.refundAddress],
+    ["refund timeout", previous.refundTimeoutDaa, next.refundTimeoutDaa],
+    ["salt", previous.salt, next.salt],
+    ["escrow address", previous.escrowAddress, next.escrowAddress],
+    ["funding source", previous.fundingSource, next.fundingSource],
+  ] as const) {
+    if (left !== right) throw new JournalInvariantError(`batch channel ${label} is immutable`);
+  }
+}
+
+function assertBatchChannelProgress(
+  previous: BatchChannelJournalRecord,
+  next: BatchChannelJournalRecord
+): void {
+  if (next.createdAtMs !== previous.createdAtMs || next.updatedAtMs < previous.updatedAtMs) {
+    throw new JournalInvariantError("batch channel time moved backward");
+  }
+  if (previous.status === "refunded" || previous.status === "retired") {
+    if (next.status !== previous.status) throw new JournalInvariantError("terminal batch channel cannot reactivate");
+  }
+  const activeChanged =
+    previous.activeOutpoint.txid !== next.activeOutpoint.txid ||
+    previous.activeOutpoint.index !== next.activeOutpoint.index;
+  if (activeChanged) {
+    if (next.epoch !== previous.epoch + 1) {
+      throw new JournalInvariantError("batch continuation must advance exactly one epoch");
+    }
+    if (BigInt(next.chargedCumulativeAtomic) < BigInt(previous.chargedCumulativeAtomic) ||
+        BigInt(next.claimedCumulativeAtomic) < BigInt(previous.claimedCumulativeAtomic)) {
+      throw new JournalInvariantError("batch continuation cumulative accounting moved backward");
+    }
+    return;
+  }
+  if (next.epoch !== previous.epoch || next.fundingAmountAtomic !== previous.fundingAmountAtomic ||
+      next.activeScriptPublicKey !== previous.activeScriptPublicKey) {
+    throw new JournalInvariantError("same-epoch batch funding identity changed");
+  }
+  for (const [label, before, after] of [
+    ["charged", previous.chargedCumulativeAtomic, next.chargedCumulativeAtomic],
+    ["claimed", previous.claimedCumulativeAtomic, next.claimedCumulativeAtomic],
+    ["signed", previous.signedCumulativeAtomic, next.signedCumulativeAtomic],
+  ] as const) {
+    if (BigInt(after) < BigInt(before)) throw new JournalInvariantError(`batch ${label} amount moved backward`);
+  }
+}
+
+function batchTransitionReason(
+  previous: BatchChannelJournalRecord,
+  next: BatchChannelJournalRecord
+): string {
+  if (previous.status !== next.status) return `status_${previous.status}_to_${next.status}`;
+  if (previous.epoch !== next.epoch) return "continuation_rotated";
+  if (previous.signedCumulativeAtomic !== next.signedCumulativeAtomic) return "voucher_advanced";
+  if (previous.chargedCumulativeAtomic !== next.chargedCumulativeAtomic) return "charge_accepted";
+  return "channel_refreshed";
+}
+
+function requireBatchHash(value: unknown, label: string): string {
+  if (typeof value !== "string" || !/^[a-f0-9]{64}$/.test(value)) {
+    throw new JournalInvariantError(`${label} is invalid`);
+  }
+  return value;
+}
+
+function requireBatchSignature(value: unknown, label: string): string {
+  if (typeof value !== "string" || !/^[a-f0-9]{128}$/.test(value)) {
+    throw new JournalInvariantError(`${label} is invalid`);
+  }
+  return value;
+}
+
+function requireBatchHex(value: unknown, label: string, maximumBytes: number): string {
+  if (typeof value !== "string" || value.length === 0 || value.length > maximumBytes * 2 || !/^(?:[a-f0-9]{2})+$/.test(value)) {
+    throw new JournalInvariantError(`${label} is invalid`);
+  }
+  return value;
+}
+
+function requireBatchAtomic(value: unknown, label: string, positive = false): bigint {
+  if (typeof value !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(value)) {
+    throw new JournalInvariantError(`${label} is invalid`);
+  }
+  const parsed = BigInt(value);
+  if (parsed > (1n << 64n) - 1n || (positive && parsed === 0n)) {
+    throw new JournalInvariantError(`${label} is outside uint64 bounds`);
+  }
+  return parsed;
+}
+
+function requireBatchText(value: unknown, label: string, maximumLength: number): string {
+  if (typeof value !== "string" || value.length === 0 || value.length > maximumLength || value.trim() !== value || /[\u0000-\u001f\u007f]/.test(value)) {
+    throw new JournalInvariantError(`${label} is invalid`);
+  }
+  return value;
+}
+
+function requireBatchReason(value: string): string {
+  return requireBatchText(value, "batch retirement reason", 256);
+}
+
+function requireBatchTime(value: unknown, label: string): number {
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new JournalInvariantError(`${label} is invalid`);
+  }
+  return value as number;
+}
+
+function batchMovementFromRow(row: BatchTreasuryMovementRow): BatchTreasuryMovementRecord {
+  return Object.freeze({
+    movementId: row.movement_id,
+    channelId: row.channel_id,
+    ...(row.purchase_id === null ? {} : { purchaseId: assertPurchaseId(row.purchase_id) }),
+    kind: row.kind,
+    state: row.state,
+    requestDigest: row.request_digest,
+    ...(row.active_txid_before === null || row.active_output_index_before === null
+      ? {}
+      : { activeOutpointBefore: Object.freeze({ txid: row.active_txid_before, index: row.active_output_index_before }) }),
+    ...(row.active_txid_after === null || row.active_output_index_after === null
+      ? {}
+      : { activeOutpointAfter: Object.freeze({ txid: row.active_txid_after, index: row.active_output_index_after }) }),
+    ...(row.maximum_authorized_atomic === null ? {} : { maximumAuthorizedAtomic: row.maximum_authorized_atomic }),
+    ...(row.actual_charge_atomic === null ? {} : { actualChargeAtomic: row.actual_charge_atomic }),
+    ...(row.voucher_ceiling_atomic === null ? {} : { voucherCeilingAtomic: row.voucher_ceiling_atomic }),
+    ...(row.transaction_id === null ? {} : { transactionId: row.transaction_id }),
+    ...(row.prepared_digest === null ? {} : { preparedDigest: row.prepared_digest }),
+    ...(row.evidence_digest === null ? {} : { evidenceDigest: row.evidence_digest }),
+    createdAtMs: row.created_at_ms,
+    updatedAtMs: row.updated_at_ms,
+  });
+}
+
+function normalizeBatchMovementPlan(
+  input: Readonly<PlanBatchTreasuryMovementInput>
+): PlanBatchTreasuryMovementInput {
+  requireBatchText(input?.movementId, "batch Treasury Movement ID", 256);
+  requireBatchHash(input?.channelId, "batch Treasury Movement channel ID");
+  if (input.purchaseId !== undefined) assertPurchaseId(input.purchaseId);
+  if (!["deposit", "topup", "voucher", "claim", "refund"].includes(input.kind)) {
+    throw new JournalInvariantError("batch Treasury Movement kind is invalid");
+  }
+  if (input.kind === "voucher" ? input.purchaseId === undefined : input.purchaseId !== undefined) {
+    throw new JournalInvariantError("only voucher movements bind a Purchase");
+  }
+  if (!/^sha256:[A-Za-z0-9_-]{43}$/.test(input.requestDigest)) {
+    throw new JournalInvariantError("batch Treasury Movement request digest is invalid");
+  }
+  if (input.preparedDigest !== undefined && !/^sha256:[A-Za-z0-9_-]{43}$/.test(input.preparedDigest)) {
+    throw new JournalInvariantError("batch Treasury Movement preparation digest is invalid");
+  }
+  const before = input.activeOutpointBefore === undefined
+    ? undefined
+    : normalizeBatchOutpoint(input.activeOutpointBefore, "batch movement predecessor");
+  const maximum = input.maximumAuthorizedAtomic === undefined
+    ? undefined
+    : requireBatchAtomic(input.maximumAuthorizedAtomic, "batch maximum authorization", true).toString();
+  const ceiling = input.voucherCeilingAtomic === undefined
+    ? undefined
+    : requireBatchAtomic(input.voucherCeilingAtomic, "batch voucher ceiling", true).toString();
+  if (input.kind === "voucher" && (maximum === undefined || ceiling === undefined || before === undefined)) {
+    throw new JournalInvariantError("voucher movement lacks authorization, ceiling, or active outpoint");
+  }
+  return Object.freeze({
+    ...input,
+    ...(before === undefined ? {} : { activeOutpointBefore: before }),
+    ...(maximum === undefined ? {} : { maximumAuthorizedAtomic: maximum }),
+    ...(ceiling === undefined ? {} : { voucherCeilingAtomic: ceiling }),
+  });
+}
+
+function normalizeBatchOutpoint(
+  value: Readonly<{ txid: string; index: number }>,
+  label: string
+): Readonly<{ txid: string; index: number }> {
+  requireBatchHash(value?.txid, `${label} transaction ID`);
+  if (!Number.isSafeInteger(value?.index) || value.index < 0 || value.index > 0xffff_ffff) {
+    throw new JournalInvariantError(`${label} output index is invalid`);
+  }
+  return Object.freeze({ txid: value.txid, index: value.index });
+}
+
+function assertBatchMovementTransition(
+  from: BatchTreasuryMovementState,
+  to: BatchTreasuryMovementState
+): void {
+  const allowed: Readonly<Record<BatchTreasuryMovementState, readonly BatchTreasuryMovementState[]>> = {
+    planned: ["submitted", "ambiguous", "accepted", "failed_terminal"],
+    submitted: ["ambiguous", "accepted", "failed_terminal"],
+    ambiguous: ["accepted", "failed_terminal"],
+    accepted: [],
+    failed_terminal: [],
+  };
+  if (!allowed[from].includes(to)) {
+    throw new JournalInvariantError(`invalid batch Treasury Movement transition ${from} -> ${to}`);
+  }
+}
+
 export interface JournalAdmissionStatus {
   readonly prevalidationPurchases: Readonly<{
     used: number;
@@ -142,6 +473,85 @@ export interface JournalAdmissionStatus {
     budget: number;
     saturated: boolean;
   }>;
+}
+
+export type BatchChannelStatus =
+  | "active"
+  | "retired"
+  | "refundable"
+  | "refunded"
+  | "suspicious";
+
+/** Protocol-adapter state stored in the same SQLite durability boundary. */
+export interface BatchChannelJournalRecord {
+  readonly channelId: string;
+  readonly origin: string;
+  readonly resourceUrl?: string;
+  readonly network: "kaspa:testnet-10";
+  readonly asset: "KAS";
+  readonly templateId: "kaspa-x402-escrow-v1";
+  readonly clientPublicKey: string;
+  readonly serverPublicKey: string;
+  readonly payTo: string;
+  readonly refundAddress: string;
+  readonly refundTimeoutDaa: string;
+  readonly salt: string;
+  readonly activeOutpoint: Readonly<{ txid: string; index: number }>;
+  readonly activeScriptPublicKey: string;
+  readonly escrowAddress: string;
+  readonly fundingSource: "vault-treasury";
+  readonly fundingAmountAtomic: string;
+  readonly chargedCumulativeAtomic: string;
+  readonly claimedCumulativeAtomic: string;
+  readonly signedCumulativeAtomic: string;
+  readonly latestVoucher?: Readonly<{ amountAtomic: string; signature: string }>;
+  readonly status: BatchChannelStatus;
+  readonly epoch: number;
+  readonly version: number;
+  readonly retiredReason?: string;
+  readonly createdAtMs: number;
+  readonly updatedAtMs: number;
+}
+
+export interface BatchChannelLookup {
+  readonly origin?: string;
+  readonly resourceUrl?: string;
+  readonly network?: "kaspa:testnet-10";
+  readonly status?: BatchChannelStatus;
+}
+
+export type BatchTreasuryMovementKind = "deposit" | "topup" | "voucher" | "claim" | "refund";
+export type BatchTreasuryMovementState = "planned" | "submitted" | "ambiguous" | "accepted" | "failed_terminal";
+
+export interface BatchTreasuryMovementRecord {
+  readonly movementId: string;
+  readonly channelId: string;
+  readonly purchaseId?: PurchaseId;
+  readonly kind: BatchTreasuryMovementKind;
+  readonly state: BatchTreasuryMovementState;
+  readonly requestDigest: Sha256Digest;
+  readonly activeOutpointBefore?: Readonly<{ txid: string; index: number }>;
+  readonly activeOutpointAfter?: Readonly<{ txid: string; index: number }>;
+  readonly maximumAuthorizedAtomic?: string;
+  readonly actualChargeAtomic?: string;
+  readonly voucherCeilingAtomic?: string;
+  readonly transactionId?: string;
+  readonly preparedDigest?: Sha256Digest;
+  readonly evidenceDigest?: Sha256Digest;
+  readonly createdAtMs: number;
+  readonly updatedAtMs: number;
+}
+
+export interface PlanBatchTreasuryMovementInput {
+  readonly movementId: string;
+  readonly channelId: string;
+  readonly purchaseId?: PurchaseId;
+  readonly kind: BatchTreasuryMovementKind;
+  readonly requestDigest: Sha256Digest;
+  readonly activeOutpointBefore?: Readonly<{ txid: string; index: number }>;
+  readonly maximumAuthorizedAtomic?: string;
+  readonly voucherCeilingAtomic?: string;
+  readonly preparedDigest?: Sha256Digest;
 }
 
 export interface CreatePurchaseInput {
@@ -179,6 +589,8 @@ export interface BindCheckoutTermsInput {
   paymentRequirementsDigest: Sha256Digest;
   paymentRequirementsVerificationProfile: string;
   paymentRequirementsVerifierId: string;
+  executionPlan: PurchaseExecutionPlan;
+  executionPlanEvidenceDigest: Sha256Digest;
 }
 
 export interface CheckoutTermsRecord extends CheckoutTerms {
@@ -190,6 +602,12 @@ export interface CheckoutTermsRecord extends CheckoutTerms {
   paymentRequirementsDigest: Sha256Digest;
   paymentRequirementsVerificationProfile: string;
   paymentRequirementsVerifierId: string;
+  createdAtMs: number;
+}
+
+export interface PurchaseExecutionPlanRecord extends CanonicalPurchaseExecutionPlan {
+  purchaseId: PurchaseId;
+  evidenceDigest: Sha256Digest;
   createdAtMs: number;
 }
 
@@ -206,6 +624,13 @@ export interface RecordAuthorizationRequestInput {
 
 export interface AuthorizationRequestRecord extends RecordAuthorizationRequestInput {
   purchaseId: PurchaseId;
+  executionPlanDigest: Sha256Digest;
+  executionMechanism: PurchaseExecutionMechanism;
+  executionProfile: string;
+  settlementAssurance: PurchaseExecutionAssurance;
+  maximumAuthorizedChargeAtomic: string;
+  channelId?: string;
+  channelEpochDigest?: Sha256Digest;
   createdAtMs: number;
 }
 
@@ -386,12 +811,15 @@ export interface PreparePaymentAttemptInput {
   requirementsDigest: Sha256Digest;
   payloadDigest: Sha256Digest;
   preparedBytes: Uint8Array;
-  transactionId: string;
+  executionId: string;
+  mechanism: PurchaseExecutionMechanism;
+  profile: string;
+  transactionId?: string;
   amountAtomic: string;
   asset: string;
   network: string;
   payee: string;
-  requiredFinality: string;
+  requiredAssurance: PurchaseExecutionAssurance;
   fundingSource: FundingSource;
 }
 
@@ -602,24 +1030,28 @@ export interface EffectTransitionRecord {
   createdAtMs: number;
 }
 
-export interface RecordObservedSpendInput {
+export interface RecordPurchaseSettlementInput {
   effectId: string;
   reservationId: string;
-  transactionId: string;
+  executionId: string;
+  mechanism: PurchaseExecutionMechanism;
+  profile: string;
+  transactionId?: string;
+  commitmentId?: string;
   outpoint?: string;
   actualAmountAtomic: string;
   actualAdditionalCostAtomic: string;
   asset: string;
   payee: string;
   network: string;
-  finality: string;
+  settlementAssurance: PurchaseExecutionAssurance;
   fundingSource: FundingSource;
   evidenceDigest: Sha256Digest;
   evidenceVerificationProfile: string;
   evidenceVerifierId: string;
 }
 
-export interface TreasurySpendRecord extends RecordObservedSpendInput {
+export interface PurchaseSettlementRecord extends RecordPurchaseSettlementInput {
   id: number;
   purchaseId: PurchaseId;
   attempt: number;
@@ -688,6 +1120,59 @@ export class EvidenceAdmissionError extends Error {
     super(message);
     this.name = "EvidenceAdmissionError";
   }
+}
+
+interface BatchChannelRow {
+  channel_id: string;
+  origin: string;
+  resource_url: string | null;
+  network: "kaspa:testnet-10";
+  asset: "KAS";
+  template_id: "kaspa-x402-escrow-v1";
+  client_public_key: string;
+  server_public_key: string;
+  pay_to: string;
+  refund_address: string;
+  refund_timeout_daa: string;
+  salt: string;
+  active_txid: string;
+  active_output_index: number;
+  active_script_public_key: string;
+  escrow_address: string;
+  funding_source: "vault-treasury";
+  funding_amount_atomic: string;
+  charged_cumulative_atomic: string;
+  claimed_cumulative_atomic: string;
+  signed_cumulative_atomic: string;
+  latest_voucher_amount_atomic: string | null;
+  latest_voucher_signature: string | null;
+  status: BatchChannelStatus;
+  epoch: number;
+  version: number;
+  retired_reason: string | null;
+  created_at_ms: number;
+  updated_at_ms: number;
+}
+
+interface BatchTreasuryMovementRow {
+  movement_id: string;
+  channel_id: string;
+  purchase_id: string | null;
+  kind: BatchTreasuryMovementKind;
+  state: BatchTreasuryMovementState;
+  request_digest: Sha256Digest;
+  active_txid_before: string | null;
+  active_output_index_before: number | null;
+  active_txid_after: string | null;
+  active_output_index_after: number | null;
+  maximum_authorized_atomic: string | null;
+  actual_charge_atomic: string | null;
+  voucher_ceiling_atomic: string | null;
+  transaction_id: string | null;
+  prepared_digest: Sha256Digest | null;
+  evidence_digest: Sha256Digest | null;
+  created_at_ms: number;
+  updated_at_ms: number;
 }
 
 export class PurchaseJournal {
@@ -1084,6 +1569,7 @@ export class PurchaseJournal {
       const existing = this.findCheckoutTerms(purchaseId);
       if (existing) {
         assertSameCheckoutTerms(existing, input);
+        assertSameExecutionPlan(this.requireExecutionPlan(purchaseId), input.executionPlan, input.executionPlanEvidenceDigest);
         return existing;
       }
       if (purchase.state !== "created") {
@@ -1111,11 +1597,18 @@ export class PurchaseJournal {
         input.paymentRequirementsDigest,
         "payment-requirements"
       );
+      const executionPlanAttachment = this.requireEvidenceAttachment(
+        purchaseId,
+        input.executionPlanEvidenceDigest,
+        "execution-plan"
+      );
       if (
         checkoutAttachment.issuer !== input.terms.merchant.id ||
         checkoutAttachment.profile !== input.checkoutVerificationProfile ||
         requirementsAttachment.issuer !== input.terms.merchant.id ||
-        requirementsAttachment.profile !== input.paymentRequirementsVerificationProfile
+        requirementsAttachment.profile !== input.paymentRequirementsVerificationProfile ||
+        executionPlanAttachment.issuer !== "sompi-purchase-module" ||
+        executionPlanAttachment.profile !== "urn:sompi:purchase-execution-plan:1"
       ) {
         throw new JournalInvariantError("Checkout evidence metadata is not bound to the canonical Merchant");
       }
@@ -1141,6 +1634,14 @@ export class PurchaseJournal {
       }
       const expiresAtMs = strictTimestamp(input.terms.expiresAt, "Checkout Terms expiry");
       if (expiresAtMs <= this.timestamp()) throw new JournalInvariantError("Checkout Terms are already expired");
+      const executionPlan = canonicalPurchaseExecutionPlan(input.executionPlan);
+      if (
+        executionPlan.digest !== input.executionPlanEvidenceDigest ||
+        executionPlan.requirementsDigest !== input.paymentRequirementsDigest ||
+        executionPlan.maximumChargeAtomic !== input.terms.amountAtomic
+      ) {
+        throw new JournalInvariantError("Purchase execution plan is not bound to Checkout evidence");
+      }
       const now = this.timestamp();
       this.db
         .prepare(
@@ -1173,6 +1674,30 @@ export class PurchaseJournal {
           input.paymentRequirementsVerifierId,
           now
         );
+      this.db.prepare(
+        `INSERT INTO purchase_execution_plans (
+           purchase_id, plan_digest, mechanism, profile, requirements_digest,
+           maximum_charge_atomic, settlement_assurance, channel_id, active_txid,
+           active_output_index, active_script_public_key, channel_funding_amount_atomic,
+           refund_timeout_daa, claim_fee_reserve_atomic, created_at_ms
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        purchaseId,
+        executionPlan.digest,
+        executionPlan.mechanism,
+        executionPlan.profile,
+        executionPlan.requirementsDigest,
+        executionPlan.maximumChargeAtomic,
+        executionPlan.settlementAssurance,
+        executionPlan.channelEpoch?.channelId ?? null,
+        executionPlan.channelEpoch?.activeOutpoint.txid ?? null,
+        executionPlan.channelEpoch?.activeOutpoint.index ?? null,
+        executionPlan.channelEpoch?.activeScriptPublicKey ?? null,
+        executionPlan.channelEpoch?.fundingAmountAtomic ?? null,
+        executionPlan.channelEpoch?.refundTimeoutDaa ?? null,
+        executionPlan.claimFeeReserveAtomic ?? null,
+        now
+      );
       this.inject("checkout_terms.after_insert");
       this.transitionPurchase(purchaseId, "created", "terms_bound", "checkout_terms_bound", input.terms.checkoutDigest);
       return this.requireCheckoutTerms(purchaseId);
@@ -1193,6 +1718,14 @@ export class PurchaseJournal {
     return row ? checkoutTermsFromRow(row) : undefined;
   }
 
+  requireExecutionPlan(purchaseId: PurchaseId): PurchaseExecutionPlanRecord {
+    const row = this.db.prepare(
+      "SELECT * FROM purchase_execution_plans WHERE purchase_id = ?"
+    ).get(purchaseId) as PurchaseExecutionPlanRow | undefined;
+    if (!row) throw new JournalNotFoundError(`Purchase ${purchaseId} has no execution plan`);
+    return purchaseExecutionPlanFromRow(row);
+  }
+
   recordAuthorizationRequest(
     purchaseId: PurchaseId,
     input: RecordAuthorizationRequestInput
@@ -1201,9 +1734,10 @@ export class PurchaseJournal {
     const record = this.db.transaction(() => {
       const purchase = this.requirePurchase(purchaseId);
       const terms = this.requireCheckoutTerms(purchaseId);
+      const executionPlan = this.requireExecutionPlan(purchaseId);
       const existing = this.findAuthorizationRequest(purchaseId);
       if (existing) {
-        assertSameAuthorizationRequest(existing, input);
+        assertSameAuthorizationRequest(existing, input, executionPlan);
         return existing;
       }
       if (purchase.state !== "terms_bound") {
@@ -1246,8 +1780,10 @@ export class PurchaseJournal {
           `INSERT INTO authorization_requests
              (purchase_id, checkout_digest, request_digest, nonce_digest, request_media_type,
               request_body_digest, additional_cost_ceiling_atomic, effective_finality_floor,
-              expires_at_ms, created_at_ms)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+              execution_plan_digest, execution_mechanism, execution_profile,
+              settlement_assurance, maximum_authorized_charge_atomic, channel_id,
+              channel_epoch_digest, expires_at_ms, created_at_ms)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           purchaseId,
@@ -1258,6 +1794,13 @@ export class PurchaseJournal {
           input.requestBodyDigest,
           input.additionalCostCeilingAtomic,
           input.effectiveFinalityFloor,
+          executionPlan.digest,
+          executionPlan.mechanism,
+          executionPlan.profile,
+          executionPlan.settlementAssurance,
+          executionPlan.maximumChargeAtomic,
+          executionPlan.channelEpoch?.channelId ?? null,
+          channelEpochDigest(executionPlan) ?? null,
           input.expiresAtMs,
           now
         );
@@ -1375,6 +1918,26 @@ export class PurchaseJournal {
       .prepare("SELECT * FROM purchase_authorizations WHERE purchase_id = ?")
       .get(purchaseId) as AuthorizationRow | undefined;
     return row ? authorizationFromRow(row) : undefined;
+  }
+
+  storeExecutionPlanEvidence(
+    purchaseId: PurchaseId,
+    input: PurchaseExecutionPlan
+  ): Readonly<{ plan: CanonicalPurchaseExecutionPlan; evidenceDigest: Sha256Digest }> {
+    const plan = canonicalPurchaseExecutionPlan(input);
+    const { digest, ...facts } = plan;
+    const bytes = Buffer.from(JSON.stringify(facts), "utf8");
+    if (evidenceDigest(bytes) !== digest) {
+      throw new JournalInvariantError("Purchase execution plan serialization is not canonical");
+    }
+    const evidence = this.storeEvidence(purchaseId, {
+      bytes,
+      mediaType: "application/json",
+      profile: "urn:sompi:purchase-execution-plan:1",
+      issuer: "sompi-purchase-module",
+      kind: "execution-plan",
+    });
+    return Object.freeze({ plan, evidenceDigest: evidence.digest });
   }
 
   storeEvidence(purchaseId: PurchaseId, input: StoreEvidenceInput): EvidenceAttachmentRecord {
@@ -2237,7 +2800,7 @@ export class PurchaseJournal {
     submissionOutcome: TreasurySubmissionOutcome = "in_flight",
   ): TreasuryOperationRecord {
     assertTreasuryOperationKey(operationKey);
-    if (!["observed", "not_submitted", "pending"].includes(status)) {
+    if (!["observed", "not_submitted", "pending", "superseded"].includes(status)) {
       throw new JournalInvariantError("direct Treasury observation status is invalid");
     }
     if (!["in_flight", "ambiguous", "accepted"].includes(submissionOutcome)) {
@@ -2264,6 +2827,35 @@ export class PurchaseJournal {
       ).run(operationKey, status, detailDigest, detailJson, now);
       this.inject("treasury_operation.after_observation_insert");
       if (status === "pending" || current.state === "observed") {
+        return this.requireTreasuryOperation(operationKey);
+      }
+      if (status === "superseded") {
+        const driverSql = driver
+          ? " AND driver_owner = ? AND driver_generation = ?"
+          : "";
+        const updated = this.db.prepare(
+          `UPDATE treasury_operations
+              SET state = 'failed_terminal', submission_in_flight = 0,
+                  effect_capability_generation = NULL,
+                  completed_at_ms = ?, updated_at_ms = ?
+            WHERE operation_key = ? AND state = ?${driverSql}`
+        ).run(
+          now,
+          now,
+          operationKey,
+          current.state,
+          ...(driver ? [driver.owner, driver.generation] : []),
+        );
+        if (updated.changes !== 1) {
+          throw new JournalInvariantError("concurrent superseding Treasury effect changed state");
+        }
+        this.insertTreasuryOperationTransition(
+          operationKey,
+          current.state,
+          "failed_terminal",
+          "mutually_exclusive_chain_effect_accepted",
+          now,
+        );
         return this.requireTreasuryOperation(operationKey);
       }
       // No current observation is proof that an exact effect-capable
@@ -2363,7 +2955,7 @@ export class PurchaseJournal {
     return rows.reduce(
       (sum, row) =>
         sum +
-        (row.kind === "vault_deposit" ? 0n : BigInt(row.resolved_amount_atomic)) +
+        (row.kind === "vault_deposit" || row.kind === "batch_refund" ? 0n : BigInt(row.resolved_amount_atomic)) +
         BigInt(row.fee_atomic),
       0n
     );
@@ -2537,6 +3129,102 @@ export class PurchaseJournal {
   }
 
   /**
+   * Cancels only while the Journal proves that no irreversible Treasury or
+   * Merchant payment effect can have occurred. Prepared bytes may exist, but
+   * every effect must still be unclaimed. Capacity release and lifecycle
+   * cancellation are one SQLite transaction.
+   */
+  cancelPurchaseBeforeExternalEffect(purchaseId: PurchaseId): PurchaseRecord {
+    const cancel = this.db.transaction(() => {
+      const purchase = this.requirePurchase(purchaseId);
+      if (purchase.state === "cancelled") return purchase;
+      if (!["created", "terms_bound", "awaiting_authority", "authorised", "execution_prepared"].includes(purchase.state)) {
+        throw new JournalEffectBusyError(
+          `Purchase ${purchaseId} cannot be cancelled after external execution began`
+        );
+      }
+
+      const effects = this.effectsForPurchase(purchaseId);
+      for (const effect of effects) {
+        const observedMerchantAuthorization =
+          effect.kind === MERCHANT_AUTHORIZATION_EFFECT_KIND && effect.state === "observed";
+        if (
+          !observedMerchantAuthorization &&
+          effect.state !== "planned" &&
+          effect.state !== "retryable" &&
+          effect.state !== "abandoned"
+        ) {
+          throw new JournalEffectBusyError(
+            `Purchase ${purchaseId} has a possible external effect ${effect.id}`
+          );
+        }
+      }
+
+      const now = this.timestamp();
+      const detailDigest = this.findCheckoutTerms(purchaseId)?.checkoutDigest;
+      for (const effect of effects) {
+        if (effect.state === "planned" || effect.state === "retryable") {
+          this.updateEffectState(
+            effect,
+            "abandoned",
+            "purchase_cancelled_before_external_effect",
+            detailDigest ?? effect.payloadDigest,
+            now,
+            { errorCode: "cancelled_before_external_effect" }
+          );
+        }
+      }
+
+      const attempts = this.paymentAttempts(purchaseId);
+      if (attempts.length > 1) {
+        throw new JournalInvariantError("pre-effect cancellation found multiple Payment Attempts");
+      }
+      const attempt = attempts[0];
+      if (attempt && (attempt.state === "planned" || attempt.state === "prepared")) {
+        this.transitionAttemptInternal(
+          attempt,
+          "failed",
+          "purchase_cancelled_before_external_effect",
+          detailDigest,
+          now,
+          "cancelled_before_external_effect"
+        );
+      } else if (attempt && attempt.state !== "failed") {
+        throw new JournalEffectBusyError(
+          `Purchase ${purchaseId} has an irreversible Payment Attempt`
+        );
+      }
+
+      const reservation = this.findReservationForPurchase(purchaseId);
+      if (reservation?.state === "active") {
+        const released = this.db.prepare(
+          "UPDATE treasury_reservations SET state = 'released', updated_at_ms = ? WHERE id = ? AND state = 'active'"
+        ).run(now, reservation.id);
+        if (released.changes !== 1) {
+          throw new JournalInvariantError("concurrent pre-effect Treasury Reservation release");
+        }
+      } else if (
+        reservation &&
+        reservation.state !== "released" &&
+        reservation.state !== "expired"
+      ) {
+        throw new JournalEffectBusyError(
+          `Purchase ${purchaseId} has irreversible Treasury Reservation state ${reservation.state}`
+        );
+      }
+
+      return this.transitionPurchase(
+        purchaseId,
+        purchase.state,
+        "cancelled",
+        "purchase_cancelled_before_external_effect",
+        detailDigest
+      );
+    });
+    return cancel.immediate();
+  }
+
+  /**
    * Terminates a never-staged Purchase after Checkout expiry. Ambiguous
    * Merchant presentation must be reconciled first; accepted presentation is
    * harmless but can no longer authorize Treasury execution.
@@ -2646,7 +3334,7 @@ export class PurchaseJournal {
       const paymentEffects = this.effectsForPurchase(purchaseId).filter(
         (effect) =>
           effect.attempt === attempt.attempt &&
-          effect.kind === "kaspa-x402-exact"
+          effect.kind === "kaspa-x402-payment"
       );
       if (paymentEffects.length > 1 || paymentEffects.some((effect) => effect.state !== "planned")) {
         throw new JournalInvariantError(
@@ -3102,7 +3790,7 @@ export class PurchaseJournal {
           effect.purchaseId,
           effect.attempt,
           input.reservationId,
-          input.transactionId,
+          input.transactionId ?? null,
           input.outpoint,
           input.stagingAmountAtomic,
           input.fundingSource,
@@ -3224,7 +3912,7 @@ export class PurchaseJournal {
           "staging recovery exact candidate differs from immutable payment preparation"
         );
       }
-      if (this.findSpendForPurchase(input.purchaseId)) {
+      if (this.findSettlementForPurchase(input.purchaseId)) {
         throw new JournalInvariantError("settled Merchant payment cannot be swept");
       }
       if (
@@ -3618,9 +4306,10 @@ export class PurchaseJournal {
         .prepare(
           `INSERT INTO payment_preparations
              (purchase_id, attempt, reservation_id, requirements_digest, payload_digest,
-              prepared_ref, prepared_byte_length, transaction_id, amount_atomic, asset,
-              network, payee, required_finality, funding_source, created_at_ms)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+              prepared_ref, prepared_byte_length, execution_id, mechanism, profile,
+              transaction_id, amount_atomic, asset, network, payee,
+              required_assurance, funding_source, created_at_ms)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           input.purchaseId,
@@ -3630,12 +4319,15 @@ export class PurchaseJournal {
           input.payloadDigest,
           stored.storageRef,
           stored.byteLength,
-          input.transactionId,
+          input.executionId,
+          input.mechanism,
+          input.profile,
+          input.transactionId ?? null,
           input.amountAtomic,
           input.asset,
           input.network,
           input.payee,
-          input.requiredFinality,
+          input.requiredAssurance,
           input.fundingSource,
           now
         );
@@ -3960,7 +4652,7 @@ export class PurchaseJournal {
       this.assertEffectWriter(effectId, lease);
       const effect = this.requireEffect(effectId);
       if (observation.status === "observed" && effect.attempt !== undefined) {
-        throw new JournalInvariantError("payment effects must be finalized with recordObservedSpend");
+        throw new JournalInvariantError("payment effects must be finalized with recordPurchaseSettlement");
       }
       if (effect.state === "observed") {
         if (observation.status !== "observed" || effect.resultDigest !== observation.resultDigest) {
@@ -4000,20 +4692,20 @@ export class PurchaseJournal {
     return record.immediate();
   }
 
-  recordObservedSpend(
+  recordPurchaseSettlement(
     lease: LeaseToken,
-    input: RecordObservedSpendInput
-  ): TreasurySpendRecord {
-    validateSpendInput(input);
+    input: RecordPurchaseSettlementInput
+  ): PurchaseSettlementRecord {
+    validatePurchaseSettlementInput(input);
     const record = this.db.transaction(() => {
       this.assertEffectWriter(input.effectId, lease);
       const effect = this.requireEffect(input.effectId);
       if (effect.attempt === undefined) throw new JournalInvariantError("observed spend requires a payment effect");
-      const existing = this.findSpend(input.reservationId);
+      const existing = this.findSettlement(input.reservationId);
       if (existing) {
-        assertSameSpend(existing, input);
+        assertSameSettlement(existing, input);
         if (effect.state !== "observed" || effect.resultDigest !== input.evidenceDigest) {
-          throw new JournalInvariantError("spend exists but effect observation conflicts");
+          throw new JournalInvariantError("Settlement exists but effect observation conflicts");
         }
         return existing;
       }
@@ -4023,14 +4715,21 @@ export class PurchaseJournal {
       const attempt = this.requirePaymentAttempt(effect.purchaseId, effect.attempt);
       if (attempt.state !== "submitted") throw new JournalInvariantError("observed spend requires submitted Payment Attempt");
       const preparation = this.requirePaymentPreparation(effect.purchaseId, effect.attempt);
+      const amountMatchesPreparation = input.mechanism === "single-transaction"
+        ? preparation.amountAtomic === input.actualAmountAtomic
+        : BigInt(input.actualAmountAtomic) > 0n &&
+          BigInt(input.actualAmountAtomic) <= BigInt(preparation.amountAtomic);
       if (
         preparation.reservationId !== input.reservationId ||
+        preparation.executionId !== input.executionId ||
+        preparation.mechanism !== input.mechanism ||
+        preparation.profile !== input.profile ||
         preparation.transactionId !== input.transactionId ||
-        preparation.amountAtomic !== input.actualAmountAtomic ||
+        !amountMatchesPreparation ||
         preparation.asset !== input.asset ||
         preparation.payee !== input.payee ||
         preparation.network !== input.network ||
-        !paymentFinalityMeets(input.finality, preparation.requiredFinality) ||
+        !settlementAssuranceMeets(input.settlementAssurance, preparation.requiredAssurance) ||
         preparation.fundingSource !== input.fundingSource
       ) {
         throw new JournalInvariantError("observed spend does not match immutable payment preparation");
@@ -4046,7 +4745,9 @@ export class PurchaseJournal {
         true
       );
       if (
-        amount !== BigInt(reservation.amountAtomic) ||
+        (input.mechanism === "single-transaction"
+          ? amount !== BigInt(reservation.amountAtomic)
+          : amount <= 0n || amount > BigInt(reservation.amountAtomic)) ||
         additionalCost > BigInt(reservation.additionalCostCeilingAtomic)
       ) {
         throw new PolicyReservationError("observed spend exceeds its Treasury Reservation");
@@ -4064,33 +4765,38 @@ export class PurchaseJournal {
       const now = this.timestamp();
       const inserted = this.db
         .prepare(
-          `INSERT INTO treasury_spends
-             (effect_id, reservation_id, purchase_id, attempt, transaction_id, outpoint,
-              actual_amount_atomic, actual_additional_cost_atomic, asset, payee, network, finality,
+          `INSERT INTO purchase_settlements
+             (effect_id, reservation_id, purchase_id, attempt, execution_id, mechanism, profile,
+              transaction_id, commitment_id, outpoint,
+              actual_amount_atomic, actual_additional_cost_atomic, asset, payee, network, settlement_assurance,
               funding_source, evidence_digest, evidence_verification_profile,
               evidence_verifier_id, observed_at_ms)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         )
         .run(
           input.effectId,
           input.reservationId,
           effect.purchaseId,
           effect.attempt,
-          input.transactionId,
+          input.executionId,
+          input.mechanism,
+          input.profile,
+          input.transactionId ?? null,
+          input.commitmentId ?? null,
           input.outpoint ?? null,
           input.actualAmountAtomic,
           input.actualAdditionalCostAtomic,
           input.asset,
           input.payee,
           input.network,
-          input.finality,
+          input.settlementAssurance,
           input.fundingSource,
           input.evidenceDigest,
           input.evidenceVerificationProfile,
           input.evidenceVerifierId,
           now
         );
-      this.inject("spend.after_insert");
+      this.inject("settlement.after_insert");
       const reservationUpdate = this.db
         .prepare(
           `UPDATE treasury_reservations
@@ -4098,7 +4804,7 @@ export class PurchaseJournal {
            WHERE id = ? AND state = 'in_flight'`
         )
         .run(now, now, input.reservationId);
-      if (reservationUpdate.changes !== 1) throw new JournalInvariantError("concurrent spend finalization");
+      if (reservationUpdate.changes !== 1) throw new JournalInvariantError("concurrent Settlement finalization");
       this.transitionAttemptInternal(attempt, "observed", "settlement_observed", input.evidenceDigest, now);
       this.insertEffectObservation(
         effect.id,
@@ -4229,7 +4935,7 @@ export class PurchaseJournal {
       const terms = this.requireCheckoutTerms(purchaseId);
       const authorization = this.requireAuthorization(purchaseId);
       const fulfilment = this.requireFulfilment(purchaseId);
-      const spend = this.findSpendForPurchase(purchaseId);
+      const spend = this.findSettlementForPurchase(purchaseId);
       if (!spend) throw new JournalInvariantError("Receipt requires verified Settlement");
       if (
         input.checkoutDigest !== terms.checkoutDigest ||
@@ -4406,17 +5112,17 @@ export class PurchaseJournal {
     return rows.map(evidenceLinkFromRow);
   }
 
-  findSpendForPurchase(purchaseId: PurchaseId): TreasurySpendRecord | undefined {
+  findSettlementForPurchase(purchaseId: PurchaseId): PurchaseSettlementRecord | undefined {
     const row = this.db
-      .prepare("SELECT * FROM treasury_spends WHERE purchase_id = ? ORDER BY id DESC LIMIT 1")
-      .get(purchaseId) as TreasurySpendRow | undefined;
-    return row ? treasurySpendFromRow(row) : undefined;
+      .prepare("SELECT * FROM purchase_settlements WHERE purchase_id = ? ORDER BY id DESC LIMIT 1")
+      .get(purchaseId) as PurchaseSettlementRow | undefined;
+    return row ? purchaseSettlementFromRow(row) : undefined;
   }
 
-  requireSpend(reservationId: string): TreasurySpendRecord {
-    const spend = this.findSpend(reservationId);
-    if (!spend) throw new JournalNotFoundError(`Treasury spend for Reservation ${reservationId} does not exist`);
-    return spend;
+  requireSettlement(reservationId: string): PurchaseSettlementRecord {
+    const settlement = this.findSettlement(reservationId);
+    if (!settlement) throw new JournalNotFoundError(`Settlement for Reservation ${reservationId} does not exist`);
+    return settlement;
   }
 
   requireEffect(id: string): EffectRecord {
@@ -4561,6 +5267,513 @@ export class PurchaseJournal {
     return rows.map(reconciliationRunFromRow);
   }
 
+  loadBatchChannels(scope: Readonly<BatchChannelLookup> = {}): BatchChannelJournalRecord[] {
+    const clauses: string[] = [];
+    const values: unknown[] = [];
+    for (const [column, value] of [
+      ["origin", scope.origin],
+      ["resource_url", scope.resourceUrl],
+      ["network", scope.network],
+      ["status", scope.status],
+    ] as const) {
+      if (value !== undefined) {
+        clauses.push(`${column} = ?`);
+        values.push(value);
+      }
+    }
+    const where = clauses.length === 0 ? "" : ` WHERE ${clauses.join(" AND ")}`;
+    const rows = this.db
+      .prepare(`SELECT * FROM batch_channels${where} ORDER BY created_at_ms, channel_id`)
+      .all(...values) as BatchChannelRow[];
+    return rows.map(batchChannelFromRow);
+  }
+
+  requireBatchChannel(channelId: string): BatchChannelJournalRecord {
+    requireBatchHash(channelId, "batch channel ID");
+    const row = this.db
+      .prepare("SELECT * FROM batch_channels WHERE channel_id = ?")
+      .get(channelId) as BatchChannelRow | undefined;
+    if (!row) throw new JournalNotFoundError(`Batch channel ${channelId} does not exist`);
+    return batchChannelFromRow(row);
+  }
+
+  /**
+   * Journal-backed compare-and-swap for the SDK ChannelStore. All monotonic
+   * voucher/accounting checks happen in the same SQLite transaction as the
+   * durable channel update and immutable transition record.
+   */
+  saveBatchChannel(candidate: Readonly<BatchChannelJournalRecord>): BatchChannelJournalRecord {
+    const normalized = normalizeBatchChannel(candidate, this.timestamp());
+    const save = this.db.transaction(() => {
+      const existingRow = this.db
+        .prepare("SELECT * FROM batch_channels WHERE channel_id = ?")
+        .get(normalized.channelId) as BatchChannelRow | undefined;
+      if (!existingRow) {
+        if (normalized.version !== 1 || normalized.epoch !== 0) {
+          throw new JournalInvariantError("new batch channel must begin at epoch 0 version 1");
+        }
+        this.db.prepare(
+          `INSERT INTO batch_channels (
+             channel_id, origin, resource_url, network, asset, template_id,
+             client_public_key, server_public_key, pay_to, refund_address,
+             refund_timeout_daa, salt, active_txid, active_output_index,
+             active_script_public_key, escrow_address, funding_source,
+             funding_amount_atomic, charged_cumulative_atomic,
+             claimed_cumulative_atomic, signed_cumulative_atomic,
+             latest_voucher_amount_atomic, latest_voucher_signature, status,
+             epoch, version, retired_reason, created_at_ms, updated_at_ms
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(...batchChannelSqlValues(normalized));
+        this.insertBatchChannelTransition(undefined, normalized, "channel_created");
+        this.inject("batch_channel.after_insert");
+        return normalized;
+      }
+      const existing = batchChannelFromRow(existingRow);
+      assertBatchChannelIdentity(existing, normalized);
+      assertBatchChannelProgress(existing, normalized);
+      if (normalized.version !== existing.version + 1) {
+        throw new JournalFencingError(
+          `batch channel version ${normalized.version} does not follow ${existing.version}`
+        );
+      }
+      const result = this.db.prepare(
+        `UPDATE batch_channels SET
+           resource_url = ?, active_txid = ?, active_output_index = ?,
+           active_script_public_key = ?, funding_amount_atomic = ?,
+           charged_cumulative_atomic = ?, claimed_cumulative_atomic = ?,
+           signed_cumulative_atomic = ?, latest_voucher_amount_atomic = ?,
+           latest_voucher_signature = ?, status = ?, epoch = ?, version = ?,
+           retired_reason = ?, updated_at_ms = ?
+         WHERE channel_id = ? AND version = ?`
+      ).run(
+        normalized.resourceUrl ?? null,
+        normalized.activeOutpoint.txid,
+        normalized.activeOutpoint.index,
+        normalized.activeScriptPublicKey,
+        normalized.fundingAmountAtomic,
+        normalized.chargedCumulativeAtomic,
+        normalized.claimedCumulativeAtomic,
+        normalized.signedCumulativeAtomic,
+        normalized.latestVoucher?.amountAtomic ?? null,
+        normalized.latestVoucher?.signature ?? null,
+        normalized.status,
+        normalized.epoch,
+        normalized.version,
+        normalized.retiredReason ?? null,
+        normalized.updatedAtMs,
+        normalized.channelId,
+        existing.version
+      );
+      if (result.changes !== 1) throw new JournalFencingError("batch channel update lost its compare-and-swap");
+      this.insertBatchChannelTransition(existing, normalized, batchTransitionReason(existing, normalized));
+      this.inject("batch_channel.after_update");
+      return normalized;
+    });
+    return save.immediate();
+  }
+
+  /**
+   * Persists an SDK channel update and any on-chain successor Movement in one
+   * SQLite transaction. Voucher-only updates produce no chain Movement.
+   */
+  saveBatchChannelWithLifecycleMovement(
+    candidate: Readonly<BatchChannelJournalRecord>
+  ): BatchChannelJournalRecord {
+    const save = this.db.transaction(() => {
+      const previousRow = this.db
+        .prepare("SELECT * FROM batch_channels WHERE channel_id = ?")
+        .get(candidate.channelId) as BatchChannelRow | undefined;
+      const previous = previousRow ? batchChannelFromRow(previousRow) : undefined;
+      const next = this.saveBatchChannel(candidate);
+      if (!previous || (
+        previous.activeOutpoint.txid === next.activeOutpoint.txid &&
+        previous.activeOutpoint.index === next.activeOutpoint.index
+      )) {
+        return next;
+      }
+      const kind: "claim" | "topup" =
+        BigInt(next.claimedCumulativeAtomic) > BigInt(previous.claimedCumulativeAtomic)
+          ? "claim"
+          : BigInt(next.fundingAmountAtomic) > BigInt(previous.fundingAmountAtomic)
+            ? "topup"
+            : (() => { throw new JournalInvariantError("batch successor is neither a claim nor a top-up"); })();
+      const movementId = `batch-${kind}:${next.channelId}:${next.activeOutpoint.txid}:${next.activeOutpoint.index}`;
+      const requestDigest = evidenceDigest(Buffer.from(JSON.stringify({
+        profile: "urn:sompi:batch-channel-successor:1",
+        kind,
+        channelId: next.channelId,
+        before: previous.activeOutpoint,
+        after: next.activeOutpoint,
+        fundingBefore: previous.fundingAmountAtomic,
+        fundingAfter: next.fundingAmountAtomic,
+        charged: next.chargedCumulativeAtomic,
+        claimedBefore: previous.claimedCumulativeAtomic,
+        claimedAfter: next.claimedCumulativeAtomic,
+      }), "utf8"));
+      const movement = this.planBatchTreasuryMovement({
+        movementId,
+        channelId: next.channelId,
+        kind,
+        requestDigest,
+        activeOutpointBefore: previous.activeOutpoint,
+      });
+      if (movement.state !== "accepted") {
+        this.advanceBatchTreasuryMovement({
+          movementId,
+          expectedState: movement.state,
+          state: "accepted",
+          activeOutpointAfter: next.activeOutpoint,
+          transactionId: next.activeOutpoint.txid,
+        });
+      }
+      return next;
+    });
+    return save.immediate();
+  }
+
+  /** Atomically publishes an accepted initial deposit and its active channel. */
+  activateBatchChannelFromDeposit(
+    candidate: Readonly<BatchChannelJournalRecord>,
+    movementId: string,
+  ): Readonly<{
+    channel: BatchChannelJournalRecord;
+    movement: BatchTreasuryMovementRecord;
+  }> {
+    const activate = this.db.transaction(() => {
+      const movement = this.requireBatchTreasuryMovement(movementId);
+      if (
+        movement.kind !== "deposit" || movement.channelId !== candidate.channelId ||
+        (movement.state !== "planned" && movement.state !== "submitted" && movement.state !== "accepted")
+      ) {
+        throw new JournalInvariantError("batch deposit Movement cannot activate this channel");
+      }
+      const existing = this.db
+        .prepare("SELECT * FROM batch_channels WHERE channel_id = ?")
+        .get(candidate.channelId) as BatchChannelRow | undefined;
+      const channel = existing ? batchChannelFromRow(existing) : this.saveBatchChannel(candidate);
+      if (existing && JSON.stringify(channel) !== JSON.stringify(normalizeBatchChannel(candidate, channel.updatedAtMs))) {
+        throw new JournalInvariantError("accepted batch deposit conflicts with the active channel");
+      }
+      const accepted = movement.state === "accepted"
+        ? movement
+        : this.advanceBatchTreasuryMovement({
+            movementId,
+            expectedState: movement.state,
+            state: "accepted",
+            activeOutpointAfter: channel.activeOutpoint,
+            transactionId: channel.activeOutpoint.txid,
+          });
+      return Object.freeze({ channel, movement: accepted });
+    });
+    return activate.immediate();
+  }
+
+  completeBatchChannelRefund(input: Readonly<{
+    channelId: string;
+    movementId: string;
+    transactionId: string;
+  }>): Readonly<{
+    channel: BatchChannelJournalRecord;
+    movement: BatchTreasuryMovementRecord;
+  }> {
+    const complete = this.db.transaction(() => {
+      const current = this.requireBatchChannel(input.channelId);
+      const movement = this.requireBatchTreasuryMovement(input.movementId);
+      requireBatchHash(input.transactionId, "batch refund transaction ID");
+      if (movement.channelId !== current.channelId || movement.kind !== "refund") {
+        throw new JournalInvariantError("batch refund Movement does not belong to the channel");
+      }
+      const channel = current.status === "refunded"
+        ? current
+        : this.saveBatchChannel({
+            ...current,
+            status: "refunded",
+            version: current.version + 1,
+            updatedAtMs: this.timestamp(),
+          });
+      const accepted = movement.state === "accepted"
+        ? movement
+        : this.advanceBatchTreasuryMovement({
+            movementId: movement.movementId,
+            expectedState: movement.state,
+            state: "accepted",
+            transactionId: input.transactionId,
+          });
+      if (accepted.transactionId !== input.transactionId) {
+        throw new JournalInvariantError("accepted batch refund transaction changed");
+      }
+      return Object.freeze({ channel, movement: accepted });
+    });
+    return complete.immediate();
+  }
+
+  /**
+   * Atomically adopts a fully verified merchant claim which spent the active
+   * channel before the prepared client refund, and terminally supersedes that
+   * refund Movement. The expected active outpoint is the compare-and-swap
+   * fence; address equality alone can never advance channel lineage.
+   */
+  completeBatchClaimRefundRace(input: Readonly<{
+    channelId: string;
+    refundMovementId: string;
+    expectedActiveOutpoint: Readonly<{ txid: string; index: number }>;
+    claimTransactionId: string;
+    continuationOutpoint: Readonly<{ txid: string; index: number }>;
+    continuationScriptPublicKey: string;
+    continuationFundingAmountAtomic: string;
+  }>): Readonly<{
+    channel: BatchChannelJournalRecord;
+    refundMovement: BatchTreasuryMovementRecord;
+  }> {
+    const reconcile = this.db.transaction(() => {
+      requireBatchHash(input.claimTransactionId, "batch claim transaction ID");
+      const expected = normalizeBatchOutpoint(input.expectedActiveOutpoint, "batch claim source");
+      const continuation = normalizeBatchOutpoint(input.continuationOutpoint, "batch claim continuation");
+      if (continuation.txid !== input.claimTransactionId || continuation.index !== 1) {
+        throw new JournalInvariantError("batch claim continuation does not belong to the accepted claim");
+      }
+      requireBatchText(input.continuationScriptPublicKey, "batch claim continuation script", 100_000);
+      const continuationFundingAtomic = requireBatchAtomic(
+        input.continuationFundingAmountAtomic,
+        "batch claim continuation funding",
+      ).toString();
+      const continuationFunding = BigInt(continuationFundingAtomic);
+      let channel = this.requireBatchChannel(input.channelId);
+      const alreadyApplied =
+        channel.activeOutpoint.txid === continuation.txid &&
+        channel.activeOutpoint.index === continuation.index;
+      if (!alreadyApplied) {
+        if (
+          channel.activeOutpoint.txid !== expected.txid ||
+          channel.activeOutpoint.index !== expected.index ||
+          channel.status !== "active"
+        ) {
+          throw new JournalFencingError("batch claim/refund race lost its active-channel compare-and-swap");
+        }
+        const funding = BigInt(channel.fundingAmountAtomic);
+        const charged = BigInt(channel.chargedCumulativeAtomic);
+        const claimed = BigInt(channel.claimedCumulativeAtomic);
+        if (
+          continuationFunding >= funding ||
+          funding - continuationFunding !== charged - claimed ||
+          input.continuationScriptPublicKey !== channel.activeScriptPublicKey
+        ) {
+          throw new JournalInvariantError("batch claim/refund race continuation violates channel accounting");
+        }
+        const { latestVoucher: _latestVoucher, ...withoutVoucher } = channel;
+        channel = this.saveBatchChannelWithLifecycleMovement({
+          ...withoutVoucher,
+          activeOutpoint: continuation,
+          activeScriptPublicKey: input.continuationScriptPublicKey,
+          fundingAmountAtomic: continuationFundingAtomic,
+          claimedCumulativeAtomic: channel.chargedCumulativeAtomic,
+          signedCumulativeAtomic: "0",
+          epoch: channel.epoch + 1,
+          version: channel.version + 1,
+          updatedAtMs: this.timestamp(),
+        });
+      } else if (
+        channel.fundingAmountAtomic !== continuationFundingAtomic ||
+        channel.activeScriptPublicKey !== input.continuationScriptPublicKey ||
+        channel.claimedCumulativeAtomic !== channel.chargedCumulativeAtomic
+      ) {
+        throw new JournalInvariantError("previously applied batch claim conflicts with race evidence");
+      }
+
+      let refundMovement = this.requireBatchTreasuryMovement(input.refundMovementId);
+      if (
+        refundMovement.kind !== "refund" ||
+        refundMovement.channelId !== channel.channelId ||
+        refundMovement.activeOutpointBefore?.txid !== expected.txid ||
+        refundMovement.activeOutpointBefore?.index !== expected.index
+      ) {
+        throw new JournalInvariantError("batch refund Movement does not match the accepted claim race");
+      }
+      if (refundMovement.state !== "failed_terminal") {
+        refundMovement = this.advanceBatchTreasuryMovement({
+          movementId: refundMovement.movementId,
+          expectedState: refundMovement.state,
+          state: "failed_terminal",
+        });
+      }
+      return Object.freeze({ channel, refundMovement });
+    });
+    return reconcile.immediate();
+  }
+
+  retireBatchChannel(channelId: string, reason = "retired_by_adapter"): BatchChannelJournalRecord {
+    const current = this.requireBatchChannel(channelId);
+    if (current.status === "retired") return current;
+    return this.saveBatchChannel({
+      ...current,
+      status: "retired",
+      retiredReason: requireBatchReason(reason),
+      version: current.version + 1,
+      updatedAtMs: this.timestamp(),
+    });
+  }
+
+  listRefundableBatchChannels(nowDaa: string): BatchChannelJournalRecord[] {
+    const now = requireBatchAtomic(nowDaa, "current DAA");
+    return this.loadBatchChannels({}).filter((channel) =>
+      (channel.status === "active" || channel.status === "refundable") &&
+      now > BigInt(channel.refundTimeoutDaa)
+    );
+  }
+
+  planBatchTreasuryMovement(
+    input: Readonly<PlanBatchTreasuryMovementInput>
+  ): BatchTreasuryMovementRecord {
+    const normalized = normalizeBatchMovementPlan(input);
+    const plan = this.db.transaction(() => {
+      // The initial deposit Movement is the durable intent that must exist
+      // before an escrow-funding effect. The channel cannot exist until that
+      // deposit is accepted and its exact outpoint is known.
+      if (normalized.kind !== "deposit") this.requireBatchChannel(normalized.channelId);
+      if (normalized.purchaseId !== undefined) this.requirePurchase(normalized.purchaseId);
+      const existing = this.db
+        .prepare("SELECT * FROM batch_treasury_movements WHERE movement_id = ? OR request_digest = ?")
+        .get(normalized.movementId, normalized.requestDigest) as BatchTreasuryMovementRow | undefined;
+      if (existing) {
+        const record = batchMovementFromRow(existing);
+        if (
+          record.movementId !== normalized.movementId ||
+          record.channelId !== normalized.channelId ||
+          record.purchaseId !== normalized.purchaseId ||
+          record.kind !== normalized.kind ||
+          record.requestDigest !== normalized.requestDigest
+        ) {
+          throw new JournalInvariantError("batch Treasury Movement identity conflicts with existing state");
+        }
+        return record;
+      }
+      if (normalized.kind === "voucher") {
+        const open = this.db.prepare(
+          `SELECT movement_id FROM batch_treasury_movements
+            WHERE channel_id = ? AND kind = 'voucher'
+              AND state IN ('planned', 'submitted', 'ambiguous')
+              AND active_txid_before = ? AND active_output_index_before = ?
+            LIMIT 1`
+        ).get(
+          normalized.channelId,
+          normalized.activeOutpointBefore?.txid ?? null,
+          normalized.activeOutpointBefore?.index ?? null
+        ) as { movement_id: string } | undefined;
+        if (open) {
+          throw new JournalFencingError(
+            `batch channel epoch already has open voucher Movement ${open.movement_id}`
+          );
+        }
+      }
+      const now = this.timestamp();
+      this.db.prepare(
+        `INSERT INTO batch_treasury_movements (
+           movement_id, channel_id, purchase_id, kind, state, request_digest,
+           active_txid_before, active_output_index_before,
+           maximum_authorized_atomic, voucher_ceiling_atomic, prepared_digest,
+           created_at_ms, updated_at_ms
+         ) VALUES (?, ?, ?, ?, 'planned', ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        normalized.movementId, normalized.channelId, normalized.purchaseId ?? null,
+        normalized.kind, normalized.requestDigest,
+        normalized.activeOutpointBefore?.txid ?? null,
+        normalized.activeOutpointBefore?.index ?? null,
+        normalized.maximumAuthorizedAtomic ?? null,
+        normalized.voucherCeilingAtomic ?? null,
+        normalized.preparedDigest ?? null,
+        now, now
+      );
+      this.inject("batch_movement.after_insert");
+      return this.requireBatchTreasuryMovement(normalized.movementId);
+    });
+    return plan.immediate();
+  }
+
+  requireBatchTreasuryMovement(movementId: string): BatchTreasuryMovementRecord {
+    requireBatchText(movementId, "batch Treasury Movement ID", 256);
+    const row = this.db
+      .prepare("SELECT * FROM batch_treasury_movements WHERE movement_id = ?")
+      .get(movementId) as BatchTreasuryMovementRow | undefined;
+    if (!row) throw new JournalNotFoundError(`Batch Treasury Movement ${movementId} does not exist`);
+    return batchMovementFromRow(row);
+  }
+
+  advanceBatchTreasuryMovement(input: Readonly<{
+    movementId: string;
+    expectedState: BatchTreasuryMovementState;
+    state: BatchTreasuryMovementState;
+    actualChargeAtomic?: string;
+    activeOutpointAfter?: Readonly<{ txid: string; index: number }>;
+    transactionId?: string;
+    evidenceDigest?: Sha256Digest;
+  }>): BatchTreasuryMovementRecord {
+    const advance = this.db.transaction(() => {
+      const current = this.requireBatchTreasuryMovement(input.movementId);
+      if (current.state !== input.expectedState) {
+        throw new JournalFencingError(`batch Treasury Movement is ${current.state}, expected ${input.expectedState}`);
+      }
+      assertBatchMovementTransition(current.state, input.state);
+      const actual = input.actualChargeAtomic === undefined
+        ? current.actualChargeAtomic
+        : requireBatchAtomic(input.actualChargeAtomic, "batch actual charge").toString();
+      if (current.kind === "voucher" && input.state === "accepted") {
+        if (actual === undefined || current.maximumAuthorizedAtomic === undefined || current.voucherCeilingAtomic === undefined) {
+          throw new JournalInvariantError("accepted voucher movement lacks authorized accounting");
+        }
+        if (BigInt(actual) <= 0n || BigInt(actual) > BigInt(current.maximumAuthorizedAtomic)) {
+          throw new JournalInvariantError("batch actual charge exceeds the Purchase authorization");
+        }
+      }
+      if (input.evidenceDigest !== undefined) this.requireEvidence(input.evidenceDigest);
+      if (input.transactionId !== undefined) requireBatchHash(input.transactionId, "batch movement transaction ID");
+      const after = input.activeOutpointAfter === undefined
+        ? current.activeOutpointAfter
+        : normalizeBatchOutpoint(input.activeOutpointAfter, "batch movement successor");
+      const result = this.db.prepare(
+        `UPDATE batch_treasury_movements SET state = ?, actual_charge_atomic = ?,
+           active_txid_after = ?, active_output_index_after = ?, transaction_id = ?,
+           evidence_digest = ?, updated_at_ms = ?
+         WHERE movement_id = ? AND state = ?`
+      ).run(
+        input.state, actual ?? null, after?.txid ?? null, after?.index ?? null,
+        input.transactionId ?? current.transactionId ?? null,
+        input.evidenceDigest ?? current.evidenceDigest ?? null,
+        this.timestamp(), current.movementId, current.state
+      );
+      if (result.changes !== 1) throw new JournalFencingError("batch Treasury Movement update lost its compare-and-swap");
+      return this.requireBatchTreasuryMovement(current.movementId);
+    });
+    return advance.immediate();
+  }
+
+  private insertBatchChannelTransition(
+    previous: BatchChannelJournalRecord | undefined,
+    next: BatchChannelJournalRecord,
+    reasonCode: string
+  ): void {
+    this.db.prepare(
+      `INSERT INTO batch_channel_transitions (
+         channel_id, from_status, to_status, epoch, active_txid,
+         active_output_index, funding_amount_atomic, charged_cumulative_atomic,
+         claimed_cumulative_atomic, signed_cumulative_atomic, reason_code,
+         created_at_ms
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      next.channelId,
+      previous?.status ?? null,
+      next.status,
+      next.epoch,
+      next.activeOutpoint.txid,
+      next.activeOutpoint.index,
+      next.fundingAmountAtomic,
+      next.chargedCumulativeAtomic,
+      next.claimedCumulativeAtomic,
+      next.signedCumulativeAtomic,
+      reasonCode,
+      next.updatedAtMs
+    );
+  }
+
   private configure(busyTimeoutMs: number): void {
     if (!Number.isSafeInteger(busyTimeoutMs) || busyTimeoutMs < 0) {
       throw new JournalInvariantError("SQLite busy timeout must be a non-negative safe integer");
@@ -4697,6 +5910,7 @@ export class PurchaseJournal {
 
       const purchaseId = purchase.id as PurchaseId;
       const terms = this.findCheckoutTerms(purchaseId);
+      const executionPlan = terms ? this.requireExecutionPlan(purchaseId) : undefined;
       const authorizationRequest = this.findAuthorizationRequest(purchaseId);
       const authorization = this.findAuthorization(purchaseId);
       const fulfilment = this.findFulfilment(purchaseId);
@@ -4709,6 +5923,14 @@ export class PurchaseJournal {
       }
       if (terms) {
         if (
+          !executionPlan ||
+          executionPlan.requirementsDigest !== terms.paymentRequirementsDigest ||
+          executionPlan.maximumChargeAtomic !== terms.amountAtomic ||
+          this.requireEvidenceAttachment(
+            purchaseId,
+            executionPlan.evidenceDigest,
+            "execution-plan"
+          ).profile !== "urn:sompi:purchase-execution-plan:1" ||
           terms.resourceFingerprint !== purchase.resource_fingerprint ||
           terms.checkoutDigest !== terms.checkoutEvidenceDigest ||
           (purchase.expected_merchant_id !== null && terms.merchant.id !== purchase.expected_merchant_id) ||
@@ -5163,7 +6385,7 @@ export class PurchaseJournal {
       ) {
         throw new JournalInvariantError(`Treasury Reservation ${reservation.id} is misbound to its Purchase`);
       }
-      const spend = this.findSpend(reservation.id);
+      const spend = this.findSettlement(reservation.id);
       if ((reservation.state === "spent") !== Boolean(spend)) {
         throw new JournalInvariantError(`Treasury Reservation ${reservation.id} spend state is inconsistent`);
       }
@@ -5296,24 +6518,31 @@ export class PurchaseJournal {
       }
     }
 
-    const spends = this.db.prepare("SELECT * FROM treasury_spends").all() as TreasurySpendRow[];
-    for (const row of spends) {
-      const spend = treasurySpendFromRow(row);
-      const preparation = this.requirePaymentPreparation(spend.purchaseId, spend.attempt);
-      const effect = this.requireEffect(spend.effectId);
+    const settlements = this.db.prepare("SELECT * FROM purchase_settlements").all() as PurchaseSettlementRow[];
+    for (const row of settlements) {
+      const settlement = purchaseSettlementFromRow(row);
+      const preparation = this.requirePaymentPreparation(settlement.purchaseId, settlement.attempt);
+      const effect = this.requireEffect(settlement.effectId);
+      const amountMatchesPreparation = settlement.mechanism === "single-transaction"
+        ? settlement.actualAmountAtomic === preparation.amountAtomic
+        : BigInt(settlement.actualAmountAtomic) > 0n &&
+          BigInt(settlement.actualAmountAtomic) <= BigInt(preparation.amountAtomic);
       if (
-        spend.reservationId !== preparation.reservationId ||
-        spend.transactionId !== preparation.transactionId ||
-        spend.actualAmountAtomic !== preparation.amountAtomic ||
-        spend.asset !== preparation.asset ||
-        spend.payee !== preparation.payee ||
-        spend.network !== preparation.network ||
-        !paymentFinalityMeets(spend.finality, preparation.requiredFinality) ||
-        spend.fundingSource !== preparation.fundingSource ||
+        settlement.reservationId !== preparation.reservationId ||
+        settlement.executionId !== preparation.executionId ||
+        settlement.mechanism !== preparation.mechanism ||
+        settlement.profile !== preparation.profile ||
+        settlement.transactionId !== preparation.transactionId ||
+        !amountMatchesPreparation ||
+        settlement.asset !== preparation.asset ||
+        settlement.payee !== preparation.payee ||
+        settlement.network !== preparation.network ||
+        !settlementAssuranceMeets(settlement.settlementAssurance, preparation.requiredAssurance) ||
+        settlement.fundingSource !== preparation.fundingSource ||
         effect.state !== "observed" ||
-        effect.resultDigest !== spend.evidenceDigest
+        effect.resultDigest !== settlement.evidenceDigest
       ) {
-        throw new JournalInvariantError(`Treasury spend ${spend.id} is inconsistent with immutable preparation`);
+        throw new JournalInvariantError(`Purchase Settlement ${settlement.id} is inconsistent with immutable preparation`);
       }
     }
 
@@ -5351,7 +6580,7 @@ export class PurchaseJournal {
       const terms = this.requireCheckoutTerms(receipt.purchaseId);
       const authorization = this.requireAuthorization(receipt.purchaseId);
       const fulfilment = this.requireFulfilment(receipt.purchaseId);
-      const spend = this.findSpendForPurchase(receipt.purchaseId);
+      const spend = this.findSettlementForPurchase(receipt.purchaseId);
       if (
         !spend ||
         receipt.canonicalDigest !== canonicalReceiptDigest(
@@ -5479,6 +6708,7 @@ export class PurchaseJournal {
     const authorizationRequest = this.findAuthorizationRequest(purchaseId);
     const authorization = this.findAuthorization(purchaseId);
     const reservation = this.findReservationForPurchase(purchaseId);
+    const executionPlan = terms ? this.requireExecutionPlan(purchaseId) : undefined;
     const attempts = this.paymentAttempts(purchaseId);
     const latestAttempt = attempts.at(-1);
     const preparation = latestAttempt
@@ -5501,12 +6731,12 @@ export class PurchaseJournal {
         effect.kind !== TREASURY_STAGING_EFFECT_KIND &&
         effect.kind !== TREASURY_STAGING_RECOVERY_EFFECT_KIND
     );
-    const spend = this.findSpendForPurchase(purchaseId);
+    const spend = this.findSettlementForPurchase(purchaseId);
     const fulfilment = this.findFulfilment(purchaseId);
     const receipts = this.receipts(purchaseId);
     const receiptSet = this.findReceiptSet(purchaseId);
 
-    if (state === "terms_bound" && !terms) {
+    if (state === "terms_bound" && (!terms || !executionPlan)) {
       throw new JournalInvariantError(`Purchase ${purchaseId} cannot enter terms_bound without Checkout Terms`);
     }
     if (state === "awaiting_authority" && (!terms || !authorizationRequest)) {
@@ -5620,6 +6850,15 @@ export class PurchaseJournal {
       nonceDigest: request.nonceDigest,
       additionalCostCeilingAtomic: request.additionalCostCeilingAtomic,
       effectiveFinalityFloor: request.effectiveFinalityFloor,
+      executionPlanDigest: request.executionPlanDigest,
+      executionMechanism: request.executionMechanism,
+      executionProfile: request.executionProfile,
+      settlementAssurance: request.settlementAssurance,
+      maximumAuthorizedChargeAtomic: request.maximumAuthorizedChargeAtomic,
+      ...(request.channelId === undefined ? {} : { channelId: request.channelId }),
+      ...(request.channelEpochDigest === undefined
+        ? {}
+        : { channelEpochDigest: request.channelEpochDigest }),
       createdAtMs: request.createdAtMs,
       expiresAtMs: request.expiresAtMs,
     });
@@ -5842,11 +7081,11 @@ export class PurchaseJournal {
     }
   }
 
-  private findSpend(reservationId: string): TreasurySpendRecord | undefined {
+  private findSettlement(reservationId: string): PurchaseSettlementRecord | undefined {
     const row = this.db
-      .prepare("SELECT * FROM treasury_spends WHERE reservation_id = ?")
-      .get(reservationId) as TreasurySpendRow | undefined;
-    return row ? treasurySpendFromRow(row) : undefined;
+      .prepare("SELECT * FROM purchase_settlements WHERE reservation_id = ?")
+      .get(reservationId) as PurchaseSettlementRow | undefined;
+    return row ? purchaseSettlementFromRow(row) : undefined;
   }
 
   private storePreparedMaterial(bytes: Uint8Array, expectedDigest: Sha256Digest): StoredEvidence {
@@ -6259,7 +7498,7 @@ export class PurchaseJournal {
     excludeOperationKey?: string
   ): void {
     if (
-      kind !== "vault_deposit" &&
+      kind !== "vault_deposit" && kind !== "batch_refund" &&
       policy.allowlist.length > 0 &&
       !policy.allowlist.includes(destination)
     ) {
@@ -6273,7 +7512,7 @@ export class PurchaseJournal {
       kind === "vault_deposit"
     );
     const fee = decimalBigInt(feeAtomic, "direct Treasury fee ceiling", true);
-    const policyAmount = kind === "vault_deposit" ? 0n : amount;
+    const policyAmount = kind === "vault_deposit" || kind === "batch_refund" ? 0n : amount;
     const gross = policyAmount + fee;
     const maxPerPayment = decimalBigInt(policy.maxPerPaymentAtomic, "per-payment limit");
     const maxPerHour = decimalBigInt(policy.maxPerHourAtomic, "hourly limit");
@@ -6324,7 +7563,7 @@ export class PurchaseJournal {
     const cutoff = now - 60 * 60 * 1000;
     const spendRows = this.db
       .prepare(
-        `SELECT actual_amount_atomic, actual_additional_cost_atomic FROM treasury_spends
+        `SELECT actual_amount_atomic, actual_additional_cost_atomic FROM purchase_settlements
          WHERE observed_at_ms >= ?`
       )
       .all(cutoff) as Array<{ actual_amount_atomic: string; actual_additional_cost_atomic: string }>;
@@ -6366,7 +7605,7 @@ export class PurchaseJournal {
         0n
       ) +
       directRows.reduce((total, row) => {
-        const amount = row.kind === "vault_deposit"
+        const amount = row.kind === "vault_deposit" || row.kind === "batch_refund"
           ? "0"
           : row.resolved_amount_atomic ??
             (row.requested_amount_atomic === "max" ? "0" : row.requested_amount_atomic);
@@ -7019,6 +8258,24 @@ interface CheckoutTermsRow {
   created_at_ms: number;
 }
 
+interface PurchaseExecutionPlanRow {
+  purchase_id: string;
+  plan_digest: string;
+  mechanism: "single-transaction" | "channel-voucher";
+  profile: string;
+  requirements_digest: string;
+  maximum_charge_atomic: string;
+  settlement_assurance: "accepted" | "confirmed" | "channel-commitment";
+  channel_id: string | null;
+  active_txid: string | null;
+  active_output_index: number | null;
+  active_script_public_key: string | null;
+  channel_funding_amount_atomic: string | null;
+  refund_timeout_daa: string | null;
+  claim_fee_reserve_atomic: string | null;
+  created_at_ms: number;
+}
+
 interface AuthorizationRequestRow {
   purchase_id: string;
   checkout_digest: string;
@@ -7028,6 +8285,13 @@ interface AuthorizationRequestRow {
   request_body_digest: string;
   additional_cost_ceiling_atomic: string;
   effective_finality_floor: "accepted" | "depth-confirmed";
+  execution_plan_digest: string;
+  execution_mechanism: PurchaseExecutionMechanism;
+  execution_profile: string;
+  settlement_assurance: PurchaseExecutionAssurance;
+  maximum_authorized_charge_atomic: string;
+  channel_id: string | null;
+  channel_epoch_digest: string | null;
   expires_at_ms: number;
   created_at_ms: number;
 }
@@ -7194,12 +8458,15 @@ interface PaymentPreparationRow {
   payload_digest: string;
   prepared_ref: string;
   prepared_byte_length: number;
-  transaction_id: string;
+  execution_id: string;
+  mechanism: PurchaseExecutionMechanism;
+  profile: string;
+  transaction_id: string | null;
   amount_atomic: string;
   asset: string;
   network: string;
   payee: string;
-  required_finality: string;
+  required_assurance: PurchaseExecutionAssurance;
   funding_source: FundingSource;
   created_at_ms: number;
 }
@@ -7334,20 +8601,24 @@ interface EffectTransitionRow {
   created_at_ms: number;
 }
 
-interface TreasurySpendRow {
+interface PurchaseSettlementRow {
   id: number;
   effect_id: string;
   reservation_id: string;
   purchase_id: string;
   attempt: number;
-  transaction_id: string;
+  execution_id: string;
+  mechanism: PurchaseExecutionMechanism;
+  profile: string;
+  transaction_id: string | null;
+  commitment_id: string | null;
   outpoint: string | null;
   actual_amount_atomic: string;
   actual_additional_cost_atomic: string;
   asset: string;
   payee: string;
   network: string;
-  finality: string;
+  settlement_assurance: PurchaseExecutionAssurance;
   funding_source: FundingSource;
   evidence_digest: string;
   evidence_verification_profile: string;
@@ -7540,6 +8811,38 @@ function checkoutTermsFromRow(row: CheckoutTermsRow): CheckoutTermsRecord {
   };
 }
 
+function purchaseExecutionPlanFromRow(row: PurchaseExecutionPlanRow): PurchaseExecutionPlanRecord {
+  const plan = canonicalPurchaseExecutionPlan({
+    mechanism: row.mechanism,
+    profile: row.profile,
+    requirementsDigest: row.requirements_digest as Sha256Digest,
+    maximumChargeAtomic: row.maximum_charge_atomic,
+    settlementAssurance: row.settlement_assurance,
+    ...(row.channel_id === null ? {} : {
+      channelEpoch: {
+        channelId: row.channel_id,
+        activeOutpoint: {
+          txid: row.active_txid!,
+          index: row.active_output_index!,
+        },
+        activeScriptPublicKey: row.active_script_public_key!,
+        fundingAmountAtomic: row.channel_funding_amount_atomic!,
+        refundTimeoutDaa: row.refund_timeout_daa!,
+      },
+      claimFeeReserveAtomic: row.claim_fee_reserve_atomic!,
+    }),
+  });
+  if (plan.digest !== row.plan_digest) {
+    throw new JournalInvariantError("persisted Purchase execution plan digest is invalid");
+  }
+  return Object.freeze({
+    ...plan,
+    purchaseId: row.purchase_id as PurchaseId,
+    evidenceDigest: row.plan_digest as Sha256Digest,
+    createdAtMs: row.created_at_ms,
+  });
+}
+
 function authorizationRequestFromRow(row: AuthorizationRequestRow): AuthorizationRequestRecord {
   return {
     purchaseId: row.purchase_id as PurchaseId,
@@ -7550,6 +8853,15 @@ function authorizationRequestFromRow(row: AuthorizationRequestRow): Authorizatio
     requestBodyDigest: row.request_body_digest as Sha256Digest,
     additionalCostCeilingAtomic: row.additional_cost_ceiling_atomic,
     effectiveFinalityFloor: row.effective_finality_floor,
+    executionPlanDigest: row.execution_plan_digest as Sha256Digest,
+    executionMechanism: row.execution_mechanism,
+    executionProfile: row.execution_profile,
+    settlementAssurance: row.settlement_assurance,
+    maximumAuthorizedChargeAtomic: row.maximum_authorized_charge_atomic,
+    ...(row.channel_id === null ? {} : { channelId: row.channel_id }),
+    ...(row.channel_epoch_digest === null
+      ? {}
+      : { channelEpochDigest: row.channel_epoch_digest as Sha256Digest }),
     expiresAtMs: row.expires_at_ms,
     createdAtMs: row.created_at_ms,
   };
@@ -7705,12 +9017,15 @@ function paymentPreparationFromRow(row: PaymentPreparationRow): PaymentPreparati
     payloadDigest: row.payload_digest as Sha256Digest,
     preparedRef: row.prepared_ref,
     preparedByteLength: row.prepared_byte_length,
-    transactionId: row.transaction_id,
+    executionId: row.execution_id,
+    mechanism: row.mechanism,
+    profile: row.profile,
+    ...(row.transaction_id === null ? {} : { transactionId: row.transaction_id }),
     amountAtomic: row.amount_atomic,
     asset: row.asset,
     network: row.network,
     payee: row.payee,
-    requiredFinality: row.required_finality,
+    requiredAssurance: row.required_assurance,
     fundingSource: row.funding_source,
     createdAtMs: row.created_at_ms,
   };
@@ -7872,21 +9187,25 @@ function effectTransitionFromRow(row: EffectTransitionRow): EffectTransitionReco
   };
 }
 
-function treasurySpendFromRow(row: TreasurySpendRow): TreasurySpendRecord {
+function purchaseSettlementFromRow(row: PurchaseSettlementRow): PurchaseSettlementRecord {
   return {
     id: row.id,
     effectId: row.effect_id,
     reservationId: row.reservation_id,
     purchaseId: row.purchase_id as PurchaseId,
     attempt: row.attempt,
-    transactionId: row.transaction_id,
+    executionId: row.execution_id,
+    mechanism: row.mechanism,
+    profile: row.profile,
+    ...(row.transaction_id === null ? {} : { transactionId: row.transaction_id }),
+    ...(row.commitment_id === null ? {} : { commitmentId: row.commitment_id }),
     outpoint: row.outpoint ?? undefined,
     actualAmountAtomic: row.actual_amount_atomic,
     actualAdditionalCostAtomic: row.actual_additional_cost_atomic,
     asset: row.asset,
     payee: row.payee,
     network: row.network,
-    finality: row.finality,
+    settlementAssurance: row.settlement_assurance,
     fundingSource: row.funding_source,
     evidenceDigest: row.evidence_digest as Sha256Digest,
     evidenceVerificationProfile: row.evidence_verification_profile,
@@ -7971,6 +9290,15 @@ function validateCheckoutTermsRecordInput(input: BindCheckoutTermsInput): void {
     200
   );
   assertSafeIdentity(input.paymentRequirementsVerifierId, "payment requirements verifier identity", 200);
+  const executionPlan = canonicalPurchaseExecutionPlan(input.executionPlan);
+  assertDigest(input.executionPlanEvidenceDigest, "Purchase execution plan evidence digest");
+  if (
+    executionPlan.digest !== input.executionPlanEvidenceDigest ||
+    executionPlan.requirementsDigest !== input.paymentRequirementsDigest ||
+    executionPlan.maximumChargeAtomic !== input.terms.amountAtomic
+  ) {
+    throw new JournalInvariantError("Purchase execution plan does not match Checkout Terms");
+  }
 }
 
 function validateAuthorizationRequestInput(input: RecordAuthorizationRequestInput): void {
@@ -8148,12 +9476,27 @@ function validatePaymentPreparation(input: PreparePaymentAttemptInput): void {
   assertCode(input.reservationId, "reservation id");
   assertDigest(input.requirementsDigest, "payment requirements digest");
   assertDigest(input.payloadDigest, "payment payload digest");
-  assertTransactionId(input.transactionId);
+  assertTransactionId(input.executionId);
+  assertSafeIdentity(input.profile, "payment execution profile", 160);
+  if (input.mechanism === "single-transaction") {
+    if (input.transactionId === undefined || input.requiredAssurance === "channel-commitment") {
+      throw new JournalInvariantError("single-transaction preparation has invalid execution facts");
+    }
+    assertTransactionId(input.transactionId);
+    if (input.executionId !== input.transactionId) {
+      throw new JournalInvariantError("single-transaction execution identity must equal its transaction identity");
+    }
+  } else if (input.mechanism === "channel-voucher") {
+    if (input.transactionId !== undefined || input.requiredAssurance !== "channel-commitment") {
+      throw new JournalInvariantError("channel-voucher preparation has invalid execution facts");
+    }
+  } else {
+    throw new JournalInvariantError("payment execution mechanism is invalid");
+  }
   decimalBigInt(input.amountAtomic, "prepared payment amount");
   assertSafeIdentity(input.asset, "prepared payment asset", 40);
   assertSafeIdentity(input.network, "prepared payment network", 100);
   assertBoundedText(input.payee, "prepared payment payee", 300);
-  requirePaymentFinality(input.requiredFinality, "prepared payment finality");
   assertVaultFundingSource(input.fundingSource);
   if (!Number.isSafeInteger(input.preparedBytes.byteLength) || input.preparedBytes.byteLength < 1) {
     throw new JournalInvariantError("prepared payment bytes must not be empty");
@@ -8313,25 +9656,62 @@ function validateObservation(observation: EffectObservation): void {
   }
 }
 
-function validateSpendInput(input: RecordObservedSpendInput): void {
+function validatePurchaseSettlementInput(input: RecordPurchaseSettlementInput): void {
   assertCode(input.reservationId, "reservation id");
-  assertTransactionId(input.transactionId);
+  assertTransactionId(input.executionId);
+  assertSafeIdentity(input.profile, "Settlement execution profile", 160);
+  if (input.mechanism === "single-transaction") {
+    if (
+      input.transactionId === undefined ||
+      input.commitmentId !== undefined ||
+      input.settlementAssurance === "channel-commitment"
+    ) {
+      throw new JournalInvariantError("single-transaction Settlement has invalid execution facts");
+    }
+    assertTransactionId(input.transactionId);
+    if (input.executionId !== input.transactionId) {
+      throw new JournalInvariantError("single-transaction Settlement identity is invalid");
+    }
+  } else if (input.mechanism === "channel-voucher") {
+    if (
+      input.transactionId !== undefined ||
+      input.commitmentId === undefined ||
+      input.settlementAssurance !== "channel-commitment"
+    ) {
+      throw new JournalInvariantError("channel-voucher Settlement has invalid execution facts");
+    }
+    assertTransactionId(input.commitmentId);
+  } else {
+    throw new JournalInvariantError("Settlement execution mechanism is invalid");
+  }
   if (input.outpoint !== undefined) {
-    assertSafeIdentity(input.outpoint, "spend outpoint", 200);
+    if (input.transactionId === undefined) {
+      throw new JournalInvariantError("channel-voucher Settlement cannot contain an outpoint");
+    }
+    assertSafeIdentity(input.outpoint, "Settlement outpoint", 200);
     if (!new RegExp(`^${input.transactionId}:[0-9]+$`).test(input.outpoint)) {
-      throw new JournalInvariantError("spend outpoint must be bound to the canonical transaction identity");
+      throw new JournalInvariantError("Settlement outpoint must be bound to the canonical transaction identity");
     }
   }
-  decimalBigInt(input.actualAmountAtomic, "actual spend amount");
+  decimalBigInt(input.actualAmountAtomic, "actual Settlement amount");
   decimalBigInt(input.actualAdditionalCostAtomic, "actual additional treasury cost", true);
-  assertSafeIdentity(input.asset, "spend asset", 40);
-  assertBoundedText(input.payee, "spend payee", 300);
-  assertSafeIdentity(input.network, "spend network", 100);
-  requirePaymentFinality(input.finality, "spend finality");
+  assertSafeIdentity(input.asset, "Settlement asset", 40);
+  assertBoundedText(input.payee, "Settlement payee", 300);
+  assertSafeIdentity(input.network, "Settlement network", 100);
   assertVaultFundingSource(input.fundingSource);
-  assertDigest(input.evidenceDigest, "spend evidence digest");
-  assertSafeIdentity(input.evidenceVerificationProfile, "spend evidence verification profile", 200);
-  assertSafeIdentity(input.evidenceVerifierId, "spend evidence verifier identity", 200);
+  assertDigest(input.evidenceDigest, "Settlement evidence digest");
+  assertSafeIdentity(input.evidenceVerificationProfile, "Settlement evidence verification profile", 200);
+  assertSafeIdentity(input.evidenceVerifierId, "Settlement evidence verifier identity", 200);
+}
+
+function settlementAssuranceMeets(
+  actual: PurchaseExecutionAssurance,
+  required: PurchaseExecutionAssurance
+): boolean {
+  if (required === "channel-commitment" || actual === "channel-commitment") {
+    return actual === required;
+  }
+  return paymentFinalityMeets(actual, required);
 }
 
 function validateLeaseFields(name: string, holder: string, ttlMs: number): void {
@@ -8377,9 +9757,26 @@ function assertSameCheckoutTerms(existing: CheckoutTermsRecord, input: BindCheck
   }
 }
 
+function assertSameExecutionPlan(
+  existing: PurchaseExecutionPlanRecord,
+  input: PurchaseExecutionPlan,
+  evidenceDigestValue: Sha256Digest
+): void {
+  const candidate = canonicalPurchaseExecutionPlan(input);
+  if (
+    existing.digest !== candidate.digest ||
+    existing.evidenceDigest !== evidenceDigestValue ||
+    JSON.stringify({ ...existing, purchaseId: undefined, evidenceDigest: undefined, createdAtMs: undefined }) !==
+      JSON.stringify({ ...candidate, purchaseId: undefined, evidenceDigest: undefined, createdAtMs: undefined })
+  ) {
+    throw new JournalInvariantError("immutable Purchase execution plan conflict");
+  }
+}
+
 function assertSameAuthorizationRequest(
   existing: AuthorizationRequestRecord,
-  input: RecordAuthorizationRequestInput
+  input: RecordAuthorizationRequestInput,
+  executionPlan: PurchaseExecutionPlanRecord
 ): void {
   if (
     existing.checkoutDigest !== input.checkoutDigest ||
@@ -8388,6 +9785,14 @@ function assertSameAuthorizationRequest(
     existing.requestMediaType !== input.requestMediaType ||
     existing.requestBodyDigest !== input.requestBodyDigest ||
     existing.additionalCostCeilingAtomic !== input.additionalCostCeilingAtomic ||
+    existing.effectiveFinalityFloor !== input.effectiveFinalityFloor ||
+    existing.executionPlanDigest !== executionPlan.digest ||
+    existing.executionMechanism !== executionPlan.mechanism ||
+    existing.executionProfile !== executionPlan.profile ||
+    existing.settlementAssurance !== executionPlan.settlementAssurance ||
+    existing.maximumAuthorizedChargeAtomic !== executionPlan.maximumChargeAtomic ||
+    existing.channelId !== executionPlan.channelEpoch?.channelId ||
+    existing.channelEpochDigest !== channelEpochDigest(executionPlan) ||
     existing.expiresAtMs !== input.expiresAtMs
   ) {
     throw new JournalInvariantError("immutable authorization request conflict");
@@ -8503,13 +9908,16 @@ function assertSamePreparation(
     existing.payloadDigest !== input.payloadDigest ||
     existing.preparedRef !== stored.storageRef ||
     existing.preparedByteLength !== stored.byteLength ||
+    existing.executionId !== input.executionId ||
+    existing.mechanism !== input.mechanism ||
+    existing.profile !== input.profile ||
     existing.transactionId !== input.transactionId ||
     existing.amountAtomic !== input.amountAtomic ||
     existing.asset !== input.asset ||
     existing.network !== input.network ||
     existing.payee !== input.payee ||
-    existing.requiredFinality !== input.requiredFinality
-    || existing.fundingSource !== input.fundingSource
+    existing.requiredAssurance !== input.requiredAssurance ||
+    existing.fundingSource !== input.fundingSource
   ) {
     throw new JournalInvariantError("immutable payment preparation conflict");
   }
@@ -8603,24 +10011,28 @@ function assertSameEffect(existing: EffectRecord, input: PlanEffectInput, stored
   }
 }
 
-function assertSameSpend(existing: TreasurySpendRecord, input: RecordObservedSpendInput): void {
+function assertSameSettlement(existing: PurchaseSettlementRecord, input: RecordPurchaseSettlementInput): void {
   if (
     existing.effectId !== input.effectId ||
     existing.reservationId !== input.reservationId ||
+    existing.executionId !== input.executionId ||
+    existing.mechanism !== input.mechanism ||
+    existing.profile !== input.profile ||
     existing.transactionId !== input.transactionId ||
+    existing.commitmentId !== input.commitmentId ||
     existing.outpoint !== input.outpoint ||
     existing.actualAmountAtomic !== input.actualAmountAtomic ||
     existing.actualAdditionalCostAtomic !== input.actualAdditionalCostAtomic ||
     existing.asset !== input.asset ||
     existing.payee !== input.payee ||
     existing.network !== input.network ||
-    existing.finality !== input.finality ||
+    existing.settlementAssurance !== input.settlementAssurance ||
     existing.fundingSource !== input.fundingSource ||
     existing.evidenceDigest !== input.evidenceDigest ||
     existing.evidenceVerificationProfile !== input.evidenceVerificationProfile ||
     existing.evidenceVerifierId !== input.evidenceVerifierId
   ) {
-    throw new JournalInvariantError(`conflicting spend finalization for Reservation ${input.reservationId}`);
+    throw new JournalInvariantError(`conflicting Settlement finalization for Reservation ${input.reservationId}`);
   }
 }
 
@@ -8710,7 +10122,8 @@ function validateTreasuryOperationIntent(input: TreasuryOperationIntent): void {
   if (
     input.kind !== "wallet_send" &&
     input.kind !== "vault_send" &&
-    input.kind !== "vault_deposit"
+    input.kind !== "vault_deposit" &&
+    input.kind !== "batch_refund"
   ) {
     throw new JournalInvariantError("direct Treasury operation kind is invalid");
   }

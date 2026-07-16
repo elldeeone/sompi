@@ -6,12 +6,6 @@ import * as path from "node:path";
 import test from "node:test";
 
 import type { ExactTransactionPaymentRequest } from "@kaspa-x402/client";
-import {
-  buildKip10AdditiveRedeemScript,
-  kip10AdditiveScriptPublicKey,
-  serializedScriptPublicKey,
-} from "@kaspa-x402/covenant";
-
 import { PrivateKey, Transaction } from "../../kaspa-wasm.js";
 import {
   assertPurchaseId,
@@ -30,23 +24,21 @@ import {
   type StagingRecoveryRaceEvidence,
   type StagingRecoveryRaceRequest,
 } from "./abandoned-staging-recovery.js";
-import { Kip10ExactTransactionBuilder } from "./exact-transaction-builder.js";
+import { KaspaTestnet10AddressCodec } from "./address-codec.js";
+import { ExactTransactionBuilder } from "./exact-transaction-builder.js";
 import { RpcStagingRecoveryTransactionSubmitter } from "./staging-recovery-rpc.js";
 import { StagingKeyStore } from "./staging-key-store.js";
 
 const NOW = Date.parse("2030-01-01T00:00:00.000Z");
 const STAGING_PRIVATE_KEY = "01".padStart(64, "0");
 const RECOVERY_PRIVATE_KEY = "03".padStart(64, "0");
-const OWNER_PUBLIC_KEY =
-  "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
 const PURCHASE_ID = assertPurchaseId("pur_AAAAAAAAAAAAAAAAAAAAAA");
 const PAYMENT_IDENTIFIER = createPaymentIdentifier(PURCHASE_ID, 1);
 const MERCHANT_ADDRESS =
   "kaspatest:qzlws9lm7uyt0tftzffshnyeu2zcqk4kf7hw5ghk6v0zh093vnkljcy2fl0fh";
-const BORROW_TXID = "22".repeat(32);
 const STAGING_TXID = "33".repeat(32);
-const STAGING_AMOUNT = "32000000";
-const RECOVERY_AMOUNT = "31000000";
+const STAGING_AMOUNT = "22000000";
+const RECOVERY_AMOUNT = "21000000";
 
 test("preparation has a stable identity, canonical secret-free bytes, and exact value conservation", async () => {
   await withFixture(async (fixture) => {
@@ -192,10 +184,10 @@ test("preparation rejects network, exact artifact, staging, key, and recovery-ad
       fixture.prepare({
         exactPayment: {
           mode: "exact_candidate",
-          candidate: { ...fixture.exact, merchantOutputIndex: 0 as never },
+          candidate: { ...fixture.exact, merchantOutputIndex: 1 as never },
         },
       }),
-      /output index must be 1/
+      /output index must be 0/
     );
     assert.throws(
       () => fixture.newModule({ recoveryAddress: MERCHANT_ADDRESS.replace("kaspatest", "kaspa") }),
@@ -764,10 +756,11 @@ interface Fixture {
     evidenceDigest: Sha256Digest;
   };
   exact: {
+    profile: "standard-native";
     transaction: string;
     transactionEncoding: "kaspa-sdk-safe-json-v2.0.0";
     transactionId: string;
-    merchantOutputIndex: 1;
+    merchantOutputIndex: 0;
   };
   recoveryAddress: string;
   module: AbandonedStagingRecovery;
@@ -807,37 +800,25 @@ async function withFixture(action: (fixture: Fixture) => Promise<void>): Promise
       keyReference: key.keyReference,
       evidenceDigest: digest("journal-verified-staging"),
     };
-    const borrowRedeemScript = buildKip10AdditiveRedeemScript({
-      ownerPublicKey: OWNER_PUBLIC_KEY,
-      amount: "10000000",
-    }).toLowerCase();
-    const borrowScriptPublicKey = serializedScriptPublicKey(
-      kip10AdditiveScriptPublicKey({
-        ownerPublicKey: OWNER_PUBLIC_KEY,
-        amount: "10000000",
-      })
-    ).toLowerCase();
+    const payToScriptPublicKey = new KaspaTestnet10AddressCodec()
+      .scriptPublicKeyForAddress(MERCHANT_ADDRESS, "kaspa:testnet-10")
+      .toLowerCase();
     const request: ExactTransactionPaymentRequest = {
       network: "kaspa:testnet-10",
+      profile: "standard-native",
+      origin: "https://merchant.example",
+      resourceUrl: "https://merchant.example/report",
       amount: "20000000",
       payTo: MERCHANT_ADDRESS,
+      payToScriptPublicKey,
+      paymentOutputIndex: 0,
       requestHash: "44".repeat(32),
+      paymentRequirementsHash: "45".repeat(32),
+      authorizationExpiresAt: "2099-01-01T00:00:00.000Z",
       requiredFinality: "accepted",
       fundingSource: "vault-treasury",
-      reservation: {
-        templateId: "kaspa-x402-kip10-additive-v1",
-        transactionEncoding: "kaspa-sdk-safe-json-v2.0.0",
-        borrowOutpoint: { txid: BORROW_TXID, index: 0 },
-        borrowAmount: "100000000",
-        borrowScriptPublicKey,
-        borrowRedeemScript,
-        additiveThresholdSompi: "10000000",
-        paymentOutputIndex: 1,
-        reservationId: "55".repeat(32),
-        reservationExpiresAt: "2099-01-01T00:00:00.000Z",
-      },
     };
-    const exactBuilder = new Kip10ExactTransactionBuilder({ keyStore: store, now: () => NOW });
+    const exactBuilder = new ExactTransactionBuilder({ keyStore: store, now: () => NOW });
     const exactBuilt = await exactBuilder.build({
       purchaseId: PURCHASE_ID,
       paymentIdentifier: PAYMENT_IDENTIFIER,
@@ -850,14 +831,15 @@ async function withFixture(action: (fixture: Fixture) => Promise<void>): Promise
         blockDaaScore: staging.blockDaaScore,
         keyReference: staging.keyReference,
       },
-      additionalCostCeilingAtomic: "12050000",
+      additionalCostCeilingAtomic: "2050000",
       stagingTransactionFeeAtomic: "50000",
     });
     const exact = {
+      profile: "standard-native" as const,
       transaction: exactBuilt.transaction,
       transactionEncoding: exactBuilt.transactionEncoding,
       transactionId: exactBuilt.transactionId,
-      merchantOutputIndex: 1 as const,
+      merchantOutputIndex: 0 as const,
     };
     const recoveryAddress = addressForPrivateKey(RECOVERY_PRIVATE_KEY);
     let observer: (

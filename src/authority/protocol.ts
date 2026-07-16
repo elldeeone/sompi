@@ -73,6 +73,13 @@ export interface AuthorityApprovalFacts {
   readonly additionalCostCeilingAtomic: string;
   /** Stronger of Merchant protocol finality and the operator floor. */
   readonly effectiveFinalityFloor: "accepted" | "depth-confirmed";
+  readonly executionPlanDigest: Sha256Digest;
+  readonly executionMechanism: "single-transaction" | "channel-voucher";
+  readonly executionProfile: string;
+  readonly settlementAssurance: "accepted" | "confirmed" | "channel-commitment";
+  readonly maximumAuthorizedChargeAtomic: string;
+  readonly channelId: string | null;
+  readonly channelEpochDigest: Sha256Digest | null;
 }
 
 /** Exact Merchant-signed Checkout bytes needed for independent AP2 verification. */
@@ -975,6 +982,13 @@ function canonicalFacts(candidate: AuthorityApprovalFacts): AuthorityApprovalFac
     "purchaseAuthorizationFactsDigest",
     "additionalCostCeilingAtomic",
     "effectiveFinalityFloor",
+    "executionPlanDigest",
+    "executionMechanism",
+    "executionProfile",
+    "settlementAssurance",
+    "maximumAuthorizedChargeAtomic",
+    "channelId",
+    "channelEpochDigest",
   ];
   requireExactKeys(record, keys);
   const merchantOrigin = requireCanonicalOrigin(requireString(record.merchantOrigin));
@@ -997,6 +1011,19 @@ function canonicalFacts(candidate: AuthorityApprovalFacts): AuthorityApprovalFac
   const asset = requireIdentity(requireString(record.asset), 64);
   const network = requireIdentity(requireString(record.network), 128);
   const payTo = requireIdentity(requireString(record.payTo), 256);
+  const executionMechanism = requireExecutionMechanism(record.executionMechanism);
+  const settlementAssurance = requireSettlementAssurance(record.settlementAssurance);
+  const channelId = record.channelId === null ? null : requireIdentity(requireString(record.channelId), 160);
+  const channelEpochDigest = record.channelEpochDigest === null
+    ? null
+    : requireDigest(requireString(record.channelEpochDigest));
+  if (
+    executionMechanism === "single-transaction"
+      ? settlementAssurance === "channel-commitment" || channelId !== null || channelEpochDigest !== null
+      : settlementAssurance !== "channel-commitment" || channelId === null || channelEpochDigest === null
+  ) {
+    throw new AuthorityProtocolError("malformed_message");
+  }
   if (
     asset !== "KAS" ||
     network !== SUPPORTED_PROTOCOL_PROFILES.x402.network ||
@@ -1033,8 +1060,31 @@ function canonicalFacts(candidate: AuthorityApprovalFacts): AuthorityApprovalFac
       requireString(record.additionalCostCeilingAtomic)
     ),
     effectiveFinalityFloor: requireFinalityFloor(record.effectiveFinalityFloor),
+    executionPlanDigest: requireDigest(requireString(record.executionPlanDigest)),
+    executionMechanism,
+    executionProfile: requireIdentity(requireString(record.executionProfile), 160),
+    settlementAssurance,
+    maximumAuthorizedChargeAtomic: requireSafeAp2KasAmount(
+      requireString(record.maximumAuthorizedChargeAtomic)
+    ),
+    channelId,
+    channelEpochDigest,
   };
   return Object.freeze(base);
+}
+
+function requireExecutionMechanism(value: unknown): "single-transaction" | "channel-voucher" {
+  if (value !== "single-transaction" && value !== "channel-voucher") {
+    throw new AuthorityProtocolError("malformed_message");
+  }
+  return value;
+}
+
+function requireSettlementAssurance(value: unknown): "accepted" | "confirmed" | "channel-commitment" {
+  if (value !== "accepted" && value !== "confirmed" && value !== "channel-commitment") {
+    throw new AuthorityProtocolError("malformed_message");
+  }
+  return value;
 }
 
 function requireFinalityFloor(value: unknown): "accepted" | "depth-confirmed" {

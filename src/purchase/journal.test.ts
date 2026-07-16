@@ -950,6 +950,9 @@ test("observed spend is separate, immutable, bounded, and replaces reserved capa
     const spendInput = {
       effectId: flow.effect.id,
       reservationId: flow.reservation.id,
+      executionId: flow.preparation.executionId,
+      mechanism: flow.preparation.mechanism,
+      profile: flow.preparation.profile,
       transactionId: flow.preparation.transactionId,
       outpoint: `${flow.preparation.transactionId}:0`,
       actualAmountAtomic: "60",
@@ -957,33 +960,33 @@ test("observed spend is separate, immutable, bounded, and replaces reserved capa
       asset: "KAS",
       payee: "kaspatest:merchant",
       network: "kaspa:testnet-10",
-      finality: "confirmed",
+      settlementAssurance: "confirmed",
       fundingSource: "vault-treasury",
       evidenceDigest: settlement,
       evidenceVerificationProfile: "test-profile-v1",
       evidenceVerifierId: "test-verifier",
     } as const;
-    assert.throws(() => journal.recordObservedSpend(claim.lease, { ...spendInput, actualAmountAtomic: "1" }));
-    assert.throws(() => journal.recordObservedSpend(claim.lease, { ...spendInput, network: "wrong-network" }));
-    assert.throws(() => journal.recordObservedSpend(claim.lease, { ...spendInput, finality: "unconfirmed" }));
-    assert.throws(() => journal.recordObservedSpend(claim.lease, { ...spendInput, asset: "NOT-KAS" }));
-    assert.throws(() => journal.recordObservedSpend(claim.lease, { ...spendInput, payee: "kaspatest:attacker" }));
+    assert.throws(() => journal.recordPurchaseSettlement(claim.lease, { ...spendInput, actualAmountAtomic: "1" }));
+    assert.throws(() => journal.recordPurchaseSettlement(claim.lease, { ...spendInput, network: "wrong-network" }));
+    assert.throws(() => journal.recordPurchaseSettlement(claim.lease, { ...spendInput, settlementAssurance: "channel-commitment" }));
+    assert.throws(() => journal.recordPurchaseSettlement(claim.lease, { ...spendInput, asset: "NOT-KAS" }));
+    assert.throws(() => journal.recordPurchaseSettlement(claim.lease, { ...spendInput, payee: "kaspatest:attacker" }));
     assert.equal(journal.requireReservation(flow.reservation.id).state, "in_flight");
-    const spend = journal.recordObservedSpend(claim.lease, spendInput);
+    const spend = journal.recordPurchaseSettlement(claim.lease, spendInput);
     assert.equal(spend.actualAdditionalCostAtomic, "2");
     assert.equal(journal.requireReservation(flow.reservation.id).state, "spent");
     assert.equal(journal.requirePaymentAttempt(flow.purchaseId, 1).state, "observed");
     assert.equal(journal.requireEffect(flow.effect.id).state, "observed");
     assert.equal(journal.policyCapacityUsed(), 62n);
-    assert.equal(journal.recordObservedSpend(claim.lease, spendInput).id, spend.id);
+    assert.equal(journal.recordPurchaseSettlement(claim.lease, spendInput).id, spend.id);
     assert.throws(
-      () => journal.recordObservedSpend(claim.lease, { ...spendInput, actualAdditionalCostAtomic: "3" }),
+      () => journal.recordPurchaseSettlement(claim.lease, { ...spendInput, actualAdditionalCostAtomic: "3" }),
       JournalInvariantError
     );
 
     journal.close();
     const restarted = reopen();
-    assert.equal(restarted.requireSpend(flow.reservation.id).transactionId, flow.preparation.transactionId);
+    assert.equal(restarted.requireSettlement(flow.reservation.id).transactionId, flow.preparation.transactionId);
     assert.equal(restarted.policyCapacityUsed(), 62n);
   });
 });
@@ -1302,6 +1305,13 @@ function authorizedPurchase(journal: PurchaseJournal, seed: number, amountAtomic
     "merchant:test"
   );
   const checkoutDigest = checkoutEvidence;
+  const executionPlan = journal.storeExecutionPlanEvidence(purchase.id, {
+    mechanism: "single-transaction",
+    profile: "kaspa-exact-v2:standard-native",
+    requirementsDigest: requirementsEvidence,
+    maximumChargeAtomic: amountAtomic,
+    settlementAssurance: "accepted",
+  });
   journal.bindCheckoutTerms(purchase.id, {
     terms: {
       merchant: { id: "merchant:test", name: "Test Merchant", origin: "https://merchant.example" },
@@ -1319,6 +1329,8 @@ function authorizedPurchase(journal: PurchaseJournal, seed: number, amountAtomic
     paymentRequirementsDigest: requirementsEvidence,
     paymentRequirementsVerificationProfile: "test-profile-v1",
     paymentRequirementsVerifierId: "test-verifier",
+    executionPlan: executionPlan.plan,
+    executionPlanEvidenceDigest: executionPlan.evidenceDigest,
   });
   const requestDigest = evidenceDigest(`authorization-request-${seed}`);
   verifiedEvidence(journal, purchase.id, `authorization-request-${seed}`, "authorization-request");
@@ -1340,6 +1352,7 @@ function authorizedPurchase(journal: PurchaseJournal, seed: number, amountAtomic
     effectiveFinalityFloor: "accepted",
     expiresAtMs,
   });
+  const storedAuthorizationRequest = journal.requireAuthorizationRequest(purchase.id);
   const authorizationEvidence = verifiedEvidence(
     journal,
     purchase.id,
@@ -1358,7 +1371,12 @@ function authorizedPurchase(journal: PurchaseJournal, seed: number, amountAtomic
     nonceDigest,
     additionalCostCeilingAtomic: "10",
     effectiveFinalityFloor: "accepted",
-    createdAtMs: journal.requireAuthorizationRequest(purchase.id).createdAtMs,
+    executionPlanDigest: storedAuthorizationRequest.executionPlanDigest,
+    executionMechanism: storedAuthorizationRequest.executionMechanism,
+    executionProfile: storedAuthorizationRequest.executionProfile,
+    settlementAssurance: storedAuthorizationRequest.settlementAssurance,
+    maximumAuthorizedChargeAtomic: storedAuthorizationRequest.maximumAuthorizedChargeAtomic,
+    createdAtMs: storedAuthorizationRequest.createdAtMs,
     expiresAtMs,
   });
   journal.recordAuthorizationDecision(purchase.id, {
@@ -1439,6 +1457,7 @@ function paymentPreparation(
   seed: number
 ): PreparePaymentAttemptInput {
   const preparedBytes = Buffer.from(`payload-${seed}`, "utf8");
+  const transactionId = seed.toString(16).padStart(2, "0").repeat(32);
   return {
     purchaseId,
     attempt: 1,
@@ -1446,12 +1465,15 @@ function paymentPreparation(
     requirementsDigest: evidenceDigest(`requirements-${seed}`),
     payloadDigest: evidenceDigest(preparedBytes),
     preparedBytes,
-    transactionId: seed.toString(16).padStart(2, "0").repeat(32),
+    executionId: transactionId,
+    mechanism: "single-transaction",
+    profile: "kaspa-exact-v2:standard-native",
+    transactionId,
     amountAtomic: "60",
     asset: "KAS",
     network: "kaspa:testnet-10",
     payee: "kaspatest:merchant",
-    requiredFinality: "accepted",
+    requiredAssurance: "accepted",
     fundingSource: "vault-treasury",
   };
 }
@@ -1605,9 +1627,12 @@ function advanceLifecycle(
   journal.transitionPurchase(purchaseId, "execution_prepared", "submitted", "payment_submitted");
   journal.markEffectSubmitted(claim, evidenceDigest(`submission-${seed}`));
   const settlement = verifiedEvidence(journal, purchaseId, `settlement-${seed}`, "kaspa-settlement", 1);
-  journal.recordObservedSpend(claim.lease, {
+  journal.recordPurchaseSettlement(claim.lease, {
     effectId: flow.effect.id,
     reservationId: flow.reservation.id,
+    executionId: flow.preparation.executionId,
+    mechanism: flow.preparation.mechanism,
+    profile: flow.preparation.profile,
     transactionId: flow.preparation.transactionId,
     outpoint: `${flow.preparation.transactionId}:0`,
     actualAmountAtomic: "60",
@@ -1616,7 +1641,7 @@ function advanceLifecycle(
     asset: "KAS",
     payee: "kaspatest:merchant",
     network: "kaspa:testnet-10",
-    finality: "confirmed",
+    settlementAssurance: "confirmed",
     evidenceDigest: settlement,
     evidenceVerificationProfile: "test-profile-v1",
     evidenceVerifierId: "test-verifier",

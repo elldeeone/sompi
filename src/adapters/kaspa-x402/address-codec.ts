@@ -14,7 +14,7 @@ const TESTNET_ADDRESS_PREFIX = "kaspatest";
 const HEX_BYTES = /^(?:[0-9a-fA-F]{2})+$/;
 
 /**
- * Strict alpha.6 AddressCodec for the initial testnet-10 exact profile.
+ * Strict alpha.8 AddressCodec for the pinned testnet-10 exact profiles.
  *
  * Kaspa addresses do not encode the testnet suffix. Restricting the x402
  * network to testnet-10 here, and round-tripping every address through the
@@ -76,7 +76,7 @@ export class KaspaTestnet10AddressCodec implements AddressCodec {
   }
 }
 
-/** Serialize the SDK representation expected by Kaspa-x402 alpha.6. */
+/** Serialize the SDK representation expected by Kaspa-x402 alpha.8. */
 export function serializeScriptPublicKey(version: number, script: string): ByteHex {
   if (!Number.isInteger(version) || version !== 0) {
     throw new Error("the initial Kaspa-x402 profile requires script public key version 0");

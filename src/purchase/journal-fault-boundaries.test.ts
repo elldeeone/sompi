@@ -25,6 +25,7 @@ import {
   JournalNotFoundError,
   PurchaseJournal,
   type BindCheckoutTermsInput,
+  type BatchChannelJournalRecord,
   type JournalFaultPoint,
   type LeaseToken,
   type PlanTreasuryStagingInput,
@@ -35,7 +36,7 @@ import {
   type RecordAuthorizationDecisionInput,
   type RecordAuthorizationRequestInput,
   type RecordFulfilmentInput,
-  type RecordObservedSpendInput,
+  type RecordPurchaseSettlementInput,
   type RecordObservedTreasuryStagingInput,
   type RecordReceiptInput,
   type RecordTreasuryStagingRecoveryObservationInput,
@@ -73,7 +74,7 @@ const FAULT_BOUNDARY_SCENARIOS = {
   "treasury_staging_recovery_accounting.after_insert": stagingRecoveryAccountingScenario,
   "effect.after_insert": effectInsertScenario,
   "effect_claim.after_effect_update": effectClaimScenario,
-  "spend.after_insert": spendInsertScenario,
+  "settlement.after_insert": spendInsertScenario,
   "checkout_terms.after_insert": checkoutTermsScenario,
   "authorization_request.after_insert": authorizationRequestScenario,
   "authorization_decision.after_insert": authorizationDecisionScenario,
@@ -84,6 +85,9 @@ const FAULT_BOUNDARY_SCENARIOS = {
   "treasury_operation.after_submission_plan": treasurySubmissionPlanScenario,
   "treasury_operation.after_observation_insert": treasuryObservationScenario,
   "treasury_operation.after_complete_update": treasuryCompletionScenario,
+  "batch_channel.after_insert": batchChannelInsertScenario,
+  "batch_channel.after_update": batchChannelUpdateScenario,
+  "batch_movement.after_insert": batchMovementInsertScenario,
 } satisfies Readonly<Record<JournalFaultPoint, FaultBoundaryScenarioFactory>>;
 
 test("fault-boundary scenario manifest exactly covers every declared Journal fault point", () => {
@@ -91,7 +95,7 @@ test("fault-boundary scenario manifest exactly covers every declared Journal fau
     Object.keys(FAULT_BOUNDARY_SCENARIOS).sort(),
     [...JOURNAL_FAULT_POINTS].sort()
   );
-  assert.equal(JOURNAL_FAULT_POINTS.length, 25);
+  assert.equal(JOURNAL_FAULT_POINTS.length, 28);
 });
 
 test("every Journal fault point rolls back atomically and its exact action recovers after restart", () => {
@@ -563,9 +567,9 @@ function spendInsertScenario(
 ): FaultBoundaryScenario {
   const setup = submittedPaymentSetup(journal, 15, clock.value);
   return {
-    act: (target) => target.recordObservedSpend(setup.lease, setup.spendInput),
+    act: (target) => target.recordPurchaseSettlement(setup.lease, setup.spendInput),
     assertRolledBack(target) {
-      assert.equal(target.findSpendForPurchase(setup.purchaseId), undefined);
+      assert.equal(target.findSettlementForPurchase(setup.purchaseId), undefined);
       assert.equal(target.requireEffect(setup.effectId).state, "submitted");
       assert.equal(target.requirePaymentAttempt(setup.purchaseId, 1).state, "submitted");
       assert.equal(target.requireReservation(setup.reservationId).state, "in_flight");
@@ -573,7 +577,7 @@ function spendInsertScenario(
     },
     assertCommitted(target) {
       assert.equal(
-        target.findSpendForPurchase(setup.purchaseId)?.transactionId,
+        target.findSettlementForPurchase(setup.purchaseId)?.transactionId,
         setup.spendInput.transactionId
       );
       assert.equal(target.requireEffect(setup.effectId).state, "observed");
@@ -796,6 +800,100 @@ function treasuryCompletionScenario(journal: PurchaseJournal): FaultBoundaryScen
   };
 }
 
+function batchChannelInsertScenario(
+  _journal: PurchaseJournal,
+  clock: TestClock
+): FaultBoundaryScenario {
+  const channel = batchChannel(clock, 26);
+  return {
+    act: (target) => target.saveBatchChannel(channel),
+    assertRolledBack(target) {
+      assert.throws(() => target.requireBatchChannel(channel.channelId), JournalNotFoundError);
+    },
+    assertCommitted(target) {
+      assert.equal(target.requireBatchChannel(channel.channelId).version, 1);
+    },
+  };
+}
+
+function batchChannelUpdateScenario(
+  journal: PurchaseJournal,
+  clock: TestClock
+): FaultBoundaryScenario {
+  const channel = journal.saveBatchChannel(batchChannel(clock, 27));
+  const updated: BatchChannelJournalRecord = {
+    ...channel,
+    signedCumulativeAtomic: "10",
+    latestVoucher: { amountAtomic: "10", signature: byte(27).repeat(64) },
+    version: 2,
+    updatedAtMs: clock.value + 1,
+  };
+  return {
+    act: (target) => target.saveBatchChannel(updated),
+    assertRolledBack(target) {
+      assert.equal(target.requireBatchChannel(channel.channelId).signedCumulativeAtomic, "0");
+      assert.equal(target.requireBatchChannel(channel.channelId).version, 1);
+    },
+    assertCommitted(target) {
+      assert.equal(target.requireBatchChannel(channel.channelId).signedCumulativeAtomic, "10");
+      assert.equal(target.requireBatchChannel(channel.channelId).version, 2);
+    },
+  };
+}
+
+function batchMovementInsertScenario(
+  journal: PurchaseJournal,
+  clock: TestClock
+): FaultBoundaryScenario {
+  const channel = journal.saveBatchChannel(batchChannel(clock, 28));
+  const input = {
+    movementId: `batch-deposit:${channel.channelId}`,
+    channelId: channel.channelId,
+    kind: "deposit",
+    requestDigest: evidenceDigest(Buffer.from(`batch-deposit:${channel.channelId}`, "utf8")),
+  } as const;
+  return {
+    act: (target) => target.planBatchTreasuryMovement(input),
+    assertRolledBack(target) {
+      assert.throws(() => target.requireBatchTreasuryMovement(input.movementId), JournalNotFoundError);
+    },
+    assertCommitted(target) {
+      assert.equal(target.requireBatchTreasuryMovement(input.movementId).state, "planned");
+    },
+  };
+}
+
+function batchChannel(clock: TestClock, seed: number): BatchChannelJournalRecord {
+  const hash = byte(seed).repeat(32);
+  return {
+    channelId: hash,
+    origin: "https://merchant.example",
+    resourceUrl: `https://merchant.example/batch/${seed}`,
+    network: "kaspa:testnet-10",
+    asset: "KAS",
+    templateId: "kaspa-x402-escrow-v1",
+    clientPublicKey: byte(seed + 1).repeat(32),
+    serverPublicKey: byte(seed + 2).repeat(32),
+    payTo: `kaspatest:batch-payee-${seed}`,
+    refundAddress: `kaspatest:batch-refund-${seed}`,
+    refundTimeoutDaa: "500000000",
+    salt: byte(seed + 3).repeat(32),
+    activeOutpoint: { txid: byte(seed + 4).repeat(32), index: 0 },
+    activeScriptPublicKey: `000020${byte(seed + 5).repeat(32)}`,
+    escrowAddress: `kaspatest:batch-escrow-${seed}`,
+    fundingSource: "vault-treasury",
+    fundingAmountAtomic: "1000",
+    chargedCumulativeAtomic: "0",
+    claimedCumulativeAtomic: "0",
+    signedCumulativeAtomic: "0",
+    status: "active",
+    epoch: 0,
+    version: 1,
+    createdAtMs: clock.value,
+    updatedAtMs: clock.value,
+  };
+}
+
 function checkoutTermsSetup(journal: PurchaseJournal, seed: number): {
   purchaseId: PurchaseId;
   checkoutDigest: Sha256Digest;
@@ -820,6 +918,13 @@ function checkoutTermsSetup(journal: PurchaseJournal, seed: number): {
     "test-v1",
     "merchant:test"
   );
+  const executionPlan = journal.storeExecutionPlanEvidence(purchase.id, {
+    mechanism: "single-transaction",
+    profile: "kaspa-exact-v2:standard-native",
+    requirementsDigest,
+    maximumChargeAtomic: "60",
+    settlementAssurance: "accepted",
+  });
   return {
     purchaseId: purchase.id,
     checkoutDigest,
@@ -844,6 +949,8 @@ function checkoutTermsSetup(journal: PurchaseJournal, seed: number): {
       paymentRequirementsDigest: requirementsDigest,
       paymentRequirementsVerificationProfile: "test-v1",
       paymentRequirementsVerifierId: "test-verifier",
+      executionPlan: executionPlan.plan,
+      executionPlanEvidenceDigest: executionPlan.evidenceDigest,
     },
   };
 }
@@ -914,6 +1021,15 @@ function authorizationDecisionSetup(journal: PurchaseJournal, seed: number): {
         nonceDigest: storedRequest.nonceDigest,
         additionalCostCeilingAtomic: storedRequest.additionalCostCeilingAtomic,
         effectiveFinalityFloor: storedRequest.effectiveFinalityFloor,
+        executionPlanDigest: storedRequest.executionPlanDigest,
+        executionMechanism: storedRequest.executionMechanism,
+        executionProfile: storedRequest.executionProfile,
+        settlementAssurance: storedRequest.settlementAssurance,
+        maximumAuthorizedChargeAtomic: storedRequest.maximumAuthorizedChargeAtomic,
+        ...(storedRequest.channelId === undefined ? {} : { channelId: storedRequest.channelId }),
+        ...(storedRequest.channelEpochDigest === undefined
+          ? {}
+          : { channelEpochDigest: storedRequest.channelEpochDigest }),
         createdAtMs: storedRequest.createdAtMs,
         expiresAtMs: storedRequest.expiresAtMs,
       }),
@@ -1138,7 +1254,7 @@ function submittedPaymentSetup(
   reservationId: string;
   effectId: string;
   lease: LeaseToken;
-  spendInput: RecordObservedSpendInput;
+  spendInput: RecordPurchaseSettlementInput;
 } {
   const setup = paymentPreparationSetup(journal, seed, now);
   const preparation = journal.preparePaymentAttempt(setup.input);
@@ -1185,6 +1301,9 @@ function submittedPaymentSetup(
     spendInput: {
       effectId: effect.id,
       reservationId: setup.reservationId,
+      executionId: setup.input.executionId,
+      mechanism: setup.input.mechanism,
+      profile: setup.input.profile,
       transactionId: setup.input.transactionId,
       outpoint: `${setup.input.transactionId}:0`,
       actualAmountAtomic: "60",
@@ -1192,7 +1311,7 @@ function submittedPaymentSetup(
       asset: "KAS",
       payee: "kaspatest:merchant",
       network: "kaspa:testnet-10",
-      finality: "confirmed",
+      settlementAssurance: "confirmed",
       fundingSource: "vault-treasury",
       evidenceDigest: settlement,
       evidenceVerificationProfile: "test-v1",
@@ -1208,7 +1327,7 @@ function fulfilmentSetup(
   record: boolean
 ): { purchaseId: PurchaseId; input: RecordFulfilmentInput } {
   const payment = submittedPaymentSetup(journal, seed, now);
-  journal.recordObservedSpend(payment.lease, payment.spendInput);
+  journal.recordPurchaseSettlement(payment.lease, payment.spendInput);
   journal.transitionPurchase(
     payment.purchaseId,
     "submitted",
@@ -1270,7 +1389,7 @@ function receiptInput(
     verifierId: "test-verifier",
     checkoutDigest: journal.requireCheckoutTerms(purchaseId).checkoutDigest,
     authorizationEvidenceDigest: journal.requireAuthorization(purchaseId).evidenceDigest,
-    settlementEvidenceDigest: journal.findSpendForPurchase(purchaseId)!.evidenceDigest,
+    settlementEvidenceDigest: journal.findSettlementForPurchase(purchaseId)!.evidenceDigest,
     fulfilmentDigest: journal.requireFulfilment(purchaseId).bodyDigest,
   };
 }
@@ -1406,6 +1525,7 @@ function paymentPreparationInput(
   seed: number
 ): PreparePaymentAttemptInput {
   const preparedBytes = Buffer.from(`payment-preparation-${seed}`, "utf8");
+  const transactionId = byte(seed).repeat(32);
   return {
     purchaseId,
     attempt: 1,
@@ -1413,12 +1533,15 @@ function paymentPreparationInput(
     requirementsDigest: evidenceDigest(`requirements-${seed}`),
     payloadDigest: evidenceDigest(preparedBytes),
     preparedBytes,
-    transactionId: byte(seed).repeat(32),
+    executionId: transactionId,
+    mechanism: "single-transaction",
+    profile: "kaspa-exact-v2:standard-native",
+    transactionId,
     amountAtomic: "60",
     asset: "KAS",
     network: "kaspa:testnet-10",
     payee: "kaspatest:merchant",
-    requiredFinality: "accepted",
+    requiredAssurance: "accepted",
     fundingSource: "vault-treasury",
   };
 }

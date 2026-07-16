@@ -217,6 +217,11 @@ function makeAuthorizationRequest(): PurchaseAuthorizationRequest {
     nonceDigest: evidenceDigest("authorization-nonce"),
     additionalCostCeilingAtomic: "10",
     effectiveFinalityFloor: "accepted",
+    executionPlanDigest: evidenceDigest("execution-plan"),
+    executionMechanism: "single-transaction",
+    executionProfile: "kaspa-exact-v2:standard-native",
+    settlementAssurance: "accepted",
+    maximumAuthorizedChargeAtomic: "20000000",
     createdAtMs: now(),
     expiresAtMs: Date.parse(makeTerms().expiresAt),
   };

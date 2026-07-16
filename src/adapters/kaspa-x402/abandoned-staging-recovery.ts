@@ -62,10 +62,11 @@ export interface JournalVerifiedStagingOutput {
 }
 
 export interface ImmutableExactPaymentCandidate {
+  readonly profile: "standard-native" | "additive";
   readonly transaction: string;
   readonly transactionEncoding: typeof ABANDONED_STAGING_RECOVERY_ENCODING;
   readonly transactionId: string;
-  readonly merchantOutputIndex: 1;
+  readonly merchantOutputIndex: 0;
 }
 
 export type ImmutableExactPaymentSelection =
@@ -1122,7 +1123,7 @@ function validateEnvelopeShape(value: unknown): AbandonedStagingRecoveryEnvelope
         );
   if (
     exactPayment !== null &&
-    (exactPayment.inputOutpoint !== stagingOutpoint || exactPayment.outputIndex !== 1)
+    (exactPayment.inputOutpoint !== stagingOutpoint || exactPayment.outputIndex !== 0)
   ) {
     throw adapterError("artifact_mismatch", "exact payment candidate changed its staging input or output index");
   }
@@ -1304,8 +1305,11 @@ function validateExactCandidate(
   if (value.transactionEncoding !== ABANDONED_STAGING_RECOVERY_ENCODING) {
     throw adapterError("profile_mismatch", "immutable exact payment encoding is unsupported");
   }
-  if (value.merchantOutputIndex !== 1) {
-    throw adapterError("profile_mismatch", "pinned exact Merchant output index must be 1");
+  if (value.profile !== "standard-native" && value.profile !== "additive") {
+    throw adapterError("profile_mismatch", "immutable exact payment profile is unsupported");
+  }
+  if (value.merchantOutputIndex !== 0) {
+    throw adapterError("profile_mismatch", "pinned exact Merchant output index must be 0");
   }
   const transactionId = requireHash(value.transactionId, "immutable exact payment transaction ID");
   const artifact = requireString(value.transaction, "immutable exact payment transaction artifact");
@@ -1313,8 +1317,9 @@ function validateExactCandidate(
     throw adapterError("artifact_mismatch", "immutable exact payment transaction is empty or oversized");
   }
   const document = canonicalTransactionDocument(artifact, transactionId, "immutable exact payment");
+  const expectedVersion = value.profile === "standard-native" ? 0 : 1;
   if (
-    document.version !== 1 ||
+    document.version !== expectedVersion ||
     document.lockTime !== "0" ||
     document.subnetworkId !== NATIVE_SUBNETWORK ||
     document.gas !== "0" ||
@@ -1324,8 +1329,9 @@ function validateExactCandidate(
   }
   const inputs = requireArray(document.inputs, "immutable exact payment inputs");
   const outputs = requireArray(document.outputs, "immutable exact payment outputs");
-  if (inputs.length !== 2 || outputs.length < 2 || outputs.length > 3) {
-    throw adapterError("profile_mismatch", "immutable exact payment is not the pinned two-input exact shape");
+  const expectedInputCount = value.profile === "standard-native" ? 1 : 2;
+  if (inputs.length !== expectedInputCount || outputs.length !== 1) {
+    throw adapterError("profile_mismatch", "immutable exact payment is outside the pinned alpha.8 shape");
   }
   const stagingOutpoint = outpointString(staging.outpoint);
   const matchingInputs = inputs.filter((candidate) => {
@@ -1335,7 +1341,11 @@ function validateExactCandidate(
   if (matchingInputs.length !== 1) {
     throw adapterError("artifact_mismatch", "immutable exact payment does not spend the exact staging outpoint once");
   }
-  const pinnedStagingInput = requireRecord(inputs[1], "immutable exact staging input");
+  const stagingInputIndex = value.profile === "standard-native" ? 0 : 1;
+  const pinnedStagingInput = requireRecord(
+    inputs[stagingInputIndex],
+    "immutable exact staging input"
+  );
   if (
     pinnedStagingInput.transactionId !== staging.outpoint.txid ||
     pinnedStagingInput.index !== staging.outpoint.index
@@ -1351,7 +1361,7 @@ function validateExactCandidate(
   ) {
     throw adapterError("artifact_mismatch", "immutable exact payment changed its staging UTXO facts");
   }
-  const output = requireRecord(outputs[1], "immutable exact Merchant output");
+  const output = requireRecord(outputs[0], "immutable exact Merchant output");
   if (output.covenant !== null) {
     throw adapterError("profile_mismatch", "immutable exact Merchant output unexpectedly carries a covenant");
   }
@@ -1368,8 +1378,8 @@ function validateExactCandidate(
     transactionId,
     transactionArtifactDigest: digestBytes(Buffer.from(artifact, "utf8")),
     inputOutpoint: stagingOutpoint,
-    outputOutpoint: `${transactionId}:1`,
-    outputIndex: 1,
+    outputOutpoint: `${transactionId}:0`,
+    outputIndex: 0,
     outputAddress,
     outputAmountAtomic,
     outputScriptPublicKey,

@@ -3,8 +3,27 @@ import test from "node:test";
 
 import { VaultTreasuryModule } from "./vault-treasury.js";
 
+function movementAdapters() {
+  const unexpected = async (): Promise<never> => {
+    throw new Error("test did not expect a Treasury Movement");
+  };
+  return {
+    staging: {
+      prepareStaging: unexpected,
+      submitStaging: unexpected,
+      observeStaging: unexpected,
+    },
+    stagingRecovery: {
+      prepare: unexpected,
+      observe: unexpected,
+      submit: unexpected,
+    },
+  };
+}
+
 test("vault Treasury returns one stable policy and exact additional-cost ceiling", async () => {
   const treasury = new VaultTreasuryModule({
+    ...movementAdapters(),
     vault: { configured: true, config: () => ({ configured: true, covenantId: "aa".repeat(32) }) },
     policy: {
       maxPerPaymentAtomic: "1000000000",
@@ -30,6 +49,7 @@ test("vault Treasury reads and copies current operator policy on every call", as
     allowlist: ["merchant-b", "merchant-a"],
   };
   const treasury = new VaultTreasuryModule({
+    ...movementAdapters(),
     vault: {
       configured: true,
       config: () => ({ covenantId: "aa".repeat(32) }),
@@ -60,6 +80,7 @@ test("vault Treasury reads and copies current operator policy on every call", as
 
 test("vault Treasury reports fail-closed readiness blockers", async () => {
   const treasury = new VaultTreasuryModule({
+    ...movementAdapters(),
     vault: { configured: false, config: () => ({ configured: false }) },
     policy: {
       maxPerPaymentAtomic: "1",
@@ -81,6 +102,7 @@ test("vault Treasury turns backend exceptions and malformed covenant identity in
     allowlist: [],
   };
   const throwing = new VaultTreasuryModule({
+    ...movementAdapters(),
     vault: {
       get configured(): boolean {
         throw new Error("backend unavailable");
@@ -98,6 +120,7 @@ test("vault Treasury turns backend exceptions and malformed covenant identity in
   );
 
   const malformed = new VaultTreasuryModule({
+    ...movementAdapters(),
     vault: {
       configured: true,
       config: () => ({ covenantId: "not-a-covenant-id" }),
@@ -111,4 +134,63 @@ test("vault Treasury turns backend exceptions and malformed covenant identity in
     })).blockerCode,
     "vault_unavailable"
   );
+});
+
+test("vault Treasury owns staging and recovery behind one Purchase-facing interface", async () => {
+  const calls: string[] = [];
+  const staging = {
+    async prepareStaging(input: unknown) {
+      calls.push("prepare-staging");
+      return input as never;
+    },
+    async submitStaging(input: unknown) {
+      calls.push("submit-staging");
+      return input as never;
+    },
+    async observeStaging(input: unknown) {
+      calls.push("observe-staging");
+      return input as never;
+    },
+  };
+  const stagingRecovery = {
+    async prepare(input: unknown) {
+      calls.push("prepare-recovery");
+      return input as never;
+    },
+    async observe(input: unknown) {
+      calls.push("observe-recovery");
+      return input as never;
+    },
+    async submit(input: unknown) {
+      calls.push("submit-recovery");
+      return input as never;
+    },
+  };
+  const treasury = new VaultTreasuryModule({
+    vault: { configured: true, config: () => ({ covenantId: "aa".repeat(32) }) },
+    policy: {
+      maxPerPaymentAtomic: "1",
+      maxPerHourAtomic: "1",
+      approvalAboveAtomic: "0",
+      allowlist: [],
+    },
+    additionalCostCeilingAtomic: "1",
+    staging: staging as never,
+    stagingRecovery: stagingRecovery as never,
+  });
+  const input = Object.freeze({ marker: "same-object" });
+  assert.equal(await treasury.prepareStaging(input as never), input);
+  assert.equal(await treasury.submitStaging(input as never), input);
+  assert.equal(await treasury.observeStaging(input as never), input);
+  assert.equal(await treasury.prepareStagingRecovery(input as never), input);
+  assert.equal(await treasury.observeStagingRecovery(input as never), input);
+  assert.equal(await treasury.submitStagingRecovery(input as never), input);
+  assert.deepEqual(calls, [
+    "prepare-staging",
+    "submit-staging",
+    "observe-staging",
+    "prepare-recovery",
+    "observe-recovery",
+    "submit-recovery",
+  ]);
 });

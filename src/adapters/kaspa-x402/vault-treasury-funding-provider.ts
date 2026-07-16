@@ -10,42 +10,43 @@ import type {
   PublicIdentity,
   SendTransactionResult,
 } from "@kaspa-x402/client";
-import type { ByteHex, NetworkId } from "@kaspa-x402/core";
+import {
+  exactRequestAuthorizationDigest,
+  stableStringify,
+  type ByteHex,
+  type NetworkId,
+} from "@kaspa-x402/core";
 
-import { payToScriptHashScript } from "../../kaspa-wasm.js";
-import { KaspaTestnet10AddressCodec, serializeScriptPublicKey } from "./address-codec.js";
+import { KaspaTestnet10AddressCodec } from "./address-codec.js";
 
 const TESTNET_10: NetworkId = "kaspa:testnet-10";
 const VAULT_TREASURY = "vault-treasury" as const;
-const EXACT_TEMPLATE = "kaspa-x402-kip10-additive-v1" as const;
 const EXACT_TRANSACTION_ENCODING = "kaspa-sdk-safe-json-v2.0.0" as const;
 const HASH32 = /^[0-9a-fA-F]{64}$/;
+const SIGNATURE64 = /^[0-9a-fA-F]{128}$/;
 const SERIALIZED_V0_SCRIPT = /^0000(?:[0-9a-fA-F]{2})+$/;
 const HEX_BYTES = /^(?:[0-9a-fA-F]{2})+$/;
 const UINT64_MAX = (1n << 64n) - 1n;
 const UINT32_MAX = 0xffff_ffff;
 
 export interface VaultTreasuryFundingProviderOptions {
-  /** Must remain kaspa:testnet-10 until the recorded mainnet gates pass. */
-  networkId?: NetworkId;
-  getPublicIdentity: () => Promise<PublicIdentity>;
-  getVirtualDaaScore: () => Promise<string>;
-  getUtxos: (addresses: readonly string[]) => Promise<FundingProviderUtxo[]>;
-  estimateFees: (request: FeeEstimateRequest) => Promise<FeeEstimate>;
-  /**
-   * Owns journaled vault staging, exact construction, signing, persistence, and
-   * artifact-level invariant checks before it returns a prepared transaction.
-   */
-  buildExactTransactionDurably: (
-    request: Readonly<ExactTransactionPaymentRequest>,
+  readonly networkId?: NetworkId;
+  readonly getPublicIdentity: () => Promise<PublicIdentity>;
+  readonly getVirtualDaaScore: () => Promise<string>;
+  readonly getUtxos: (addresses: readonly string[]) => Promise<FundingProviderUtxo[]>;
+  readonly estimateFees: (request: FeeEstimateRequest) => Promise<FeeEstimate>;
+  readonly authorizeExactPayment: (
+    request: Readonly<ExactTransactionPaymentRequest>
+  ) => Promise<void>;
+  readonly buildExactTransactionDurably: (
+    request: Readonly<ExactTransactionPaymentRequest>
   ) => Promise<ExactTransactionPaymentResult>;
-  now?: () => number;
+  readonly now?: () => number;
 }
 
 /**
- * The alpha.6 FundingProvider boundary for Sompi's journaled vault treasury.
- * It deliberately exposes no escrow-deposit or transaction-broadcast path:
- * exact artifacts are durably prepared here and submitted by the Merchant.
+ * Attempt-scoped alpha.8 FundingProvider. It can authorize and sign exactly one
+ * immutable request, cannot broadcast, and has no batch-deposit authority.
  */
 export class VaultTreasuryFundingProvider implements FundingProvider {
   readonly networkId: NetworkId;
@@ -53,6 +54,7 @@ export class VaultTreasuryFundingProvider implements FundingProvider {
 
   private readonly options: VaultTreasuryFundingProviderOptions;
   private readonly addressCodec = new KaspaTestnet10AddressCodec();
+  private authorizedRequest?: string;
 
   constructor(options: VaultTreasuryFundingProviderOptions) {
     this.networkId = options.networkId ?? TESTNET_10;
@@ -73,27 +75,40 @@ export class VaultTreasuryFundingProvider implements FundingProvider {
       : { address: identity.address, publicKey: identity.publicKey };
   }
 
+  async authorizeExactPayment(request: ExactTransactionPaymentRequest): Promise<void> {
+    validateExactRequest(request, this.networkId, this.addressCodec, this.now());
+    const canonical = stableStringify(request);
+    if (this.authorizedRequest !== undefined && this.authorizedRequest !== canonical) {
+      throw new Error("attempt provider cannot authorize a different exact request");
+    }
+    await this.options.authorizeExactPayment(deepFreeze(structuredClone(request)));
+    this.authorizedRequest = canonical;
+  }
+
   async payExactTransaction(
-    request: ExactTransactionPaymentRequest,
+    request: ExactTransactionPaymentRequest
   ): Promise<ExactTransactionPaymentResult> {
-    validateExactRequest(request, this.networkId, this.addressCodec, this.options.now?.() ?? Date.now());
-
-    const durableRequest = deepFreeze(structuredClone(request));
-    const result = await this.options.buildExactTransactionDurably(durableRequest);
+    validateExactRequest(request, this.networkId, this.addressCodec, this.now());
+    if (this.authorizedRequest !== stableStringify(request)) {
+      throw new Error("exact payment request was not authorized before signing");
+    }
+    const result = await this.options.buildExactTransactionDurably(
+      deepFreeze(structuredClone(request))
+    );
     validateExactResult(result, request, this.networkId, this.addressCodec);
-
     return {
       transaction: result.transaction,
       transactionEncoding: result.transactionEncoding,
       transactionId: result.transactionId,
       paymentOutputIndex: result.paymentOutputIndex,
+      authorization: structuredClone(result.authorization),
       ...(result.payerAddress === undefined ? {} : { payerAddress: result.payerAddress }),
       fundingSource: VAULT_TREASURY,
     };
   }
 
   async fundEscrowDeposit(_request: EscrowDepositRequest): Promise<EscrowDepositResult> {
-    throw new Error("Kaspa-x402 escrow deposits are disabled by the Sompi exact-only profile");
+    throw new Error("batch deposits are outside the exact attempt provider");
   }
 
   async getUtxos(addresses: readonly string[]): Promise<FundingProviderUtxo[]> {
@@ -101,7 +116,9 @@ export class VaultTreasuryFundingProvider implements FundingProvider {
       this.addressCodec.scriptPublicKeyForAddress(address, this.networkId);
     }
     const utxos = await this.options.getUtxos([...addresses]);
-    for (const [position, utxo] of utxos.entries()) validateUtxo(utxo, position, this.networkId, this.addressCodec);
+    for (const [position, utxo] of utxos.entries()) {
+      validateUtxo(utxo, position, this.networkId, this.addressCodec);
+    }
     return utxos.map((utxo) => structuredClone(utxo));
   }
 
@@ -112,7 +129,7 @@ export class VaultTreasuryFundingProvider implements FundingProvider {
   async estimateFees(request: FeeEstimateRequest): Promise<FeeEstimate> {
     assertNetwork(request.network, this.networkId);
     if (request.action !== "exact") {
-      throw new Error(`fee action ${request.action} is disabled by the Sompi exact-only profile`);
+      throw new Error(`fee action ${request.action} is outside the exact attempt provider`);
     }
     if (request.amount !== undefined) assertPositiveUint64(request.amount, "fee estimate amount");
     const estimate = await this.options.estimateFees(structuredClone(request));
@@ -120,9 +137,13 @@ export class VaultTreasuryFundingProvider implements FundingProvider {
   }
 
   async sendTransaction(_transaction: ByteHex): Promise<SendTransactionResult> {
-    throw new Error(
-      "Kaspa-x402 transaction broadcast is disabled here; the exact Merchant submits the prepared artifact",
-    );
+    throw new Error("the merchant or facilitator submits the prepared exact artifact");
+  }
+
+  private now(): number {
+    const value = this.options.now?.() ?? Date.now();
+    if (!Number.isSafeInteger(value) || value < 0) throw new Error("funding provider clock is invalid");
+    return value;
   }
 }
 
@@ -130,113 +151,98 @@ function validateExactRequest(
   request: ExactTransactionPaymentRequest,
   networkId: NetworkId,
   addressCodec: KaspaTestnet10AddressCodec,
-  now: number,
+  now: number
 ): void {
   assertNetwork(request.network, networkId);
   if (request.fundingSource !== VAULT_TREASURY) {
     throw new Error("exact payment request must require vault-treasury funding");
   }
+  if (request.profile !== "standard-native" && request.profile !== "additive") {
+    throw new Error("exact payment profile is unsupported");
+  }
   assertPositiveUint64(request.amount, "exact payment amount");
   addressCodec.scriptPublicKeyForAddress(request.payTo, networkId);
-  if (request.requestHash !== undefined) assertHash32(request.requestHash, "request hash");
-  if (
-    request.requiredFinality !== undefined &&
-    request.requiredFinality !== "mempool" &&
-    request.requiredFinality !== "accepted" &&
-    request.requiredFinality !== "confirmed"
-  ) {
-    throw new Error("exact payment required finality is invalid");
+  if (!SERIALIZED_V0_SCRIPT.test(request.payToScriptPublicKey)) {
+    throw new Error("exact payment script public key is invalid");
   }
+  assertHash32(request.requestHash, "request hash");
+  assertHash32(request.paymentRequirementsHash, "payment requirements hash");
+  if (request.requiredFinality === "mempool") {
+    throw new Error("Sompi exact requires accepted or confirmed finality");
+  }
+  if (request.paymentOutputIndex !== undefined && request.paymentOutputIndex !== 0) {
+    throw new Error("exact payment output must be index 0");
+  }
+  requireFutureTime(request.authorizationExpiresAt, now, "request authorization expiry");
 
-  const reservation = request.reservation;
-  if (reservation.templateId !== EXACT_TEMPLATE) {
-    throw new Error("exact payment reservation uses an unsupported KIP-10 template");
+  if (request.profile === "standard-native") {
+    if (request.head !== undefined) throw new Error("standard-native exact must not include a head");
+    return;
   }
-  if (reservation.transactionEncoding !== EXACT_TRANSACTION_ENCODING) {
-    throw new Error("exact payment reservation uses an unsupported transaction encoding");
+  const head = request.head;
+  if (!head) throw new Error("additive exact requires a head challenge");
+  assertHash32(head.headId, "head ID");
+  assertUint64(head.headVersion, "head version");
+  assertHash32(head.challengeId, "head challenge ID");
+  assertHash32(head.expectedHeadOutpoint.txid, "head outpoint transaction ID");
+  assertUint32(head.expectedHeadOutpoint.index, "head outpoint index");
+  assertPositiveUint64(head.headAmount, "head amount");
+  assertPositiveUint64(head.additiveThresholdSompi, "additive threshold");
+  if (!SERIALIZED_V0_SCRIPT.test(head.headScriptPublicKey) || !HEX_BYTES.test(head.headRedeemScript)) {
+    throw new Error("additive head script facts are invalid");
   }
-  assertHash32(reservation.reservationId, "reservation ID");
-  const borrowOutpoint = reservation.borrowOutpoint;
-  if (!borrowOutpoint) throw new Error("exact payment reservation is missing its borrow outpoint");
-  assertHash32(borrowOutpoint.txid, "borrow outpoint transaction ID");
-  assertUint32(borrowOutpoint.index, "borrow outpoint index");
-  assertPositiveUint64(reservation.borrowAmount, "borrow amount");
-  assertUint64(reservation.additiveThresholdSompi, "additive threshold");
-  assertUint32(reservation.paymentOutputIndex, "payment output index");
-  const borrowScriptPublicKey = reservation.borrowScriptPublicKey;
-  if (typeof borrowScriptPublicKey !== "string" || !SERIALIZED_V0_SCRIPT.test(borrowScriptPublicKey)) {
-    throw new Error("borrow script public key is not an alpha.6 serialized version-0 script");
-  }
-  const borrowRedeemScript = reservation.borrowRedeemScript;
-  if (typeof borrowRedeemScript !== "string" || !HEX_BYTES.test(borrowRedeemScript)) {
-    throw new Error("borrow redeem script must contain complete hexadecimal bytes");
-  }
-
-  const derivedBorrowScript = payToScriptHashScript(borrowRedeemScript);
-  try {
-    const serialized = serializeScriptPublicKey(derivedBorrowScript.version, derivedBorrowScript.script);
-    if (serialized !== borrowScriptPublicKey.toLowerCase()) {
-      throw new Error("borrow redeem script does not match the reserved script public key");
-    }
-  } finally {
-    derivedBorrowScript.free();
-  }
-
-  if (typeof reservation.reservationExpiresAt !== "string") {
-    throw new Error("exact payment reservation must have an expiry");
-  }
-  const expiresAt = Date.parse(reservation.reservationExpiresAt);
-  if (!Number.isFinite(expiresAt)) {
-    throw new Error("exact payment reservation expiry is invalid");
-  }
-  if (expiresAt <= now) {
-    throw new Error("exact payment reservation has expired");
-  }
+  requireFutureTime(head.challengeExpiresAt, now, "head challenge expiry");
 }
 
 function validateExactResult(
   result: ExactTransactionPaymentResult,
   request: ExactTransactionPaymentRequest,
   networkId: NetworkId,
-  addressCodec: KaspaTestnet10AddressCodec,
+  addressCodec: KaspaTestnet10AddressCodec
 ): void {
-  if (!result || typeof result !== "object") {
-    throw new Error("durable exact transaction builder returned no result");
-  }
-  if (result.transactionEncoding !== request.reservation.transactionEncoding) {
-    throw new Error("prepared transaction encoding does not match the reservation");
+  if (!result || typeof result !== "object") throw new Error("exact builder returned no result");
+  if (result.transactionEncoding !== EXACT_TRANSACTION_ENCODING) {
+    throw new Error("prepared transaction encoding does not match kaspa-exact-v2");
   }
   if (result.fundingSource !== VAULT_TREASURY) {
     throw new Error("prepared exact transaction must use vault-treasury funding");
   }
   assertHash32(result.transactionId, "prepared transaction ID");
-  assertUint32(result.paymentOutputIndex, "prepared payment output index");
-  const expectedPaymentOutputIndex = request.reservation.paymentOutputIndex;
-  assertUint32(expectedPaymentOutputIndex, "reserved payment output index");
-  if (result.paymentOutputIndex !== expectedPaymentOutputIndex) {
-    throw new Error("prepared payment output index does not match the reservation");
-  }
+  if (result.paymentOutputIndex !== 0) throw new Error("prepared payment output must be index 0");
   if (typeof result.transaction !== "string" || result.transaction.length === 0) {
     throw new Error("prepared exact transaction artifact is empty");
   }
-
   let parsed: unknown;
-  try {
-    parsed = JSON.parse(result.transaction);
-  } catch {
-    throw new Error("prepared exact transaction artifact is not safe JSON");
-  }
-  if (!isRecord(parsed)) {
-    throw new Error("prepared exact transaction artifact must be a JSON object");
-  }
-  if (parsed.id !== undefined) {
-    assertHash32(parsed.id, "transaction artifact ID");
-    if (parsed.id.toLowerCase() !== result.transactionId.toLowerCase()) {
-      throw new Error("transaction artifact ID does not match the prepared transaction ID");
-    }
+  try { parsed = JSON.parse(result.transaction); } catch { throw new Error("prepared transaction is not safe JSON"); }
+  if (!isRecord(parsed)) throw new Error("prepared transaction artifact must be an object");
+  if (parsed.id !== undefined && parsed.id !== result.transactionId) {
+    throw new Error("transaction artifact ID does not match the prepared ID");
   }
   if (result.payerAddress !== undefined) {
     addressCodec.scriptPublicKeyForAddress(result.payerAddress, networkId);
+  }
+  const expectedDigest = exactRequestAuthorizationDigest({
+    network: request.network,
+    profile: request.profile,
+    transactionId: result.transactionId,
+    paymentOutputIndex: result.paymentOutputIndex,
+    amount: request.amount,
+    payTo: request.payTo,
+    payToScriptPublicKey: request.payToScriptPublicKey,
+    paymentRequirementsHash: request.paymentRequirementsHash,
+    requestHash: request.requestHash,
+    ...(request.head === undefined ? {} : { challengeId: request.head.challengeId }),
+    inputIndex: request.profile === "additive" ? 1 : 0,
+    expiresAt: request.authorizationExpiresAt,
+  });
+  if (
+    result.authorization.version !== "kaspa-x402-exact-request-authorization-v1" ||
+    result.authorization.inputIndex !== (request.profile === "additive" ? 1 : 0) ||
+    result.authorization.expiresAt !== request.authorizationExpiresAt ||
+    result.authorization.digest !== expectedDigest ||
+    !SIGNATURE64.test(result.authorization.signature)
+  ) {
+    throw new Error("prepared exact request authorization is not bound to the request");
   }
 }
 
@@ -244,13 +250,13 @@ function validateUtxo(
   utxo: FundingProviderUtxo,
   position: number,
   networkId: NetworkId,
-  addressCodec: KaspaTestnet10AddressCodec,
+  addressCodec: KaspaTestnet10AddressCodec
 ): void {
   assertHash32(utxo.outpoint.txid, `UTXO ${position} transaction ID`);
   assertUint32(utxo.outpoint.index, `UTXO ${position} output index`);
   assertUint64(utxo.amount, `UTXO ${position} amount`);
   if (!SERIALIZED_V0_SCRIPT.test(utxo.scriptPublicKey)) {
-    throw new Error(`UTXO ${position} script public key is not a serialized version-0 script`);
+    throw new Error(`UTXO ${position} script public key is invalid`);
   }
   if (utxo.address !== undefined) addressCodec.scriptPublicKeyForAddress(utxo.address, networkId);
 }
@@ -277,8 +283,7 @@ function assertUint64(value: unknown, label: string): string {
   if (typeof value !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(value)) {
     throw new Error(`${label} must be a canonical unsigned decimal string`);
   }
-  const parsed = BigInt(value);
-  if (parsed > UINT64_MAX) throw new Error(`${label} exceeds uint64`);
+  if (BigInt(value) > UINT64_MAX) throw new Error(`${label} exceeds uint64`);
   return value;
 }
 
@@ -286,6 +291,14 @@ function assertPositiveUint64(value: unknown, label: string): string {
   const normalized = assertUint64(value, label);
   if (normalized === "0") throw new Error(`${label} must be greater than zero`);
   return normalized;
+}
+
+function requireFutureTime(value: unknown, now: number, label: string): void {
+  if (typeof value !== "string") throw new Error(`${label} is missing`);
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed) || new Date(parsed).toISOString() !== value || parsed <= now) {
+    throw new Error(`${label} is invalid or expired`);
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

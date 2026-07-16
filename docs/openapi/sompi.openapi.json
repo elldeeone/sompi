@@ -1,0 +1,727 @@
+{
+  "openapi": "3.2.0",
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "info": {
+    "title": "Sompi Purchase API",
+    "version": "0.8.0",
+    "description": "Authenticated, protocol-neutral Purchase lifecycle for Sompi."
+  },
+  "servers": [
+    {
+      "url": "http://127.0.0.1:7442",
+      "description": "Default local service"
+    }
+  ],
+  "security": [
+    {
+      "AgentCredential": []
+    }
+  ],
+  "paths": {
+    "/purchases": {
+      "post": {
+        "operationId": "createPurchase",
+        "summary": "Create or idempotently resume a Purchase",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PurchaseCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Purchase state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseApiError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/purchases/{purchaseId}": {
+      "get": {
+        "operationId": "getPurchase",
+        "summary": "Read a durable Purchase without an external side effect",
+        "parameters": [
+          {
+            "name": "purchaseId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^pur_[A-Za-z0-9_-]{22}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Purchase state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseApiError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/purchases/{purchaseId}/recover": {
+      "post": {
+        "operationId": "recoverPurchase",
+        "summary": "Reconcile a Purchase without blind resubmission",
+        "parameters": [
+          {
+            "name": "purchaseId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^pur_[A-Za-z0-9_-]{22}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Reconciled Purchase state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseApiError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PurchaseApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "AgentCredential": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "sompi-purchase-api-v1"
+      }
+    },
+    "schemas": {
+      "PurchaseCreateRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requestKey",
+          "url"
+        ],
+        "properties": {
+          "requestKey": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._:-]{1,160}$",
+            "maxLength": 160
+          },
+          "url": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "format": "uri"
+          },
+          "method": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9!#$%&'*+.^_`|~-]{0,31}$",
+            "nullable": true
+          },
+          "bodyBase64": {
+            "type": "string",
+            "minLength": 4,
+            "maxLength": 1398104,
+            "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+            "nullable": true
+          },
+          "mediaType": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "nullable": true
+          },
+          "expectedMerchant": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [],
+            "nullable": true,
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256,
+                "nullable": true
+              },
+              "origin": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048,
+                "format": "uri",
+                "nullable": true
+              }
+            }
+          }
+        }
+      },
+      "PurchaseView": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "requestKey",
+          "state",
+          "summary",
+          "resourceFingerprint",
+          "authorization",
+          "treasury",
+          "paymentAttempts",
+          "receiptEvidence"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^pur_[A-Za-z0-9_-]{22}$"
+          },
+          "requestKey": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._:-]{1,160}$"
+          },
+          "state": {
+            "enum": [
+              "created",
+              "terms_bound",
+              "awaiting_authority",
+              "authorised",
+              "execution_prepared",
+              "submitted",
+              "settled",
+              "fulfilled",
+              "receipted",
+              "denied",
+              "cancelled",
+              "expired",
+              "failed_recoverable",
+              "failed_terminal"
+            ]
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "userAction": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "resourceFingerprint": {
+            "type": "string",
+            "pattern": "^sha256:[A-Za-z0-9_-]{43}$"
+          },
+          "terms": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "merchant",
+              "resourceFingerprint",
+              "amountAtomic",
+              "asset",
+              "network",
+              "payTo",
+              "expiresAt",
+              "checkoutDigest"
+            ],
+            "properties": {
+              "merchant": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "id",
+                  "name",
+                  "origin"
+                ],
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "name": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "origin": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 2048
+                  }
+                }
+              },
+              "resourceFingerprint": {
+                "type": "string",
+                "pattern": "^sha256:[A-Za-z0-9_-]{43}$"
+              },
+              "amountAtomic": {
+                "type": "string",
+                "pattern": "^[1-9][0-9]*$",
+                "maxLength": 78
+              },
+              "asset": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "network": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "payTo": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "expiresAt": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "checkoutDigest": {
+                "type": "string",
+                "pattern": "^sha256:[A-Za-z0-9_-]{43}$"
+              }
+            }
+          },
+          "authorization": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "enum": [
+                  "not_requested",
+                  "pending",
+                  "approved",
+                  "denied",
+                  "expired"
+                ]
+              },
+              "authorityId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "evidenceDigest": {
+                "type": "string",
+                "pattern": "^sha256:[A-Za-z0-9_-]{43}$"
+              }
+            }
+          },
+          "treasury": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "enum": [
+                  "unreserved",
+                  "reserved",
+                  "committed",
+                  "released",
+                  "expired"
+                ]
+              },
+              "amountAtomic": {
+                "type": "string",
+                "pattern": "^(?:0|[1-9][0-9]*)$",
+                "maxLength": 78
+              },
+              "additionalCostCeilingAtomic": {
+                "type": "string",
+                "pattern": "^(?:0|[1-9][0-9]*)$",
+                "maxLength": 78
+              },
+              "reservationId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "fundingSource": {
+                "const": "vault-treasury"
+              }
+            }
+          },
+          "paymentAttempts": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "attempt",
+                "identifier",
+                "status",
+                "evidenceDigests"
+              ],
+              "properties": {
+                "attempt": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 2147483647
+                },
+                "identifier": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 160
+                },
+                "status": {
+                  "enum": [
+                    "planned",
+                    "prepared",
+                    "submitted",
+                    "observed",
+                    "failed"
+                  ]
+                },
+                "transactionId": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "finality": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 100
+                },
+                "evidenceDigests": {
+                  "type": "array",
+                  "maxItems": 64,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "pattern": "^sha256:[A-Za-z0-9_-]{43}$"
+                  }
+                }
+              }
+            }
+          },
+          "settlementEvidence": {
+            "type": "string",
+            "pattern": "^sha256:[A-Za-z0-9_-]{43}$"
+          },
+          "fulfilmentDigest": {
+            "type": "string",
+            "pattern": "^sha256:[A-Za-z0-9_-]{43}$"
+          },
+          "receiptEvidence": {
+            "type": "array",
+            "maxItems": 64,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "pattern": "^sha256:[A-Za-z0-9_-]{43}$"
+            }
+          },
+          "fulfilmentBody": {
+            "type": "string",
+            "maxLength": 8192
+          },
+          "fulfilmentHandle": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          }
+        }
+      },
+      "PurchaseApiError": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "code",
+              "message",
+              "retryable"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "pattern": "^[A-Z][A-Z0-9_]{0,79}$",
+                "maxLength": 80
+              },
+              "message": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "retryable": {
+                "type": "boolean"
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

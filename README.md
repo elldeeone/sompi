@@ -9,8 +9,8 @@ The initial profile composes two evolving protocols without merging them:
 
 - **AP2 v0.2 human-present** owns Merchant checkout evidence, exact human
   authorization, closed mandates, and receipts.
-- **Kaspa-x402 `exact` alpha.6** owns HTTP payment requirements/payloads and
-  Kaspa Settlement.
+- **Kaspa-x402 `0.1.0-alpha.8`** owns `kaspa-exact-v2` requirements,
+  `standard-native` and `additive` payment execution, and Kaspa Settlement.
 - **Sompi Purchase** binds both sides through canonical facts, identifiers, and
   evidence digests. It adds no proprietary AP2 fields to x402 objects.
 
@@ -22,8 +22,9 @@ supports only `kaspa:testnet-10`; mainnet is intentionally unavailable.
 
 ```mermaid
 flowchart LR
-  A["Untrusted Agent / MCP client"] --> M["sompi-mcp"]
-  M --> P["Stable Purchase module"]
+  A["Untrusted Agent / API client"] --> API["sompi-api"]
+  MCP["sompi-mcp compatibility"] --> API
+  API --> P["Stable Purchase module"]
   P <--> J["SQLite Purchase Journal"]
   P --> AP2["Versioned AP2 adapter"]
   AP2 <--> H["AP2-aware Merchant"]
@@ -236,9 +237,10 @@ See [`docs/architecture/THREAT_MODEL.md`](docs/architecture/THREAT_MODEL.md) and
 ## Pinned protocol inputs
 
 The supported-profile declaration pins AP2 v0.2 schemas/upstream provenance,
-Kaspa-x402 `0.1.0-alpha.6`, ES256/SD-JWT dependencies, and the initial
-testnet-only network/scheme. Vendored AP2 schemas retain their upstream Apache
-2.0 license and provenance; Sompi source is MIT licensed.
+Kaspa-x402 `0.1.0-alpha.8` package integrities, source and release identities,
+exact HTTP and consensus vectors, ES256/SD-JWT dependencies, and the
+testnet-only profiles. Vendored AP2 schemas and Kaspa-x402 vectors retain their
+upstream licences and provenance; Sompi source is MIT licensed.
 
 The old Sompi x402 v1 escrow implementation and compatibility paths were
 deleted at clean cutover. Kaspa-x402 remains an external package and is not

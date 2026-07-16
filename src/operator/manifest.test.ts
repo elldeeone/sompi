@@ -157,6 +157,7 @@ function buildManifestValue(
       merchantReceiptIssuer: "receipt:merchant",
       paymentReceiptIssuer: "receipt:payment",
     },
+    batch: { claimFeeReserveAtomic: "100000" },
     chainEvidence: {
       operatorNodeUrl: "ws://10.0.3.26:17210/",
       witnessBaseUrl: "https://api-tn10.kaspa.org/",

@@ -1,14 +1,53 @@
 # Current state
 
-Last updated: **2026-07-14**
+Last updated: **2026-07-16**
 
 ## Plain-English status
 
-**Phase 2D post-review hardening is verified and ready to become the new base.**
-The first human-present AP2 + Kaspa-x402 exact vertical remains testnet-only;
-the post-scan hardening gates now pass through the bounded Authority,
-Purchase/Journal, Evidence, MCP, and direct-Treasury lifecycles. Phase 3 has
-not started.
+**The alpha.8 clean-cutover goal is active; Phases A through E are complete and
+the hermetic Phase F batch lifecycle is implemented.** The
+landed Kaspa-x402 `0.1.0-alpha.8` release, published package integrities,
+immutable specifications, schemas, vectors, public APIs, and funded TN10
+evidence have been mapped into Sompi's ownership and acceptance boundaries in
+[`docs/architecture/KASPA_X402_INTEGRATION.md`](docs/architecture/KASPA_X402_INTEGRATION.md).
+The implementation is now moving through the remaining AP2/Merchant workflow,
+funded Testnet-10, security, and release-readiness gates. Batch settlement is a
+separate capital-backed channel lifecycle and is not treated as exact payment.
+
+ADR-0015 and the aligned architecture require a clean replacement of alpha.6,
+support both
+`kaspa-exact-v2` profiles (`standard-native` and `additive`), and treats
+`batch-settlement` as a separate gated lifecycle. HTTP/OpenAPI is now the
+canonical Purchase API and MCP is a thin untrusted compatibility adapter. No
+alpha.8 payment conformance claim has been made yet.
+
+Current verification: `npm test` passes all **428** tests (**427 pass**, one
+documented privileged ownership skip) and the complete offline smoke. The
+authenticated loopback API, runtime-derived OpenAPI, operator-installed agent
+credential, HTTP/MCP parity, request limits, deadlines, and cancellation gates
+pass. Both `kaspa-exact-v2` profiles now run through the alpha.8 SDK contract,
+and Treasury owns policy capacity, vault staging, attempt-scoped funding,
+external-effect fencing, abandoned-stage recovery, and cancellation semantics
+behind one Purchase-facing deep module. Cancellation before an external effect
+atomically releases capacity; cancellation after any possible effect remains
+durably fenced for reconciliation. MCP production code imports no wallet,
+Journal, Authority, AP2, Kaspa-x402, Treasury, or Purchase runtime capability.
+
+The hermetic Phase F gate covers immutable channel capitalization, durable
+channel and Movement state, separately authorized monotonic vouchers, a
+claim-fee reserve, strict DAA refund, claim/refund races, ambiguity and
+recovery, and rotation through independently funded channel epochs. The demo
+Merchant consumes the public Kaspa-x402 alpha.8 server/store seams for exact
+and batch: one batch request produces a durable commitment and AP2 receipt, an
+accepted claim advances the continuation outpoint, and the original paid
+response replays byte-for-byte after that epoch change. In-place top-up is
+deliberately unsupported until the public client exposes a general builder;
+Sompi rotates to a separately capitalized channel instead. No funded batch
+Testnet-10 conformance claim has been made yet.
+
+The first human-present AP2 + Kaspa-x402 vertical remains testnet-only; the
+post-scan hardening gates pass through the bounded Authority, Purchase/Journal,
+Evidence, MCP, and direct-Treasury lifecycles.
 
 Phases 0 through 6 were implemented through `4ebb82d`, including the stable
 Purchase module, clean Kaspa-x402 alpha.6 exact path, isolated interactive AP2
@@ -20,13 +59,17 @@ unbounded operation lifecycles. The independent review of the initial Phase
 work. The remediation commits through `eb96534` passed an exact independent
 security diff review with zero reportable findings. Commit `1151938` then
 removed the remaining speculative non-execution release and is verified
-locally; Phase 3 has not started.
+locally. That alpha.6 vertical is now the pre-hardening implementation being
+replaced by the alpha.8 clean cutover; it is historical evidence, not the
+target contract.
 
 ## Git orientation at codification
 
 - Repository: `https://github.com/elldeeone/sompi`
-- Normalized local `main`: `1bbfa0c` (`Document AP2 and Kaspa-x402 architecture`)
-- Active implementation branch: `phase-2d-review-remediation`
+- Normalized local `main`: `fd7ba42` (`Complete AP2 + Kaspa-x402 purchase core
+  and Phase 2D hardening (#4)`)
+- Active implementation branch/worktree: `phase-3-purchase-module` at
+  `/home/luke/.codex/worktrees/dd12/sompi`.
 - Historical branch/HEAD before the Phase 2D execution:
   `ap2-kaspa-purchase-core` at the required
   `17cce287fb0006aee9dd5f36697b58d770054e2f`.
@@ -63,13 +106,19 @@ surface.
 - One repository and initially one npm package.
 - Deep, stable Purchase module at the centre.
 - SQLite Purchase Journal before replacement payments.
-- Separate `sompi-mcp` and deterministic `sompi-authority` executables.
+- Canonical authenticated `sompi-api`, thin untrusted `sompi-mcp`
+  compatibility adapter, and deterministic `sompi-authority` executable.
 - AP2 adapter owns authorization and evidence.
 - Kaspa-x402 adapter owns x402/Kaspa payment execution.
 - Kaspa-x402 is used unchanged for initial AP2 integration.
 - AP2 and x402 are initially linked by canonical Purchase/payment identifiers
   and evidence digests, not a proprietary wire extension.
-- AP2 v0.2 human-present + Kaspa-x402 exact + testnet first.
+- AP2 v0.2 human-present + both Kaspa-x402 `kaspa-exact-v2` profiles +
+  testnet first, followed by separately gated batch settlement.
+- OpenAPI 3.2 describes the canonical Purchase API; Arazzo follows only after
+  the lifecycle stabilizes.
+- The alpha.8 cutover starts a new Journal epoch and rejects prior development
+  epochs without migration or compatibility readers.
 - Complete deletion of Sompi x402 v1 at cutover; no compatibility layer.
 
 ## Completed milestones
@@ -211,8 +260,9 @@ Phase 2 is complete:
 
 Phases 3 through 6 have an implemented pre-hardening vertical:
 
-1. MCP exposes the stable Purchase interface and the Purchase module owns the
-   lifecycle and recovery orchestration;
+1. MCP exposes the stable Purchase operations and the Purchase module owns the
+   lifecycle and recovery orchestration; Phase 3 will move MCP behind the
+   canonical authenticated API;
 2. Kaspa-x402 alpha.6 exact executes through durable wallet/vault staging with
    the bespoke x402 v1 runtime removed;
 3. a separate deterministic `sompi-authority` verifies and signs human-present
@@ -334,9 +384,10 @@ protocol behavior and did not spend additional testnet funds.
 
 ## Next action
 
-Normalize the verified `phase-2d-review-remediation` branch into one main base,
-then execute Phase 3 from that exact base. Do not carry the hardening work on a
-branch-of-a-branch.
+Complete Phase 3 on `phase-3-purchase-module`: audit the existing Purchase
+operations, add the authenticated OpenAPI-described API, reduce MCP to a
+least-authority compatibility adapter, and prove transport parity before the
+alpha.8 runtime cutover.
 
 ## Known external uncertainties
 

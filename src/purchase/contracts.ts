@@ -7,6 +7,10 @@ import type {
   PurchaseId,
   Sha256Digest,
 } from "./types.js";
+import type {
+  PurchaseExecutionAssurance,
+  PurchaseExecutionMechanism,
+} from "./execution-plan.js";
 
 const DIGEST_PATTERN = /^sha256:[A-Za-z0-9_-]{43}$/;
 const POSITIVE_DECIMAL_PATTERN = /^[1-9][0-9]*$/;
@@ -44,6 +48,13 @@ export interface PurchaseAuthorizationRequest {
   nonceDigest: Sha256Digest;
   additionalCostCeilingAtomic: string;
   effectiveFinalityFloor: "accepted" | "depth-confirmed";
+  executionPlanDigest: Sha256Digest;
+  executionMechanism: PurchaseExecutionMechanism;
+  executionProfile: string;
+  settlementAssurance: PurchaseExecutionAssurance;
+  maximumAuthorizedChargeAtomic: string;
+  channelId?: string;
+  channelEpochDigest?: Sha256Digest;
   createdAtMs: number;
   expiresAtMs: number;
 }
@@ -67,6 +78,13 @@ export interface CanonicalAuthorizationFacts {
   nonceDigest: Sha256Digest;
   additionalCostCeilingAtomic: string;
   effectiveFinalityFloor: "accepted" | "depth-confirmed";
+  executionPlanDigest: Sha256Digest;
+  executionMechanism: PurchaseExecutionMechanism;
+  executionProfile: string;
+  settlementAssurance: PurchaseExecutionAssurance;
+  maximumAuthorizedChargeAtomic: string;
+  channelId?: string;
+  channelEpochDigest?: Sha256Digest;
 }
 
 export interface PurchaseAuthorizationDecision {
@@ -212,6 +230,7 @@ export function authorizationFacts(request: PurchaseAuthorizationRequest): Canon
   if (Date.parse(terms.expiresAt) !== request.expiresAtMs) {
     throw new PurchaseContractError("authorization request expiry does not match Checkout Terms");
   }
+  const execution = canonicalAuthorizationExecution(request);
   return {
     purchaseId,
     resourceUrl,
@@ -234,6 +253,83 @@ export function authorizationFacts(request: PurchaseAuthorizationRequest): Canon
       "authorization additional-cost ceiling"
     ),
     effectiveFinalityFloor: requireFinalityFloor(request.effectiveFinalityFloor),
+    ...execution,
+  };
+}
+
+type AuthorizationExecutionFacts = Pick<
+  CanonicalAuthorizationFacts,
+  | "executionPlanDigest"
+  | "executionMechanism"
+  | "executionProfile"
+  | "settlementAssurance"
+  | "maximumAuthorizedChargeAtomic"
+  | "channelId"
+  | "channelEpochDigest"
+>;
+
+function canonicalAuthorizationExecution(
+  request: AuthorizationExecutionFacts
+): AuthorizationExecutionFacts {
+  const executionPlanDigest = requireDigest(request.executionPlanDigest, "authorization execution-plan digest");
+  const executionProfile = requireBoundedIdentity(
+    request.executionProfile,
+    "authorization execution profile",
+    160
+  );
+  const maximumAuthorizedChargeAtomic = requirePositiveDecimal(
+    request.maximumAuthorizedChargeAtomic,
+    "authorization maximum charge"
+  );
+  if (
+    request.executionMechanism !== "single-transaction" &&
+    request.executionMechanism !== "channel-voucher"
+  ) {
+    throw new PurchaseContractError("authorization execution mechanism is invalid");
+  }
+  if (
+    request.settlementAssurance !== "accepted" &&
+    request.settlementAssurance !== "confirmed" &&
+    request.settlementAssurance !== "channel-commitment"
+  ) {
+    throw new PurchaseContractError("authorization settlement assurance is invalid");
+  }
+  if (request.executionMechanism === "single-transaction") {
+    if (
+      request.settlementAssurance === "channel-commitment" ||
+      request.channelId !== undefined ||
+      request.channelEpochDigest !== undefined
+    ) {
+      throw new PurchaseContractError("single-transaction authorization contains channel facts");
+    }
+    return {
+      executionPlanDigest,
+      executionMechanism: request.executionMechanism,
+      executionProfile,
+      settlementAssurance: request.settlementAssurance,
+      maximumAuthorizedChargeAtomic,
+    };
+  }
+  if (
+    request.settlementAssurance !== "channel-commitment" ||
+    request.channelId === undefined ||
+    request.channelEpochDigest === undefined
+  ) {
+    throw new PurchaseContractError("channel-voucher authorization requires a bound channel epoch");
+  }
+  const channelId = requireBoundedIdentity(request.channelId, "authorization channel id", 160);
+  const channelEpochDigest = requireDigest(
+    request.channelEpochDigest,
+    "authorization channel-epoch digest"
+  );
+  return {
+    executionPlanDigest,
+    executionMechanism: request.executionMechanism,
+    executionProfile,
+    settlementAssurance: request.settlementAssurance,
+    maximumAuthorizedChargeAtomic,
+    channelId,
+    channelEpochDigest,
   };
 }
 
@@ -326,6 +422,7 @@ function validateMerchant(candidate: MerchantIdentity): MerchantIdentity {
 }
 
 function validateAuthorizationFacts(candidate: CanonicalAuthorizationFacts): CanonicalAuthorizationFacts {
+  const execution = canonicalAuthorizationExecution(candidate);
   return {
     purchaseId: requirePurchaseId(candidate.purchaseId),
     resourceUrl: canonicalResourceUrl(candidate.resourceUrl),
@@ -348,6 +445,7 @@ function validateAuthorizationFacts(candidate: CanonicalAuthorizationFacts): Can
       "authorization fact additional-cost ceiling"
     ),
     effectiveFinalityFloor: requireFinalityFloor(candidate.effectiveFinalityFloor),
+    ...execution,
   };
 }
 

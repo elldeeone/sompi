@@ -49,10 +49,10 @@ test("request envelopes are canonical, deterministic, authenticated, and replay 
   assert.equal(first.wire, second.wire);
   assert.equal(first.requestDigest, second.requestDigest);
   assert.equal(first.factsDigest, authorityFactsDigest(request.facts));
-  assert.equal(first.requestDigest, "sha256:TZQlatCXSA8G7Ffrp7rgBzxNeu-mbW2rvblWWjhi7p0");
-  assert.equal(first.factsDigest, "sha256:F89JoQoECvLr7luvif13c9nT-kNTSoER3rBJKpchvps");
+  assert.equal(first.requestDigest, "sha256:FofTYFxHJRKQtyfbQKhdGa26c1e0iqHQl0ZmEUaqR7I");
+  assert.equal(first.factsDigest, "sha256:ImcKshAC1obvE-CwVaYJIw3NHrCSyuUqTqp8H6WhfGA");
   assert.equal(first.nonceDigest, "sha256:rPcvkLHhzeSiKxzypYz1ZjonDwweFIQ-VUjqZcc6cZo");
-  assert.equal(JSON.parse(first.wire).mac, "IINkgkQqtRrHua791HispL1jVn5UueRIq8Vnq7ce4HQ");
+  assert.equal(JSON.parse(first.wire).mac, "DSpZ2cIfXeB5iSsMWeRAF_jaSz-gA-QVF2IBWEMIVyk");
   assert.deepEqual(Buffer.from(KEY), keyBefore, "caller-owned MAC key must not be zeroed or mutated");
   assert(Object.isFrozen(first));
   assert(Object.isFrozen(first.message));
@@ -702,6 +702,13 @@ function makeFacts(): AuthorityApprovalFacts {
     purchaseAuthorizationFactsDigest: evidenceDigest("purchase-authorization-facts"),
     additionalCostCeilingAtomic: "100",
     effectiveFinalityFloor: "accepted",
+    executionPlanDigest: evidenceDigest("execution-plan"),
+    executionMechanism: "single-transaction",
+    executionProfile: "kaspa-exact-v2:standard-native",
+    settlementAssurance: "accepted",
+    maximumAuthorizedChargeAtomic: "20000000",
+    channelId: null,
+    channelEpochDigest: null,
   };
 }
 

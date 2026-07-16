@@ -388,7 +388,7 @@ export class TreasuryOperationModule {
       throw new TreasuryOperationError("Treasury operation exceeded its bounded proof-backed submission retries");
     }
     if (!record.resolvedAmountAtomic) throw new TreasuryOperationError("Prepared Treasury operation has no resolved amount");
-    if (record.kind !== "vault_deposit") {
+    if (record.kind !== "vault_deposit" && record.kind !== "batch_refund") {
       this.authorize(operationKey, record.destination, BigInt(record.resolvedAmountAtomic));
     }
     if (!this.journal.planTreasuryOperationSubmission(operationKey, driver)) {
@@ -456,7 +456,7 @@ export class TreasuryOperationModule {
   private authorize(operationKey: string, destination: string, amount: bigint): void {
     const operation = this.journal.requireTreasuryOperation(operationKey);
     const ownCapacity =
-      (operation.kind === "vault_deposit"
+      (operation.kind === "vault_deposit" || operation.kind === "batch_refund"
         ? 0n
         : BigInt(operation.resolvedAmountAtomic ?? operation.requestedAmountAtomic)) +
       BigInt(operation.feeCeilingAtomic);
@@ -495,7 +495,8 @@ function normalizeRequest(request: Readonly<TreasuryOperationRequest>): {
   if (
     request.kind !== "wallet_send" &&
     request.kind !== "vault_send" &&
-    request.kind !== "vault_deposit"
+    request.kind !== "vault_deposit" &&
+    request.kind !== "batch_refund"
   ) {
     throw new TreasuryOperationError("Treasury operation kind is invalid");
   }

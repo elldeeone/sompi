@@ -1,9 +1,14 @@
 import { createHash } from "node:crypto";
+import { schnorr } from "@noble/curves/secp256k1.js";
 
 import type { AddressCodec } from "@kaspa-x402/client";
 import {
   decodePaymentResponseHeader,
   encodePaymentResponseHeader,
+  exactRequestAuthorizationDigest,
+  exactRequestAuthorizationId,
+  hexToBytes,
+  sha256Hex,
   stableStringify,
   validatePaymentRetry,
   type ExactPaymentRequirements,
@@ -22,15 +27,13 @@ import {
 
 import {
   Transaction,
+  calculateTransactionFee,
   payToScriptHashSignatureScript,
 } from "../../kaspa-wasm.js";
 import { requestFingerprint } from "../../purchase/identity.js";
 import type { Sha256Digest } from "../../purchase/types.js";
 import { KaspaTestnet10AddressCodec } from "./address-codec.js";
-import {
-  minimumRequiredExactFeeSompi,
-  SOMPI_EXACT_FEE_POLICY,
-} from "./exact-transaction-builder.js";
+import { SOMPI_EXACT_FEE_POLICY } from "./exact-transaction-builder.js";
 import type {
   ExactSettlementVerificationInput,
   ExactSettlementVerificationResult,
@@ -42,11 +45,11 @@ import type {
 const NETWORK = "kaspa:testnet-10" as const;
 const ASSET = "KAS" as const;
 const EXACT_SCHEME = "exact" as const;
-const EXACT_BINDING = "kaspa-exact-v1" as const;
+const EXACT_BINDING = "kaspa-exact-v2" as const;
 const EXACT_TEMPLATE = "kaspa-x402-kip10-additive-v1" as const;
 const EXACT_ENCODING = "kaspa-sdk-safe-json-v2.0.0" as const;
 const FUNDING_SOURCE = "vault-treasury" as const;
-const SETTLEMENT_PROFILE = "kaspa-x402-0.1.0-alpha.6-exact-settlement";
+const SETTLEMENT_PROFILE = "kaspa-x402-0.1.0-alpha.8-exact-settlement";
 const NATIVE_SUBNETWORK = "00".repeat(20);
 const HASH32 = /^[a-f0-9]{64}$/;
 const DIGEST = /^sha256:[A-Za-z0-9_-]{43}$/;
@@ -54,7 +57,7 @@ const UINT_DECIMAL = /^(?:0|[1-9][0-9]*)$/;
 const SERIALIZED_V0_SCRIPT = /^0000(?:[a-f0-9]{2})+$/;
 const HEX_BYTES = /^(?:[a-f0-9]{2})+$/;
 const PAYMENT_IDENTIFIER = /^pay_[A-Za-z0-9_-]{43}$/;
-const HEADER_ASCII = /^[A-Za-z0-9_-]+$/;
+const HEADER_ASCII = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 const UINT64_MAX = (1n << 64n) - 1n;
 const MAX_PAYMENT_RESPONSE_HEADER_BYTES = 32 * 1024;
 const MAX_TRANSACTION_ARTIFACT_BYTES = 2_000_000;
@@ -144,6 +147,8 @@ export interface KaspaExactChainVerifierOptions {
   verifierId?: string;
   observationTimeoutMs?: number;
   now?: () => number;
+  /** Wall clock used for the alpha.8 payer authorization expiry. */
+  authorizationNow?: () => number;
 }
 
 export interface KaspaX402ServerStorePaymentResponseLookupOptions {
@@ -152,7 +157,7 @@ export interface KaspaX402ServerStorePaymentResponseLookupOptions {
 }
 
 /**
- * Merchant recovery adapter for alpha.6's durable idempotency store. This
+ * Merchant recovery adapter for alpha.8's durable idempotency store. This
  * reads the already-committed PAYMENT-RESPONSE; it never invokes the paid
  * handler and therefore cannot accept or execute a second payment.
  */
@@ -266,14 +271,26 @@ export class KaspaExactChainVerifierError extends Error {
   }
 }
 
+type ExactVerificationContext = ExactSettlementVerificationInput["context"] & {
+  staging: NonNullable<ExactSettlementVerificationInput["context"]["staging"]>;
+  preparation: ExactSettlementVerificationInput["context"]["preparation"] & {
+    mechanism: "single-transaction";
+    transactionId: string;
+    requiredAssurance: "accepted" | "confirmed";
+  };
+};
+
 interface ParsedExactPayment {
-  context: ExactSettlementVerificationInput["context"];
+  context: ExactVerificationContext;
   accepted: ExactPaymentRequirements;
   transactionId: Hash32Hex;
   requestHash: Hash32Hex;
   paymentIdentifier: string;
-  reservationId: Hash32Hex;
+  profile: "standard-native" | "additive";
+  requestAuthorizationId: Hash32Hex;
+  headId?: Hash32Hex;
   merchantOutputIndex: number;
+  merchantOutputAmount: string;
   merchantScript: string;
   stagingScript: string;
   stagingAmount: bigint;
@@ -289,7 +306,7 @@ interface PaymentBindingState {
 }
 
 /**
- * Deep alpha.6 adapter implementing both Settlement verification and passive
+ * Deep alpha.8 adapter implementing both Settlement verification and passive
  * recovery. It revalidates the immutable exact transaction independently of
  * the Merchant and only accepts chain-attested Merchant output facts.
  */
@@ -303,6 +320,7 @@ export class KaspaExactChainVerifier
   private readonly verifierId: string;
   private readonly observationTimeoutMs: number;
   private readonly now: () => number;
+  private readonly authorizationNow: () => number;
   private readonly bindings = new Map<string, PaymentBindingState>();
 
   constructor(options: KaspaExactChainVerifierOptions) {
@@ -323,14 +341,16 @@ export class KaspaExactChainVerifier
     this.merchantResponses = options.merchantResponses;
     this.addressCodec = options.addressCodec ?? new KaspaTestnet10AddressCodec();
     this.verifierId = requireBoundedIdentifier(
-      options.verifierId ?? "sompi:kaspa-chain-verifier:alpha.6",
+      options.verifierId ?? "sompi:kaspa-chain-verifier:alpha.8",
       "Settlement verifier identity"
     );
     this.observationTimeoutMs = requireTimeout(
       options.observationTimeoutMs ?? DEFAULT_OBSERVATION_TIMEOUT_MS
     );
     this.now = options.now ?? Date.now;
+    this.authorizationNow = options.authorizationNow ?? Date.now;
     readClock(this.now);
+    readClock(this.authorizationNow);
   }
 
   async verify(
@@ -342,7 +362,11 @@ export class KaspaExactChainVerifier
       input.paymentPayload,
       input.transactionId,
       this.addressCodec,
-      { allowExpired: input.source === "recovery-observer", nowMs: readClock(this.now) }
+      {
+        allowExpired: input.source === "recovery-observer",
+        nowMs: readClock(this.now),
+        authorizationNowMs: readClock(this.authorizationNow),
+      }
     );
     validateSettlementResponse(input.response, parsed);
     this.claimBinding(parsed);
@@ -372,7 +396,7 @@ export class KaspaExactChainVerifier
     }
     const stagingFee = uint64(stagingFeeValue, "actual Treasury staging fee");
     const additionalCost = checkedAdd(
-      checkedAdd(parsed.threshold, parsed.exactFee, "threshold and exact fee"),
+      parsed.exactFee,
       stagingFee,
       "complete exact Purchase additional cost"
     );
@@ -408,7 +432,9 @@ export class KaspaExactChainVerifier
           exactTransactionFeeAtomic: parsed.exactFee.toString(),
           additionalCostAtomic: additionalCost.toString(),
           requestHash: parsed.requestHash,
-          reservationId: parsed.reservationId,
+          exactProfile: parsed.profile,
+          requestAuthorizationId: parsed.requestAuthorizationId,
+          ...(parsed.headId === undefined ? {} : { headId: parsed.headId }),
           paymentResponseDigest: digestBytes(input.evidenceBytes),
         }),
       }),
@@ -423,7 +449,11 @@ export class KaspaExactChainVerifier
       input.paymentPayload,
       input.transactionId,
       this.addressCodec,
-      { allowExpired: true, nowMs: readClock(this.now) }
+      {
+        allowExpired: true,
+        nowMs: readClock(this.now),
+        authorizationNowMs: readClock(this.authorizationNow),
+      }
     );
     this.claimBinding(parsed);
     const deadlineAtMs = checkedDeadline(readClock(this.now), this.observationTimeoutMs);
@@ -490,7 +520,7 @@ export class KaspaExactChainVerifier
         outpoint: `${parsed.transactionId}:${parsed.merchantOutputIndex}`,
         outputIndex: parsed.merchantOutputIndex,
         merchantAddress: parsed.context.execution.terms.payTo,
-        expectedAmountAtomic: parsed.context.execution.terms.amountAtomic,
+        expectedAmountAtomic: parsed.merchantOutputAmount,
         expectedScriptPublicKey: parsed.merchantScript,
         minimumFinality,
         deadlineAtMs,
@@ -528,17 +558,31 @@ export class KaspaExactChainVerifier
   }
 }
 
+function assertExactVerificationContext(
+  context: ExactSettlementVerificationInput["context"]
+): asserts context is ExactVerificationContext {
+  if (
+    !context.staging ||
+    context.preparation.mechanism !== "single-transaction" ||
+    context.preparation.transactionId === undefined ||
+    context.preparation.requiredAssurance === "channel-commitment"
+  ) {
+    throw error("artifact_mismatch", "exact Purchase execution context is incomplete");
+  }
+}
+
 function parseExactPayment(
   context: ExactSettlementVerificationInput["context"],
   paymentRequired: PaymentRequired,
   paymentPayload: PaymentPayload,
   transactionIdValue: string,
   addressCodec: AddressCodec,
-  options: { allowExpired: boolean; nowMs: number }
+  options: { allowExpired: boolean; nowMs: number; authorizationNowMs: number }
 ): ParsedExactPayment {
   if (!context || typeof context !== "object") {
     throw error("artifact_mismatch", "exact Purchase execution context is missing");
   }
+  assertExactVerificationContext(context);
   const transactionId = requireHash(transactionIdValue, "exact transaction ID");
   if (
     context.execution.terms.network !== NETWORK ||
@@ -583,7 +627,7 @@ function parseExactPayment(
 
   const retry = validatePaymentRetry({ paymentRequired, paymentPayload });
   if (!retry.ok) {
-    throw error("artifact_mismatch", "alpha.6 PaymentRequired/PaymentPayload pair is invalid", {
+    throw error("artifact_mismatch", "alpha.8 PaymentRequired/PaymentPayload pair is invalid", {
       cause: retry.error,
     });
   }
@@ -595,16 +639,22 @@ function parseExactPayment(
     paymentRequired.accepts.length !== 1 ||
     stableStringify(paymentRequired.accepts[0]) !== stableStringify(paymentPayload.accepted)
   ) {
-    throw error("artifact_mismatch", "alpha.6 payment artifacts changed the exact resource or requirement");
+    throw error("artifact_mismatch", "alpha.8 payment artifacts changed the exact resource or requirement");
   }
   const accepted = paymentPayload.accepted;
+  const extra = accepted.extra;
   if (
     accepted.scheme !== EXACT_SCHEME ||
     accepted.network !== NETWORK ||
     accepted.asset !== ASSET ||
     accepted.amount !== context.execution.terms.amountAtomic ||
     accepted.payTo !== context.execution.terms.payTo ||
-    accepted.extra.binding !== EXACT_BINDING
+    extra.binding !== EXACT_BINDING ||
+    (extra.profile !== "standard-native" && extra.profile !== "additive") ||
+    extra.transactionEncoding !== EXACT_ENCODING ||
+    (extra.profile === "standard-native"
+      ? extra.paymentOutputIndex !== undefined
+      : extra.paymentOutputIndex !== 0)
   ) {
     throw error("artifact_mismatch", "exact payment requirement does not match Checkout Terms");
   }
@@ -612,50 +662,28 @@ function parseExactPayment(
     throw error("artifact_mismatch", "exact payment timeout is invalid");
   }
   assertPaymentIdentifierExtensions(paymentRequired, paymentPayload, paymentIdentifier);
-
-  const extra = accepted.extra;
-  if (
-    extra.templateId !== EXACT_TEMPLATE ||
-    extra.transactionEncoding !== EXACT_ENCODING ||
-    extra.paymentOutputIndex !== 1 ||
-    !extra.borrowOutpoint
-  ) {
-    throw error("artifact_mismatch", "exact KIP-10 reservation uses an unknown profile or output index");
-  }
-  const reservationId = requireHash(extra.reservationId, "KIP-10 reservation ID");
-  const reservationExpiry = canonicalTime(extra.reservationExpiresAt, "KIP-10 reservation expiry");
-  if (!options.allowExpired && reservationExpiry <= options.nowMs) {
-    throw error("artifact_mismatch", "KIP-10 reservation expired before Settlement verification");
-  }
-  const borrowOutpoint = {
-    transactionId: requireHash(extra.borrowOutpoint.txid, "KIP-10 borrow transaction ID"),
-    index: uint32(extra.borrowOutpoint.index, "KIP-10 borrow output index"),
-  };
-  if (
-    borrowOutpoint.transactionId === stagingOutpoint.transactionId &&
-    borrowOutpoint.index === stagingOutpoint.index
-  ) {
-    throw error("artifact_mismatch", "borrow and staging inputs are not distinct");
-  }
-  const borrowAmount = uint64(extra.borrowAmount, "KIP-10 borrow amount", { positive: true });
-  const threshold = uint64(extra.additiveThresholdSompi, "KIP-10 additive threshold", {
-    positive: true,
-  });
-  const borrowScript = canonicalScript(extra.borrowScriptPublicKey, "KIP-10 borrow script public key");
-  const borrowRedeemScript = canonicalHex(extra.borrowRedeemScript, "KIP-10 borrow redeem script");
-  validateKip10Reservation(borrowRedeemScript, borrowScript, threshold);
+  const profile = extra.profile;
   const requiredFinality = requireFinality(extra.finality, "exact required finality");
-  if (context.preparation.requiredFinality !== requiredFinality) {
+  if (requiredFinality === "mempool" || context.preparation.requiredAssurance !== requiredFinality) {
     throw error("artifact_mismatch", "durable exact finality changed from the Merchant requirement");
+  }
+  let merchantScript: string;
+  try {
+    merchantScript = String(addressCodec.scriptPublicKeyForAddress(accepted.payTo, NETWORK)).toLowerCase();
+  } catch (cause) {
+    throw error("artifact_mismatch", "Checkout payee address is invalid for testnet-10", { cause });
+  }
+  if (canonicalScript(extra.payToScriptPublicKey, "exact payTo script") !== merchantScript) {
+    throw error("artifact_mismatch", "payTo address and payment script differ");
   }
 
   if (paymentPayload.payload.type !== "exact-transaction") {
-    throw error("artifact_mismatch", "PaymentPayload is not alpha.6 exact-transaction");
+    throw error("artifact_mismatch", "PaymentPayload is not alpha.8 exact-transaction");
   }
   const payload = paymentPayload.payload;
   if (
     payload.transactionEncoding !== EXACT_ENCODING ||
-    payload.paymentOutputIndex !== 1 ||
+    payload.paymentOutputIndex !== 0 ||
     requireHash(payload.requestHash, "PaymentPayload request hash") !== requestHash ||
     typeof payload.transaction !== "string" ||
     payload.transaction.length === 0 ||
@@ -672,7 +700,7 @@ function parseExactPayment(
     if (finalized !== transactionId || transaction.serializeToSafeJSON() !== payload.transaction) {
       throw error("artifact_mismatch", "safe-JSON exact transaction is non-canonical or ID-mismatched");
     }
-    minimumExactFee = minimumRequiredExactFeeSompi(transaction);
+    minimumExactFee = calculateTransactionFee("testnet-10", transaction) ?? 0n;
   } catch (cause) {
     if (cause instanceof KaspaExactChainVerifierError) throw cause;
     throw error("artifact_mismatch", "safe-JSON exact transaction cannot be rehydrated", { cause });
@@ -683,100 +711,158 @@ function parseExactPayment(
   const document = parseJsonRecord(payload.transaction, "safe-JSON exact transaction");
   const inputs = requireArray(document.inputs, "exact transaction inputs");
   const outputs = requireArray(document.outputs, "exact transaction outputs");
-  if (
-    document.id !== transactionId ||
-    document.version !== 1 ||
-    document.lockTime !== "0" ||
-    document.subnetworkId !== NATIVE_SUBNETWORK ||
-    document.gas !== "0" ||
-    document.payload !== "" ||
-    inputs.length !== 2 ||
-    outputs.length !== 2
-  ) {
-    throw error("artifact_mismatch", "safe-JSON exact transaction envelope changed");
+  const commonEnvelope =
+    document.id === transactionId &&
+    document.lockTime === "0" &&
+    document.subnetworkId === NATIVE_SUBNETWORK &&
+    document.gas === "0" &&
+    document.payload === "" &&
+    outputs.length === 1;
+  if (!commonEnvelope) throw error("artifact_mismatch", "safe-JSON exact transaction envelope changed");
+
+  let stagingInput: ReturnType<typeof validateVersionedInput>;
+  let threshold = 0n;
+  let merchantOutputAmount = context.execution.terms.amountAtomic;
+  let headId: Hash32Hex | undefined;
+  if (profile === "standard-native") {
+    if (document.version !== 0 || inputs.length !== 1 || hasAnyAdditiveFact(extra)) {
+      throw error("artifact_mismatch", "standard-native exact contains additive or v1 transaction facts");
+    }
+    stagingInput = validateVersionedInput(inputs[0], {
+      transactionId: stagingOutpoint.transactionId,
+      index: stagingOutpoint.index,
+      amountAtomic: stagingAmount.toString(),
+      version: 0,
+      // Rust's semantic v0 commitment is SigOpCount-only, while the pinned
+      // WASM safe-JSON v2.0.0 serializer emits the inactive numeric field as
+      // zero. SigOpCount remains the authoritative version-0 commitment.
+      computeBudget: 0,
+      sigOpCount: 1,
+    });
+    validateOutput(outputs[0], context.execution.terms.amountAtomic, merchantScript);
+  } else {
+    if (
+      document.version !== 1 ||
+      inputs.length !== 2 ||
+      extra.templateId !== EXACT_TEMPLATE ||
+      !extra.expectedHeadOutpoint
+    ) {
+      throw error("artifact_mismatch", "additive exact head or v1 transaction facts are incomplete");
+    }
+    headId = requireHash(extra.headId, "additive head ID");
+    const challengeId = requireHash(extra.challengeId, "additive challenge ID");
+    const challengeExpiry = canonicalTime(extra.challengeExpiresAt, "additive challenge expiry");
+    if (!options.allowExpired && challengeExpiry <= options.nowMs) {
+      throw error("artifact_mismatch", "additive challenge expired before Settlement verification");
+    }
+    const headOutpoint = {
+      transactionId: requireHash(extra.expectedHeadOutpoint.txid, "head transaction ID"),
+      index: uint32(extra.expectedHeadOutpoint.index, "head output index"),
+    };
+    if (headOutpoint.index !== 0) throw error("artifact_mismatch", "additive head must use index 0");
+    const headAmount = uint64(extra.headAmount, "head amount", { positive: true });
+    threshold = uint64(extra.additiveThresholdSompi, "additive threshold", { positive: true });
+    const price = uint64(accepted.amount, "Merchant price", { positive: true });
+    if (price < threshold) throw error("artifact_mismatch", "Merchant price is below additive threshold");
+    const headScript = canonicalScript(extra.headScriptPublicKey, "head script public key");
+    const headRedeem = canonicalHex(extra.headRedeemScript, "head redeem script");
+    validateKip10Reservation(headRedeem, headScript, threshold);
+    if (headScript !== merchantScript) throw error("artifact_mismatch", "additive payTo is not the head script");
+    const headSignature = payToScriptHashSignatureScript(
+      headRedeem,
+      buildKip10AdditiveBorrowArgs()
+    ).toLowerCase();
+    validateVersionedInput(inputs[0], {
+      transactionId: headOutpoint.transactionId,
+      index: headOutpoint.index,
+      amountAtomic: headAmount.toString(),
+      scriptPublicKey: headScript,
+      signatureScript: headSignature,
+      version: 1,
+      computeBudget: SOMPI_EXACT_FEE_POLICY.kip10BorrowComputeBudget,
+      sigOpCount: 0,
+    });
+    stagingInput = validateVersionedInput(inputs[1], {
+      transactionId: stagingOutpoint.transactionId,
+      index: stagingOutpoint.index,
+      amountAtomic: stagingAmount.toString(),
+      version: 1,
+      computeBudget: SOMPI_EXACT_FEE_POLICY.p2pkComputeBudget,
+      sigOpCount: 0,
+    });
+    merchantOutputAmount = checkedAdd(headAmount, price, "additive successor").toString();
+    validateOutput(outputs[0], merchantOutputAmount, headScript);
+    void challengeId;
   }
-  const borrowSignature = payToScriptHashSignatureScript(
-    borrowRedeemScript,
-    buildKip10AdditiveBorrowArgs()
-  ).toLowerCase();
-  validateInput(inputs[0], {
-    transactionId: borrowOutpoint.transactionId,
-    index: borrowOutpoint.index,
-    amountAtomic: borrowAmount.toString(),
-    scriptPublicKey: borrowScript,
-    signatureScript: borrowSignature,
-    blockDaaScore: "0",
-    stagingSignature: false,
-  });
-  const stagingInput = validateInput(inputs[1], {
-    transactionId: stagingOutpoint.transactionId,
-    index: stagingOutpoint.index,
-    amountAtomic: stagingAmount.toString(),
-    blockDaaScore: undefined,
-    stagingSignature: true,
-  });
+
   const stagingScript = stagingInput.scriptPublicKey;
   if (payload.payerAddress !== undefined) {
-    let payerScript: string;
-    try {
-      payerScript = String(addressCodec.scriptPublicKeyForAddress(payload.payerAddress, NETWORK)).toLowerCase();
-    } catch (cause) {
-      throw error("artifact_mismatch", "PaymentPayload payer address is invalid", { cause });
-    }
+    const payerScript = String(addressCodec.scriptPublicKeyForAddress(payload.payerAddress, NETWORK)).toLowerCase();
     if (payerScript !== stagingScript) {
       throw error("artifact_mismatch", "PaymentPayload payer address is not the observed staging key");
     }
   }
-  let merchantScript: string;
-  try {
-    merchantScript = String(
-      addressCodec.scriptPublicKeyForAddress(context.execution.terms.payTo, NETWORK)
-    ).toLowerCase();
-  } catch (cause) {
-    throw error("artifact_mismatch", "Checkout payee address is invalid for testnet-10", { cause });
-  }
-  validateOutput(outputs[0], checkedAdd(borrowAmount, threshold, "KIP-10 continuation").toString(), borrowScript);
-  validateOutput(outputs[1], context.execution.terms.amountAtomic, merchantScript);
-
-  let outputTotal = 0n;
-  for (const [index, output] of outputs.entries()) {
-    outputTotal = checkedAdd(
-      outputTotal,
-      outputAmount(output, `exact output ${index}`),
-      "exact output total"
-    );
-  }
-  const inputTotal = checkedAdd(borrowAmount, stagingAmount, "exact input total");
-  if (outputTotal >= inputTotal) {
-    throw error("cost_mismatch", "exact transaction has no positive conserved fee");
-  }
-  const exactFee = inputTotal - outputTotal;
+  const publicKeyMatch = /^000020([a-f0-9]{64})ac$/.exec(stagingScript);
+  if (!publicKeyMatch) throw error("artifact_mismatch", "staging input is not canonical Schnorr P2PK");
+  const authorizationInputIndex = profile === "additive" ? 1 : 0;
+  const expectedAuthorizationDigest = exactRequestAuthorizationDigest({
+    network: NETWORK,
+    profile,
+    transactionId,
+    paymentOutputIndex: 0,
+    amount: accepted.amount,
+    payTo: accepted.payTo,
+    payToScriptPublicKey: merchantScript,
+    paymentRequirementsHash: sha256Hex(stableStringify(accepted)),
+    requestHash,
+    ...(profile === "additive" ? { challengeId: requireHash(extra.challengeId, "challenge ID") } : {}),
+    inputIndex: authorizationInputIndex,
+    expiresAt: payload.authorization.expiresAt,
+  });
   if (
-    exactFee.toString() !== SOMPI_EXACT_FEE_POLICY.feeSompi ||
-    exactFee < minimumExactFee
+    payload.authorization.version !== "kaspa-x402-exact-request-authorization-v1" ||
+    payload.authorization.inputIndex !== authorizationInputIndex ||
+    payload.authorization.digest !== expectedAuthorizationDigest ||
+    (!options.allowExpired &&
+      canonicalTime(payload.authorization.expiresAt, "authorization expiry") <=
+        options.authorizationNowMs) ||
+    !schnorr.verify(
+      hexToBytes(payload.authorization.signature, { expectedLength: 64 }),
+      hexToBytes(expectedAuthorizationDigest, { expectedLength: 32 }),
+      hexToBytes(publicKeyMatch[1]!, { expectedLength: 32 })
+    )
   ) {
-    throw error("cost_mismatch", "exact transaction fee changed from the pinned signed fee policy");
+    throw error("artifact_mismatch", "payer request authorization is invalid or differently bound");
   }
-  const expectedChange = stagingAmount - uint64(context.execution.terms.amountAtomic, "Merchant price", { positive: true }) - threshold - exactFee;
-  if (expectedChange < 0n) {
-    throw error("cost_mismatch", "observed staging output cannot fund the exact transaction");
+  const requestAuthorizationId = exactRequestAuthorizationId(payload.authorization);
+
+  const outputTotal = outputAmount(outputs[0], "exact output 0");
+  const inputTotal = profile === "additive"
+    ? checkedAdd(uint64(extra.headAmount, "head amount", { positive: true }), stagingAmount, "exact input total")
+    : stagingAmount;
+  if (outputTotal >= inputTotal) throw error("cost_mismatch", "exact transaction has no positive fee");
+  const exactFee = inputTotal - outputTotal;
+  if (exactFee.toString() !== SOMPI_EXACT_FEE_POLICY.feeSompi || exactFee < minimumExactFee) {
+    throw error("cost_mismatch", "exact transaction fee changed from the bounded fee policy");
   }
-  if (expectedChange !== 0n) {
-    throw error("cost_mismatch", "fixed-v2 exact transaction requires exact staging without change");
+  if (stagingAmount !== checkedAdd(uint64(accepted.amount, "Merchant price", { positive: true }), exactFee, "staging requirement")) {
+    throw error("cost_mismatch", "exact staging does not equal price plus fee");
   }
 
   const bindingDigest = digestCanonical({
     profile: SETTLEMENT_PROFILE,
+    exactProfile: profile,
     purchaseId: context.execution.purchaseId,
     paymentIdentifier,
     checkoutDigest: context.execution.terms.checkoutDigest,
     resourceFingerprint: recomputedFingerprint,
     transactionId,
     transactionArtifactDigest: digestBytes(Buffer.from(payload.transaction, "utf8")),
-    amountAtomic: context.execution.terms.amountAtomic,
-    payTo: context.execution.terms.payTo,
+    amountAtomic: accepted.amount,
+    payTo: accepted.payTo,
     requestHash,
-    reservationId,
+    requestAuthorizationId,
+    ...(headId === undefined ? {} : { headId }),
     stagingOutpoint: context.staging.outpoint,
     stagingAmountAtomic: context.staging.amountAtomic,
   });
@@ -786,8 +872,11 @@ function parseExactPayment(
     transactionId,
     requestHash,
     paymentIdentifier,
-    reservationId,
-    merchantOutputIndex: 1,
+    profile,
+    requestAuthorizationId,
+    ...(headId === undefined ? {} : { headId }),
+    merchantOutputIndex: 0,
+    merchantOutputAmount,
     merchantScript,
     stagingScript,
     stagingAmount,
@@ -857,11 +946,12 @@ function validateSettlementResponse(
     extension.paymentOutputIndex !== parsed.merchantOutputIndex ||
     extension.requestHash !== parsed.requestHash ||
     extension.transactionEncoding !== EXACT_ENCODING ||
-    extension.templateId !== EXACT_TEMPLATE ||
-    extension.reservationId !== parsed.reservationId ||
-    stableStringify(extension.borrowOutpoint) !== stableStringify(parsed.accepted.extra.borrowOutpoint)
+    extension.exactProfile !== parsed.profile ||
+    (parsed.profile === "additive" &&
+      (extension.templateId !== EXACT_TEMPLATE ||
+       extension.headId !== parsed.headId))
   ) {
-    throw error("artifact_mismatch", "Settlement response changed exact transaction or reservation facts");
+    throw error("artifact_mismatch", "Settlement response changed exact transaction or profile facts");
   }
   settlementFinality(response);
 }
@@ -892,12 +982,12 @@ function validateFullTreasuryBounds(
     throw error("cost_mismatch", "staging amount plus its actual fee exceeds the authorised gross bound");
   }
   const minimumStaging = checkedAdd(
-    checkedAdd(price, parsed.threshold, "price and KIP-10 threshold"),
+    price,
     parsed.exactFee,
-    "minimum exact staging amount"
+    "price and exact fee"
   );
   if (parsed.stagingAmount < minimumStaging) {
-    throw error("cost_mismatch", "observed staging output cannot fund price, threshold, and exact fee");
+    throw error("cost_mismatch", "observed staging output cannot fund price and exact fee");
   }
 }
 
@@ -924,7 +1014,7 @@ function validateChainObservation(
     requireHash(observation.transactionId, "chain-observed transaction ID") !== parsed.transactionId ||
     observation.outpoint !== wantedOutpoint ||
     uint64(observation.amountAtomic, "chain-observed Merchant amount", { positive: true }) !==
-      uint64(parsed.context.execution.terms.amountAtomic, "Merchant price", { positive: true }) ||
+      uint64(parsed.merchantOutputAmount, "expected exact output amount", { positive: true }) ||
     canonicalScript(observation.scriptPublicKey, "chain-observed Merchant script") !== parsed.merchantScript
   ) {
     throw error("chain_mismatch", "Kaspa chain observation does not attest the exact Merchant output");
@@ -946,6 +1036,60 @@ function validateChainObservation(
   if (observation.detailDigest !== undefined) {
     requireDigest(observation.detailDigest, "chain observation detail digest");
   }
+}
+
+function hasAnyAdditiveFact(extra: ExactPaymentRequirements["extra"]): boolean {
+  return [
+    extra.templateId,
+    extra.headId,
+    extra.headVersion,
+    extra.expectedHeadOutpoint,
+    extra.headAmount,
+    extra.headScriptPublicKey,
+    extra.headRedeemScript,
+    extra.challengeId,
+    extra.challengeExpiresAt,
+    extra.additiveThresholdSompi,
+  ].some((value) => value !== undefined);
+}
+
+function validateVersionedInput(
+  value: unknown,
+  expected: {
+    transactionId: string;
+    index: number;
+    amountAtomic: string;
+    version: 0 | 1;
+    computeBudget: number | null;
+    sigOpCount: number;
+    scriptPublicKey?: string;
+    signatureScript?: string;
+  }
+): { scriptPublicKey: string } {
+  const input = requireRecord(value, "exact transaction input");
+  const utxo = requireRecord(input.utxo, "exact transaction input UTXO");
+  const script = canonicalScript(utxo.scriptPublicKey, "exact input script public key");
+  const signature = canonicalHex(input.signatureScript, "exact input signature script");
+  if (
+    input.transactionId !== expected.transactionId ||
+    input.index !== expected.index ||
+    input.sequence !== "0" ||
+    input.sigOpCount !== expected.sigOpCount ||
+    input.computeBudget !== expected.computeBudget ||
+    utxo.amount !== expected.amountAtomic ||
+    utxo.address !== null ||
+    utxo.covenantId !== null ||
+    utxo.isCoinbase !== false ||
+    (expected.scriptPublicKey !== undefined && script !== expected.scriptPublicKey) ||
+    (expected.signatureScript !== undefined && signature !== expected.signatureScript)
+  ) {
+    throw error("artifact_mismatch", "exact transaction input facts changed");
+  }
+  if (expected.signatureScript === undefined && !/^[a-f0-9]{132}$/.test(signature)) {
+    throw error("artifact_mismatch", "payer input signature is not canonical Schnorr SIGHASH_ALL");
+  }
+  uint64(utxo.blockDaaScore, "exact input DAA score");
+  return { scriptPublicKey: script };
 }
 
 function validateInput(
@@ -986,7 +1130,7 @@ function validateInput(
     input.index !== expected.index ||
     input.sequence !== "0" ||
     input.sigOpCount !== 0 ||
-    input.computeBudget !== SOMPI_EXACT_FEE_POLICY.inputComputeBudget ||
+    input.computeBudget !== SOMPI_EXACT_FEE_POLICY.p2pkComputeBudget ||
     utxo.amount !== expected.amountAtomic ||
     utxo.address !== null ||
     utxo.covenantId !== null ||
@@ -1084,8 +1228,12 @@ function snapshotPaymentResponseHeader(bytes: Uint8Array): Uint8Array {
   }
   const snapshot = Uint8Array.from(bytes);
   const ascii = Buffer.from(snapshot).toString("ascii");
-  if (!HEADER_ASCII.test(ascii) || !Buffer.from(ascii, "ascii").equals(Buffer.from(snapshot))) {
-    throw error("artifact_mismatch", "Merchant payment response is not canonical ASCII base64url");
+  if (
+    !HEADER_ASCII.test(ascii) ||
+    Buffer.from(ascii, "base64").toString("base64") !== ascii ||
+    !Buffer.from(ascii, "ascii").equals(Buffer.from(snapshot))
+  ) {
+    throw error("artifact_mismatch", "Merchant payment response is not canonical ASCII base64");
   }
   return snapshot;
 }

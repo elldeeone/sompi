@@ -6,7 +6,7 @@ import {
   type EffectObservation,
   type EffectRecord,
   type LeaseToken,
-  type RecordObservedSpendInput,
+  type RecordPurchaseSettlementInput,
   type RecordObservedTreasuryStagingInput,
 } from "./journal.js";
 import type { Sha256Digest } from "./types.js";
@@ -16,7 +16,7 @@ export type ReconciliationObservation =
   | EffectObservation
   | {
       status: "spend_observed";
-      spend: Omit<RecordObservedSpendInput, "effectId">;
+      spend: Omit<RecordPurchaseSettlementInput, "effectId">;
     }
   | {
       status: "treasury_staging_observed";
@@ -164,7 +164,7 @@ export class PurchaseReconciler {
         if (leaseError) break;
         lease = this.renewBeforeWrite(lease, ttlMs);
         if (observation.status === "spend_observed") {
-          const spend = this.journal.recordObservedSpend(lease, {
+          const spend = this.journal.recordPurchaseSettlement(lease, {
             effectId: effect.id,
             ...observation.spend,
           });

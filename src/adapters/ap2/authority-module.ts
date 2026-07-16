@@ -192,6 +192,13 @@ function authorityFacts(request: PurchaseAuthorizationRequest) {
     purchaseAuthorizationFactsDigest: authorizationFactsDigest(request),
     additionalCostCeilingAtomic: canonical.additionalCostCeilingAtomic,
     effectiveFinalityFloor: canonical.effectiveFinalityFloor,
+    executionPlanDigest: canonical.executionPlanDigest,
+    executionMechanism: canonical.executionMechanism,
+    executionProfile: canonical.executionProfile,
+    settlementAssurance: canonical.settlementAssurance,
+    maximumAuthorizedChargeAtomic: canonical.maximumAuthorizedChargeAtomic,
+    channelId: canonical.channelId ?? null,
+    channelEpochDigest: canonical.channelEpochDigest ?? null,
   });
 }
 

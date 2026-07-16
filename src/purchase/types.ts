@@ -113,7 +113,7 @@ export interface PurchaseView {
  * blindly repeats an irreversible effect.
  */
 export interface PurchaseModule {
-  purchase(intent: PurchaseIntent): Promise<PurchaseView>;
-  status(id: PurchaseId): Promise<PurchaseView>;
-  recover(id: PurchaseId): Promise<PurchaseView>;
+  purchase(intent: PurchaseIntent, signal?: AbortSignal): Promise<PurchaseView>;
+  status(id: PurchaseId, signal?: AbortSignal): Promise<PurchaseView>;
+  recover(id: PurchaseId, signal?: AbortSignal): Promise<PurchaseView>;
 }

@@ -20,3 +20,4 @@ or documentation is not allowed.
 | [0012](0012-chain-evidence-and-finality.md) | Sompi-owned typed Chain Evidence and explicit finality floors | Accepted |
 | [0013](0013-bounded-operation-lifecycles.md) | Per-module bounded Admission Leases and cancellation semantics | Accepted |
 | [0014](0014-phase-2d-review-remediation.md) | Phase 2D review remediation lifecycles | Accepted |
+| [0015](0015-api-first-alpha8-clean-cutover.md) | API-first alpha.8 clean cutover with MCP compatibility | Accepted |

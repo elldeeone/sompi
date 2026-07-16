@@ -18,6 +18,7 @@ test("package manifest exposes only supported executables and no import side eff
   assert.equal(Object.prototype.hasOwnProperty.call(manifest, "main"), false);
   assert.deepEqual(manifest.exports, { "./package.json": "./package.json" });
   assert.deepEqual(manifest.bin, {
+    "sompi-api": "dist/api-main.js",
     "sompi-authority": "dist/authority-main.js",
     "sompi-mcp": "dist/index.js",
     "sompi-operator": "dist/operator-main.js",
@@ -69,6 +70,23 @@ test("fixed AP2 proof identities have no production import path", () => {
     if (fs.readFileSync(filename, "utf8").includes("test-fixtures")) offenders.push(relative);
   }
   assert.deepEqual(offenders, []);
+});
+
+test("MCP production code has only the canonical API client capability", () => {
+  const files = [
+    path.join(ROOT, "src", "index.ts"),
+    ...sourceFiles(path.join(ROOT, "src", "mcp")).filter((filename) => !filename.endsWith(".test.ts")),
+  ];
+  const forbidden = [
+    "/runtime/", "/wallet", "/vault", "/treasury/", "/authority/",
+    "/adapters/ap2/", "/adapters/kaspa-x402/", "/purchase/journal",
+  ];
+  for (const filename of files) {
+    const source = fs.readFileSync(filename, "utf8");
+    for (const fragment of forbidden) {
+      assert.equal(source.includes(fragment), false, `${path.relative(ROOT, filename)} imports ${fragment}`);
+    }
+  }
 });
 
 function sourceFiles(directory: string): string[] {

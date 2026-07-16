@@ -31,6 +31,7 @@ export type XOnlyPublicKey = import("../vendor/kaspa-wasm/kaspa.js").XOnlyPublic
 export const SighashType = kaspa.SighashType;
 export const addressFromScriptPublicKey = kaspa.addressFromScriptPublicKey;
 export const calculateTransactionMass = kaspa.calculateTransactionMass;
+export const calculateTransactionFee = kaspa.calculateTransactionFee;
 export const createInputSignature = kaspa.createInputSignature;
 export const createTransactions = kaspa.createTransactions;
 export const initConsolePanicHook = kaspa.initConsolePanicHook;

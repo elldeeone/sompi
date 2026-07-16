@@ -9,15 +9,9 @@ import {
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type {
-  ExactBorrowReservationProvider,
   ServerChainProvider,
   VoucherVerifier,
 } from "@kaspa-x402/server";
-import {
-  buildKip10AdditiveRedeemScript,
-  kip10AdditiveScriptPublicKey,
-  serializedScriptPublicKey,
-} from "@kaspa-x402/covenant";
 
 import {
   AP2_AUTHORIZATION_STATUS_PATH,
@@ -44,14 +38,15 @@ import {
   fixedTrustStore,
 } from "../adapters/ap2/test-fixtures.js";
 import {
-  ExactOnlyChannelSigner,
-  ExactOnlyChannelStore,
+  JournalBatchChannelStore,
+  SecureBatchChannelSigner,
   KaspaExactChainVerifier,
   KaspaTestnet10AddressCodec,
   KaspaX402ExactPaymentModule,
+  KaspaX402TreasuryStagingAdapter,
   KaspaX402PaymentRequirementsVerifier,
   KaspaX402ServerStorePaymentResponseLookup,
-  Kip10ExactTransactionBuilder,
+  ExactTransactionBuilder,
   StagingKeyStore,
   VaultExactAttemptFundingBridge,
   VaultTreasuryStaging,
@@ -64,7 +59,7 @@ import { SqliteAuthorityDecisionStore } from "../authority/decision-store.js";
 import { SqliteAuthorityReplayStore } from "../authority/replay-store.js";
 import { AuthorityService } from "../authority/service.js";
 import { SqliteDemoCommerceAuthorizationStore } from "../demo/commerce-authorization-store.js";
-import { SqliteExactServerStateStore } from "../demo/exact-server-store.js";
+import { SqliteMerchantServerStateStore } from "../demo/merchant-server-store.js";
 import {
   DemoMerchantFixture,
   type DemoMerchantOffer,
@@ -74,7 +69,7 @@ import type {
   PinnedHttpTransportRequest,
   PinnedHttpTransportResponse,
 } from "../http/pinned-transport.js";
-import type { ChainEvidenceModule } from "../chain-evidence/module.js";
+import { createPurchaseApplication } from "../api/contracts.js";
 import {
   Keypair,
   PrivateKey,
@@ -118,7 +113,6 @@ import { KaspaWallet } from "../wallet.js";
 import { InMemoryKaspaTestnet10 } from "./in-memory-testnet.js";
 import { createSompiMcpServer } from "../mcp/server.js";
 import { PolicyEngine } from "../policy.js";
-import type { SompiPurchaseRuntime } from "../runtime/purchase-runtime.js";
 
 const NOW_MS = 2_000_000_000_000;
 const MERCHANT_ORIGIN = "https://merchant.example";
@@ -127,10 +121,6 @@ const RESOURCE_BODY = Buffer.from("Sompi deterministic AP2 + x402 resource\n", "
 const PAY_TO = "kaspatest:qpumuen7l8wthtz45p3ftn58pvrs9xlumvkuu2xet8egzkcklqtes5z8rkmpd";
 const PRICE_ATOMIC = "20000000";
 const ADDITIONAL_COST_CEILING_ATOMIC = "30000000";
-const ADDITIVE_THRESHOLD_ATOMIC = "10000000";
-const BORROW_AMOUNT_ATOMIC = "100000000";
-const BORROW_TRANSACTION_ID = "62".repeat(32);
-const BORROW_RESERVATION_ID = "63".repeat(32);
 const INITIAL_VAULT_TRANSACTION_ID = "64".repeat(32);
 const COVENANT_ID = "65".repeat(32);
 const OWNER_PUBLIC_KEY =
@@ -214,7 +204,7 @@ export interface RunLocalTestnetProofOptions {
  * Runs one fully local vertical proof. The external Kaspa/RPC boundary alone
  * is deterministic in-memory Testnet-10, so this never claims live network
  * conformance. Every Sompi module, AP2 signature, Unix authority frame,
- * Kaspa-x402 alpha.6 transaction, Merchant acceptance, and journal write is
+ * Kaspa-x402 alpha.8 transaction, Merchant acceptance, and journal write is
  * the production implementation.
  */
 export async function runLocalTestnetProof(
@@ -272,7 +262,7 @@ export async function runLocalTestnetProof(
       ownedAuthority?.module
     );
 
-    const merchantStore = new SqliteExactServerStateStore(
+    const merchantStore = new SqliteMerchantServerStateStore(
       path.join(directory, "merchant", "exact.sqlite")
     );
     resources.push(() => merchantStore.close());
@@ -288,6 +278,8 @@ export async function runLocalTestnetProof(
       merchantOrigin: MERCHANT_ORIGIN,
       merchantWebsite: `${MERCHANT_ORIGIN}/store`,
       payTo: PAY_TO,
+      paymentScheme: "exact",
+      exactProfile: "standard-native",
       amountAtomic: PRICE_ATOMIC,
       additionalCostCeilingAtomic: ADDITIONAL_COST_CEILING_ATOMIC,
       checkoutTtlMs: 120_000,
@@ -307,7 +299,6 @@ export async function runLocalTestnetProof(
       chainProvider: inertServerChainProvider(),
       voucherVerifier: { verifyVoucher: () => false } satisfies VoucherVerifier,
       exactTransactionVerifier: chain,
-      exactReservationProvider: exactReservationProvider(clock),
       serverPublicKey: `02${"11".repeat(32)}`,
       merchantCheckoutSigner: MERCHANT_SIGNER,
       merchantReceiptSigner: MERCHANT_RECEIPT_SIGNER,
@@ -576,7 +567,7 @@ function composeCoordinator(input: {
   wallet: KaspaWallet;
   vault: VaultManager;
   chain: InMemoryKaspaTestnet10;
-  merchantStore: SqliteExactServerStateStore;
+  merchantStore: SqliteMerchantServerStateStore;
   transport: PinnedHttpTransport;
   authorityModule: Ap2AuthorityModule;
   trust: Ap2PublicKeyResolver;
@@ -618,17 +609,6 @@ function composeCoordinator(input: {
   const commerceAuthorization = input.commerceAuthorizationDecorator
     ? input.commerceAuthorizationDecorator(commerceBase)
     : commerceBase;
-  const treasury = new VaultTreasuryModule({
-    vault: input.vault,
-    policy: {
-      maxPerPaymentAtomic: "100000000",
-      maxPerHourAtomic: "500000000",
-      approvalAboveAtomic: "0",
-      allowlist: [PAY_TO],
-    },
-    additionalCostCeilingAtomic: ADDITIONAL_COST_CEILING_ATOMIC,
-    reservationTtlMs: 120_000,
-  });
   const keyStore = new StagingKeyStore({
     directory: path.join(input.directory, "staging-keys"),
     now: input.clock,
@@ -649,7 +629,10 @@ function composeCoordinator(input: {
   const funding = new VaultExactAttemptFundingBridge({
     metadataSource: canonicalStaging,
     observedStagingSource: observedStaging,
-    builder: new Kip10ExactTransactionBuilder({ keyStore, now: input.clock }),
+    // @kaspa-x402/client derives the short-lived request authorization from
+    // wall-clock time. Keep the signing adapter on that same clock even though
+    // the surrounding deterministic proof uses a fixed AP2 business clock.
+    builder: new ExactTransactionBuilder({ keyStore }),
   });
   const chainVerifier = new KaspaExactChainVerifier({
     stagingMetadata: new JournalChainTreasuryMetadataSource(
@@ -672,17 +655,47 @@ function composeCoordinator(input: {
     expectedPaymentReceiptIssuer: PAYMENT_RECEIPT_SIGNER.issuer,
     now: input.clock,
   });
+  const treasuryStaging = new KaspaX402TreasuryStagingAdapter({
+    driver: staging,
+    now: input.clock,
+  });
   const payment = new KaspaX402ExactPaymentModule({
-    staging,
     funding,
-    channelSigner: new ExactOnlyChannelSigner(),
-    channelStore: new ExactOnlyChannelStore(),
+    channelSigner: new SecureBatchChannelSigner(
+      path.join(input.directory, "batch-channel-keys"),
+      input.clock
+    ),
+    channelStore: new JournalBatchChannelStore(input.journal, input.clock),
     addressCodec: new KaspaTestnet10AddressCodec(),
     transport: input.transport,
     settlementVerifier: chainVerifier,
     recoveryObserver: chainVerifier,
     paidResponseVerifier,
     now: input.clock,
+  });
+  const stagingRecovery = {
+    async prepare() {
+      throw new Error("local proof did not expect abandoned staging recovery");
+    },
+    async observe() {
+      throw new Error("local proof did not expect abandoned staging recovery");
+    },
+    async submit() {
+      throw new Error("local proof did not expect abandoned staging recovery");
+    },
+  };
+  const treasury = new VaultTreasuryModule({
+    vault: input.vault,
+    policy: {
+      maxPerPaymentAtomic: "100000000",
+      maxPerHourAtomic: "500000000",
+      approvalAboveAtomic: "0",
+      allowlist: [PAY_TO],
+    },
+    additionalCostCeilingAtomic: ADDITIONAL_COST_CEILING_ATOMIC,
+    reservationTtlMs: 120_000,
+    staging: treasuryStaging,
+    stagingRecovery,
   });
   return new PurchaseCoordinator(
     input.journal,
@@ -692,17 +705,6 @@ function composeCoordinator(input: {
     commerceAuthorization,
     treasury,
     payment,
-    {
-      async prepare() {
-        throw new Error("local proof did not expect abandoned staging recovery");
-      },
-      async observe() {
-        throw new Error("local proof did not expect abandoned staging recovery");
-      },
-      async submit() {
-        throw new Error("local proof did not expect abandoned staging recovery");
-      },
-    },
     { async obtain() { return { status: "pending" as const }; } },
     {
       now: input.clock,
@@ -728,18 +730,10 @@ async function invokePurchase(input: {
   if (input.mode !== "mcp-sdk-in-memory-transport") {
     throw new Error("local proof initiation mode is unsupported");
   }
-  const runtime: SompiPurchaseRuntime = Object.freeze({
-    purchase: input.coordinator,
-    journal: input.journal,
-    wallet: input.wallet,
-    vault: input.vault,
-    policy: input.policy,
-    chainEvidence: Object.freeze({}) as ChainEvidenceModule,
-    async close() {
-      // The proof owns and closes these resources after the MCP session.
-    },
-  });
-  const server = createSompiMcpServer(runtime, "e2e-human-present-proof");
+  const server = createSompiMcpServer(
+    createPurchaseApplication(input.coordinator),
+    "e2e-human-present-proof"
+  );
   const client = new Client({ name: "sompi-e2e-agent", version: "1" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport);
@@ -1008,33 +1002,6 @@ function createDeterministicVault(directory: string): {
   }
 }
 
-function exactReservationProvider(now: () => number = () => NOW_MS): ExactBorrowReservationProvider {
-  const borrowRedeemScript = buildKip10AdditiveRedeemScript({
-    ownerPublicKey: OWNER_PUBLIC_KEY,
-    amount: ADDITIVE_THRESHOLD_ATOMIC,
-  }).toLowerCase();
-  const borrowScriptPublicKey = serializedScriptPublicKey(
-    kip10AdditiveScriptPublicKey({
-      ownerPublicKey: OWNER_PUBLIC_KEY,
-      amount: ADDITIVE_THRESHOLD_ATOMIC,
-    })
-  ).toLowerCase();
-  return {
-    reserveExactPayment: () => ({
-      reservationId: BORROW_RESERVATION_ID,
-      templateId: "kaspa-x402-kip10-additive-v1",
-      transactionEncoding: "kaspa-sdk-safe-json-v2.0.0",
-      borrowOutpoint: { txid: BORROW_TRANSACTION_ID, index: 0 },
-      borrowAmount: BORROW_AMOUNT_ATOMIC,
-      borrowScriptPublicKey,
-      borrowRedeemScript,
-      additiveThresholdSompi: ADDITIVE_THRESHOLD_ATOMIC,
-      paymentOutputIndex: 1,
-      expiresAt: new Date(readProofClock(now) + 300_000).toISOString(),
-    }),
-  };
-}
-
 function inertServerChainProvider(): ServerChainProvider {
   return {
     getUtxo: async () => null,
@@ -1077,7 +1044,7 @@ function proofReport(
   const authorization = journal.requireAuthorization(first.id);
   const attempt = journal.requirePaymentAttempt(first.id, 1);
   const staging = journal.findTreasuryStagingObservation(first.id, 1);
-  const spend = journal.findSpendForPurchase(first.id);
+  const spend = journal.findSettlementForPurchase(first.id);
   const fulfilment = journal.findFulfilment(first.id);
   const receipts = journal.receipts(first.id);
   if (!staging || !spend || !fulfilment || receipts.length !== 2) {

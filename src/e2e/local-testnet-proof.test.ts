@@ -26,7 +26,7 @@ test("deterministic local Testnet-10 proof joins AP2, x402, Settlement, Fulfilme
   assert.equal(report.protocolSeparation.ap2DataInX402Request, false);
   assert.equal(report.recovery.restartCount, 0);
   assert.match(report.transactions.stagingOutpoint, /^[a-f0-9]{64}:0$/);
-  assert.match(report.transactions.merchantOutpoint, /^[a-f0-9]{64}:1$/);
+  assert.match(report.transactions.merchantOutpoint, /^[a-f0-9]{64}:0$/);
 
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-e2e-report-"));
   const filename = path.join(directory, "evidence", "proof.json");
@@ -55,7 +55,7 @@ test("local vertical can be initiated through the real MCP SDK transport", async
 test("real vertical crash points restart without a second staging or Merchant payment", async () => {
   for (const faultPoint of [
     "payment_preparation.after_insert",
-    "spend.after_insert",
+    "settlement.after_insert",
     "fulfilment.after_insert",
   ] as const) {
     const report = await runLocalTestnetProof({ faultPoint });

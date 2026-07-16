@@ -10,7 +10,7 @@ import {
 const ALLOWED_FAULT_POINTS = new Set<JournalFaultPoint>([
   "treasury_staging_plan.after_insert",
   "payment_preparation.after_insert",
-  "spend.after_insert",
+  "settlement.after_insert",
   "fulfilment.after_insert",
   "receipt.after_insert",
 ]);

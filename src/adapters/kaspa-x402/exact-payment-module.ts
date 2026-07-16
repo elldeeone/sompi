@@ -45,6 +45,7 @@ import type {
   PreparedTreasuryStaging,
   PurchaseEgressSession,
   SettlementResult,
+  TreasuryModule,
   TreasuryStagingRecoveryObservation,
   TreasuryStagingSubmissionResult,
   VerifiedArtifact,
@@ -54,14 +55,18 @@ import type { PurchaseId, Sha256Digest } from "../../purchase/types.js";
 import type { SupportedProtocolProfiles } from "../../protocols/profiles.js";
 import type { PinnedHttpTransport } from "../../http/pinned-transport.js";
 import type { PaidResourceResponseVerifier } from "../../purchase/paid-resource-response.js";
+import {
+  sendBoundedPaidRequest,
+  type BoundedPaidHttpResponse,
+} from "./paid-http-transport.js";
 
 const CLIENT_VERSION: SupportedProtocolProfiles["x402"]["packages"]["client"]["version"] =
-  "0.1.0-alpha.6";
+  "0.1.0-alpha.8";
 const TESTNET_10: SupportedProtocolProfiles["x402"]["network"] = "kaspa:testnet-10";
 const ASSET = "KAS" as const;
 const FUNDING_SOURCE = "vault-treasury" as const;
 const EXACT_SCHEME = "exact" as const;
-const EXACT_BINDING = "kaspa-exact-v1" as const;
+const EXACT_BINDING = "kaspa-exact-v2" as const;
 const EXACT_TEMPLATE = "kaspa-x402-kip10-additive-v1" as const;
 const EXACT_ENCODING = "kaspa-sdk-safe-json-v2.0.0" as const;
 const SETTLEMENT_PROFILE = `kaspa-x402-${CLIENT_VERSION}-exact-settlement`;
@@ -72,17 +77,22 @@ const HASH32 = /^[a-f0-9]{64}$/;
 const DIGEST = /^sha256:[A-Za-z0-9_-]{43}$/;
 const UINT64_MAX = (1n << 64n) - 1n;
 
-type PrepareStagingInput = Parameters<KaspaPaymentModule["prepareStaging"]>[0];
-type SubmitStagingInput = Parameters<KaspaPaymentModule["submitStaging"]>[0];
-type ObserveStagingInput = Parameters<KaspaPaymentModule["observeStaging"]>[0];
+type PrepareStagingInput = Parameters<TreasuryModule["prepareStaging"]>[0];
+type SubmitStagingInput = Parameters<TreasuryModule["submitStaging"]>[0];
+type ObserveStagingInput = Parameters<TreasuryModule["observeStaging"]>[0];
 type PreparePaymentInput = Parameters<KaspaPaymentModule["prepare"]>[0];
 type SubmitPaymentInput = Parameters<KaspaPaymentModule["submit"]>[0];
 type ObservePaymentInput = Parameters<KaspaPaymentModule["observe"]>[0];
 
-export interface DurableTreasuryStagingSeam {
+export interface TreasuryStagingDriver {
   prepare(input: Readonly<PrepareStagingInput>): Promise<PreparedTreasuryStaging>;
   submit(input: Readonly<SubmitStagingInput>): Promise<TreasuryStagingSubmissionResult>;
   observe(input: Readonly<ObserveStagingInput>): Promise<TreasuryStagingRecoveryObservation>;
+}
+
+export interface KaspaX402TreasuryStagingAdapterOptions {
+  readonly driver: TreasuryStagingDriver;
+  readonly now?: () => number;
 }
 
 export interface ExactAttemptFundingContext {
@@ -92,7 +102,7 @@ export interface ExactAttemptFundingContext {
   requestHash: Hash32Hex;
   amountAtomic: string;
   payTo: string;
-  staging: Readonly<KaspaPreparedExecutionContext["staging"]>;
+  staging: Readonly<NonNullable<KaspaPreparedExecutionContext["staging"]>>;
   additionalCostCeilingAtomic?: string;
 }
 
@@ -112,7 +122,7 @@ export interface ExactSettlementVerificationInput {
 }
 
 export interface ExactSettlementVerificationResult {
-  /** Actual staging fee + threshold + exact fee, not Merchant price or a ceiling. */
+  /** Actual staging plus exact network fees, excluding the Merchant price. */
   additionalCostAtomic: string;
   /** Chain-attested exact Merchant payment output. */
   outpoint: string;
@@ -144,7 +154,6 @@ export interface KaspaExactRecoveryObserver {
 }
 
 export interface KaspaX402ExactPaymentModuleOptions {
-  staging: DurableTreasuryStagingSeam;
   funding: ExactAttemptFundingBridge;
   channelSigner: ChannelSigner;
   channelStore: ChannelStore;
@@ -189,54 +198,28 @@ interface RehydratedExactPayment {
   requestHash: Hash32Hex;
 }
 
-interface BoundedHttpResponse {
-  status: number;
-  headers: readonly (readonly [string, string])[];
-  body: Uint8Array;
-}
-
 interface ProcessedPaymentResponse {
   settlement: SettlementResult;
   response: SettlementResponse;
 }
 
 /**
- * Pinned alpha.6 exact adapter. AP2 and Agent-facing types remain outside this
- * module; only the internal Purchase execution seam reaches it.
+ * Protocol-aware adapter behind the Treasury seam. It validates alpha.8
+ * requirements and immutable effect bindings, while the underlying driver
+ * owns the vault transaction and chain observation.
  */
-export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
-  private readonly staging: DurableTreasuryStagingSeam;
-  private readonly funding: ExactAttemptFundingBridge;
-  private readonly channelSigner: ChannelSigner;
-  private readonly channelStore: ChannelStore;
-  private readonly addressCodec: AddressCodec;
-  private readonly transport: PinnedHttpTransport;
-  private readonly settlementVerifier: ExactSettlementVerifier;
-  private readonly recoveryObserver: KaspaExactRecoveryObserver;
-  private readonly paidResponseVerifier?: PaidResourceResponseVerifier;
+export class KaspaX402TreasuryStagingAdapter implements Pick<
+  TreasuryModule,
+  "prepareStaging" | "submitStaging" | "observeStaging"
+> {
+  private readonly driver: TreasuryStagingDriver;
   private readonly now: () => number;
-  private readonly usedProviders = new WeakSet<object>();
 
-  constructor(options: KaspaX402ExactPaymentModuleOptions) {
-    requireFunction(options?.staging?.prepare, "Treasury staging prepare seam");
-    requireFunction(options?.staging?.submit, "Treasury staging submit seam");
-    requireFunction(options?.staging?.observe, "Treasury staging observer seam");
-    requireFunction(options?.funding?.createProvider, "attempt funding bridge");
-    requireFunction(options?.transport?.send, "address-pinned HTTP transport");
-    requireFunction(options?.settlementVerifier?.verify, "exact Settlement verifier");
-    requireFunction(options?.recoveryObserver?.observe, "exact recovery observer");
-    if (!options.channelSigner || !options.channelStore || !options.addressCodec) {
-      throw adapterError("invalid_configuration", "official DirectModeClient dependency adapters are required");
-    }
-    this.staging = options.staging;
-    this.funding = options.funding;
-    this.channelSigner = options.channelSigner;
-    this.channelStore = options.channelStore;
-    this.addressCodec = options.addressCodec;
-    this.transport = options.transport;
-    this.settlementVerifier = options.settlementVerifier;
-    this.recoveryObserver = options.recoveryObserver;
-    this.paidResponseVerifier = options.paidResponseVerifier;
+  constructor(options: KaspaX402TreasuryStagingAdapterOptions) {
+    requireFunction(options?.driver?.prepare, "Treasury staging driver prepare");
+    requireFunction(options?.driver?.submit, "Treasury staging driver submit");
+    requireFunction(options?.driver?.observe, "Treasury staging driver observe");
+    this.driver = options.driver;
     this.now = options.now ?? Date.now;
     readClock(this.now);
   }
@@ -259,14 +242,10 @@ export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
         "Treasury staging ceiling exceeds the exact Purchase authorization"
       );
     }
-    const prepared = await this.staging.prepare(cloneForAdapter(input));
+    const prepared = await this.driver.prepare(cloneForAdapter(input));
     validatePreparedStaging(
       prepared,
-      BigInt(input.execution.terms.amountAtomic) +
-        positiveOrZeroAtomic(
-          parsed.accepted.extra.additiveThresholdSompi,
-          "KIP-10 additive threshold"
-        ),
+      BigInt(input.execution.terms.amountAtomic),
       BigInt(input.execution.terms.amountAtomic) + additionalCost
     );
     return copyPreparedStaging(prepared);
@@ -283,7 +262,7 @@ export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
       ["executing"]
     );
     if (input.signal.aborted) throw abortError(input.signal);
-    const result = await this.staging.submit({
+    const result = await this.driver.submit({
       context: cloneForAdapter(input.context),
       effect: cloneForAdapter(input.effect),
       signal: input.signal,
@@ -302,16 +281,56 @@ export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
       `treasury-staging:${input.context.execution.paymentIdentifier}`,
       ["executing", "submitted", "ambiguous"]
     );
-    const result = await this.staging.observe({
+    const result = await this.driver.observe({
       context: cloneForAdapter(input.context),
       effect: cloneForAdapter(input.effect),
     });
     validateStagingRecovery(result, input.context);
     return copyStagingRecovery(result);
   }
+}
+
+/**
+ * Pinned alpha.8 exact adapter. AP2 and Agent-facing types remain outside this
+ * module; only the internal Purchase execution seam reaches it.
+ */
+export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
+  private readonly funding: ExactAttemptFundingBridge;
+  private readonly channelSigner: ChannelSigner;
+  private readonly channelStore: ChannelStore;
+  private readonly addressCodec: AddressCodec;
+  private readonly transport: PinnedHttpTransport;
+  private readonly settlementVerifier: ExactSettlementVerifier;
+  private readonly recoveryObserver: KaspaExactRecoveryObserver;
+  private readonly paidResponseVerifier?: PaidResourceResponseVerifier;
+  private readonly now: () => number;
+  private readonly usedProviders = new WeakSet<object>();
+
+  constructor(options: KaspaX402ExactPaymentModuleOptions) {
+    requireFunction(options?.funding?.createProvider, "attempt funding bridge");
+    requireFunction(options?.transport?.send, "address-pinned HTTP transport");
+    requireFunction(options?.settlementVerifier?.verify, "exact Settlement verifier");
+    requireFunction(options?.recoveryObserver?.observe, "exact recovery observer");
+    if (!options.channelSigner || !options.channelStore || !options.addressCodec) {
+      throw adapterError("invalid_configuration", "official DirectModeClient dependency adapters are required");
+    }
+    this.funding = options.funding;
+    this.channelSigner = options.channelSigner;
+    this.channelStore = options.channelStore;
+    this.addressCodec = options.addressCodec;
+    this.transport = options.transport;
+    this.settlementVerifier = options.settlementVerifier;
+    this.recoveryObserver = options.recoveryObserver;
+    this.paidResponseVerifier = options.paidResponseVerifier;
+    this.now = options.now ?? Date.now;
+    readClock(this.now);
+  }
 
   async prepare(input: PreparePaymentInput): Promise<PreparedKaspaPayment> {
     assertExecutionBinding(input.execution, input.request, this.now);
+    if (!input.staging) {
+      throw adapterError("preparation_mismatch", "exact execution requires an observed Treasury staging output");
+    }
     assertObservedStaging(input.staging, input.execution.purchaseId);
     const additionalCost = positiveOrZeroAtomic(
       input.additionalCostCeilingAtomic,
@@ -337,7 +356,7 @@ export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
     const header = strictPaymentRequiredArtifact(input.paymentRequirements);
     const requestHash = requestHashHex(input.request.requestFingerprint);
     const client = await this.createPreparationClient(
-      input,
+      Object.freeze({ ...input, staging: input.staging }),
       requestHash,
       input.additionalCostCeilingAtomic
     );
@@ -373,7 +392,10 @@ export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
     };
     const preparedBytes = Buffer.from(stableStringify(envelope), "utf8");
     const preparedDigest = digestBytes(preparedBytes);
-    const finality = requireFinality(selected.accepted.extra.finality, "exact required finality");
+    const finality = requireExactSettlementAssurance(
+      selected.accepted.extra.finality,
+      "exact required finality"
+    );
 
     return {
       purchaseId: input.execution.purchaseId,
@@ -389,8 +411,10 @@ export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
       fundingSource: FUNDING_SOURCE,
       preparedBytes,
       requirementsDigest: digestBytes(input.paymentRequirements),
+      mechanism: "single-transaction",
+      profile: input.execution.authorizationRequest.executionProfile,
       transactionId,
-      requiredFinality: finality,
+      requiredAssurance: finality,
     };
   }
 
@@ -398,7 +422,7 @@ export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
     assertEffectBinding(
       input.effect,
       input.context.execution.purchaseId,
-      "kaspa-x402-exact",
+      "kaspa-x402-payment",
       input.context.preparation.preparedDigest,
       `payment:${input.context.execution.paymentIdentifier}`,
       ["executing"]
@@ -459,7 +483,7 @@ export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
     assertEffectBinding(
       input.effect,
       input.context.execution.purchaseId,
-      "kaspa-x402-exact",
+      "kaspa-x402-payment",
       input.context.preparation.preparedDigest,
       `payment:${input.context.execution.paymentIdentifier}`,
       ["executing", "submitted", "ambiguous"]
@@ -556,7 +580,9 @@ export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
   }
 
   private async createPreparationClient(
-    input: Pick<PreparePaymentInput, "execution" | "request" | "staging">,
+    input: Pick<PreparePaymentInput, "execution" | "request"> & {
+      staging: NonNullable<PreparePaymentInput["staging"]>;
+    },
     requestHash: Hash32Hex,
     additionalCostCeilingAtomic?: string
   ): Promise<DirectModeClient> {
@@ -610,7 +636,10 @@ export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
       supportedNetworks: [TESTNET_10],
       supportedSchemes: [EXACT_SCHEME],
       allowMainnet: false,
-      fundingPolicy: { requiredSource: FUNDING_SOURCE },
+      fundingPolicy: {
+        requiredSource: FUNDING_SOURCE,
+        allowedExactProfiles: ["standard-native", "additive"],
+      },
       maxPaymentRetries: 0,
     });
     if (
@@ -735,79 +764,17 @@ export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
     egress: PurchaseEgressSession,
     signatureHeader: string,
     signal: AbortSignal
-  ): Promise<BoundedHttpResponse> {
-    strictHeaderString(signatureHeader, PAYMENT_SIGNATURE_HEADER);
-    assertEgressBinding(context.request, egress.request);
-    let hop = egress.request;
-    for (;;) {
-      const response = await this.sendOneHop(context, egress, hop, signatureHeader, signal);
-      if (![301, 302, 303, 307, 308].includes(response.status)) return response;
-      const location = requireSingleHeader(response.headers, "location");
-      if (!location) {
-        throw adapterError("transport_mismatch", "paid retry redirect has no Location header");
-      }
-      hop = await egress.redirect(hop, location);
-      assertEgressBinding(context.request, hop);
-    }
-  }
-
-  private async sendOneHop(
-    context: KaspaPreparedExecutionContext,
-    egress: PurchaseEgressSession,
-    hop: PurchaseEgressSession["request"],
-    signatureHeader: string,
-    signal: AbortSignal
-  ): Promise<BoundedHttpResponse> {
-    const controller = new AbortController();
-    const abortFromCaller = () => controller.abort(signal.reason);
-    if (signal.aborted) abortFromCaller();
-    else signal.addEventListener("abort", abortFromCaller, { once: true });
-    const remaining = hop.deadlineAtMs - readClock(this.now);
-    if (remaining <= 0) controller.abort(new Error("egress deadline exceeded"));
-    const timeout = setTimeout(
-      () => controller.abort(new Error("egress deadline exceeded")),
-      Math.max(1, remaining)
-    );
-    // The paid request may be waiting on a handle-free injected transport, so
-    // its only completion deadline must stay referenced until finally clears it.
-    const guard = egress.responseGuard(hop, (reason) => controller.abort(reason));
-    try {
-      controller.signal.throwIfAborted();
-      const headers: Array<readonly [string, string]> = [
-        [PAYMENT_SIGNATURE_HEADER, signatureHeader],
-      ];
-      if (context.request.mediaType) headers.push(["content-type", context.request.mediaType]);
-      const response = await this.transport.send({
-        hop,
-        headers: Object.freeze(headers),
-        body: Uint8Array.from(context.request.body),
-        signal: controller.signal,
-      });
-      controller.signal.throwIfAborted();
-      if (!Number.isSafeInteger(response.status) || response.status < 100 || response.status > 599) {
-        throw adapterError("transport_mismatch", "paid retry returned an invalid HTTP status");
-      }
-      const responseHeaders = normalizeResponseHeaders(response.headers);
-      guard.acceptHeaders(responseHeaders);
-      const chunks: Buffer[] = [];
-      for await (const chunk of response.body) {
-        controller.signal.throwIfAborted();
-        if (!(chunk instanceof Uint8Array)) {
-          throw adapterError("transport_mismatch", "paid retry body yielded a non-byte chunk");
-        }
-        guard.acceptBodyChunk(chunk);
-        chunks.push(Buffer.from(chunk));
-      }
-      guard.checkTime();
-      return {
-        status: response.status,
-        headers: responseHeaders,
-        body: Buffer.concat(chunks),
-      };
-    } finally {
-      clearTimeout(timeout);
-      signal.removeEventListener("abort", abortFromCaller);
-    }
+  ): Promise<BoundedPaidHttpResponse> {
+    return sendBoundedPaidRequest({
+      request: context.request,
+      egress,
+      transport: this.transport,
+      paymentHeaderName: PAYMENT_SIGNATURE_HEADER,
+      paymentHeaderValue: signatureHeader,
+      signal,
+      now: this.now,
+      error: (message, cause) => adapterError("transport_mismatch", message, { cause }),
+    });
   }
 
   private async processPaymentResponse(
@@ -844,8 +811,11 @@ export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
         "Settlement transaction does not match the immutable payment"
       );
     }
-    const actualFinality = requireFinality(applied.finality, "applied exact Settlement finality");
-    if (!finalityMeets(actualFinality, context.preparation.requiredFinality)) {
+    const actualFinality = requireExactSettlementAssurance(
+      applied.finality,
+      "applied exact Settlement finality"
+    );
+    if (!finalityMeets(actualFinality, context.preparation.requiredAssurance)) {
       throw adapterError(
         "settlement_mismatch",
         "Settlement does not meet the immutable required finality"
@@ -878,7 +848,7 @@ export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
     if (verified.verification.profile !== SETTLEMENT_PROFILE) {
       throw adapterError(
         "settlement_mismatch",
-        "Settlement verifier used a profile outside the pinned alpha.6 exact adapter"
+        "Settlement verifier used a profile outside the pinned alpha.8 exact adapter"
       );
     }
     const outputIndex = exactPayload(rehydrated.envelope.paymentPayload).paymentOutputIndex;
@@ -902,6 +872,9 @@ export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
       response,
       settlement: {
         evidence,
+        executionId: transactionId,
+        mechanism: "single-transaction",
+        profile: context.preparation.profile,
         transactionId,
         outpoint,
         amountAtomic: context.execution.terms.amountAtomic,
@@ -909,7 +882,7 @@ export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
         asset: ASSET,
         network: TESTNET_10,
         payTo: context.execution.terms.payTo,
-        finality: actualFinality,
+        settlementAssurance: actualFinality,
         fundingSource: FUNDING_SOURCE,
       },
     };
@@ -917,9 +890,10 @@ export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
 
   private async verifyPaidResponse(
     context: KaspaPreparedExecutionContext,
-    response: BoundedHttpResponse,
+    response: BoundedPaidHttpResponse,
     settlement: SettlementResult
   ): Promise<Extract<FulfilmentResult, { status: "fulfilled" }> | undefined> {
+    assertPreparedContext(context, this.now, { allowExpired: true });
     if (!this.paidResponseVerifier || response.status < 200 || response.status > 299) return undefined;
     const mediaType = requireSingleHeader(response.headers, "content-type") ?? undefined;
     const fulfilled = await this.paidResponseVerifier.verify({
@@ -935,7 +909,7 @@ export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
           requestFingerprint: context.request.requestFingerprint,
         }),
         paymentRequirements: Uint8Array.from(context.paymentRequirements),
-        preparedTransactionId: context.preparation.transactionId,
+        preparedExecutionId: context.preparation.executionId,
       }),
       status: response.status,
       headers: response.headers,
@@ -991,12 +965,24 @@ function assertTreasuryStagingContext(
   positiveAtomic(context.staging.amountAtomic, "Treasury staging amount");
 }
 
+type ExactPreparedContext = KaspaPreparedExecutionContext & {
+  staging: NonNullable<KaspaPreparedExecutionContext["staging"]>;
+  preparation: KaspaPreparedExecutionContext["preparation"] & {
+    mechanism: "single-transaction";
+    transactionId: string;
+    requiredAssurance: "accepted" | "confirmed";
+  };
+};
+
 function assertPreparedContext(
   context: KaspaPreparedExecutionContext,
   now: () => number,
   options: { allowExpired?: boolean } = {}
-): void {
+): asserts context is ExactPreparedContext {
   assertExecutionBinding(context.execution, context.request, now, options);
+  if (!context.staging) {
+    throw adapterError("artifact_mismatch", "durable exact context lost its Treasury staging output");
+  }
   assertObservedStaging(context.staging, context.execution.purchaseId);
   const header = strictPaymentRequiredArtifact(context.paymentRequirements);
   const parsed = parsePaymentRequiredHeaderValue(header, {
@@ -1012,13 +998,16 @@ function assertPreparedContext(
   );
   if (
     context.preparation.fundingSource !== FUNDING_SOURCE ||
+    context.preparation.mechanism !== "single-transaction" ||
+    context.preparation.profile !== context.execution.authorizationRequest.executionProfile ||
+    typeof context.preparation.transactionId !== "string" ||
     !HASH32.test(context.preparation.transactionId) ||
     !DIGEST.test(context.preparation.preparedDigest) ||
     context.preparation.preparedBytes.byteLength === 0
   ) {
     throw adapterError("artifact_mismatch", "durable exact preparation metadata is invalid");
   }
-  requireFinality(context.preparation.requiredFinality, "durable exact required finality");
+  requireFinality(context.preparation.requiredAssurance, "durable exact required finality");
 }
 
 function assertExecutionBinding(
@@ -1152,38 +1141,42 @@ function assertExactRequirement(
   }
   const extra = accepted.extra;
   if (
-    extra.templateId !== EXACT_TEMPLATE ||
+    (extra.profile !== "standard-native" && extra.profile !== "additive") ||
     extra.transactionEncoding !== EXACT_ENCODING ||
-    !extra.borrowOutpoint ||
-    !HASH32.test(String(extra.borrowOutpoint.txid).toLowerCase()) ||
-    !Number.isSafeInteger(extra.borrowOutpoint.index) ||
-    extra.borrowOutpoint.index < 0 ||
-    extra.borrowOutpoint.index > 0xffff_ffff ||
-    typeof extra.borrowScriptPublicKey !== "string" ||
-    !/^(?:[a-fA-F0-9]{2})+$/.test(extra.borrowScriptPublicKey) ||
-    typeof extra.borrowRedeemScript !== "string" ||
-    !/^(?:[a-fA-F0-9]{2})+$/.test(extra.borrowRedeemScript) ||
-    typeof extra.paymentOutputIndex !== "number" ||
-    !Number.isSafeInteger(extra.paymentOutputIndex) ||
-    extra.paymentOutputIndex < 0 ||
-    extra.paymentOutputIndex > 0xffff_ffff ||
-    typeof extra.reservationId !== "string" ||
-    !HASH32.test(extra.reservationId.toLowerCase())
+    typeof extra.payToScriptPublicKey !== "string" ||
+    !/^(?:[a-fA-F0-9]{2})+$/.test(extra.payToScriptPublicKey)
   ) {
-    throw adapterError("profile_mismatch", "exact KIP-10 reservation terms are incomplete");
+    throw adapterError("profile_mismatch", "kaspa-exact-v2 profile terms are incomplete");
   }
-  positiveAtomic(extra.borrowAmount, "Merchant borrow amount");
-  positiveOrZeroAtomic(extra.additiveThresholdSompi, "KIP-10 additive threshold");
   requireFinality(extra.finality, "exact required finality");
-  if (typeof extra.reservationExpiresAt !== "string") {
-    throw adapterError("profile_mismatch", "exact reservation expiry is required");
-  }
-  const reservationExpiry = Date.parse(extra.reservationExpiresAt);
-  if (
-    !Number.isFinite(reservationExpiry) ||
-    (!options.allowExpired && reservationExpiry <= readClock(now))
+  if (extra.profile === "additive") {
+    const challengeExpiry = Date.parse(String(extra.challengeExpiresAt ?? ""));
+    if (
+      extra.templateId !== EXACT_TEMPLATE ||
+      !HASH32.test(String(extra.headId ?? "").toLowerCase()) ||
+      !extra.expectedHeadOutpoint ||
+      !HASH32.test(extra.expectedHeadOutpoint.txid.toLowerCase()) ||
+      extra.expectedHeadOutpoint.index !== 0 ||
+      typeof extra.headScriptPublicKey !== "string" ||
+      typeof extra.headRedeemScript !== "string" ||
+      extra.paymentOutputIndex !== 0 ||
+      !HASH32.test(String(extra.challengeId ?? "").toLowerCase()) ||
+      typeof extra.additiveThresholdSompi !== "string" ||
+      positiveOrZeroAtomic(extra.additiveThresholdSompi, "KIP-10 additive threshold") === 0n ||
+      !Number.isFinite(challengeExpiry) ||
+      (!options.allowExpired && challengeExpiry <= readClock(now))
+    ) {
+      throw adapterError("profile_mismatch", "additive head challenge is incomplete or expired");
+    }
+  } else if (
+    extra.headId !== undefined ||
+    extra.expectedHeadOutpoint !== undefined ||
+    extra.challengeId !== undefined ||
+    extra.additiveThresholdSompi !== undefined ||
+    extra.templateId !== undefined ||
+    extra.paymentOutputIndex !== undefined
   ) {
-    throw adapterError("profile_mismatch", "exact reservation is invalid or expired");
+    throw adapterError("profile_mismatch", "standard-native terms contain additive head facts");
   }
   assertRequiredPaymentIdentifier(parsed.paymentRequired, execution.paymentIdentifier);
 }
@@ -1219,14 +1212,14 @@ function assertCreatedPayment(
   if (
     payload.requestHash?.toLowerCase() !== requestHash ||
     payload.transactionEncoding !== EXACT_ENCODING ||
-    payload.paymentOutputIndex !== selected.accepted.extra.paymentOutputIndex ||
-    payment.paymentOutputIndex !== selected.accepted.extra.paymentOutputIndex ||
+    payload.paymentOutputIndex !== 0 ||
+    payment.paymentOutputIndex !== 0 ||
     payment.payerAddress !== payload.payerAddress
   ) {
     throw adapterError("preparation_mismatch", "exact PaymentPayload changed immutable request facts");
   }
   assertPaymentIdentifierEcho(payment.paymentPayload, paymentIdentifier);
-  // alpha.6 deliberately keeps transactionId outside the client-supplied wire
+  // Alpha.8 deliberately keeps transactionId outside the client-supplied wire
   // payload. DirectModeClient validates and returns the provider's transactionId;
   // the Merchant and injected chain verifier derive it from the signed artifact.
   requireHash32(payment.transactionId, "prepared exact transaction ID");
@@ -1240,20 +1233,16 @@ function assertUsableStagingAmount(
 ): void {
   const amount = positiveAtomic(value, `${label} amount`);
   const price = positiveAtomic(execution.terms.amountAtomic, "Purchase amount");
-  const threshold = positiveOrZeroAtomic(
-    accepted.extra.additiveThresholdSompi,
-    "KIP-10 additive threshold"
-  );
   const authorizedGross =
     price +
     positiveOrZeroAtomic(
       execution.authorizationRequest.additionalCostCeilingAtomic,
       "authorized additional-cost ceiling"
     );
-  if (amount < price + threshold || amount > authorizedGross) {
+  if (amount < price || amount > authorizedGross) {
     throw adapterError(
       "preparation_mismatch",
-      `${label} cannot fund the Merchant price and additive threshold within the authorized gross bound`
+      `${label} cannot fund the Merchant price and bounded fee within the authorized gross bound`
     );
   }
 }
@@ -1284,14 +1273,14 @@ function assertSettlementWireFacts(
     extra.paymentOutputIndex !== payload.paymentOutputIndex ||
     extra.requestHash?.toLowerCase() !== requestHashHex(context.request.requestFingerprint) ||
     extra.transactionEncoding !== EXACT_ENCODING ||
-    extra.templateId !== EXACT_TEMPLATE ||
-    extra.reservationId !== (payment.accepted as ExactPaymentRequirements).extra.reservationId ||
-    stableStringify(extra.borrowOutpoint) !==
-      stableStringify((payment.accepted as ExactPaymentRequirements).extra.borrowOutpoint)
+    extra.exactProfile !== (payment.accepted as ExactPaymentRequirements).extra.profile ||
+    (extra.exactProfile === "additive" &&
+      (extra.templateId !== EXACT_TEMPLATE ||
+       extra.headId !== (payment.accepted as ExactPaymentRequirements).extra.headId))
   ) {
     throw adapterError(
       "settlement_mismatch",
-      "Settlement response changed exact requirement, request, or KIP-10 reservation facts"
+      "Settlement response changed exact requirement, request, or profile facts"
     );
   }
 }
@@ -1324,7 +1313,7 @@ function exactPayload(payload: PaymentPayload) {
 }
 
 function assertObservedStaging(
-  staging: KaspaPreparedExecutionContext["staging"],
+  staging: NonNullable<KaspaPreparedExecutionContext["staging"]>,
   _purchaseId: PurchaseId
 ): void {
   if (
@@ -1504,6 +1493,7 @@ function inertReplayFundingProvider(): FundingProvider {
   return Object.freeze({
     networkId: TESTNET_10,
     sourceKind: FUNDING_SOURCE,
+    authorizeExactPayment: unavailable,
     getPublicIdentity: unavailable,
     fundEscrowDeposit: unavailable,
     payExactTransaction: unavailable,
@@ -1588,25 +1578,6 @@ function strictHeaderString(value: string, name: string, originalBytes?: Uint8Ar
   }
   fatalUtf8(decoded, `${name} decoded JSON`);
   return value;
-}
-
-function normalizeResponseHeaders(
-  headers: readonly (readonly [string, string])[]
-): readonly (readonly [string, string])[] {
-  if (!Array.isArray(headers)) {
-    throw adapterError("transport_mismatch", "HTTP transport returned no header collection");
-  }
-  return Object.freeze(headers.map((entry) => {
-    if (
-      !Array.isArray(entry) ||
-      entry.length !== 2 ||
-      typeof entry[0] !== "string" ||
-      typeof entry[1] !== "string"
-    ) {
-      throw adapterError("transport_mismatch", "HTTP transport returned an invalid header");
-    }
-    return Object.freeze([entry[0], entry[1]] as const);
-  }));
 }
 
 function requireSingleHeader(
@@ -1727,6 +1698,17 @@ function requireFinality(
     throw adapterError("profile_mismatch", `${label} is invalid`);
   }
   return value;
+}
+
+function requireExactSettlementAssurance(
+  value: unknown,
+  label: string
+): "accepted" | "confirmed" {
+  const finality = requireFinality(value, label);
+  if (finality === "mempool") {
+    throw adapterError("profile_mismatch", `${label} cannot be mempool-only`);
+  }
+  return finality;
 }
 
 function finalityMeets(actual: string, required: string): boolean {

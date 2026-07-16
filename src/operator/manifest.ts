@@ -49,6 +49,9 @@ export interface OperatorManifest {
     merchantReceiptIssuer: string;
     paymentReceiptIssuer: string;
   }>;
+  readonly batch: Readonly<{
+    claimFeeReserveAtomic: string;
+  }>;
   readonly chainEvidence: Readonly<{
     operatorNodeUrl: string;
     witnessBaseUrl: string;
@@ -94,6 +97,7 @@ export function parseOperatorManifest(value: unknown): OperatorManifest {
     "vault",
     "treasury",
     "merchant",
+    "batch",
     "chainEvidence",
     "admission",
   ], "Operator Manifest");
@@ -176,6 +180,13 @@ export function parseOperatorManifest(value: unknown): OperatorManifest {
     throw new OperatorManifestError("Merchant and Payment Receipt issuers must be distinct");
   }
 
+  const batch = record(root.batch, "Operator Manifest batch settlement");
+  exactKeys(batch, ["claimFeeReserveAtomic"], "Operator Manifest batch settlement");
+  const claimFeeReserveAtomic = positiveAtomic(
+    batch.claimFeeReserveAtomic,
+    "batch claim-fee reserve"
+  );
+
   const chainEvidence = record(root.chainEvidence, "Operator Manifest Chain Evidence");
   exactKeys(chainEvidence, [
     "operatorNodeUrl",
@@ -245,6 +256,7 @@ export function parseOperatorManifest(value: unknown): OperatorManifest {
       operationFeeCeilingAtomic,
     },
     merchant: { allowRules, merchantReceiptIssuer, paymentReceiptIssuer },
+    batch: { claimFeeReserveAtomic },
     chainEvidence: {
       operatorNodeUrl,
       witnessBaseUrl,

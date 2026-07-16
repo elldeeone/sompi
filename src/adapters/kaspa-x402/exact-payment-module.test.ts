@@ -11,7 +11,10 @@ import {
   createPaymentIdentifier,
   requestFingerprint,
 } from "../../purchase/identity.js";
-import { KaspaX402ExactPaymentModule } from "./exact-payment-module.js";
+import {
+  KaspaX402ExactPaymentModule,
+  KaspaX402TreasuryStagingAdapter,
+} from "./exact-payment-module.js";
 
 const PURCHASE_ID = assertPurchaseId("pur_AQEBAQEBAQEBAQEBAQEBAQ");
 const PAYMENT_ID = createPaymentIdentifier(PURCHASE_ID, 1);
@@ -20,11 +23,9 @@ const MERCHANT_ORIGIN = "https://merchant.example";
 const MERCHANT_ID = "merchant:test";
 const PAY_TO = "kaspatest:test-payee";
 const AMOUNT = "20000000";
-const ADDITIONAL_COST = "10001000";
+const ADDITIONAL_COST = "2001000";
 const STAGING_TX = "11".repeat(32);
 const EXACT_TX = "22".repeat(32);
-const BORROW_TX = "33".repeat(32);
-const RESERVATION_ID = "44".repeat(32);
 const CHECKOUT_DIGEST = digest("checkout");
 const REQUEST_BODY = Buffer.from("request-body", "utf8");
 const REQUEST_FINGERPRINT = requestFingerprint({
@@ -39,12 +40,13 @@ const AUTH_NONCE_DIGEST = digest("authority-nonce");
 const AUTH_EVIDENCE_DIGEST = digest("authority-evidence");
 const STAGING_EVIDENCE_DIGEST = digest("staging-evidence");
 const SETTLEMENT_DETAIL_DIGEST = digest("settlement-verified");
+const EXECUTION_PLAN_DIGEST = digest("standard-native-execution-plan");
 const NOW = Date.parse("2030-01-01T00:00:00.000Z");
 
-test("alpha.6 exact module uses official lower-level flow and durable staging seams", async () => {
+test("alpha.8 standard-native exact module uses official lower-level flow and durable staging seams", async () => {
   const fixture = makeFixture();
 
-  const preparedStaging = await fixture.module.prepareStaging({
+  const preparedStaging = await fixture.treasuryStaging.prepareStaging({
     execution: fixture.execution,
     request: fixture.request,
     paymentRequirements: fixture.paymentRequirements,
@@ -54,7 +56,7 @@ test("alpha.6 exact module uses official lower-level flow and durable staging se
   assert.equal(fixture.calls.stagingPrepare, 1);
 
   const stagingContext = fixture.stagingContext(preparedStaging);
-  const staged = await fixture.module.submitStaging({
+  const staged = await fixture.treasuryStaging.submitStaging({
     context: stagingContext,
     effect: fixture.effect("treasury-staging", preparedStaging.preparedDigest),
     signal: new AbortController().signal,
@@ -100,7 +102,7 @@ test("paid retry is address-pinned, bounded, settlement-verified, and replay-ide
   const fixture = makeFixture();
   const prepared = await fixture.prepareExact();
   const context = fixture.preparedContext(prepared);
-  const effect = fixture.effect("kaspa-x402-exact", prepared.preparedDigest);
+  const effect = fixture.effect("kaspa-x402-payment", prepared.preparedDigest);
 
   const first = await fixture.module.submit({
     context,
@@ -120,10 +122,10 @@ test("paid retry is address-pinned, bounded, settlement-verified, and replay-ide
   assert.equal(first.submissionDigest, second.submissionDigest);
   if (first.status !== "settled") throw new Error("expected Settlement");
   assert.equal(first.settlement.transactionId, EXACT_TX);
-  assert.equal(first.settlement.outpoint, `${EXACT_TX}:1`);
+  assert.equal(first.settlement.outpoint, `${EXACT_TX}:0`);
   assert.equal(first.settlement.amountAtomic, AMOUNT);
-  assert.equal(first.settlement.additionalCostAtomic, "10000002");
-  assert.equal(first.settlement.finality, "accepted");
+  assert.equal(first.settlement.additionalCostAtomic, "2001000");
+  assert.equal(first.settlement.settlementAssurance, "accepted");
   assert.equal(first.settlement.evidence.declaredDigest, digest(fixture.paymentResponseHeader));
 
   assert.equal(fixture.calls.payExact, 1, "replay must not construct another exact transaction");
@@ -153,7 +155,7 @@ test("canonical rehydration rejects tampering, payment-id replay, and provider r
   const fixture = makeFixture();
   const prepared = await fixture.prepareExact();
   const originalContext = fixture.preparedContext(prepared);
-  const effect = fixture.effect("kaspa-x402-exact", prepared.preparedDigest);
+  const effect = fixture.effect("kaspa-x402-payment", prepared.preparedDigest);
 
   const tampered = JSON.parse(Buffer.from(prepared.preparedBytes).toString("utf8"));
   tampered.paymentPayload.payload.requestHash = "ff".repeat(32);
@@ -192,7 +194,7 @@ test("canonical rehydration rejects tampering, payment-id replay, and provider r
   assert.equal(fixture.calls.transport, 0);
 
   await assert.rejects(
-    fixture.module.prepareStaging({
+    fixture.treasuryStaging.prepareStaging({
       execution: fixture.execution,
       request: fixture.request,
       paymentRequirements: Buffer.from(`${fixture.paymentRequirements.toString("ascii")}\n`, "ascii"),
@@ -213,7 +215,7 @@ test("ambiguous recovery observes first and retries only the same immutable payl
   const fixture = makeFixture({ recoveryStatus: "transaction_observed" });
   const prepared = await fixture.prepareExact();
   const context = fixture.preparedContext(prepared);
-  const effect = fixture.effect("kaspa-x402-exact", prepared.preparedDigest);
+  const effect = fixture.effect("kaspa-x402-payment", prepared.preparedDigest);
 
   const recovered = await fixture.module.observe({
     context,
@@ -230,24 +232,24 @@ test("ambiguous recovery observes first and retries only the same immutable payl
   const pendingPrepared = await pending.prepareExact();
   const pendingResult = await pending.module.observe({
     context: pending.preparedContext(pendingPrepared),
-    effect: pending.effect("kaspa-x402-exact", pendingPrepared.preparedDigest),
+    effect: pending.effect("kaspa-x402-payment", pendingPrepared.preparedDigest),
     egress: pending.egress,
   });
   assert.equal(pendingResult.status, "pending");
   assert.equal(pending.calls.transport, 0);
 });
 
-test("Settlement substitutions rejected beyond alpha.6 applySettlement checks", async () => {
-  const fixture = makeFixture({ settlementReservationId: "55".repeat(32) });
+test("Settlement substitutions reject an exact profile switch", async () => {
+  const fixture = makeFixture({ settlementProfile: "additive" });
   const prepared = await fixture.prepareExact();
   await assert.rejects(
     fixture.module.submit({
       context: fixture.preparedContext(prepared),
-      effect: fixture.effect("kaspa-x402-exact", prepared.preparedDigest),
+      effect: fixture.effect("kaspa-x402-payment", prepared.preparedDigest),
       egress: fixture.egress,
       signal: new AbortController().signal,
     }),
-    /reservation facts/
+    /profile/
   );
 });
 
@@ -255,7 +257,7 @@ test("restart rejects misbound Effects and a supplied fingerprint unrelated to t
   const fixture = makeFixture();
   const prepared = await fixture.prepareExact();
   const context = fixture.preparedContext(prepared);
-  const effect = fixture.effect("kaspa-x402-exact", prepared.preparedDigest);
+  const effect = fixture.effect("kaspa-x402-payment", prepared.preparedDigest);
 
   for (const changed of [
     { ...effect, payloadDigest: digest("different-preparation") },
@@ -292,7 +294,7 @@ test("restart rejects misbound Effects and a supplied fingerprint unrelated to t
     },
   };
   await assert.rejects(
-    fixture.module.prepareStaging({
+    fixture.treasuryStaging.prepareStaging({
       execution: changedExecution,
       request: { ...fixture.request, requestFingerprint: unrelated },
       paymentRequirements: fixture.paymentRequirements,
@@ -307,12 +309,12 @@ test("restart rechecks usable staging bounds and the pinned destination index", 
   const fixture = makeFixture();
   const stagingContext = fixture.stagingContext(fixture.preparedStaging);
   for (const staging of [
-    { ...stagingContext.staging, amountAtomic: "29999999" },
-    { ...stagingContext.staging, amountAtomic: "30001001" },
+    { ...stagingContext.staging, amountAtomic: "19999999" },
+    { ...stagingContext.staging, amountAtomic: "22001001" },
     { ...stagingContext.staging, expectedOutpoint: `${STAGING_TX}:1` },
   ]) {
     await assert.rejects(
-      fixture.module.submitStaging({
+      fixture.treasuryStaging.submitStaging({
         context: { ...stagingContext, staging },
         effect: fixture.effect("treasury-staging", staging.preparedDigest),
         signal: new AbortController().signal,
@@ -328,9 +330,9 @@ test("restart rechecks usable staging bounds and the pinned destination index", 
     fixture.module.submit({
       context: {
         ...paymentContext,
-        staging: { ...paymentContext.staging, amountAtomic: "29999999" },
+        staging: { ...paymentContext.staging, amountAtomic: "19999999" },
       },
-      effect: fixture.effect("kaspa-x402-exact", prepared.preparedDigest),
+      effect: fixture.effect("kaspa-x402-payment", prepared.preparedDigest),
       egress: fixture.egress,
       signal: new AbortController().signal,
     }),
@@ -340,13 +342,13 @@ test("restart rechecks usable staging bounds and the pinned destination index", 
 });
 
 test("Settlement requires an exact chain-attested outpoint and authorized total cost", async () => {
-  for (const settlementOutpoint of [null, `${EXACT_TX}:2`]) {
+  for (const settlementOutpoint of [null, `${EXACT_TX}:1`]) {
     const fixture = makeFixture({ settlementOutpoint });
     const prepared = await fixture.prepareExact();
     await assert.rejects(
       fixture.module.submit({
         context: fixture.preparedContext(prepared),
-        effect: fixture.effect("kaspa-x402-exact", prepared.preparedDigest),
+        effect: fixture.effect("kaspa-x402-payment", prepared.preparedDigest),
         egress: fixture.egress,
         signal: new AbortController().signal,
       }),
@@ -354,12 +356,12 @@ test("Settlement requires an exact chain-attested outpoint and authorized total 
     );
   }
 
-  const excessive = makeFixture({ settlementAdditionalCostAtomic: "10001001" });
+  const excessive = makeFixture({ settlementAdditionalCostAtomic: "2001001" });
   const prepared = await excessive.prepareExact();
   await assert.rejects(
     excessive.module.submit({
       context: excessive.preparedContext(prepared),
-      effect: excessive.effect("kaspa-x402-exact", prepared.preparedDigest),
+      effect: excessive.effect("kaspa-x402-payment", prepared.preparedDigest),
       egress: excessive.egress,
       signal: new AbortController().signal,
     }),
@@ -377,7 +379,7 @@ test("recovery is deadline-bounded and snapshots observer-owned Settlement bytes
   await assert.rejects(
     hung.module.observe({
       context: hung.preparedContext(hungPrepared),
-      effect: hung.effect("kaspa-x402-exact", hungPrepared.preparedDigest),
+      effect: hung.effect("kaspa-x402-payment", hungPrepared.preparedDigest),
       egress: expiringEgress,
     }),
     /deadline has expired/
@@ -391,7 +393,7 @@ test("recovery is deadline-bounded and snapshots observer-owned Settlement bytes
   const mutatingPrepared = await mutating.prepareExact();
   const recovered = await mutating.module.observe({
     context: mutating.preparedContext(mutatingPrepared),
-    effect: mutating.effect("kaspa-x402-exact", mutatingPrepared.preparedDigest),
+    effect: mutating.effect("kaspa-x402-payment", mutatingPrepared.preparedDigest),
     egress: mutating.egress,
   });
   assert.equal(recovered.status, "settled");
@@ -430,7 +432,7 @@ test("paid request aborts a handle-free pending transport at its deadline", asyn
 function makeFixture(
   options: {
     recoveryStatus?: "transaction_observed" | "payment_response" | "hung" | "pending";
-    settlementReservationId?: string;
+    settlementProfile?: "standard-native" | "additive";
     settlementOutpoint?: string | null;
     settlementAdditionalCostAtomic?: string;
     mutateRecoveryHeader?: boolean;
@@ -463,13 +465,11 @@ function makeFixture(
     amount: AMOUNT,
     extensions: {
       kaspa: {
-        paymentOutputIndex: 1,
+        paymentOutputIndex: 0,
         finality: "accepted",
         requestHash,
         transactionEncoding: "kaspa-sdk-safe-json-v2.0.0",
-        templateId: "kaspa-x402-kip10-additive-v1",
-        reservationId: options.settlementReservationId ?? RESERVATION_ID,
-        borrowOutpoint: { txid: BORROW_TX, index: 0 },
+        exactProfile: options.settlementProfile ?? "standard-native",
       },
     },
   };
@@ -498,6 +498,13 @@ function makeFixture(
     requestDigest: AUTH_REQUEST_DIGEST,
     nonceDigest: AUTH_NONCE_DIGEST,
     additionalCostCeilingAtomic: ADDITIONAL_COST,
+    executionPlanDigest: EXECUTION_PLAN_DIGEST,
+    executionMechanism: "single-transaction" as const,
+    executionProfile: "standard-native",
+    settlementAssurance: "accepted" as const,
+    maximumAuthorizedChargeAtomic: (
+      BigInt(AMOUNT) + BigInt(ADDITIONAL_COST)
+    ).toString(10),
     expiresAtMs: Date.parse(terms.expiresAt),
   };
   const facts = {
@@ -518,6 +525,13 @@ function makeFixture(
     requestDigest: AUTH_REQUEST_DIGEST,
     nonceDigest: AUTH_NONCE_DIGEST,
     additionalCostCeilingAtomic: ADDITIONAL_COST,
+    executionPlanDigest: EXECUTION_PLAN_DIGEST,
+    executionMechanism: "single-transaction" as const,
+    executionProfile: "standard-native",
+    settlementAssurance: "accepted" as const,
+    maximumAuthorizedChargeAtomic: (
+      BigInt(AMOUNT) + BigInt(ADDITIONAL_COST)
+    ).toString(10),
   };
   const execution = {
     purchaseId: PURCHASE_ID,
@@ -543,7 +557,7 @@ function makeFixture(
   const observedStaging = {
     transactionId: STAGING_TX,
     outpoint: `${STAGING_TX}:0`,
-    amountAtomic: "30001000",
+    amountAtomic: "22000000",
     evidenceDigest: STAGING_EVIDENCE_DIGEST,
     fundingSource: "vault-treasury",
   };
@@ -569,6 +583,7 @@ function makeFixture(
     networkId: "kaspa:testnet-10",
     sourceKind: "vault-treasury",
     getPublicIdentity: async () => ({ address: "kaspatest:test-payer" }),
+    authorizeExactPayment: async () => undefined,
     fundEscrowDeposit: async () => { throw new Error("batch disabled"); },
     payExactTransaction: async (payment: any) => {
       calls.payExact += 1;
@@ -578,12 +593,29 @@ function makeFixture(
       assert.equal(payment.requestHash, requestHash);
       assert.equal(payment.fundingSource, "vault-treasury");
       return {
-        // Official alpha.6 vector shape: transaction identity is returned by
-        // the provider, not invented as a root field inside the wire payload.
         transaction: JSON.stringify({ transaction: "signed-kip10-exact" }),
         transactionEncoding: "kaspa-sdk-safe-json-v2.0.0",
         transactionId: EXACT_TX,
-        paymentOutputIndex: 1,
+        paymentOutputIndex: 0,
+        authorization: {
+          version: "kaspa-x402-exact-request-authorization-v1",
+          inputIndex: 0,
+          expiresAt: payment.authorizationExpiresAt,
+          digest: core.exactRequestAuthorizationDigest({
+            network: payment.network,
+            profile: payment.profile,
+            transactionId: EXACT_TX,
+            paymentOutputIndex: 0,
+            amount: payment.amount,
+            payTo: payment.payTo,
+            payToScriptPublicKey: payment.payToScriptPublicKey,
+            paymentRequirementsHash: payment.paymentRequirementsHash,
+            requestHash: payment.requestHash,
+            inputIndex: 0,
+            expiresAt: payment.authorizationExpiresAt,
+          }),
+          signature: "aa".repeat(64),
+        },
         payerAddress: "kaspatest:test-payer",
         fundingSource: "vault-treasury",
       };
@@ -643,8 +675,11 @@ function makeFixture(
     },
   };
 
+  const treasuryStaging: any = new KaspaX402TreasuryStagingAdapter({
+    driver: staging as any,
+    now: () => NOW,
+  });
   const module: any = new KaspaX402ExactPaymentModule({
-    staging,
     funding: {
       createProvider: async (context: any) => {
         calls.providerPurposes.push(context.purpose);
@@ -677,20 +712,20 @@ function makeFixture(
         calls.settlementVerify += 1;
         assert.equal(input.transactionId, EXACT_TX);
         assert.equal(
-          input.response.extensions.kaspa.reservationId,
-          options.settlementReservationId ?? RESERVATION_ID
+          input.response.extensions.kaspa.exactProfile,
+          options.settlementProfile ?? "standard-native"
         );
         if (options.mutateRecoveryHeader) {
           await new Promise((resolve) => setTimeout(resolve, 5));
         }
         return {
-          additionalCostAtomic: options.settlementAdditionalCostAtomic ?? "10000002",
+          additionalCostAtomic: options.settlementAdditionalCostAtomic ?? "2001000",
           ...(options.settlementOutpoint === null
             ? {}
-            : { outpoint: options.settlementOutpoint ?? `${EXACT_TX}:1` }),
+            : { outpoint: options.settlementOutpoint ?? `${EXACT_TX}:0` }),
           verification: {
             verifierId: "kaspa-chain-observer:test",
-            profile: "kaspa-x402-0.1.0-alpha.6-exact-settlement",
+            profile: "kaspa-x402-0.1.0-alpha.8-exact-settlement",
             detailDigest: SETTLEMENT_DETAIL_DIGEST,
           },
         };
@@ -777,6 +812,7 @@ function makeFixture(
 
   return {
     module,
+    treasuryStaging,
     calls,
     execution,
     request,
@@ -796,7 +832,7 @@ function makeFixture(
         attempt: 1,
         kind,
         idempotencyKey:
-          kind === "kaspa-x402-exact"
+          kind === "kaspa-x402-payment"
             ? `payment:${PAYMENT_ID}`
             : `${kind}:${PAYMENT_ID}`,
         state: "executing",
@@ -841,8 +877,11 @@ function makeFixture(
         preparation: {
           preparedBytes: prepared.preparedBytes,
           preparedDigest: prepared.preparedDigest,
+          executionId: prepared.executionId,
+          mechanism: prepared.mechanism,
+          profile: prepared.profile,
           transactionId: prepared.transactionId,
-          requiredFinality: prepared.requiredFinality,
+          requiredAssurance: prepared.requiredAssurance,
           fundingSource: prepared.fundingSource,
         },
       };
@@ -863,18 +902,11 @@ function paymentRequiredWire() {
         payTo: PAY_TO,
         maxTimeoutSeconds: 60,
         extra: {
-          binding: "kaspa-exact-v1",
+          binding: "kaspa-exact-v2",
+          profile: "standard-native",
           finality: "accepted",
-          templateId: "kaspa-x402-kip10-additive-v1",
           transactionEncoding: "kaspa-sdk-safe-json-v2.0.0",
-          borrowOutpoint: { txid: BORROW_TX, index: 0 },
-          borrowAmount: "100000000",
-          borrowScriptPublicKey: "000051",
-          borrowRedeemScript: "51",
-          additiveThresholdSompi: "10000000",
-          paymentOutputIndex: 1,
-          reservationId: RESERVATION_ID,
-          reservationExpiresAt: "2099-01-01T00:00:00.000Z",
+          payToScriptPublicKey: "000051",
           assetKind: "native",
           assetDecimals: 8,
         },
