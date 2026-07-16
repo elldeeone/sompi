@@ -10,6 +10,8 @@ import {
   type ExactPaymentRequirements,
   type PaymentPayload,
 } from "@kaspa-x402/core";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import type {
   ExactHeadRecord,
   ServerChainProvider,
@@ -82,6 +84,14 @@ import {
   type DemoMerchantPaidResult,
 } from "../demo/merchant-fixture.js";
 import { SompiCheckoutTermsModule } from "../purchase/checkout-terms-module.js";
+import { PurchaseApiClient } from "../api/client.js";
+import {
+  createPurchaseApplication,
+  type PurchaseApplication,
+  type PurchaseCreateRequest,
+} from "../api/contracts.js";
+import { generateAgentApiCredential } from "../api/credential.js";
+import { startPurchaseApiServer } from "../api/server.js";
 import type {
   PinnedHttpTransport,
   PinnedHttpTransportRequest,
@@ -112,6 +122,12 @@ import {
   createJournalTreasuryStagingMetadataSource,
 } from "../runtime/journal-sources.js";
 import { VaultTreasuryModule } from "../treasury/vault-treasury.js";
+import { createSompiMcpServer } from "../mcp/server.js";
+import {
+  Transaction,
+  calculateTransactionFee,
+  calculateTransactionMass,
+} from "../kaspa-wasm.js";
 import {
   LIVE_ADDITIONAL_COST_CEILING_ATOMIC,
   LIVE_ADDITIVE_THRESHOLD_ATOMIC,
@@ -149,14 +165,28 @@ const AUTHORITY_TIMEOUT_MS = 5_000;
 const PROOF_TIMEOUT_MS = 12 * 60_000;
 
 export const LIVE_TESTNET_PROOF_PROFILE =
-  "urn:sompi:e2e:live-testnet10-ap2-kaspa-x402-exact:1" as const;
+  "urn:sompi:e2e:live-testnet10-ap2-kaspa-x402-exact:2" as const;
+
+export type LiveExactProfile = "standard-native" | "additive";
+export type LivePurchaseIngress = "http-api" | "mcp-api-compatibility";
 
 export interface LiveTestnetProofReport {
   readonly profile: typeof LIVE_TESTNET_PROOF_PROFILE;
   readonly generatedAt: string;
   readonly network: typeof LIVE_NETWORK;
   readonly chainMode: "operator-pinned-live-testnet-10-wrpc";
+  readonly chainProvenance: {
+    readonly nodeVersion: string;
+    readonly nodeNetwork: "testnet-10";
+    readonly nodeVirtualDaaScore: string;
+    readonly nodeSynced: true;
+    readonly nodeUtxoIndex: true;
+    readonly rustyKaspaSourceCommit: "78257f273a26c4be085bab0f79437dee99ca8835";
+    readonly kaspaWasmVersion: "2.0.1";
+  };
   readonly liveKaspaTestnet10ExecutionProved: true;
+  readonly exactProfile: LiveExactProfile;
+  readonly purchaseIngress: LivePurchaseIngress;
   readonly ap2HumanPresentConformanceClaimed: false;
   readonly authorityMode: "in-process-local-auto-approved-test-fixture";
   readonly authorityIsolationAppliedToThisRun: false;
@@ -166,7 +196,7 @@ export interface LiveTestnetProofReport {
   readonly bootstrapFunding: LiveChainMilestone;
   readonly additiveHead: {
     readonly created: LiveChainMilestone;
-    readonly additiveContinuation: LiveObservedOutpoint;
+    readonly additiveContinuation?: LiveObservedOutpoint;
   };
   readonly vaultDeposit: LiveChainMilestone & {
     readonly covenantId: string;
@@ -196,6 +226,17 @@ export interface LiveTestnetProofReport {
     readonly clientObserver: "accepted" | "confirmed";
     readonly clientObservedAtMs: number;
   };
+  readonly economics: {
+    readonly advertisedAmountAtomic: typeof LIVE_PRICE_ATOMIC;
+    readonly merchantGainAtomic: typeof LIVE_PRICE_ATOMIC;
+    readonly payerTransactionCostAtomic: string;
+    readonly exactFeeAtomic: string;
+    readonly minimumSdkFeeAtomic: string;
+    readonly transactionMass: string;
+    readonly transactionVersion: 0 | 1;
+    readonly inputCount: 1 | 2;
+    readonly outputCount: 1;
+  };
   readonly idempotency: {
     readonly duplicatePurchaseReturnedSameId: true;
     readonly duplicateMerchantPaidRequestReturnedSameTransaction: true;
@@ -223,12 +264,20 @@ export interface RunLiveTestnetProofOptions {
   readonly directory: string;
   readonly sourceWalletDirectory: string;
   readonly reportFilename: string;
+  readonly exactProfile: LiveExactProfile;
+  readonly purchaseIngress: LivePurchaseIngress;
   readonly onProgress?: (message: string) => void;
 }
 
 export async function runLiveTestnetProof(
   options: RunLiveTestnetProofOptions
 ): Promise<LiveTestnetProofReport> {
+  if (options.exactProfile !== "standard-native" && options.exactProfile !== "additive") {
+    throw new Error("live exact profile is unsupported");
+  }
+  if (options.purchaseIngress !== "http-api" && options.purchaseIngress !== "mcp-api-compatibility") {
+    throw new Error("live Purchase ingress is unsupported");
+  }
   assertLiveTestnetProofPaths(options);
   const initialized = initializeLiveProof(options.directory, options.sourceWalletDirectory);
   const resources: Array<() => void | Promise<void>> = [];
@@ -257,7 +306,7 @@ export async function runLiveTestnetProof(
       "authorization.sqlite"
     );
     const existingPurchase = purchaseJournal.findPurchaseByRequestKey(
-      assertPurchaseRequestKey(`e2e:live-testnet10:${initialized.config.runId}`)
+      liveRequestKey(initialized.config, options.exactProfile)
     );
     if (existingPurchase) {
       if (
@@ -285,26 +334,34 @@ export async function runLiveTestnetProof(
     const additiveHeadMilestone = bootstrap.progress.additiveHead;
     if (!additiveHeadMilestone) throw new Error("live additive head milestone is unavailable");
     const additiveHeadOutpoint = parseOutpoint(additiveHeadMilestone.outpoint);
+    const payTo = options.exactProfile === "additive"
+      ? initialized.config.additiveHead.address
+      : initialized.config.wallets.merchantAddress;
+    const payToScriptPublicKey = new KaspaTestnet10AddressCodec().scriptPublicKeyForAddress(
+      payTo,
+      LIVE_NETWORK
+    ).toLowerCase();
     const verifier = new LiveMerchantExactVerifier({
       wallet: initialized.merchantWallet,
       statePath: initialized.layout.merchantVerifierStatePath,
       expected: {
-        profile: "additive",
-        payTo: initialized.config.additiveHead.address,
-        payToScriptPublicKey: new KaspaTestnet10AddressCodec().scriptPublicKeyForAddress(
-          initialized.config.additiveHead.address,
-          LIVE_NETWORK
-        ).toLowerCase(),
-        head: {
-          headId: additiveHeadId(initialized.config, additiveHeadMilestone.outpoint),
-          headVersion: "0",
-          transactionId: additiveHeadOutpoint.transactionId,
-          index: additiveHeadOutpoint.index,
-          amountAtomic: initialized.config.additiveHead.amountAtomic,
-          scriptPublicKey: initialized.config.additiveHead.scriptPublicKey,
-          redeemScript: initialized.config.additiveHead.redeemScript,
-          additiveThresholdAtomic: initialized.config.additiveHead.additiveThresholdAtomic,
-        },
+        profile: options.exactProfile,
+        payTo,
+        payToScriptPublicKey,
+        ...(options.exactProfile === "additive"
+          ? {
+              head: {
+                headId: additiveHeadId(initialized.config, additiveHeadMilestone.outpoint),
+                headVersion: "0",
+                transactionId: additiveHeadOutpoint.transactionId,
+                index: additiveHeadOutpoint.index,
+                amountAtomic: initialized.config.additiveHead.amountAtomic,
+                scriptPublicKey: initialized.config.additiveHead.scriptPublicKey,
+                redeemScript: initialized.config.additiveHead.redeemScript,
+                additiveThresholdAtomic: initialized.config.additiveHead.additiveThresholdAtomic,
+              },
+            }
+          : {}),
       },
     });
     const merchant = await createLiveMerchant(
@@ -312,7 +369,8 @@ export async function runLiveTestnetProof(
       bootstrap.progress,
       merchantStore,
       authorizationStore,
-      verifier
+      verifier,
+      options.exactProfile
     );
     const merchantPaidEndpoint = new LiveMerchantPaidEndpoint({
       merchant,
@@ -345,17 +403,23 @@ export async function runLiveTestnetProof(
       merchantStore,
       transport,
       authorityModule: authority.module,
+      payTo,
     });
-    const intent = purchaseIntent(initialized.config);
+    const intent = purchaseIntent(initialized.config, options.exactProfile);
+    const ingress = await createLivePurchaseIngress(
+      composition.coordinator,
+      options.purchaseIngress
+    );
+    resources.push(() => ingress.close());
     options.onProgress?.("running resumable AP2 authorization and Kaspa-x402 exact Purchase");
     const first = await drivePurchase(
-      composition.coordinator,
+      ingress.application,
       purchaseJournal,
       intent,
       expectedPurchaseId,
       options.onProgress
     );
-    const duplicate = await composition.coordinator.purchase(intent);
+    const duplicate = await ingress.application.purchase(purchaseCreateRequest(intent));
     if (duplicate.id !== first.id || duplicate.state !== "receipted") {
       throw new Error("duplicate live Purchase did not return the same receipted identity");
     }
@@ -377,6 +441,8 @@ export async function runLiveTestnetProof(
       clientChain: composition.clientChain,
       merchantStore,
       paymentIdentifier: attempt.identifier,
+      exactProfile: options.exactProfile,
+      purchaseIngress: options.purchaseIngress,
     });
     writeLiveTestnetProofReport(options.reportFilename, report, initialized);
     purchaseJournal.integrityCheck();
@@ -471,6 +537,7 @@ function composeLiveCoordinator(input: {
   readonly merchantStore: SqliteMerchantServerStateStore;
   readonly transport: PinnedHttpTransport;
   readonly authorityModule: Ap2AuthorityModule;
+  readonly payTo: string;
 }): LiveComposition {
   const now = Date.now;
   const trust = fixedTrustStore();
@@ -591,7 +658,7 @@ function composeLiveCoordinator(input: {
       maxPerPaymentAtomic: "100000000",
       maxPerHourAtomic: "1000000000",
       approvalAboveAtomic: "0",
-      allowlist: [config.additiveHead.address],
+      allowlist: [input.payTo],
     },
     additionalCostCeilingAtomic: LIVE_ADDITIONAL_COST_CEILING_ATOMIC,
     reservationTtlMs: 30 * 60_000,
@@ -680,7 +747,7 @@ export class LiveMerchantPaidEndpoint {
 
 }
 
-class LiveDemoPinnedTransport implements PinnedHttpTransport {
+export class LiveDemoPinnedTransport implements PinnedHttpTransport {
   private offerValue?: DemoMerchantOffer;
   private replayConfirmed = false;
 
@@ -948,35 +1015,41 @@ export async function createLiveMerchant(
   progress: LiveProofProgress,
   store: SqliteMerchantServerStateStore,
   authorizationStore: SqliteDemoCommerceAuthorizationStore,
-  verifier: LiveMerchantExactVerifier
+  verifier: LiveMerchantExactVerifier,
+  exactProfile: LiveExactProfile
 ): Promise<DemoMerchantFixture> {
   const additiveHead = progress.additiveHead;
   if (!additiveHead) throw new Error("live KIP-10 additive head is not durably observed");
   const outpoint = parseOutpoint(additiveHead.outpoint);
-  await store.registerExactHead(Object.freeze({
-    headId: additiveHeadId(initialized.config, additiveHead.outpoint),
-    network: LIVE_NETWORK,
-    payTo: initialized.config.additiveHead.address,
-    templateId: "kaspa-x402-kip10-additive-v1",
-    transactionEncoding: "kaspa-sdk-safe-json-v2.0.0",
-    currentOutpoint: Object.freeze({ txid: outpoint.transactionId, index: outpoint.index }),
-    currentAmount: LIVE_ADDITIVE_HEAD_AMOUNT_ATOMIC,
-    scriptPublicKey: initialized.config.additiveHead.scriptPublicKey,
-    redeemScript: initialized.config.additiveHead.redeemScript,
-    additiveThresholdSompi: LIVE_ADDITIVE_THRESHOLD_ATOMIC,
-    version: "0",
-    status: "available",
-    createdAt: initialized.config.createdAt,
-    updatedAt: initialized.config.createdAt,
-  }) satisfies ExactHeadRecord);
+  if (exactProfile === "additive") {
+    await store.registerExactHead(Object.freeze({
+      headId: additiveHeadId(initialized.config, additiveHead.outpoint),
+      network: LIVE_NETWORK,
+      payTo: initialized.config.additiveHead.address,
+      templateId: "kaspa-x402-kip10-additive-v1",
+      transactionEncoding: "kaspa-sdk-safe-json-v2.0.0",
+      currentOutpoint: Object.freeze({ txid: outpoint.transactionId, index: outpoint.index }),
+      currentAmount: LIVE_ADDITIVE_HEAD_AMOUNT_ATOMIC,
+      scriptPublicKey: initialized.config.additiveHead.scriptPublicKey,
+      redeemScript: initialized.config.additiveHead.redeemScript,
+      additiveThresholdSompi: LIVE_ADDITIVE_THRESHOLD_ATOMIC,
+      version: "0",
+      status: "available",
+      createdAt: initialized.config.createdAt,
+      updatedAt: initialized.config.createdAt,
+    }) satisfies ExactHeadRecord);
+  }
+  const payTo = exactProfile === "additive"
+    ? initialized.config.additiveHead.address
+    : initialized.config.wallets.merchantAddress;
   return DemoMerchantFixture.create({
     merchantId: MERCHANT_SIGNER.issuer,
     merchantName: "Sompi Live Testnet-10 Merchant",
     merchantOrigin: MERCHANT_ORIGIN,
     merchantWebsite: `${MERCHANT_ORIGIN}/store`,
-    payTo: initialized.config.additiveHead.address,
+    payTo,
     paymentScheme: "exact",
-    exactProfile: "additive",
+    exactProfile,
     amountAtomic: LIVE_PRICE_ATOMIC,
     additionalCostCeilingAtomic: LIVE_ADDITIONAL_COST_CEILING_ATOMIC,
     checkoutTtlMs: 5 * 60_000,
@@ -1043,7 +1116,7 @@ function merchantServerChainProvider(initialized: InitializedLiveProof): ServerC
   };
 }
 
-async function createLiveAuthority(initialized: InitializedLiveProof): Promise<{
+export async function createLiveAuthority(initialized: InitializedLiveProof): Promise<{
   readonly module: Ap2AuthorityModule;
   close(): Promise<void>;
 }> {
@@ -1130,8 +1203,8 @@ async function createLiveAuthority(initialized: InitializedLiveProof): Promise<{
   });
 }
 
-async function drivePurchase(
-  coordinator: PurchaseCoordinator,
+export async function drivePurchase(
+  application: PurchaseApplication,
   journal: PurchaseJournal,
   intent: PurchaseIntent,
   expectedPurchaseId: PurchaseId,
@@ -1140,11 +1213,11 @@ async function drivePurchase(
   const deadline = Date.now() + PROOF_TIMEOUT_MS;
   let current: PurchaseView;
   try {
-    current = await coordinator.purchase(intent);
+    current = await application.purchase(purchaseCreateRequest(intent));
   } catch (error) {
     const existing = journal.findPurchaseByRequestKey(intent.requestKey);
     if (!existing || existing.id !== expectedPurchaseId) throw error;
-    current = await coordinator.recover(existing.id);
+    current = await application.recover(existing.id);
   }
   let priorState = "";
   while (current.state !== "receipted") {
@@ -1164,13 +1237,106 @@ async function drivePurchase(
     current = ["created", "terms_bound", "awaiting_authority", "authorised"].includes(
       current.state
     )
-      ? await coordinator.purchase(intent)
-      : await coordinator.recover(current.id);
+      ? await application.purchase(purchaseCreateRequest(intent))
+      : await application.recover(current.id);
   }
   if (current.id !== expectedPurchaseId) {
     throw new Error("live Purchase identity differs from the durable proof run identity");
   }
   return current as PurchaseView & { readonly state: "receipted" };
+}
+
+export async function createLivePurchaseIngress(
+  coordinator: PurchaseCoordinator,
+  mode: LivePurchaseIngress,
+  onRequestError?: (error: unknown) => void
+): Promise<{ readonly application: PurchaseApplication; close(): Promise<void> }> {
+  const credential = generateAgentApiCredential();
+  const api = await startPurchaseApiServer({
+    application: createPurchaseApplication(coordinator),
+    credential,
+    host: "127.0.0.1",
+    port: 0,
+    deadlineMs: PROOF_TIMEOUT_MS,
+    maxConcurrency: 4,
+    onRequestError,
+  });
+  const apiClient = new PurchaseApiClient({
+    baseUrl: api.baseUrl,
+    credential,
+    timeoutMs: PROOF_TIMEOUT_MS + 5_000,
+  });
+  if (mode === "http-api") {
+    return Object.freeze({ application: apiClient, close: () => api.close() });
+  }
+  const server = createSompiMcpServer(apiClient, "alpha8-live-proof");
+  const client = new Client({ name: "sompi-alpha8-live-proof", version: "1" });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  const application: PurchaseApplication = Object.freeze({
+    purchase: async (input: PurchaseCreateRequest, signal?: AbortSignal) =>
+      mcpPurchaseView(client, "purchase", {
+        requestKey: input.requestKey,
+        url: input.url,
+        method: input.method ?? "GET",
+        ...(input.bodyBase64 === undefined ? {} : { bodyBase64: input.bodyBase64 }),
+        ...(input.mediaType === undefined ? {} : { mediaType: input.mediaType }),
+        ...(input.expectedMerchant === undefined
+          ? {}
+          : { expectedMerchant: input.expectedMerchant }),
+      }, signal),
+    status: async (purchaseId: string, signal?: AbortSignal) =>
+      mcpPurchaseView(client, "purchase_status", { purchaseId }, signal),
+    recover: async (purchaseId: string, signal?: AbortSignal) =>
+      mcpPurchaseView(client, "purchase_recover", { purchaseId }, signal),
+  });
+  return Object.freeze({
+    application,
+    async close() {
+      await client.close();
+      await server.close();
+      await api.close();
+    },
+  });
+}
+
+async function mcpPurchaseView(
+  client: Client,
+  name: string,
+  args: Record<string, unknown>,
+  signal?: AbortSignal
+): Promise<PurchaseView> {
+  const result = await client.callTool(
+    { name, arguments: args },
+    undefined,
+    signal ? { signal } : undefined
+  );
+  if (result.isError || !Array.isArray(result.content) || result.content.length !== 1) {
+    throw new Error(`live MCP ${name} failed safely`);
+  }
+  const item = result.content[0] as { type?: unknown; text?: unknown };
+  if (item.type !== "text" || typeof item.text !== "string") {
+    throw new Error(`live MCP ${name} returned malformed content`);
+  }
+  return JSON.parse(item.text) as PurchaseView;
+}
+
+function purchaseCreateRequest(intent: PurchaseIntent): PurchaseCreateRequest {
+  return Object.freeze({
+    requestKey: intent.requestKey,
+    url: intent.resource.url,
+    method: intent.resource.method,
+    ...(intent.resource.body === undefined
+      ? {}
+      : { bodyBase64: Buffer.from(intent.resource.body).toString("base64") }),
+    ...(intent.resource.mediaType === undefined
+      ? {}
+      : { mediaType: intent.resource.mediaType }),
+    ...(intent.expectedMerchant === undefined
+      ? {}
+      : { expectedMerchant: Object.freeze({ ...intent.expectedMerchant }) }),
+  });
 }
 
 async function createReport(input: {
@@ -1185,6 +1351,8 @@ async function createReport(input: {
   readonly clientChain: ChainObservationSource;
   readonly merchantStore: SqliteMerchantServerStateStore;
   readonly paymentIdentifier: string;
+  readonly exactProfile: LiveExactProfile;
+  readonly purchaseIngress: LivePurchaseIngress;
 }): Promise<LiveTestnetProofReport> {
   const bootstrap = input.progress.bootstrap;
   const additiveHead = input.progress.additiveHead;
@@ -1201,6 +1369,10 @@ async function createReport(input: {
   const terms = input.journal.requireCheckoutTerms(input.first.id);
   const authorization = input.journal.requireAuthorization(input.first.id);
   const attempt = input.journal.requirePaymentAttempt(input.first.id, 1);
+  const economics = exactTransactionEconomics(
+    input.journal.readPreparedPayment(input.first.id, 1),
+    input.exactProfile
+  );
   const stagingRecord = input.journal.findTreasuryStagingObservation(input.first.id, 1);
   const spend = input.journal.findSettlementForPurchase(input.first.id);
   const fulfilment = input.journal.findFulfilment(input.first.id);
@@ -1215,13 +1387,16 @@ async function createReport(input: {
   });
   const merchantIndex = parseOutpoint(spend.outpoint).index;
   const controller = new AbortController();
+  const expectedMerchantOutputAmount = input.exactProfile === "additive"
+    ? (BigInt(LIVE_ADDITIVE_HEAD_AMOUNT_ATOMIC) + BigInt(LIVE_PRICE_ATOMIC)).toString()
+    : LIVE_PRICE_ATOMIC;
   const clientObservation = await input.clientChain.observeExactOutput({
     network: LIVE_NETWORK,
     transactionId: spend.transactionId,
     outpoint: spend.outpoint,
     outputIndex: merchantIndex,
     merchantAddress: terms.payTo,
-    expectedAmountAtomic: terms.amountAtomic,
+    expectedAmountAtomic: expectedMerchantOutputAmount,
     expectedScriptPublicKey: new KaspaTestnet10AddressCodec().scriptPublicKeyForAddress(
       terms.payTo,
       LIVE_NETWORK
@@ -1236,14 +1411,14 @@ async function createReport(input: {
   if (clientObservation.finality === "mempool") {
     throw new Error("independent client RPC observed only mempool finality for the live exact payment");
   }
-  const continuation = await observeCurrentAddressOutpoint({
-    wallet: input.initialized.observerWallet,
-    address: input.initialized.config.additiveHead.address,
-    outpoint: `${spend.transactionId}:0`,
-    amountAtomic: (
-      BigInt(LIVE_ADDITIVE_HEAD_AMOUNT_ATOMIC) + BigInt(LIVE_ADDITIVE_THRESHOLD_ATOMIC)
-    ).toString(),
-  });
+  const continuation = input.exactProfile === "additive"
+    ? await observeCurrentAddressOutpoint({
+        wallet: input.initialized.observerWallet,
+        address: input.initialized.config.additiveHead.address,
+        outpoint: `${spend.transactionId}:0`,
+        amountAtomic: expectedMerchantOutputAmount,
+      })
+    : undefined;
   const exactRecord = await input.merchantStore.loadExactPayment(spend.transactionId);
   const identifierRecord = await input.merchantStore.loadPaymentIdentifier(attempt.identifier);
   const exactPaymentCount = input.merchantStore.exactPaymentCount();
@@ -1264,13 +1439,34 @@ async function createReport(input: {
     throw new Error("live Merchant, client, and Purchase exact facts are inconsistent");
   }
   const info = await input.initialized.observerWallet.serverInfo();
+  if (
+    info.isSynced !== true ||
+    info.hasUtxoIndex !== true ||
+    String(info.networkId) !== LIVE_SDK_NETWORK ||
+    !/^[1-9][0-9]*$/.test(String(info.virtualDaaScore)) ||
+    typeof info.serverVersion !== "string" ||
+    info.serverVersion.length === 0
+  ) {
+    throw new Error("live report node provenance is invalid");
+  }
   const stagingDepth = BigInt(info.virtualDaaScore) - BigInt(staging.blockDaaScore);
   const report: LiveTestnetProofReport = Object.freeze({
     profile: LIVE_TESTNET_PROOF_PROFILE,
     generatedAt: new Date().toISOString(),
     network: LIVE_NETWORK,
     chainMode: "operator-pinned-live-testnet-10-wrpc",
+    chainProvenance: Object.freeze({
+      nodeVersion: String(info.serverVersion),
+      nodeNetwork: "testnet-10" as const,
+      nodeVirtualDaaScore: String(info.virtualDaaScore),
+      nodeSynced: true as const,
+      nodeUtxoIndex: true as const,
+      rustyKaspaSourceCommit: "78257f273a26c4be085bab0f79437dee99ca8835" as const,
+      kaspaWasmVersion: "2.0.1" as const,
+    }),
     liveKaspaTestnet10ExecutionProved: true,
+    exactProfile: input.exactProfile,
+    purchaseIngress: input.purchaseIngress,
     ap2HumanPresentConformanceClaimed: false,
     authorityMode: "in-process-local-auto-approved-test-fixture",
     authorityIsolationAppliedToThisRun: false,
@@ -1280,7 +1476,7 @@ async function createReport(input: {
     bootstrapFunding: bootstrap,
     additiveHead: Object.freeze({
       created: additiveHead,
-      additiveContinuation: continuation,
+      ...(continuation === undefined ? {} : { additiveContinuation: continuation }),
     }),
     vaultDeposit: Object.freeze({
       ...deposit,
@@ -1312,6 +1508,7 @@ async function createReport(input: {
       clientObserver: clientObservation.finality,
       clientObservedAtMs: clientObservation.observedAtMs,
     }),
+    economics,
     idempotency: Object.freeze({
       duplicatePurchaseReturnedSameId: true as const,
       duplicateMerchantPaidRequestReturnedSameTransaction: input.transport.duplicateConfirmed(),
@@ -1341,15 +1538,87 @@ async function createReport(input: {
   return report;
 }
 
-function purchaseIntent(config: LiveProofConfig): PurchaseIntent {
+function exactTransactionEconomics(
+  preparedBytes: Uint8Array,
+  profile: LiveExactProfile
+): LiveTestnetProofReport["economics"] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(preparedBytes).toString("utf8"));
+  } catch {
+    throw new Error("live exact preparation is not JSON");
+  }
+  const record = parsed as {
+    paymentPayload?: { payload?: { transaction?: unknown } };
+    transactionId?: unknown;
+  };
+  const transactionJson = record.paymentPayload?.payload?.transaction;
+  if (typeof transactionJson !== "string") {
+    throw new Error("live exact preparation omitted its signed transaction");
+  }
+  const transaction = Transaction.deserializeFromSafeJSON(transactionJson);
+  try {
+    const transactionId = String(transaction.finalize()).toLowerCase();
+    if (record.transactionId !== transactionId) {
+      throw new Error("live exact preparation transaction identity changed");
+    }
+    const inputs = transaction.inputs;
+    const outputs = transaction.outputs;
+    if (
+      inputs.length !== (profile === "additive" ? 2 : 1) ||
+      outputs.length !== 1 ||
+      transaction.version !== (profile === "additive" ? 1 : 0)
+    ) {
+      throw new Error("live exact transaction shape disagrees with its profile");
+    }
+    const inputTotal = inputs.reduce((sum, input) => {
+      if (!input.utxo) throw new Error("live exact transaction omitted populated input facts");
+      return sum + BigInt(input.utxo.amount);
+    }, 0n);
+    const outputTotal = outputs.reduce((sum, output) => sum + BigInt(output.value), 0n);
+    const exactFee = inputTotal - outputTotal;
+    const minimumFee = calculateTransactionFee(LIVE_SDK_NETWORK, transaction);
+    const mass = calculateTransactionMass(LIVE_SDK_NETWORK, transaction);
+    if (minimumFee === undefined || mass === undefined || exactFee < minimumFee) {
+      throw new Error("live exact transaction fee or mass is invalid");
+    }
+    const merchantOutput = BigInt(outputs[0]!.value);
+    const merchantGain = profile === "additive"
+      ? merchantOutput - BigInt(LIVE_ADDITIVE_HEAD_AMOUNT_ATOMIC)
+      : merchantOutput;
+    const payerCost = BigInt(LIVE_PRICE_ATOMIC) + exactFee;
+    if (merchantGain !== BigInt(LIVE_PRICE_ATOMIC)) {
+      throw new Error("live exact merchant gain differs from the advertised price");
+    }
+    return Object.freeze({
+      advertisedAmountAtomic: LIVE_PRICE_ATOMIC,
+      merchantGainAtomic: LIVE_PRICE_ATOMIC,
+      payerTransactionCostAtomic: payerCost.toString(),
+      exactFeeAtomic: exactFee.toString(),
+      minimumSdkFeeAtomic: minimumFee.toString(),
+      transactionMass: mass.toString(),
+      transactionVersion: transaction.version as 0 | 1,
+      inputCount: inputs.length as 1 | 2,
+      outputCount: 1 as const,
+    });
+  } finally {
+    transaction.free();
+  }
+}
+
+function purchaseIntent(config: LiveProofConfig, exactProfile: LiveExactProfile): PurchaseIntent {
   return Object.freeze({
-    requestKey: assertPurchaseRequestKey(`e2e:live-testnet10:${config.runId}`),
+    requestKey: liveRequestKey(config, exactProfile),
     resource: Object.freeze({ url: RESOURCE_URL, method: "GET" }),
     expectedMerchant: Object.freeze({
       id: MERCHANT_SIGNER.issuer,
       origin: MERCHANT_ORIGIN,
     }),
   });
+}
+
+function liveRequestKey(config: LiveProofConfig, exactProfile: LiveExactProfile) {
+  return assertPurchaseRequestKey(`e2e:live-testnet10:${exactProfile}:${config.runId}`);
 }
 
 function response(
@@ -1507,7 +1776,10 @@ function assertExactReportSchema(report: LiveTestnetProofReport): void {
     "bootstrapFunding",
     "additiveHead",
     "chainMode",
+    "chainProvenance",
+    "economics",
     "evidenceHandling",
+    "exactProfile",
     "exactFinality",
     "generatedAt",
     "idempotency",
@@ -1518,6 +1790,7 @@ function assertExactReportSchema(report: LiveTestnetProofReport): void {
     "profile",
     "protocolPins",
     "protocolSeparation",
+    "purchaseIngress",
     "purchase",
     "separateAuthorityIsolationProofAvailable",
     "transactions",
@@ -1536,12 +1809,27 @@ function assertExactReportSchema(report: LiveTestnetProofReport): void {
     "virtualDaaScore",
   ];
   exactKeys(report.bootstrapFunding, milestoneKeys, "bootstrap milestone");
-  exactKeys(report.additiveHead, ["additiveContinuation", "created"], "additive head");
+  exactKeys(report.chainProvenance, [
+    "kaspaWasmVersion", "nodeNetwork", "nodeSynced", "nodeUtxoIndex",
+    "nodeVersion", "nodeVirtualDaaScore", "rustyKaspaSourceCommit",
+  ], "chain provenance");
+  exactKeys(
+    report.additiveHead,
+    report.exactProfile === "additive" ? ["additiveContinuation", "created"] : ["created"],
+    "additive head"
+  );
   exactKeys(report.additiveHead.created, milestoneKeys, "additive head milestone");
-  exactKeys(report.additiveHead.additiveContinuation, [
-    "address", "amountAtomic", "blockDaaScore", "finality", "outpoint",
-    "transactionId", "virtualDaaScore",
-  ], "additiveHead continuation");
+  if (report.exactProfile === "additive") {
+    if (!report.additiveHead.additiveContinuation) {
+      throw new Error("live additive report is missing its continuation");
+    }
+    exactKeys(report.additiveHead.additiveContinuation, [
+      "address", "amountAtomic", "blockDaaScore", "finality", "outpoint",
+      "transactionId", "virtualDaaScore",
+    ], "additiveHead continuation");
+  } else if (report.additiveHead.additiveContinuation !== undefined) {
+    throw new Error("live standard-native report contains an additive continuation");
+  }
   exactKeys(report.vaultDeposit, [
     ...milestoneKeys, "covenantId", "requestedDepositAtomic",
   ], "vault deposit");
@@ -1556,6 +1844,11 @@ function assertExactReportSchema(report: LiveTestnetProofReport): void {
   exactKeys(report.exactFinality, [
     "clientObservedAtMs", "clientObserver", "merchantObservedAtDaa", "merchantVerifier",
   ], "exact finality");
+  exactKeys(report.economics, [
+    "advertisedAmountAtomic", "exactFeeAtomic", "inputCount", "merchantGainAtomic",
+    "minimumSdkFeeAtomic", "outputCount", "payerTransactionCostAtomic",
+    "transactionMass", "transactionVersion",
+  ], "exact economics");
   exactKeys(report.idempotency, [
     "duplicateMerchantPaidRequestReturnedSameTransaction",
     "duplicatePurchaseReturnedSameId",
@@ -1576,6 +1869,16 @@ function assertExactReportSchema(report: LiveTestnetProofReport): void {
     report.ap2HumanPresentConformanceClaimed !== false ||
     report.authorityIsolationAppliedToThisRun !== false ||
     report.separateAuthorityIsolationProofAvailable !== false ||
+    report.chainProvenance.nodeNetwork !== LIVE_SDK_NETWORK ||
+    report.chainProvenance.nodeSynced !== true ||
+    report.chainProvenance.nodeUtxoIndex !== true ||
+    report.chainProvenance.rustyKaspaSourceCommit !==
+      "78257f273a26c4be085bab0f79437dee99ca8835" ||
+    report.chainProvenance.kaspaWasmVersion !== "2.0.1" ||
+    report.economics.advertisedAmountAtomic !== LIVE_PRICE_ATOMIC ||
+    report.economics.merchantGainAtomic !== LIVE_PRICE_ATOMIC ||
+    (report.exactProfile !== "standard-native" && report.exactProfile !== "additive") ||
+    (report.purchaseIngress !== "http-api" && report.purchaseIngress !== "mcp-api-compatibility") ||
     report.evidenceHandling.outputBlockDaaScoreMeaning !==
       "utxo-creation-daa-observed-while-output-was-live" ||
     report.evidenceHandling.acceptingBlockDaaScoreMeaning !==

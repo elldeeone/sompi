@@ -104,18 +104,23 @@ implements PaymentRequirementsArtifactVerifier {
       throw new Error("batch PAYMENT-REQUIRED requires a durable ChannelStore");
     }
     const state = extra.channelState;
-    if (!state || !HASH32.test(state.channelId) || !HASH32.test(state.activeOutpoint?.txid ?? "")) {
-      throw new Error("batch Purchase requires an already accepted channel epoch");
-    }
     const candidates = await this.channelStore.loadChannels({
       origin: terms.merchant.origin,
       resourceUrl: finalUrl,
       network: TESTNET,
       status: "active",
     });
-    const channel = candidates.find((candidate) => candidate.id === state.channelId);
-    assertChannelMatchesOffer(channel, accepted, finalUrl, nowMs);
     if (
+      state &&
+      (!HASH32.test(state.channelId) || !HASH32.test(state.activeOutpoint?.txid ?? ""))
+    ) {
+      throw new Error("batch PAYMENT-REQUIRED corrective channel state is invalid");
+    }
+    const channel = state
+      ? candidates.find((candidate) => candidate.id === state.channelId)
+      : candidates.find((candidate) => channelMatchesOffer(candidate, accepted, finalUrl, nowMs));
+    assertChannelMatchesOffer(channel, accepted, finalUrl, nowMs);
+    if (state && (
       state.activeOutpoint.txid !== channel.activeOutpoint.txid ||
       state.activeOutpoint.index !== channel.activeOutpoint.index ||
       state.activeScriptPublicKey.toLowerCase() !== channel.activeScriptPublicKey.toLowerCase() ||
@@ -123,7 +128,7 @@ implements PaymentRequirementsArtifactVerifier {
       state.chargedCumulativeAmount !== channel.chargedCumulativeAmount ||
       state.claimedCumulativeAmount !== channel.claimedCumulativeAmount ||
       state.signedMaxClaimable !== channel.signedCumulativeAmount
-    ) {
+    )) {
       throw new Error("batch PAYMENT-REQUIRED channel epoch does not match durable state");
     }
     const activeCharged = BigInt(channel.chargedCumulativeAmount) - BigInt(channel.claimedCumulativeAmount);
@@ -242,6 +247,20 @@ function assertChannelMatchesOffer(
     !Number.isSafeInteger(nowMs)
   ) {
     throw new Error("batch PAYMENT-REQUIRED has no matching durable channel");
+  }
+}
+
+function channelMatchesOffer(
+  channel: DirectModeChannel,
+  accepted: BatchPaymentRequirements,
+  resourceUrl: string,
+  nowMs: number
+): boolean {
+  try {
+    assertChannelMatchesOffer(channel, accepted, resourceUrl, nowMs);
+    return true;
+  } catch {
+    return false;
   }
 }
 

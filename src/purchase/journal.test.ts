@@ -146,6 +146,77 @@ test("Purchase identity is idempotent, runtime-validated, and cannot bypass the 
   });
 });
 
+test("different Purchases may bind the same verified execution plan", () => {
+  withJournal(({ journal }) => {
+    const bind = (seed: number) => {
+      const purchase = createPurchase(journal, seed);
+      const checkoutEvidence = verifiedEvidence(
+        journal,
+        purchase.id,
+        `checkout-${seed}`,
+        "checkout-terms",
+        undefined,
+        "test-profile-v1",
+        "merchant:test"
+      );
+      const requirementsEvidence = verifiedEvidence(
+        journal,
+        purchase.id,
+        "shared-batch-requirements",
+        "payment-requirements",
+        undefined,
+        "test-profile-v1",
+        "merchant:test"
+      );
+      const executionPlan = journal.storeExecutionPlanEvidence(purchase.id, {
+        mechanism: "channel-voucher",
+        profile: "kaspa-escrow-v1",
+        requirementsDigest: requirementsEvidence,
+        maximumChargeAtomic: "10000000",
+        settlementAssurance: "channel-commitment",
+        channelEpoch: {
+          channelId: "a".repeat(64),
+          activeOutpoint: { txid: "b".repeat(64), index: 0 },
+          activeScriptPublicKey: "000020" + "c".repeat(64),
+          fundingAmountAtomic: "40000000",
+          refundTimeoutDaa: "600000000",
+        },
+        claimFeeReserveAtomic: "2000000",
+      });
+      journal.bindCheckoutTerms(purchase.id, {
+        terms: {
+          merchant: {
+            id: "merchant:test",
+            name: "Test Merchant",
+            origin: "https://merchant.example",
+          },
+          resourceFingerprint: purchase.resourceFingerprint,
+          amountAtomic: "10000000",
+          asset: "KAS",
+          network: "kaspa:testnet-10",
+          payTo: "kaspatest:merchant",
+          expiresAt: "2099-01-01T00:00:00.000Z",
+          checkoutDigest: checkoutEvidence,
+        },
+        checkoutEvidenceDigest: checkoutEvidence,
+        checkoutVerificationProfile: "test-profile-v1",
+        checkoutVerifierId: "test-verifier",
+        paymentRequirementsDigest: requirementsEvidence,
+        paymentRequirementsVerificationProfile: "test-profile-v1",
+        paymentRequirementsVerifierId: "test-verifier",
+        executionPlan: executionPlan.plan,
+        executionPlanEvidenceDigest: executionPlan.evidenceDigest,
+      });
+      return journal.requireExecutionPlan(purchase.id);
+    };
+
+    const first = bind(95);
+    const second = bind(96);
+    assert.equal(first.digest, second.digest);
+    assert.notEqual(first.purchaseId, second.purchaseId);
+  });
+});
+
 test("Purchase state update and transition history roll back together", () => {
   withJournal(({ filename, evidenceDirectory, journal, clock }) => {
     const purchase = createPurchase(journal, 3);

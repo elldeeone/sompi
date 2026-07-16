@@ -275,7 +275,12 @@ export function createPurchaseApplication(module: PurchaseModule): PurchaseAppli
 }
 
 export function assertPurchaseView(value: unknown): PurchaseView {
-  if (!validateView(value)) throw new PurchaseApiContractError("Purchase response does not match the canonical schema");
+  if (!validateView(value)) {
+    const detail = ajv.errorsText(validateView.errors, { separator: "; " });
+    throw new PurchaseApiContractError(
+      `Purchase response does not match the canonical schema: ${detail}`
+    );
+  }
   const bytes = Buffer.from(JSON.stringify(value), "utf8");
   if (bytes.byteLength > MAX_PURCHASE_API_RESPONSE_BYTES) {
     throw new PurchaseApiContractError("Purchase response exceeds the canonical size limit");

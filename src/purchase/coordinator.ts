@@ -2668,9 +2668,11 @@ export class PurchaseCoordinator implements PurchaseModule {
         status: attempt.state,
         transactionId,
         finality,
-        evidenceDigests: links
-          .filter((link) => link.attempt === attempt.attempt)
-          .map((link) => link.digest),
+        evidenceDigests: [...new Set(
+          links
+            .filter((link) => link.attempt === attempt.attempt)
+            .map((link) => link.digest)
+        )],
       };
     });
     const fulfilmentProjection = fulfilment

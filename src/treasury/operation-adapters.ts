@@ -604,8 +604,12 @@ function envelopeExpectedInputs(envelope: EvidenceEnvelope): readonly { transact
   const document = parsedTransaction(envelope.prepared.transaction);
   return requireArray(document.inputs, "vault send inputs").map((value) => {
     const input = requireRecord(value, "vault send input");
-    const previous = requireRecord(input.previousOutpoint, "vault send previous outpoint");
-    return Object.freeze({ transactionId: String(previous.transactionId).toLowerCase(), index: Number(previous.index) });
+    const transactionId = String(input.transactionId).toLowerCase();
+    const index = Number(input.index);
+    if (!HASH32.test(transactionId) || !Number.isSafeInteger(index) || index < 0 || index > 0xffff_ffff) {
+      throw new Error("vault send input outpoint is invalid");
+    }
+    return Object.freeze({ transactionId, index });
   });
 }
 

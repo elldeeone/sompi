@@ -20,7 +20,7 @@ support both
 canonical Purchase API and MCP is a thin untrusted compatibility adapter. No
 alpha.8 payment conformance claim has been made yet.
 
-Current verification: `npm test` passes all **433** tests (**432 pass**, one
+Current verification: `npm test` passes all **434** tests (**433 pass**, one
 documented privileged ownership skip) and the complete offline smoke. The
 authenticated loopback API, runtime-derived OpenAPI, operator-installed agent
 credential, HTTP/MCP parity, request limits, deadlines, and cancellation gates
@@ -41,8 +41,22 @@ and batch: one batch request produces a durable commitment and AP2 receipt, an
 accepted claim advances the continuation outpoint, and the original paid
 response replays byte-for-byte after that epoch change. In-place top-up is
 deliberately unsupported until the public client exposes a general builder;
-Sompi rotates to a separately capitalized channel instead. No funded batch
-Testnet-10 conformance claim has been made yet.
+Sompi rotates to a separately capitalized channel instead.
+
+The funded Phase I batch proof now covers two 40,000,000-sompi deposits, two
+separately authorized Purchases (one through the canonical HTTP API and one
+through the MCP-over-API compatibility path), monotonic 10,000,000 and
+16,000,000-sompi voucher ceilings, exact 6,000,000-sompi charges, a
+12,000,000-sompi claim, a 28,000,000-sompi continuation, and a separate
+38,000,000-sompi refund after the strict absolute DAA boundary. The accepted
+claim transaction is
+`79fbe8071c7942ed26895fa00ef1b606f774f466926178a7720b9f9be0e2e5ea`;
+the refund is
+`6772094be335e81a22276bc8f15916065721e58df91578b1819a27a7209f675d`;
+the private report digest is
+`8736ece032a8c2e517169319edf91c30a50f87de97f89ce47b22868be0fbb7f1`.
+The proof intentionally uses an in-process auto-approved Authority fixture and
+therefore does not claim human-present AP2 conformance.
 
 Phase G revalidates the complete human-present AP2 and merchant join across
 `standard-native`, corrected `additive`, and `batch-settlement`. The separate
@@ -134,8 +148,8 @@ surface.
   testnet first, followed by separately gated batch settlement.
 - OpenAPI 3.2 describes the canonical Purchase API; Arazzo follows only after
   the lifecycle stabilizes.
-- The alpha.8 cutover starts a new Journal epoch and rejects prior development
-  epochs without migration or compatibility readers.
+- The alpha.8 cutover uses Journal epoch 13 and rejects epochs 1–12 without
+  migration or compatibility readers.
 - Complete deletion of Sompi x402 v1 at cutover; no compatibility layer.
 
 ## Completed milestones

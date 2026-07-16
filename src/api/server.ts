@@ -26,6 +26,8 @@ export interface PurchaseApiServerOptions {
   readonly port?: number;
   readonly deadlineMs?: number;
   readonly maxConcurrency?: number;
+  /** Operator-only diagnostic sink. Error details are never returned to the caller. */
+  readonly onRequestError?: (error: unknown) => void;
 }
 
 export interface RunningPurchaseApiServer {
@@ -76,6 +78,7 @@ export async function startPurchaseApiServer(options: PurchaseApiServerOptions):
       try {
         await routeRequest(options.application, request, response, signal);
       } catch (error) {
+        try { options.onRequestError?.(error); } catch { /* diagnostics cannot alter the API result */ }
         if (!response.headersSent) writeMappedError(response, error, timeout.aborted);
         else response.destroy();
       } finally {

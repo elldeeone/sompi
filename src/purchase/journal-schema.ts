@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 
 export const JOURNAL_APPLICATION_ID = 0x534f4d50; // SOMP
-export const JOURNAL_SCHEMA_VERSION = 12;
+export const JOURNAL_SCHEMA_VERSION = 13;
 
 export const JOURNAL_SCHEMA_V1_SQL = `
   CREATE TABLE schema_migrations (
@@ -905,7 +905,7 @@ export const JOURNAL_SCHEMA_V10_MIGRATION_SQL = `
 
   CREATE TABLE purchase_execution_plans (
     purchase_id TEXT PRIMARY KEY REFERENCES checkout_terms(purchase_id) ON DELETE RESTRICT,
-    plan_digest TEXT NOT NULL UNIQUE REFERENCES evidence_artifacts(digest) ON DELETE RESTRICT,
+    plan_digest TEXT NOT NULL REFERENCES evidence_artifacts(digest) ON DELETE RESTRICT,
     mechanism TEXT NOT NULL CHECK (mechanism IN ('single-transaction', 'channel-voucher')),
     profile TEXT NOT NULL,
     requirements_digest TEXT NOT NULL REFERENCES evidence_artifacts(digest) ON DELETE RESTRICT,
@@ -1045,6 +1045,8 @@ export const JOURNAL_SCHEMA_V7_SQL = `${JOURNAL_SCHEMA_V6_SQL}\n${JOURNAL_SCHEMA
 export const JOURNAL_SCHEMA_V8_SQL = `${JOURNAL_SCHEMA_V7_SQL}\n${JOURNAL_SCHEMA_V8_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V9_SQL = `${JOURNAL_SCHEMA_V8_SQL}\n${JOURNAL_SCHEMA_V9_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V10_SQL = `${JOURNAL_SCHEMA_V9_SQL}\n${JOURNAL_SCHEMA_V10_MIGRATION_SQL}`;
+export const JOURNAL_SCHEMA_V11_SQL = JOURNAL_SCHEMA_V10_SQL;
+export const JOURNAL_SCHEMA_V12_SQL = JOURNAL_SCHEMA_V11_SQL;
 export const JOURNAL_SCHEMA_SQL = JOURNAL_SCHEMA_V10_SQL;
 
 export const JOURNAL_SCHEMA_V1_CHECKSUM = sha256Text(JOURNAL_SCHEMA_V1_SQL);

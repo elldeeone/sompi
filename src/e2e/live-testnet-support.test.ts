@@ -517,7 +517,8 @@ test("live Merchant composition validates before any funded Purchase begins", as
         verifyExactPayment: async () => {
           throw new Error("composition test must not verify a payment");
         },
-      } as unknown as LiveMerchantExactVerifier
+      } as unknown as LiveMerchantExactVerifier,
+      "additive"
     );
     await closeInitialized(initialized);
   } finally {
@@ -716,11 +717,22 @@ function fakeReport(
     "300000000"
   );
   const report: LiveTestnetProofReport = Object.freeze({
-    profile: "urn:sompi:e2e:live-testnet10-ap2-kaspa-x402-exact:1",
+    profile: "urn:sompi:e2e:live-testnet10-ap2-kaspa-x402-exact:2",
     generatedAt: new Date().toISOString(),
     network: LIVE_NETWORK,
     chainMode: "operator-pinned-live-testnet-10-wrpc",
+    chainProvenance: {
+      nodeVersion: "2.0.0",
+      nodeNetwork: "testnet-10" as const,
+      nodeVirtualDaaScore: "160",
+      nodeSynced: true as const,
+      nodeUtxoIndex: true as const,
+      rustyKaspaSourceCommit: "78257f273a26c4be085bab0f79437dee99ca8835" as const,
+      kaspaWasmVersion: "2.0.1" as const,
+    },
     liveKaspaTestnet10ExecutionProved: true,
+    exactProfile: "additive",
+    purchaseIngress: "http-api",
     ap2HumanPresentConformanceClaimed: false,
     authorityMode: "in-process-local-auto-approved-test-fixture",
     authorityIsolationAppliedToThisRun: false,
@@ -734,7 +746,7 @@ function fakeReport(
         transactionId: "44".repeat(32),
         outpoint: `${"44".repeat(32)}:0`,
         address: initialized.config.additiveHead.address,
-        amountAtomic: "110000000",
+        amountAtomic: "120000000",
         blockDaaScore: "130",
         virtualDaaScore: "140",
         finality: "confirmed" as const,
@@ -768,6 +780,17 @@ function fakeReport(
       merchantObservedAtDaa: "151",
       clientObserver: "confirmed" as const,
       clientObservedAtMs: Date.now(),
+    },
+    economics: {
+      advertisedAmountAtomic: "20000000" as const,
+      merchantGainAtomic: "20000000" as const,
+      payerTransactionCostAtomic: "22000000",
+      exactFeeAtomic: "2000000",
+      minimumSdkFeeAtomic: "128200",
+      transactionMass: "1282",
+      transactionVersion: 1 as const,
+      inputCount: 2 as const,
+      outputCount: 1 as const,
     },
     idempotency: {
       duplicatePurchaseReturnedSameId: true as const,
