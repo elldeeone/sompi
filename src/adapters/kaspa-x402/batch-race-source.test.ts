@@ -91,6 +91,70 @@ test("an unspent active channel avoids history lookup and an invalid spender fai
   })).status, "unknown");
 });
 
+test("an accepted claim may reconcile the highest disclosed voucher before response acknowledgement", async () => {
+  const pendingAcknowledgement = {
+    ...channel(),
+    chargedCumulativeAtomic: "0",
+    signedCumulativeAtomic: "200000",
+  };
+  let evidenceCalls = 0;
+  const source = new HttpsBatchClaimRaceSource(
+    "https://history.example/",
+    { getVirtualDaaScore: async () => "1", getUtxos: async () => [] },
+    {
+      observe: async () => {
+        evidenceCalls += 1;
+        return {
+          status: "present",
+          level: "accepted",
+          detailDigest: evidenceDigest("accepted-unacknowledged-claim"),
+        };
+      },
+    } as unknown as ChainEvidenceModule,
+    "accepted",
+    async () => new Response(JSON.stringify([claimTransaction()]), { status: 200 }),
+  );
+  const result = await source.observeClaimWinner({
+    channel: pendingAcknowledgement,
+    refundTransactionId: "77".repeat(32),
+    signal: new AbortController().signal,
+  });
+  assert.equal(result.status, "claim");
+  assert.equal(evidenceCalls, 1);
+});
+
+test("claim history is streamed under a hard byte ceiling", async () => {
+  const source = new HttpsBatchClaimRaceSource(
+    "https://history.example/",
+    { getVirtualDaaScore: async () => "1", getUtxos: async () => [] },
+    {} as ChainEvidenceModule,
+    "accepted",
+    async () => new Response("[" + " ".repeat(4 * 1024 * 1024) + "]", { status: 200 }),
+  );
+  await assert.rejects(source.observeClaimWinner({
+    channel: channel(),
+    refundTransactionId: "77".repeat(32),
+    signal: new AbortController().signal,
+  }), /oversized/);
+});
+
+test("batch refund DAA is independently read from the bounded witness", async () => {
+  const source = new HttpsBatchClaimRaceSource(
+    "https://history.example/",
+    { getVirtualDaaScore: async () => "1", getUtxos: async () => [] },
+    {} as ChainEvidenceModule,
+    "accepted",
+    async (input) => {
+      assert.equal(String(input), "https://history.example/info/blockdag");
+      return new Response('{"virtualDaaScore":"500000001"}', { status: 200 });
+    },
+  );
+  assert.equal(
+    await source.getVirtualDaaScore(new AbortController().signal),
+    "500000001",
+  );
+});
+
 function claimTransaction(): Record<string, unknown> {
   return {
     transaction_id: CLAIM_TXID,

@@ -117,7 +117,7 @@ export interface LiveBatchProofReport {
     readonly virtualDaaScore: string;
     readonly synced: true;
     readonly utxoIndex: true;
-    readonly rustyKaspaSourceCommit: "78257f273a26c4be085bab0f79437dee99ca8835";
+    readonly kaspaWasmSourceCommit: "78257f273a26c4be085bab0f79437dee99ca8835";
     readonly kaspaWasmVersion: "2.0.1";
   };
   readonly authority: {
@@ -199,6 +199,7 @@ export async function runLiveBatchProof(
       new HttpsAcceptedChainWitness({
         baseUrl: "https://api-tn10.kaspa.org/",
         depthConfirmationDaa: 10,
+        fetch: globalThis.fetch,
         now: Date.now,
       }),
       new JournalChainEvidenceStore(journal),
@@ -218,6 +219,9 @@ export async function runLiveBatchProof(
     );
     const batchChain = new WalletBatchChainSource(initialized.observerWallet);
     const claimRace: BatchClaimRaceSource = {
+      async getVirtualDaaScore() {
+        return batchChain.getVirtualDaaScore();
+      },
       async observeClaimWinner() {
         return Object.freeze({
           status: "unknown" as const,
@@ -526,7 +530,7 @@ export async function runLiveBatchProof(
         virtualDaaScore: String(info.virtualDaaScore),
         synced: true as const,
         utxoIndex: true as const,
-        rustyKaspaSourceCommit: "78257f273a26c4be085bab0f79437dee99ca8835" as const,
+        kaspaWasmSourceCommit: "78257f273a26c4be085bab0f79437dee99ca8835" as const,
         kaspaWasmVersion: "2.0.1" as const,
       }),
       authority: Object.freeze({
@@ -566,8 +570,8 @@ export async function runLiveBatchProof(
         privateStateExcluded: true as const,
       }),
     });
-    writeLiveBatchReport(options.reportFilename, report);
     journal.integrityCheck();
+    writeLiveBatchReport(options.reportFilename, report);
     options.onProgress?.("live batch vouchers, claim, and strict-boundary refund are durable");
     return report;
   } finally {

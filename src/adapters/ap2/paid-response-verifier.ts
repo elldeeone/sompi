@@ -1,5 +1,6 @@
 import { canonicalEvidenceJson } from "../../purchase/canonical-json.js";
 import { evidenceDigest } from "../../purchase/identity.js";
+import { paymentFinalityMeets } from "../../purchase/finality.js";
 import type {
   FulfilmentResult,
   PurchaseReceiptResult,
@@ -398,7 +399,13 @@ function assertSettlementJoins(
     settlement.executionId !== context.preparedExecutionId ||
     settlement.mechanism !== context.authorizationRequest.executionMechanism ||
     settlement.profile !== context.authorizationRequest.executionProfile ||
-    settlement.settlementAssurance !== context.authorizationRequest.settlementAssurance ||
+    (settlement.mechanism === "single-transaction" &&
+      !paymentFinalityMeets(
+        settlement.settlementAssurance,
+        context.authorizationRequest.settlementAssurance
+      )) ||
+    (settlement.mechanism === "channel-voucher" &&
+      settlement.settlementAssurance !== context.authorizationRequest.settlementAssurance) ||
     !amountMatches ||
     settlement.asset !== terms.asset ||
     settlement.network !== terms.network ||

@@ -1012,6 +1012,7 @@ function canonicalFacts(candidate: AuthorityApprovalFacts): AuthorityApprovalFac
   const network = requireIdentity(requireString(record.network), 128);
   const payTo = requireIdentity(requireString(record.payTo), 256);
   const executionMechanism = requireExecutionMechanism(record.executionMechanism);
+  const executionProfile = requireIdentity(requireString(record.executionProfile), 160);
   const settlementAssurance = requireSettlementAssurance(record.settlementAssurance);
   const channelId = record.channelId === null ? null : requireIdentity(requireString(record.channelId), 160);
   const channelEpochDigest = record.channelEpochDigest === null
@@ -1021,6 +1022,15 @@ function canonicalFacts(candidate: AuthorityApprovalFacts): AuthorityApprovalFac
     executionMechanism === "single-transaction"
       ? settlementAssurance === "channel-commitment" || channelId !== null || channelEpochDigest !== null
       : settlementAssurance !== "channel-commitment" || channelId === null || channelEpochDigest === null
+  ) {
+    throw new AuthorityProtocolError("malformed_message");
+  }
+  if (
+    (executionMechanism === "single-transaction" &&
+      executionProfile !== "kaspa-exact-v2:standard-native" &&
+      executionProfile !== "kaspa-exact-v2:additive") ||
+    (executionMechanism === "channel-voucher" &&
+      executionProfile !== "kaspa-escrow-v1:batch-settlement")
   ) {
     throw new AuthorityProtocolError("malformed_message");
   }
@@ -1062,7 +1072,7 @@ function canonicalFacts(candidate: AuthorityApprovalFacts): AuthorityApprovalFac
     effectiveFinalityFloor: requireFinalityFloor(record.effectiveFinalityFloor),
     executionPlanDigest: requireDigest(requireString(record.executionPlanDigest)),
     executionMechanism,
-    executionProfile: requireIdentity(requireString(record.executionProfile), 160),
+    executionProfile,
     settlementAssurance,
     maximumAuthorizedChargeAtomic: requireSafeAp2KasAmount(
       requireString(record.maximumAuthorizedChargeAtomic)

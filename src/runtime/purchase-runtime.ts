@@ -48,6 +48,7 @@ import { VaultExactAttemptFundingBridge } from "../adapters/kaspa-x402/exact-att
 import { VaultTreasuryStaging } from "../adapters/kaspa-x402/vault-treasury-staging.js";
 import { NodePinnedHttpTransport } from "../http/node-pinned-transport.js";
 import type { PinnedHttpTransport } from "../http/pinned-transport.js";
+import { createPinnedGetFetch } from "../http/pinned-fetch.js";
 import { PolicyEngine } from "../policy.js";
 import {
   PurchaseCoordinator,
@@ -132,6 +133,17 @@ export function createSompiPurchaseRuntime(
     resolver: dependencies.resolver ?? systemResolver,
     now,
   });
+  const witnessUrl = new URL(config.witnessBaseUrl);
+  const witnessEgress = new EgressPolicy({
+    allowRules: [{
+      hostname: witnessUrl.hostname,
+      ports: [witnessUrl.port ? Number(witnessUrl.port) : 443],
+    }],
+    resolver: dependencies.resolver ?? systemResolver,
+    limits: { maxRedirects: 0, maxResponseBodyBytes: 4 * 1024 * 1024 },
+    now,
+  });
+  const witnessFetch = createPinnedGetFetch(witnessEgress, transport, now);
   const policy = new PolicyEngine(config.policy);
   const vault = new VaultManager(config.dataDirectory, config.networkId);
   assertManifestVault(vault, config);
@@ -156,7 +168,7 @@ export function createSompiPurchaseRuntime(
     const runtimeAuthorityReplay = authorityReplay;
     const chainEvidence = new ChainEvidenceModule(
       new WrpcOperatorChainObserver({ rpc: wallet, depthConfirmationDaa: config.depthConfirmationDaa, now }),
-      new HttpsAcceptedChainWitness({ baseUrl: config.witnessBaseUrl, depthConfirmationDaa: config.depthConfirmationDaa, now }),
+      new HttpsAcceptedChainWitness({ baseUrl: config.witnessBaseUrl, depthConfirmationDaa: config.depthConfirmationDaa, fetch: witnessFetch, now }),
       new JournalChainEvidenceStore(journal),
       now
     );
@@ -174,19 +186,19 @@ export function createSompiPurchaseRuntime(
         new WalletTreasuryOperationAdapter(
           wallet,
           chainEvidence,
-          config.finalityFloors.settlement,
+          config.finalityFloors.directTreasury,
         ),
         new VaultSendTreasuryOperationAdapter(
           vault,
           wallet,
           chainEvidence,
-          config.finalityFloors.settlement,
+          config.finalityFloors.vault,
         ),
         new VaultDepositTreasuryOperationAdapter(
           vault,
           wallet,
           chainEvidence,
-          config.finalityFloors.settlement,
+          config.finalityFloors.vault,
         ),
         new BatchRefundTreasuryOperationAdapter(
           journal,
@@ -201,10 +213,12 @@ export function createSompiPurchaseRuntime(
             batchChain,
             chainEvidence,
             config.finalityFloors.recoveryRelease,
+            witnessFetch,
           ),
         ),
       ],
-      feeCeilingAtomic: config.additionalCostCeilingAtomic,
+      feeCeilingAtomic: config.treasuryOperationFeeCeilingAtomic,
+      directTreasuryRetries: config.admission.directTreasuryRetries,
     });
     const batchCapital = new KaspaX402BatchCapitalModule(
       journal,

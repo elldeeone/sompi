@@ -10,6 +10,7 @@ const HASH32 = /^[a-f0-9]{64}$/;
 const UINT64_MAX = (1n << 64n) - 1n;
 const MAX_HISTORY_TRANSACTIONS = 500;
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+const HISTORY_TIMEOUT_MS = 15_000;
 
 export type BatchClaimRaceObservation =
   | Readonly<{ status: "unspent"; detailDigest: Sha256Digest }>
@@ -25,6 +26,7 @@ export type BatchClaimRaceObservation =
     }>;
 
 export interface BatchClaimRaceSource {
+  getVirtualDaaScore(signal: AbortSignal): Promise<string>;
   observeClaimWinner(input: Readonly<{
     channel: BatchChannelJournalRecord;
     refundTransactionId: string;
@@ -49,7 +51,7 @@ export class HttpsBatchClaimRaceSource implements BatchClaimRaceSource {
     private readonly chain: BatchActiveUtxoSource,
     private readonly evidence: ChainEvidenceModule,
     private readonly floor: FinalityFloor,
-    fetcher: typeof globalThis.fetch = globalThis.fetch,
+    fetcher: typeof globalThis.fetch,
   ) {
     const parsed = new URL(baseUrl);
     if (
@@ -60,6 +62,22 @@ export class HttpsBatchClaimRaceSource implements BatchClaimRaceSource {
     }
     this.baseUrl = parsed;
     this.fetcher = fetcher;
+  }
+
+  async getVirtualDaaScore(signal: AbortSignal): Promise<string> {
+    signal.throwIfAborted();
+    const response = await this.fetcher(new URL("info/blockdag", this.baseUrl), {
+      method: "GET",
+      headers: { accept: "application/json" },
+      redirect: "error",
+      signal: AbortSignal.any([signal, AbortSignal.timeout(HISTORY_TIMEOUT_MS)]),
+    });
+    if (!response.ok) {
+      void response.body?.cancel();
+      throw new Error(`batch DAA witness returned HTTP ${response.status}`);
+    }
+    const value = await boundedJson(response);
+    return atomic(value.virtualDaaScore, "batch witness virtual DAA").toString();
   }
 
   async observeClaimWinner(input: Readonly<{
@@ -93,11 +111,12 @@ export class HttpsBatchClaimRaceSource implements BatchClaimRaceSource {
     url.searchParams.set("limit", String(MAX_HISTORY_TRANSACTIONS));
     url.searchParams.set("resolve_previous_outpoints", "light");
     url.searchParams.set("acceptance", "accepted");
+    const timeout = AbortSignal.timeout(HISTORY_TIMEOUT_MS);
     const response = await this.fetcher(url, {
       method: "GET",
       headers: { accept: "application/json" },
       redirect: "error",
-      signal: input.signal,
+      signal: AbortSignal.any([input.signal, timeout]),
     });
     if (!response.ok) {
       void response.body?.cancel();
@@ -197,10 +216,10 @@ function validateClaimCandidate(
     const payout = output(transaction.outputs[0], transactionId, 0);
     const continuation = output(transaction.outputs[1], transactionId, 1);
     const funding = atomic(channel.fundingAmountAtomic, "channel funding", true);
-    const charged = atomic(channel.chargedCumulativeAtomic, "channel charged amount");
+    const signed = atomic(channel.signedCumulativeAtomic, "channel signed voucher ceiling");
     const claimed = atomic(channel.claimedCumulativeAtomic, "channel claimed amount");
-    if (claimed >= charged) return undefined;
-    const claim = charged - claimed;
+    if (claimed >= signed) return undefined;
+    const claim = signed - claimed;
     const expectedContinuation = funding - claim;
     const payoutAmount = atomic(payout.amountAtomic, "claim payout", true);
     const continuationAmount = atomic(continuation.amountAtomic, "claim continuation", true);
@@ -245,11 +264,7 @@ function output(value: unknown, transactionId: string, index: number): Readonly<
 }
 
 async function boundedJsonArray(response: Response): Promise<Record<string, unknown>[]> {
-  const declared = response.headers.get("content-length");
-  if (declared && Number(declared) > MAX_RESPONSE_BYTES) throw new Error("batch claim history is oversized");
-  const text = await response.text();
-  if (Buffer.byteLength(text, "utf8") > MAX_RESPONSE_BYTES) throw new Error("batch claim history is oversized");
-  const value = JSON.parse(text) as unknown;
+  const value = await boundedJson(response);
   if (!Array.isArray(value) || value.length > MAX_HISTORY_TRANSACTIONS) {
     throw new Error("batch claim history count is invalid");
   }
@@ -258,6 +273,37 @@ async function boundedJsonArray(response: Response): Promise<Record<string, unkn
     if (!candidate) throw new Error("batch claim history entry is invalid");
     return candidate;
   });
+}
+
+async function boundedJson(response: Response): Promise<any> {
+  const declared = response.headers.get("content-length");
+  if (declared !== null) {
+    const size = Number(declared);
+    if (!Number.isSafeInteger(size) || size < 0 || size > MAX_RESPONSE_BYTES) {
+      void response.body?.cancel();
+      throw new Error("batch claim history is oversized");
+    }
+  }
+  if (!response.body) throw new Error("batch claim history has no body");
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_RESPONSE_BYTES) {
+        await reader.cancel("batch claim history is oversized");
+        throw new Error("batch claim history is oversized");
+      }
+      chunks.push(Uint8Array.from(value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  const text = new TextDecoder("utf-8", { fatal: true }).decode(Buffer.concat(chunks));
+  return JSON.parse(text) as unknown;
 }
 
 function record(value: unknown): Record<string, any> | undefined {

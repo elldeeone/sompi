@@ -75,7 +75,8 @@ export class BatchRefundTreasuryOperationAdapter implements TreasuryOperationAda
   ) {
     if (
       !journal || !wallet || wallet.networkId !== "testnet-10" || !chain ||
-      !signer || !chainEvidence || typeof claimRace?.observeClaimWinner !== "function"
+      !signer || !chainEvidence || typeof claimRace?.observeClaimWinner !== "function" ||
+      typeof claimRace?.getVirtualDaaScore !== "function"
     ) {
       throw new Error("batch refund adapter dependencies are incomplete");
     }
@@ -103,9 +104,16 @@ export class BatchRefundTreasuryOperationAdapter implements TreasuryOperationAda
     if (channel.status !== "active" && channel.status !== "refundable") {
       throw new Error("batch channel is not refundable");
     }
-    const nowDaa = atomic(await this.chain.getVirtualDaaScore(), "current DAA");
+    const [operatorDaa, witnessDaa] = await Promise.all([
+      this.chain.getVirtualDaaScore(),
+      this.claimRace.getVirtualDaaScore(new AbortController().signal),
+    ]);
+    const nowDaa = atomic(operatorDaa, "operator current DAA");
+    const corroboratedDaa = atomic(witnessDaa, "witness current DAA");
     const timeout = atomic(channel.refundTimeoutDaa, "refund timeout");
-    if (nowDaa <= timeout) throw new Error("batch refund is not unlocked at the strict DAA boundary");
+    if (nowDaa <= timeout || corroboratedDaa <= timeout) {
+      throw new Error("batch refund is not independently unlocked at the strict DAA boundary");
+    }
     const active = atomic(channel.fundingAmountAtomic, "batch funding", true);
     const fee = atomic(this.feeAtomic, "batch refund fee", true);
     if (fee >= active) throw new Error("batch refund fee consumes the channel");

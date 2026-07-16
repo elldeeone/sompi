@@ -61,8 +61,9 @@ test("batch chain source rejects wrong network, duplicates, provisional, and unr
 test("batch chain source fails closed on unsynced or non-Testnet-10 evidence", async () => {
   const unsynced = new WalletBatchChainSource(provider({ entries: [], isSynced: false }));
   await assert.rejects(unsynced.getVirtualDaaScore(), /synced/);
+  await assert.rejects(unsynced.getUtxos([ADDRESS]), /synced/);
   const wrongDag = new WalletBatchChainSource(provider({ entries: [], network: "mainnet" }));
-  await assert.rejects(wrongDag.getUtxos([ADDRESS]), /not Testnet-10/);
+  await assert.rejects(wrongDag.getUtxos([ADDRESS]), /Testnet-10/);
 });
 
 function provider(options: Readonly<{

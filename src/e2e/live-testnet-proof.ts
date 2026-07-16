@@ -181,7 +181,7 @@ export interface LiveTestnetProofReport {
     readonly nodeVirtualDaaScore: string;
     readonly nodeSynced: true;
     readonly nodeUtxoIndex: true;
-    readonly rustyKaspaSourceCommit: "78257f273a26c4be085bab0f79437dee99ca8835";
+    readonly kaspaWasmSourceCommit: "78257f273a26c4be085bab0f79437dee99ca8835";
     readonly kaspaWasmVersion: "2.0.1";
   };
   readonly liveKaspaTestnet10ExecutionProved: true;
@@ -444,8 +444,8 @@ export async function runLiveTestnetProof(
       exactProfile: options.exactProfile,
       purchaseIngress: options.purchaseIngress,
     });
-    writeLiveTestnetProofReport(options.reportFilename, report, initialized);
     purchaseJournal.integrityCheck();
+    writeLiveTestnetProofReport(options.reportFilename, report, initialized);
     options.onProgress?.("live Purchase reached receipted and the 0600 public-facts report is durable");
     return report;
   } finally {
@@ -575,7 +575,12 @@ function composeLiveCoordinator(input: {
   });
   const chainEvidence = new ChainEvidenceModule(
     new WrpcOperatorChainObserver({ rpc: input.initialized.treasuryWallet, depthConfirmationDaa: 10, now }),
-    new HttpsAcceptedChainWitness({ baseUrl: "https://api-tn10.kaspa.org/", depthConfirmationDaa: 10, now }),
+    new HttpsAcceptedChainWitness({
+      baseUrl: "https://api-tn10.kaspa.org/",
+      depthConfirmationDaa: 10,
+      fetch: globalThis.fetch,
+      now,
+    }),
     new JournalChainEvidenceStore(input.journal),
     now
   );
@@ -1461,7 +1466,7 @@ async function createReport(input: {
       nodeVirtualDaaScore: String(info.virtualDaaScore),
       nodeSynced: true as const,
       nodeUtxoIndex: true as const,
-      rustyKaspaSourceCommit: "78257f273a26c4be085bab0f79437dee99ca8835" as const,
+      kaspaWasmSourceCommit: "78257f273a26c4be085bab0f79437dee99ca8835" as const,
       kaspaWasmVersion: "2.0.1" as const,
     }),
     liveKaspaTestnet10ExecutionProved: true,
@@ -1811,7 +1816,7 @@ function assertExactReportSchema(report: LiveTestnetProofReport): void {
   exactKeys(report.bootstrapFunding, milestoneKeys, "bootstrap milestone");
   exactKeys(report.chainProvenance, [
     "kaspaWasmVersion", "nodeNetwork", "nodeSynced", "nodeUtxoIndex",
-    "nodeVersion", "nodeVirtualDaaScore", "rustyKaspaSourceCommit",
+    "kaspaWasmSourceCommit", "nodeVersion", "nodeVirtualDaaScore",
   ], "chain provenance");
   exactKeys(
     report.additiveHead,
@@ -1872,7 +1877,7 @@ function assertExactReportSchema(report: LiveTestnetProofReport): void {
     report.chainProvenance.nodeNetwork !== LIVE_SDK_NETWORK ||
     report.chainProvenance.nodeSynced !== true ||
     report.chainProvenance.nodeUtxoIndex !== true ||
-    report.chainProvenance.rustyKaspaSourceCommit !==
+    report.chainProvenance.kaspaWasmSourceCommit !==
       "78257f273a26c4be085bab0f79437dee99ca8835" ||
     report.chainProvenance.kaspaWasmVersion !== "2.0.1" ||
     report.economics.advertisedAmountAtomic !== LIVE_PRICE_ATOMIC ||

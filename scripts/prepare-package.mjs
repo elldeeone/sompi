@@ -9,6 +9,7 @@ const packageJsonPath = path.join(root, "package.json");
 const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
 
 const expectedBins = Object.freeze({
+  "sompi-api": "dist/api-main.js",
   "sompi-authority": "dist/authority-main.js",
   "sompi-mcp": "dist/index.js",
   "sompi-operator": "dist/operator-main.js",
@@ -51,6 +52,7 @@ const roots = [
   "vendor/kaspa-wasm",
 ];
 const executableFiles = new Set([
+  "dist/api-main.js",
   "dist/authority-main.js",
   "dist/index.js",
   "dist/operator-main.js",
@@ -74,6 +76,7 @@ for (const rule of requiredFileRules) {
 }
 
 const requiredFiles = [
+  "dist/api-main.js",
   "dist/authority-main.js",
   "dist/index.js",
   "dist/operator-main.js",

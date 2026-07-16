@@ -78,6 +78,9 @@ export class KaspaX402BatchCapitalModule {
 
   async openChannel(request: Readonly<OpenBatchChannelRequest>): Promise<BatchChannelCapitalResult> {
     const input = normalizeOpenRequest(request, this.codec);
+    if (BigInt(input.refundTimeoutDaa) >= 500000000000n) {
+      throw new Error("batch refund timeout must remain below the consensus timestamp boundary");
+    }
     const key = await this.signer.ensureChannelKey(input.operationKey);
     const salt = sha256Hex(`sompi:batch-channel-salt:v1\0${input.operationKey}\0${key.publicKey}`) as Hash32Hex;
     const config: ChannelConfig = Object.freeze({

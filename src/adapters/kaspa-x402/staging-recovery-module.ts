@@ -237,13 +237,17 @@ function exactRequirement(
   });
   const accepted = parsed.accepted;
   const requiredFinality = accepted.extra.finality;
+  const profile = accepted.extra.profile;
+  const outputIndexMatches =
+    (profile === "standard-native" && accepted.extra.paymentOutputIndex === undefined) ||
+    (profile === "additive" && accepted.extra.paymentOutputIndex === 0);
   if (
     accepted.scheme !== SCHEME ||
     accepted.network !== NETWORK ||
     accepted.asset !== ASSET ||
     accepted.amount !== input.terms.amountAtomic ||
     accepted.payTo !== input.terms.payTo ||
-    accepted.extra.paymentOutputIndex !== 1 ||
+    !outputIndexMatches ||
     (requiredFinality !== "mempool" &&
       requiredFinality !== "accepted" &&
       requiredFinality !== "confirmed")

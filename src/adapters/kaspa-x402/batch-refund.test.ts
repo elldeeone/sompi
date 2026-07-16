@@ -72,7 +72,25 @@ test("batch refund is prepared from public alpha.8 covenant primitives only afte
       "100000",
       unspentRace(),
     );
-    await assert.rejects(locked.prepare(intent), /not unlocked/);
+    await assert.rejects(locked.prepare(intent), /not independently unlocked/);
+
+    const uncorroborated = new BatchRefundTreasuryOperationAdapter(
+      fixture.journal,
+      wallet,
+      { getVirtualDaaScore: async () => "500000001", getUtxos: async () => [] },
+      fixture.signer,
+      {} as ChainEvidenceModule,
+      "accepted",
+      "100000",
+      {
+        getVirtualDaaScore: async () => "500000000",
+        observeClaimWinner: async () => ({
+          status: "unknown" as const,
+          detailDigest: evidenceDigest("not-observed"),
+        }),
+      },
+    );
+    await assert.rejects(uncorroborated.prepare(intent), /not independently unlocked/);
 
     await adapter.commit(intent, prepared.bytes, {
       transactionId: prepared.transactionId,
@@ -91,7 +109,7 @@ test("accepted merchant claim atomically advances the channel and supersedes a c
     const current = fixture.journal.requireBatchChannel(fixture.channelId);
     fixture.journal.saveBatchChannel({
       ...current,
-      chargedCumulativeAtomic: "200000",
+      chargedCumulativeAtomic: "0",
       signedCumulativeAtomic: "200000",
       latestVoucher: { amountAtomic: "200000", signature: "11".repeat(64) },
       version: current.version + 1,
@@ -122,6 +140,7 @@ test("accepted merchant claim atomically advances the channel and supersedes a c
       "accepted",
       "100000",
       {
+        getVirtualDaaScore: async () => "500000001",
         observeClaimWinner: async () => ({
           status: "claim",
           transactionId: claimTransactionId,
@@ -141,6 +160,7 @@ test("accepted merchant claim atomically advances the channel and supersedes a c
     const channel = fixture.journal.requireBatchChannel(fixture.channelId);
     assert.deepEqual(channel.activeOutpoint, { txid: claimTransactionId, index: 1 });
     assert.equal(channel.fundingAmountAtomic, "800000");
+    assert.equal(channel.chargedCumulativeAtomic, "200000");
     assert.equal(channel.claimedCumulativeAtomic, "200000");
     assert.equal(channel.signedCumulativeAtomic, "0");
     assert.equal(channel.latestVoucher, undefined);
@@ -265,6 +285,7 @@ function pendingView(operationKey: string, destination: string, amount: string):
 
 function unspentRace(): BatchClaimRaceSource {
   return {
+    getVirtualDaaScore: async () => "500000001",
     observeClaimWinner: async () => ({
       status: "unspent",
       detailDigest: evidenceDigest("active-channel-unspent"),

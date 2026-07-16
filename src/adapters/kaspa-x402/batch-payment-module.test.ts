@@ -113,6 +113,14 @@ test("batch module signs one authorized voucher against an existing epoch and ap
   assert.equal((await store.loadChannels({}))[0]?.chargedCumulativeAmount, "12");
 });
 
+test("batch module refuses a channel epoch not approved by Trusted Authority", async () => {
+  const selected = { ...channel(), id: "99".repeat(32) as Hash32Hex };
+  await assert.rejects(
+    batchModule(new MemoryChannelStore([selected])).prepare(input()),
+    /Trusted Authority approval/
+  );
+});
+
 test("batch module refuses implicit deposit and preserves the claim-fee reserve", async () => {
   const noChannel = new KaspaX402BatchPaymentModule({
     store: new MemoryChannelStore(), signer: signer(),
@@ -349,7 +357,7 @@ function input(): Parameters<KaspaX402BatchPaymentModule["prepare"]>[0] {
     settlementAssurance: "channel-commitment" as const,
     maximumAuthorizedChargeAtomic: "20",
     channelId: CHANNEL_ID,
-    channelEpochDigest: evidenceDigest(Buffer.from("channel-epoch")),
+    channelEpochDigest: channelDigest(channel()),
     createdAtMs: 1,
     expiresAtMs: Date.parse(terms.expiresAt),
   };
@@ -465,6 +473,16 @@ function channel(): DirectModeChannel {
     templateId: "kaspa-x402-escrow-v1",
     status: "active",
   };
+}
+
+function channelDigest(value: DirectModeChannel): Sha256Digest {
+  return evidenceDigest(Buffer.from(JSON.stringify({
+    channelId: value.id,
+    activeOutpoint: value.activeOutpoint,
+    activeScriptPublicKey: value.activeScriptPublicKey,
+    fundingAmountAtomic: value.fundingAmount,
+    refundTimeoutDaa: value.refundTimeoutDaa,
+  }), "utf8"));
 }
 
 function signer(): ChannelSigner {

@@ -59,6 +59,9 @@ implements PaymentRequirementsArtifactVerifier {
       supportedNetworks: [TESTNET],
       supportedSchemes: ["exact", "batch-settlement"],
     });
+    if (parsed.paymentRequired.accepts.length !== 1) {
+      throw new Error("PAYMENT-REQUIRED must contain exactly one authorized offer");
+    }
     const executionPlan = parsed.accepted.scheme === "exact"
       ? assertExactPaymentRequired(parsed, input.terms, input.finalHop.url, nowMs, digest)
       : await this.assertBatchPaymentRequired(

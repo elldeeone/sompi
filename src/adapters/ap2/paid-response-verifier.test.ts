@@ -99,6 +99,19 @@ test("paid-response verifier returns copied Fulfilment and exact AP2 evidence jo
   assert.equal(SOMPI_PAYMENT_RECEIPT_HEADER.startsWith("SOMPI-"), true);
 });
 
+test("paid-response verifier accepts stronger exact finality than the authorized floor", async () => {
+  const fixture = await makeFixture();
+  const verifier = makeVerifier(sourceFor(fixture.evidence));
+  const result = await verifier.verify({
+    ...fixture.input,
+    settlement: {
+      ...fixture.input.settlement,
+      settlementAssurance: "confirmed",
+    },
+  });
+  assert.equal(result?.status, "fulfilled");
+});
+
 test("paid-response verifier rejects missing, duplicate, and unbounded Receipt headers", async () => {
   const fixture = await makeFixture();
   const verifier = makeVerifier(sourceFor(fixture.evidence));

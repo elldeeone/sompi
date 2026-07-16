@@ -15,7 +15,7 @@ const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 export interface HttpsAcceptedChainWitnessOptions {
   readonly baseUrl: string;
   readonly depthConfirmationDaa: bigint | number | string;
-  readonly fetch?: typeof globalThis.fetch;
+  readonly fetch: typeof globalThis.fetch;
   readonly now?: () => number;
 }
 
@@ -33,7 +33,8 @@ export class HttpsAcceptedChainWitness implements IndependentChainWitness {
     }
     this.baseUrl = url.href;
     this.depth = positiveBigInt(options.depthConfirmationDaa, "witness confirmation depth");
-    this.fetcher = options.fetch ?? globalThis.fetch;
+    if (typeof options.fetch !== "function") throw new Error("Chain Evidence witness requires an injected fetch boundary");
+    this.fetcher = options.fetch;
     this.now = options.now ?? Date.now;
   }
 

@@ -70,9 +70,18 @@ export class WalletBatchChainSource implements BatchActiveUtxoSource {
     }
 
     const rpc = await this.wallet.client();
-    const dag = record(await rpc.getBlockDagInfo(), "Kaspa DAG info");
-    if (dag.network !== SDK_NETWORK) {
-      throw new Error("batch UTXO source is not Testnet-10");
+    const [serverValue, dagValue] = await Promise.all([
+      this.wallet.serverInfo(),
+      rpc.getBlockDagInfo(),
+    ]);
+    const server = record(serverValue, "Kaspa server info");
+    const dag = record(dagValue, "Kaspa DAG info");
+    if (
+      server.isSynced !== true ||
+      server.hasUtxoIndex !== true ||
+      dag.network !== SDK_NETWORK
+    ) {
+      throw new Error("batch UTXO source requires a synced UTXO-indexed Testnet-10 node");
     }
     const response = record(
       await rpc.getUtxosByAddresses(unique),

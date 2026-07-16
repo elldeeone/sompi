@@ -20,6 +20,7 @@ for (const required of [
   "package/LICENSE",
   "package/README.md",
   "package/dist/index.js",
+  "package/dist/api-main.js",
   "package/dist/authority-main.js",
   "package/dist/operator-main.js",
   "package/dist/e2e-main.js",
@@ -79,6 +80,7 @@ if (JSON.stringify(manifest.exports) !== JSON.stringify({ "./package.json": "./p
 if (
   JSON.stringify(manifest.bin) !==
   JSON.stringify({
+    "sompi-api": "dist/api-main.js",
     "sompi-authority": "dist/authority-main.js",
     "sompi-mcp": "dist/index.js",
     "sompi-operator": "dist/operator-main.js",
@@ -104,6 +106,7 @@ process.stdout.write(
 
 function executable(name) {
   return new Set([
+    "package/dist/api-main.js",
     "package/dist/authority-main.js",
     "package/dist/index.js",
     "package/dist/operator-main.js",

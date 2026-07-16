@@ -48,6 +48,7 @@ export function sdkBatchTransaction(artifact: BatchTransactionArtifact): Transac
       subnetworkId: artifact.transaction.subnetworkId,
       gas: BigInt(artifact.transaction.gas),
       payload: artifact.transaction.payload,
+      storageMass: BigInt(artifact.transaction.mass),
     } as never);
   } finally {
     for (const script of scripts) script.free();

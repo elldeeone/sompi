@@ -727,7 +727,7 @@ function fakeReport(
       nodeVirtualDaaScore: "160",
       nodeSynced: true as const,
       nodeUtxoIndex: true as const,
-      rustyKaspaSourceCommit: "78257f273a26c4be085bab0f79437dee99ca8835" as const,
+      kaspaWasmSourceCommit: "78257f273a26c4be085bab0f79437dee99ca8835" as const,
       kaspaWasmVersion: "2.0.1" as const,
     },
     liveKaspaTestnet10ExecutionProved: true,

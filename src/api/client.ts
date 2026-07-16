@@ -87,8 +87,8 @@ export class PurchaseApiClient implements PurchaseApplication {
     if (declared !== null && (!/^(?:0|[1-9][0-9]*)$/.test(declared) || Number(declared) > MAX_PURCHASE_API_RESPONSE_BYTES)) {
       throw new PurchaseApiClientError("INVALID_API_RESPONSE", "The local Purchase API response exceeds the size limit.", false);
     }
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (bytes.byteLength === 0 || bytes.byteLength > MAX_PURCHASE_API_RESPONSE_BYTES) {
+    const bytes = await readBoundedResponse(response, MAX_PURCHASE_API_RESPONSE_BYTES);
+    if (bytes.byteLength === 0) {
       throw new PurchaseApiClientError("INVALID_API_RESPONSE", "The local Purchase API response size is invalid.", false);
     }
     let value: unknown;
@@ -111,6 +111,34 @@ export class PurchaseApiClient implements PurchaseApplication {
       throw cause;
     }
   }
+}
+
+async function readBoundedResponse(response: Response, limit: number): Promise<Uint8Array> {
+  if (!response.body) {
+    throw new PurchaseApiClientError("INVALID_API_RESPONSE", "The local Purchase API response has no body.", false);
+  }
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > limit) {
+        await reader.cancel("response size limit exceeded");
+        throw new PurchaseApiClientError(
+          "INVALID_API_RESPONSE",
+          "The local Purchase API response exceeds the size limit.",
+          false
+        );
+      }
+      chunks.push(Uint8Array.from(value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Uint8Array.from(Buffer.concat(chunks));
 }
 
 function canonicalLoopbackBaseUrl(value: string): string {

@@ -78,6 +78,8 @@ export interface PrepareBatchPaymentInput {
   readonly resourceFingerprint: Sha256Digest;
   readonly paymentRequirements: Uint8Array;
   readonly claimFeeReserveAtomic: string;
+  readonly authorizedChannelId: Hash32Hex;
+  readonly authorizedChannelEpochDigest: Sha256Digest;
 }
 
 export interface PreparedBatchPayment {
@@ -269,6 +271,14 @@ export class KaspaX402BatchPaymentModule implements KaspaPaymentModule {
       resourceFingerprint: input.execution.terms.resourceFingerprint,
       paymentRequirements: Uint8Array.from(input.paymentRequirements),
       claimFeeReserveAtomic: this.options.claimFeeReserveAtomic,
+      authorizedChannelId: requireHash32(
+        input.execution.authorizationRequest.channelId,
+        "authorized batch channel ID"
+      ),
+      authorizedChannelEpochDigest: requireDigest(
+        input.execution.authorizationRequest.channelEpochDigest,
+        "authorized batch channel epoch"
+      ),
     });
     return Object.freeze({
       purchaseId: input.execution.purchaseId,
@@ -643,6 +653,12 @@ class AuthorizedVoucherSigner implements ChannelSigner {
 
   async signVoucher(request: Parameters<ChannelSigner["signVoucher"]>[0]) {
     if (this.movement) throw new Error("batch Purchase cannot sign more than one voucher");
+    if (
+      request.channel.id !== this.input.authorizedChannelId ||
+      digestChannelEpoch(request.channel) !== this.input.authorizedChannelEpochDigest
+    ) {
+      throw new Error("batch channel epoch differs from the Trusted Authority approval");
+    }
     this.movement = this.authorizer.authorize({
       purchaseId: this.input.purchaseId,
       channel: request.channel,
@@ -686,9 +702,38 @@ function validateInput(input: Readonly<PrepareBatchPaymentInput>): void {
   atomic(input.amountAtomic, "batch maximum charge", true);
   atomic(input.claimFeeReserveAtomic, "batch claim-fee reserve");
   if (!/^[a-f0-9]{64}$/.test(input.requestHash)) throw new Error("batch request hash is invalid");
+  requireHash32(input.authorizedChannelId, "authorized batch channel ID");
+  requireDigest(input.authorizedChannelEpochDigest, "authorized batch channel epoch");
   if (!(input.paymentRequirements instanceof Uint8Array) || input.paymentRequirements.byteLength === 0 || input.paymentRequirements.byteLength > 32 * 1024) {
     throw new Error("batch PAYMENT-REQUIRED artifact is invalid");
   }
+}
+
+function digestChannelEpoch(channel: DirectModeChannel): Sha256Digest {
+  return evidenceDigest(Buffer.from(JSON.stringify({
+    channelId: channel.id,
+    activeOutpoint: {
+      txid: channel.activeOutpoint.txid,
+      index: channel.activeOutpoint.index,
+    },
+    activeScriptPublicKey: channel.activeScriptPublicKey,
+    fundingAmountAtomic: channel.fundingAmount,
+    refundTimeoutDaa: channel.refundTimeoutDaa,
+  }), "utf8"));
+}
+
+function requireHash32(value: unknown, label: string): Hash32Hex {
+  if (typeof value !== "string" || !/^[a-f0-9]{64}$/.test(value)) {
+    throw new Error(`${label} is invalid`);
+  }
+  return value as Hash32Hex;
+}
+
+function requireDigest(value: unknown, label: string): Sha256Digest {
+  if (typeof value !== "string" || !/^sha256:[A-Za-z0-9_-]{43}$/.test(value)) {
+    throw new Error(`${label} is invalid`);
+  }
+  return value as Sha256Digest;
 }
 
 function assertBatchRequirement(

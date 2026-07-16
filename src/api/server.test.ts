@@ -1,4 +1,5 @@
 import * as assert from "node:assert/strict";
+import * as net from "node:net";
 import test from "node:test";
 
 import { generateAgentApiCredential } from "./credential.js";
@@ -65,6 +66,35 @@ test("HTTP seam fails closed on bad content, oversized bodies, concurrency, and 
     assert.equal(oversized.status, 413);
   } finally {
     release();
+    await running.close();
+  }
+});
+
+test("pre-authentication TCP sockets are bounded separately from request concurrency", async () => {
+  const credential = generateAgentApiCredential();
+  const running = await startPurchaseApiServer({
+    application: fakeApplication(),
+    credential,
+    port: 0,
+    maxConcurrency: 1,
+    maxConnections: 2,
+  });
+  const sockets: net.Socket[] = [];
+  try {
+    assert.equal(running.server.maxConnections, 2);
+    for (let index = 0; index < 6; index += 1) {
+      const socket = net.createConnection({ host: running.host, port: running.port });
+      socket.on("error", () => {});
+      socket.write("GET / HTTP/1.1\r\nHost: localhost\r\n");
+      sockets.push(socket);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const retained = await new Promise<number>((resolve, reject) => {
+      running.server.getConnections((error, count) => error ? reject(error) : resolve(count));
+    });
+    assert.ok(retained <= 2);
+  } finally {
+    for (const socket of sockets) socket.destroy();
     await running.close();
   }
 });

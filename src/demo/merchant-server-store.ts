@@ -679,13 +679,15 @@ export class SqliteMerchantServerStateStore implements ServerStateStore {
         if (stableJson(currentChannel) !== stableJson(channel)) throw new DemoMerchantStoreError("conflict");
         return;
       }
-      if (attempt.status !== "accepted" || stableJson(currentAttempt) !== stableJson(attempt)) {
+      if (attempt.status !== "accepted") {
         throw new DemoMerchantStoreError("conflict");
       }
+      assertClaimAttemptProgress(currentAttempt, attempt);
       const current = this.requireBatchChannelRow(channel.channelId);
       if (!claimAttemptMatchesChannelSnapshot(current, attempt)) {
         throw new DemoMerchantStoreError("conflict");
       }
+      this.writeClaimAttempt(attempt);
       this.writeBatchChannel(channel);
       this.writeClaimAttempt({ ...attempt, status: "applied" });
     });

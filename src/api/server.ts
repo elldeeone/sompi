@@ -17,6 +17,7 @@ import { agentApiCredentialMatches, type AgentApiCredential } from "./credential
 
 const DEFAULT_DEADLINE_MS = 120_000;
 const DEFAULT_MAX_CONCURRENCY = 8;
+const DEFAULT_MAX_CONNECTIONS = 32;
 const PURCHASE_PATH = /^\/purchases\/(pur_[A-Za-z0-9_-]{22})(\/recover)?$/;
 
 export interface PurchaseApiServerOptions {
@@ -26,6 +27,8 @@ export interface PurchaseApiServerOptions {
   readonly port?: number;
   readonly deadlineMs?: number;
   readonly maxConcurrency?: number;
+  /** Hard bound on retained pre-authentication TCP sockets. */
+  readonly maxConnections?: number;
   /** Operator-only diagnostic sink. Error details are never returned to the caller. */
   readonly onRequestError?: (error: unknown) => void;
 }
@@ -50,6 +53,13 @@ export async function startPurchaseApiServer(options: PurchaseApiServerOptions):
   const port = options.port ?? 7442;
   const deadlineMs = positiveInteger(options.deadlineMs ?? DEFAULT_DEADLINE_MS, "API deadline");
   const maxConcurrency = positiveInteger(options.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY, "API concurrency");
+  const maxConnections = positiveInteger(
+    options.maxConnections ?? Math.max(DEFAULT_MAX_CONNECTIONS, maxConcurrency * 4),
+    "API connection limit"
+  );
+  if (maxConnections < maxConcurrency) {
+    throw new PurchaseApiServerError("Purchase API connection limit cannot be below request concurrency");
+  }
   if (host !== "127.0.0.1" && host !== "::1") throw new PurchaseApiServerError("Purchase API must bind to loopback");
   if (!Number.isInteger(port) || port < 0 || port > 65_535) throw new PurchaseApiServerError("Purchase API port is invalid");
   if (!options.application || !options.credential) throw new PurchaseApiServerError("Purchase API dependencies are unavailable");
@@ -89,6 +99,7 @@ export async function startPurchaseApiServer(options: PurchaseApiServerOptions):
       else response.destroy();
     });
   });
+  server.maxConnections = maxConnections;
   server.maxHeadersCount = 32;
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);

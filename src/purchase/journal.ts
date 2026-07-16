@@ -5551,11 +5551,11 @@ export class PurchaseJournal {
           throw new JournalFencingError("batch claim/refund race lost its active-channel compare-and-swap");
         }
         const funding = BigInt(channel.fundingAmountAtomic);
-        const charged = BigInt(channel.chargedCumulativeAtomic);
+        const signed = BigInt(channel.signedCumulativeAtomic);
         const claimed = BigInt(channel.claimedCumulativeAtomic);
         if (
           continuationFunding >= funding ||
-          funding - continuationFunding !== charged - claimed ||
+          funding - continuationFunding !== signed - claimed ||
           input.continuationScriptPublicKey !== channel.activeScriptPublicKey
         ) {
           throw new JournalInvariantError("batch claim/refund race continuation violates channel accounting");
@@ -5566,7 +5566,8 @@ export class PurchaseJournal {
           activeOutpoint: continuation,
           activeScriptPublicKey: input.continuationScriptPublicKey,
           fundingAmountAtomic: continuationFundingAtomic,
-          claimedCumulativeAtomic: channel.chargedCumulativeAtomic,
+          chargedCumulativeAtomic: channel.signedCumulativeAtomic,
+          claimedCumulativeAtomic: channel.signedCumulativeAtomic,
           signedCumulativeAtomic: "0",
           epoch: channel.epoch + 1,
           version: channel.version + 1,
@@ -5575,7 +5576,8 @@ export class PurchaseJournal {
       } else if (
         channel.fundingAmountAtomic !== continuationFundingAtomic ||
         channel.activeScriptPublicKey !== input.continuationScriptPublicKey ||
-        channel.claimedCumulativeAtomic !== channel.chargedCumulativeAtomic
+        channel.claimedCumulativeAtomic !== channel.signedCumulativeAtomic ||
+        channel.chargedCumulativeAtomic !== channel.signedCumulativeAtomic
       ) {
         throw new JournalInvariantError("previously applied batch claim conflicts with race evidence");
       }

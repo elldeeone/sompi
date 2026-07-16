@@ -1551,6 +1551,12 @@ function strictPaymentRequiredArtifact(bytes: Uint8Array): string {
 function strictPaymentRequiredHeader(value: string): string {
   const header = strictHeaderString(value, PAYMENT_REQUIRED_HEADER);
   const envelope = decodePaymentRequiredEnvelopeHeader(header);
+  if (envelope.accepts.length !== 1) {
+    throw adapterError(
+      "artifact_mismatch",
+      "PAYMENT-REQUIRED must contain exactly one immutable exact offer"
+    );
+  }
   if (encodePaymentRequiredEnvelopeHeader(envelope) !== header) {
     throw adapterError(
       "artifact_mismatch",

@@ -1334,7 +1334,11 @@ function treasuryModule(input: {
   const raw = JSON.parse(fs.readFileSync(input.policyPath, "utf8")) as Record<string, unknown>;
   const chainEvidence = new ChainEvidenceModule(
     new WrpcOperatorChainObserver({ rpc: input.wallet, depthConfirmationDaa: 10 }),
-    new HttpsAcceptedChainWitness({ baseUrl: "https://api-tn10.kaspa.org/", depthConfirmationDaa: 10 }),
+    new HttpsAcceptedChainWitness({
+      baseUrl: "https://api-tn10.kaspa.org/",
+      depthConfirmationDaa: 10,
+      fetch: globalThis.fetch,
+    }),
     new JournalChainEvidenceStore(input.journal)
   );
   return new TreasuryOperationModule({
