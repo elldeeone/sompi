@@ -701,10 +701,12 @@ export class SqliteMerchantServerStateStore implements ServerStateStore {
         "SELECT status FROM batch_claim_attempts WHERE attempt_id = ?",
       ).get(attemptId) as { status: string } | undefined;
       if (!current || current.status === "applied") return;
-      if (current.status !== "pending") {
-        throw new DemoMerchantStoreError("conflict");
-      }
-      this.db.prepare("DELETE FROM batch_claim_attempts WHERE attempt_id = ?").run(attemptId);
+      // `pending` is durably written immediately before the SDK invokes the
+      // chain provider. A provider can submit successfully and then throw
+      // before returning a transaction ID, so no open status proves that the
+      // transaction was never broadcast. Preserve the recovery anchor until
+      // authoritative negative evidence is designed and recorded.
+      throw new DemoMerchantStoreError("conflict");
     });
     this.runWrite(abandon);
   }

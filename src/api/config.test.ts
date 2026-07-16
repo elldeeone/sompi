@@ -31,6 +31,10 @@ test("API environment accepts only loopback and a securely installed credential"
     assert.equal(listener.maxControlConcurrency, 2);
     assert.equal(listener.deadlineMs, 90_000);
     assert.throws(() => purchaseApiConnectionConfigFromEnv({ ...env, SOMPI_API_HOST: "0.0.0.0" }, { allowSameUserForTests: true }), /loopback/);
+    assert.throws(
+      () => purchaseApiConnectionConfigFromEnv(env),
+      /distinct non-root runtime principal/,
+    );
   } finally {
     bytes.fill(0);
     fs.rmSync(directory, { recursive: true, force: true });

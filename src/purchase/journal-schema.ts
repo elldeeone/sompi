@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 
 export const JOURNAL_APPLICATION_ID = 0x534f4d50; // SOMP
-export const JOURNAL_SCHEMA_VERSION = 13;
+export const JOURNAL_SCHEMA_VERSION = 14;
 
 export const JOURNAL_SCHEMA_V1_SQL = `
   CREATE TABLE schema_migrations (
@@ -1043,6 +1043,35 @@ export const JOURNAL_SCHEMA_V10_MIGRATION_SQL = `
     BEGIN SELECT RAISE(ABORT, 'batch Treasury Movement history is immutable'); END;
 `;
 
+/**
+ * Clean-cutover epoch for resumable batch claim/refund race discovery.
+ *
+ * The cursor is recovery state, not trusted chain evidence. A discovered
+ * winner still has to pass the alpha.8 transaction checks and the configured
+ * Chain Evidence floor before the Journal may apply it.
+ */
+export const JOURNAL_SCHEMA_V14_MIGRATION_SQL = `
+  CREATE TABLE batch_race_recoveries (
+    channel_id TEXT NOT NULL REFERENCES batch_channels(channel_id) ON DELETE RESTRICT,
+    source_txid TEXT NOT NULL,
+    source_output_index INTEGER NOT NULL CHECK (source_output_index >= 0),
+    refund_txid TEXT NOT NULL,
+    next_before_cursor TEXT,
+    pages_scanned INTEGER NOT NULL DEFAULT 0 CHECK (pages_scanned >= 0),
+    rows_scanned INTEGER NOT NULL DEFAULT 0 CHECK (rows_scanned >= 0),
+    state TEXT NOT NULL CHECK (state IN ('active', 'exhausted', 'accepted')),
+    winner_txid TEXT,
+    evidence_digest TEXT,
+    updated_at_ms INTEGER NOT NULL,
+    PRIMARY KEY (channel_id, source_txid, source_output_index, refund_txid),
+    CHECK ((state = 'accepted') = (winner_txid IS NOT NULL AND evidence_digest IS NOT NULL)),
+    CHECK (state = 'accepted' OR (winner_txid IS NULL AND evidence_digest IS NULL))
+  ) STRICT;
+
+  CREATE INDEX batch_race_recovery_status
+    ON batch_race_recoveries(state, updated_at_ms);
+`;
+
 export const JOURNAL_SCHEMA_V2_SQL = `${JOURNAL_SCHEMA_V1_SQL}\n${JOURNAL_SCHEMA_V2_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V3_SQL = `${JOURNAL_SCHEMA_V2_SQL}\n${JOURNAL_SCHEMA_V3_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V4_SQL = `${JOURNAL_SCHEMA_V3_SQL}\n${JOURNAL_SCHEMA_V4_MIGRATION_SQL}`;
@@ -1054,7 +1083,8 @@ export const JOURNAL_SCHEMA_V9_SQL = `${JOURNAL_SCHEMA_V8_SQL}\n${JOURNAL_SCHEMA
 export const JOURNAL_SCHEMA_V10_SQL = `${JOURNAL_SCHEMA_V9_SQL}\n${JOURNAL_SCHEMA_V10_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V11_SQL = JOURNAL_SCHEMA_V10_SQL;
 export const JOURNAL_SCHEMA_V12_SQL = JOURNAL_SCHEMA_V11_SQL;
-export const JOURNAL_SCHEMA_SQL = JOURNAL_SCHEMA_V10_SQL;
+export const JOURNAL_SCHEMA_V13_SQL = JOURNAL_SCHEMA_V12_SQL;
+export const JOURNAL_SCHEMA_SQL = `${JOURNAL_SCHEMA_V13_SQL}\n${JOURNAL_SCHEMA_V14_MIGRATION_SQL}`;
 
 export const JOURNAL_SCHEMA_V1_CHECKSUM = sha256Text(JOURNAL_SCHEMA_V1_SQL);
 export const JOURNAL_SCHEMA_V2_CHECKSUM = sha256Text(JOURNAL_SCHEMA_V2_SQL);

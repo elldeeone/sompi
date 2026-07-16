@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 
-import type { BatchChannelJournalRecord } from "../../purchase/journal.js";
+import type {
+  BatchChannelJournalRecord,
+  PurchaseJournal,
+} from "../../purchase/journal.js";
 import type { Sha256Digest } from "../../purchase/types.js";
 import { ChainEvidenceModule, meets } from "../../chain-evidence/module.js";
 import type { FinalityFloor } from "../../chain-evidence/types.js";
@@ -9,6 +12,8 @@ import type { BatchActiveUtxoSource } from "./batch-payment-module.js";
 const HASH32 = /^[a-f0-9]{64}$/;
 const UINT64_MAX = (1n << 64n) - 1n;
 const MAX_HISTORY_TRANSACTIONS = 500;
+const MAX_HISTORY_ROWS_PER_PAGE = 5_000;
+const MAX_HISTORY_PAGES_PER_ATTEMPT = 4;
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 const HISTORY_TIMEOUT_MS = 15_000;
 
@@ -34,6 +39,11 @@ export interface BatchClaimRaceSource {
   }>): Promise<BatchClaimRaceObservation>;
 }
 
+export type BatchRaceRecoveryStore = Pick<
+  PurchaseJournal,
+  "loadBatchRaceRecovery" | "advanceBatchRaceRecovery"
+>;
+
 /**
  * Identifies an accepted merchant claim which won the claim/refund race.
  *
@@ -51,12 +61,13 @@ export class HttpsBatchClaimRaceSource implements BatchClaimRaceSource {
     private readonly chain: BatchActiveUtxoSource,
     private readonly evidence: ChainEvidenceModule,
     private readonly floor: FinalityFloor,
+    private readonly journal: BatchRaceRecoveryStore,
     fetcher: typeof globalThis.fetch,
   ) {
     const parsed = new URL(baseUrl);
     if (
       parsed.protocol !== "https:" || parsed.username || parsed.password ||
-      parsed.search || parsed.hash || typeof fetcher !== "function"
+      parsed.search || parsed.hash || !journal || typeof fetcher !== "function"
     ) {
       throw new Error("batch claim-race history requires an uncredentialed HTTPS base URL");
     }
@@ -104,44 +115,95 @@ export class HttpsBatchClaimRaceSource implements BatchClaimRaceSource {
       return Object.freeze({ status: "unspent", detailDigest: digest("active-channel-unspent") });
     }
 
-    const url = new URL(
-      `addresses/${encodeURIComponent(channel.escrowAddress)}/full-transactions-page`,
-      this.baseUrl,
-    );
-    url.searchParams.set("limit", String(MAX_HISTORY_TRANSACTIONS));
-    url.searchParams.set("resolve_previous_outpoints", "light");
-    url.searchParams.set("acceptance", "accepted");
-    const timeout = AbortSignal.timeout(HISTORY_TIMEOUT_MS);
-    const response = await this.fetcher(url, {
-      method: "GET",
-      headers: { accept: "application/json" },
-      redirect: "error",
-      signal: AbortSignal.any([input.signal, timeout]),
+    const recoveryKey = Object.freeze({
+      channelId: channel.channelId,
+      sourceOutpoint: channel.activeOutpoint,
+      refundTransactionId: input.refundTransactionId,
     });
-    if (!response.ok) {
-      void response.body?.cancel();
-      return unknown(`history-http-${response.status}`);
-    }
-    const history = await boundedJsonArray(response);
-    const spenders = history.filter((transaction) =>
-      transaction.is_accepted === true &&
-      Array.isArray(transaction.inputs) &&
-      transaction.inputs.some((candidate: unknown) => {
-        const value = record(candidate);
-        return (
-          String(value?.previous_outpoint_hash ?? "").toLowerCase() === channel.activeOutpoint.txid &&
-          Number(value?.previous_outpoint_index) === channel.activeOutpoint.index
-        );
-      })
-    );
-    if (spenders.length !== 1) {
-      return unknown(spenders.length === 0 ? "accepted-spender-not-found" : "multiple-accepted-spenders");
-    }
-    const candidate = validateClaimCandidate(spenders[0]!, channel);
-    if (!candidate || candidate.transactionId === input.refundTransactionId) {
-      return unknown("accepted-spender-is-not-alpha8-claim");
-    }
+    const checkpoint = this.journal.loadBatchRaceRecovery(recoveryKey);
+    if (checkpoint?.state === "accepted") return unknown("accepted-race-already-applied");
 
+    // Exhaustion completes one bounded index scan, not chain truth. The
+    // address index may lag an already accepted spender, so a later recovery
+    // call starts a fresh cycle at the newest page. Accepted lineage is the
+    // only terminal discovery state.
+    let before = checkpoint?.state === "active"
+      ? checkpoint.nextBeforeCursor
+      : undefined;
+    let pagesScanned = checkpoint?.pagesScanned ?? 0;
+    const deadline = AbortSignal.any([
+      input.signal,
+      AbortSignal.timeout(HISTORY_TIMEOUT_MS),
+    ]);
+    for (let page = 0; page < MAX_HISTORY_PAGES_PER_ATTEMPT; page += 1) {
+      const url = new URL(
+        `addresses/${encodeURIComponent(channel.escrowAddress)}/full-transactions-page`,
+        this.baseUrl,
+      );
+      url.searchParams.set("limit", String(MAX_HISTORY_TRANSACTIONS));
+      url.searchParams.set("resolve_previous_outpoints", "light");
+      url.searchParams.set("acceptance", "accepted");
+      if (before !== undefined) url.searchParams.set("before", before);
+      const response = await this.fetcher(url, {
+        method: "GET",
+        headers: { accept: "application/json" },
+        redirect: "error",
+        signal: deadline,
+      });
+      if (!response.ok) {
+        void response.body?.cancel();
+        return unknown(`history-http-${response.status}`);
+      }
+      const history = await boundedJsonArray(response);
+      const spenders = history.filter((transaction) =>
+        transaction.is_accepted === true &&
+        Array.isArray(transaction.inputs) &&
+        transaction.inputs.some((candidate: unknown) => {
+          const value = record(candidate);
+          return (
+            String(value?.previous_outpoint_hash ?? "").toLowerCase() === channel.activeOutpoint.txid &&
+            Number(value?.previous_outpoint_index) === channel.activeOutpoint.index
+          );
+        })
+      );
+      if (spenders.length > 1) return unknown("multiple-accepted-spenders");
+      if (spenders.length === 1) {
+        const candidate = validateClaimCandidate(spenders[0]!, channel);
+        if (!candidate || candidate.transactionId === input.refundTransactionId) {
+          return unknown("accepted-spender-is-not-alpha8-claim");
+        }
+        return this.verifyCandidate(input, channel, candidate);
+      }
+
+      const next = historyCursor(response.headers.get("x-next-page-before"), before);
+      const progress = this.journal.advanceBatchRaceRecovery({
+        ...recoveryKey,
+        ...(before === undefined ? {} : { expectedBeforeCursor: before }),
+        expectedPagesScanned: pagesScanned,
+        ...(next === undefined ? {} : { nextBeforeCursor: next }),
+        rowsScanned: history.length,
+      });
+      if (progress.state === "exhausted") return unknown("accepted-history-exhausted");
+      before = progress.nextBeforeCursor;
+      pagesScanned = progress.pagesScanned;
+    }
+    return unknown("accepted-history-search-incomplete");
+  }
+
+  private async verifyCandidate(
+    input: Readonly<{
+      channel: BatchChannelJournalRecord;
+      refundTransactionId: string;
+      signal: AbortSignal;
+    }>,
+    channel: BatchChannelJournalRecord,
+    candidate: Readonly<{
+      transactionId: string;
+      payoutAmountAtomic: string;
+      payoutScriptPublicKey: string;
+      continuationFundingAmountAtomic: string;
+    }>,
+  ): Promise<BatchClaimRaceObservation> {
     const observed = await this.evidence.observe({
       operationId: `batch-claim-race:${channel.channelId}`,
       operation: "recovery-release",
@@ -265,7 +327,7 @@ function output(value: unknown, transactionId: string, index: number): Readonly<
 
 async function boundedJsonArray(response: Response): Promise<Record<string, unknown>[]> {
   const value = await boundedJson(response);
-  if (!Array.isArray(value) || value.length > MAX_HISTORY_TRANSACTIONS) {
+  if (!Array.isArray(value) || value.length > MAX_HISTORY_ROWS_PER_PAGE) {
     throw new Error("batch claim history count is invalid");
   }
   return value.map((entry) => {
@@ -273,6 +335,15 @@ async function boundedJsonArray(response: Response): Promise<Record<string, unkn
     if (!candidate) throw new Error("batch claim history entry is invalid");
     return candidate;
   });
+}
+
+function historyCursor(value: string | null, previous: string | undefined): string | undefined {
+  if (value === null) return undefined;
+  if (!/^[1-9][0-9]{0,19}$/.test(value)) throw new Error("batch claim history cursor is invalid");
+  if (previous !== undefined && BigInt(value) >= BigInt(previous)) {
+    throw new Error("batch claim history cursor did not move backward");
+  }
+  return value;
 }
 
 async function boundedJson(response: Response): Promise<any> {

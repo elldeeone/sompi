@@ -32,6 +32,14 @@ export function purchaseApiConnectionConfigFromEnv(
   const port = numeric(env.SOMPI_API_PORT ?? "7442", "Sompi API port", 1, 65_535);
   const expectedOwnerUserId = numeric(required(env, "SOMPI_OPERATOR_UID"), "operator user ID", 0, 0x7fffffff);
   const runtimeGroupId = numeric(required(env, "SOMPI_RUNTIME_GID"), "runtime group ID", 0, 0x7fffffff);
+  if (!options.allowSameUserForTests) {
+    const currentUserId = typeof process.getuid === "function" ? process.getuid() : undefined;
+    if (currentUserId === undefined || currentUserId === 0 || currentUserId === expectedOwnerUserId) {
+      throw new PurchaseApiConfigError(
+        "Sompi API clients must run as a distinct non-root runtime principal",
+      );
+    }
+  }
   const filename = path.resolve(env.SOMPI_AGENT_API_CREDENTIAL ?? path.join(os.homedir(), ".sompi", "agent-api.json"));
   try {
     return Object.freeze({

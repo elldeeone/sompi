@@ -7,7 +7,7 @@ import test from "node:test";
 import type { ChainEvidenceModule } from "../../chain-evidence/module.js";
 import { CHAIN_EVIDENCE_PROFILE, type ChainEvidenceRecord } from "../../chain-evidence/types.js";
 import { evidenceDigest } from "../../purchase/identity.js";
-import { PurchaseJournal } from "../../purchase/journal.js";
+import { PurchaseJournal, type JournalFaultPoint } from "../../purchase/journal.js";
 import type { TreasuryOperationRecord } from "../../treasury/operation-journal.js";
 import type {
   TreasuryOperationRequest,
@@ -160,8 +160,37 @@ test("accepted merchant claim atomically advances the channel and supersedes a c
         }),
       },
     );
-    const intent = refundIntent(fixture.channelId);
+    const requested = refundIntent(fixture.channelId);
+    const capacityBeforeRefund = fixture.journal.treasuryPolicyCapacityUsed();
+    const policy = fixture.journal.installPolicy({
+      maxPerPaymentAtomic: "10000000",
+      maxPerHourAtomic: "10000000",
+      approvalAboveAtomic: "0",
+      allowlist: [ADDRESS],
+    });
+    let intent = fixture.journal.claimTreasuryOperationIntent({
+      operationKey: requested.operationKey,
+      requestDigest: requested.requestDigest,
+      kind: requested.kind,
+      destination: requested.destination,
+      requestedAmountAtomic: requested.requestedAmountAtomic,
+      feeCeilingAtomic: requested.feeCeilingAtomic,
+      retryLimit: requested.retryLimit,
+      policyDigest: policy.digest,
+    });
+    const driver = fixture.journal.claimTreasuryOperationDriver(
+      intent.operationKey,
+      "batch-refund-race-test",
+      60_000,
+    ).lease!;
     const prepared = await adapter.prepare(intent);
+    intent = fixture.journal.recordPreparedTreasuryOperation(intent.operationKey, {
+      ...prepared,
+      policyDigest: policy.digest,
+    }, driver);
+    assert.equal(fixture.journal.planTreasuryOperationSubmission(intent.operationKey, driver), true);
+    assert.equal(fixture.journal.claimTreasuryOperationEffectCapability(intent.operationKey, driver), true);
+    intent = fixture.journal.requireTreasuryOperation(intent.operationKey);
     const observed = await adapter.observe(intent, prepared.bytes);
     assert.equal(observed.status, "superseded");
     assert.equal(observed.detail.winningTransactionId, claimTransactionId);
@@ -173,10 +202,25 @@ test("accepted merchant claim atomically advances the channel and supersedes a c
     assert.equal(channel.signedCumulativeAtomic, "0");
     assert.equal(channel.latestVoucher, undefined);
     assert.equal(fixture.journal.requireBatchTreasuryMovement(movementId).state, "failed_terminal");
+    assert.equal(fixture.journal.requireTreasuryOperation(intent.operationKey).state, "failed_terminal");
+    assert.equal(fixture.journal.treasuryPolicyCapacityUsed(), capacityBeforeRefund);
     const claimMovement = fixture.journal.requireBatchTreasuryMovement(
       `batch-claim:${fixture.channelId}:${claimTransactionId}:1`,
     );
     assert.equal(claimMovement.state, "accepted");
+
+    // TreasuryOperationModule records the adapter observation after the
+    // adapter's atomic Journal transition. That second write must be an exact
+    // idempotent replay, not a conflicting terminal-state transition.
+    assert.equal(
+      fixture.journal.recordTreasuryOperationObservation(
+        intent.operationKey,
+        "superseded",
+        observed.detail,
+        driver,
+      ).state,
+      "failed_terminal",
+    );
 
     const replayed = await adapter.observe(intent, prepared.bytes);
     assert.equal(replayed.status, "superseded");
@@ -184,6 +228,60 @@ test("accepted merchant claim atomically advances the channel and supersedes a c
     assert.deepEqual(
       fixture.journal.requireBatchChannel(fixture.channelId).activeOutpoint,
       { txid: claimTransactionId, index: 1 },
+    );
+  } finally {
+    fixture.close();
+  }
+});
+
+test("a crash during claim adoption rolls back channel, Movement, recovery, and Treasury state", async () => {
+  let inject = false;
+  const fixture = await channelFixture({
+    faultInjector(point) {
+      if (inject && point === "batch_channel.after_update") {
+        throw new Error("injected batch claim adoption crash");
+      }
+    },
+  });
+  try {
+    const race = await preparedClaimRace(fixture);
+    const channelBefore = fixture.journal.requireBatchChannel(fixture.channelId);
+    const movementBefore = fixture.journal.requireBatchTreasuryMovement(race.movementId);
+    const operationBefore = fixture.journal.requireTreasuryOperation(race.intent.operationKey);
+    const capacityBefore = fixture.journal.treasuryPolicyCapacityUsed();
+
+    inject = true;
+    await assert.rejects(
+      race.adapter.observe(race.intent, race.prepared.bytes),
+      /injected batch claim adoption crash/,
+    );
+    inject = false;
+
+    assert.deepEqual(fixture.journal.requireBatchChannel(fixture.channelId), channelBefore);
+    assert.deepEqual(fixture.journal.requireBatchTreasuryMovement(race.movementId), movementBefore);
+    assert.deepEqual(fixture.journal.requireTreasuryOperation(race.intent.operationKey), operationBefore);
+    assert.equal(fixture.journal.treasuryPolicyCapacityUsed(), capacityBefore);
+    assert.equal(fixture.journal.loadBatchRaceRecovery({
+      channelId: fixture.channelId,
+      sourceOutpoint: channelBefore.activeOutpoint,
+      refundTransactionId: race.prepared.transactionId,
+    }), undefined);
+    assert.throws(
+      () => fixture.journal.requireBatchTreasuryMovement(
+        `batch-claim:${fixture.channelId}:${race.claimTransactionId}:1`,
+      ),
+      /does not exist/,
+    );
+
+    const recovered = await race.adapter.observe(race.intent, race.prepared.bytes);
+    assert.equal(recovered.status, "superseded");
+    assert.deepEqual(
+      fixture.journal.requireBatchChannel(fixture.channelId).activeOutpoint,
+      { txid: race.claimTransactionId, index: 1 },
+    );
+    assert.equal(
+      fixture.journal.requireTreasuryOperation(race.intent.operationKey).state,
+      "failed_terminal",
     );
   } finally {
     fixture.close();
@@ -211,7 +309,9 @@ test("batch refund module persists a non-Purchase Movement before Treasury execu
   }
 });
 
-async function channelFixture() {
+async function channelFixture(options: Readonly<{
+  faultInjector?: (point: JournalFaultPoint) => void;
+}> = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-batch-refund-"));
   const journal = new PurchaseJournal(":memory:", {
     now: () => 1_800_000_000_000,
@@ -227,6 +327,7 @@ async function channelFixture() {
       evidenceBytes: 67_108_864,
       directTreasuryRetries: 3,
     },
+    ...(options.faultInjector ? { faultInjector: options.faultInjector } : {}),
   });
   const signer = new SecureBatchChannelSigner(
     directory,
@@ -255,6 +356,95 @@ async function channelFixture() {
       fs.rmSync(directory, { recursive: true, force: true });
     },
   };
+}
+
+async function preparedClaimRace(
+  fixture: Awaited<ReturnType<typeof channelFixture>>,
+) {
+  const current = fixture.journal.requireBatchChannel(fixture.channelId);
+  fixture.journal.saveBatchChannel({
+    ...current,
+    chargedCumulativeAtomic: "0",
+    signedCumulativeAtomic: "200000",
+    latestVoucher: { amountAtomic: "200000", signature: "11".repeat(64) },
+    version: current.version + 1,
+    updatedAtMs: current.updatedAtMs,
+  });
+  const movementId = `batch-refund:${fixture.channelId}`;
+  fixture.journal.planBatchTreasuryMovement({
+    movementId,
+    channelId: fixture.channelId,
+    kind: "refund",
+    requestDigest: evidenceDigest("batch-refund-race-crash"),
+    activeOutpointBefore: { txid: DEPOSIT_TXID, index: 0 },
+  });
+  const claimTransactionId = "66".repeat(32);
+  const claimEvidence = evidenceDigest("accepted-claim-crash");
+  recordAcceptedEvidence(fixture.journal, claimTransactionId, claimEvidence);
+  const adapter = new BatchRefundTreasuryOperationAdapter(
+    fixture.journal,
+    {
+      networkId: "testnet-10",
+      client: async () => ({ submitTransaction: async () => { throw new Error("not used"); } }),
+    } as unknown as KaspaWallet,
+    { getVirtualDaaScore: async () => "500000001", getUtxos: async () => [] },
+    fixture.signer,
+    { observe: async () => ({
+      status: "unavailable",
+      detailDigest: evidenceDigest("refund-not-observed-crash"),
+    }) } as unknown as ChainEvidenceModule,
+    "accepted",
+    "100000",
+    {
+      getVirtualDaaScore: async () => "500000001",
+      observeClaimWinner: async () => ({
+        status: "claim" as const,
+        transactionId: claimTransactionId,
+        finality: "accepted" as const,
+        continuationOutpoint: { txid: claimTransactionId, index: 1 },
+        continuationScriptPublicKey: current.activeScriptPublicKey,
+        continuationFundingAmountAtomic: "800000",
+        detailDigest: claimEvidence,
+      }),
+    },
+  );
+  const requested = refundIntent(fixture.channelId);
+  const policy = fixture.journal.installPolicy({
+    maxPerPaymentAtomic: "10000000",
+    maxPerHourAtomic: "10000000",
+    approvalAboveAtomic: "0",
+    allowlist: [ADDRESS],
+  });
+  let intent = fixture.journal.claimTreasuryOperationIntent({
+    operationKey: requested.operationKey,
+    requestDigest: requested.requestDigest,
+    kind: requested.kind,
+    destination: requested.destination,
+    requestedAmountAtomic: requested.requestedAmountAtomic,
+    feeCeilingAtomic: requested.feeCeilingAtomic,
+    retryLimit: requested.retryLimit,
+    policyDigest: policy.digest,
+  });
+  const driver = fixture.journal.claimTreasuryOperationDriver(
+    intent.operationKey,
+    "batch-refund-race-crash-test",
+    60_000,
+  ).lease!;
+  const prepared = await adapter.prepare(intent);
+  intent = fixture.journal.recordPreparedTreasuryOperation(intent.operationKey, {
+    ...prepared,
+    policyDigest: policy.digest,
+  }, driver);
+  assert.equal(fixture.journal.planTreasuryOperationSubmission(intent.operationKey, driver), true);
+  assert.equal(fixture.journal.claimTreasuryOperationEffectCapability(intent.operationKey, driver), true);
+  return Object.freeze({
+    adapter,
+    claimTransactionId,
+    driver,
+    intent: fixture.journal.requireTreasuryOperation(intent.operationKey),
+    movementId,
+    prepared,
+  });
 }
 
 function completedTreasury(

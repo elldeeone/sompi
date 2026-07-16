@@ -178,6 +178,30 @@ function batchChannelFromRow(row: BatchChannelRow): BatchChannelJournalRecord {
   });
 }
 
+function batchRaceRecoveryFromRow(row: BatchRaceRecoveryRow): BatchRaceRecoveryRecord {
+  return Object.freeze({
+    channelId: row.channel_id,
+    sourceOutpoint: Object.freeze({
+      txid: row.source_txid,
+      index: row.source_output_index,
+    }),
+    refundTransactionId: row.refund_txid,
+    ...(row.next_before_cursor === null
+      ? {}
+      : { nextBeforeCursor: row.next_before_cursor }),
+    pagesScanned: row.pages_scanned,
+    rowsScanned: row.rows_scanned,
+    state: row.state,
+    ...(row.winner_txid === null
+      ? {}
+      : { winnerTransactionId: row.winner_txid }),
+    ...(row.evidence_digest === null
+      ? {}
+      : { evidenceDigest: row.evidence_digest }),
+    updatedAtMs: row.updated_at_ms,
+  });
+}
+
 function normalizeBatchChannel(
   value: Readonly<BatchChannelJournalRecord>,
   now: number
@@ -323,6 +347,14 @@ function batchTransitionReason(
 
 function requireBatchHash(value: unknown, label: string): string {
   if (typeof value !== "string" || !/^[a-f0-9]{64}$/.test(value)) {
+    throw new JournalInvariantError(`${label} is invalid`);
+  }
+  return value;
+}
+
+function optionalBatchHistoryCursor(value: unknown, label: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !/^[1-9][0-9]{0,19}$/.test(value)) {
     throw new JournalInvariantError(`${label} is invalid`);
   }
   return value;
@@ -539,6 +571,21 @@ export interface BatchTreasuryMovementRecord {
   readonly preparedDigest?: Sha256Digest;
   readonly evidenceDigest?: Sha256Digest;
   readonly createdAtMs: number;
+  readonly updatedAtMs: number;
+}
+
+export type BatchRaceRecoveryState = "active" | "exhausted" | "accepted";
+
+export interface BatchRaceRecoveryRecord {
+  readonly channelId: string;
+  readonly sourceOutpoint: Readonly<{ txid: string; index: number }>;
+  readonly refundTransactionId: string;
+  readonly nextBeforeCursor?: string;
+  readonly pagesScanned: number;
+  readonly rowsScanned: number;
+  readonly state: BatchRaceRecoveryState;
+  readonly winnerTransactionId?: string;
+  readonly evidenceDigest?: Sha256Digest;
   readonly updatedAtMs: number;
 }
 
@@ -1172,6 +1219,20 @@ interface BatchTreasuryMovementRow {
   prepared_digest: Sha256Digest | null;
   evidence_digest: Sha256Digest | null;
   created_at_ms: number;
+  updated_at_ms: number;
+}
+
+interface BatchRaceRecoveryRow {
+  channel_id: string;
+  source_txid: string;
+  source_output_index: number;
+  refund_txid: string;
+  next_before_cursor: string | null;
+  pages_scanned: number;
+  rows_scanned: number;
+  state: BatchRaceRecoveryState;
+  winner_txid: string | null;
+  evidence_digest: Sha256Digest | null;
   updated_at_ms: number;
 }
 
@@ -2813,6 +2874,21 @@ export class PurchaseJournal {
     const detailDigest = evidenceDigest(detailJson);
     const record = this.db.transaction(() => {
       const current = this.requireTreasuryOperation(operationKey);
+      if (current.state === "failed_terminal" && status === "superseded") {
+        const existing = this.db.prepare(
+          `SELECT detail_digest, detail_json
+             FROM treasury_operation_observations
+            WHERE operation_key = ? AND status = 'superseded'
+            ORDER BY sequence DESC LIMIT 1`,
+        ).get(operationKey) as { detail_digest: string; detail_json: string } | undefined;
+        if (
+          !existing || existing.detail_digest !== detailDigest ||
+          existing.detail_json !== detailJson
+        ) {
+          throw new JournalInvariantError("superseded Treasury evidence changed after terminalization");
+        }
+        return current;
+      }
       if (!["submission_planned", "submitted", "observed"].includes(current.state)) {
         throw new JournalInvariantError("direct Treasury operation is not awaiting observation");
       }
@@ -5490,6 +5566,125 @@ export class PurchaseJournal {
     return complete.immediate();
   }
 
+  loadBatchRaceRecovery(input: Readonly<{
+    channelId: string;
+    sourceOutpoint: Readonly<{ txid: string; index: number }>;
+    refundTransactionId: string;
+  }>): BatchRaceRecoveryRecord | undefined {
+    requireBatchHash(input.channelId, "batch race channel ID");
+    const source = normalizeBatchOutpoint(input.sourceOutpoint, "batch race source");
+    requireBatchHash(input.refundTransactionId, "batch race refund transaction ID");
+    const row = this.db.prepare(
+      `SELECT * FROM batch_race_recoveries
+        WHERE channel_id = ? AND source_txid = ?
+          AND source_output_index = ? AND refund_txid = ?`,
+    ).get(
+      input.channelId,
+      source.txid,
+      source.index,
+      input.refundTransactionId,
+    ) as BatchRaceRecoveryRow | undefined;
+    return row ? batchRaceRecoveryFromRow(row) : undefined;
+  }
+
+  /**
+   * Commits one completed, bounded history page. The expected cursor and page
+   * revision form the compare-and-swap fence, so concurrent recovery workers
+   * cannot skip, duplicate, or rewind pages. A later recovery call resumes
+   * from `nextBeforeCursor`; an exhausted cycle may be safely rescanned because
+   * address indexing can lag accepted chain state.
+   */
+  advanceBatchRaceRecovery(input: Readonly<{
+    channelId: string;
+    sourceOutpoint: Readonly<{ txid: string; index: number }>;
+    refundTransactionId: string;
+    expectedBeforeCursor?: string;
+    expectedPagesScanned: number;
+    nextBeforeCursor?: string;
+    rowsScanned: number;
+  }>): BatchRaceRecoveryRecord {
+    requireBatchHash(input.channelId, "batch race channel ID");
+    const source = normalizeBatchOutpoint(input.sourceOutpoint, "batch race source");
+    requireBatchHash(input.refundTransactionId, "batch race refund transaction ID");
+    const expected = optionalBatchHistoryCursor(input.expectedBeforeCursor, "expected batch history cursor");
+    const next = optionalBatchHistoryCursor(input.nextBeforeCursor, "next batch history cursor");
+    if (expected !== undefined && next !== undefined && BigInt(next) >= BigInt(expected)) {
+      throw new JournalInvariantError("batch history cursor did not move backward");
+    }
+    if (!Number.isSafeInteger(input.expectedPagesScanned) || input.expectedPagesScanned < 0) {
+      throw new JournalInvariantError("expected batch history page count is invalid");
+    }
+    if (!Number.isSafeInteger(input.rowsScanned) || input.rowsScanned < 0 || input.rowsScanned > 5_000) {
+      throw new JournalInvariantError("batch history row count is invalid");
+    }
+    const advance = this.db.transaction(() => {
+      const channel = this.requireBatchChannel(input.channelId);
+      if (
+        channel.status !== "active" ||
+        channel.activeOutpoint.txid !== source.txid ||
+        channel.activeOutpoint.index !== source.index
+      ) {
+        throw new JournalFencingError("batch history recovery source is no longer the active channel outpoint");
+      }
+      const current = this.loadBatchRaceRecovery(input);
+      if (!current) {
+        if (expected !== undefined || input.expectedPagesScanned !== 0) {
+          throw new JournalFencingError("batch history recovery cursor has no durable predecessor");
+        }
+        this.db.prepare(
+          `INSERT INTO batch_race_recoveries
+             (channel_id, source_txid, source_output_index, refund_txid,
+              next_before_cursor, pages_scanned, rows_scanned, state,
+              winner_txid, evidence_digest, updated_at_ms)
+           VALUES (?, ?, ?, ?, ?, 1, ?, ?, NULL, NULL, ?)`,
+        ).run(
+          input.channelId,
+          source.txid,
+          source.index,
+          input.refundTransactionId,
+          next ?? null,
+          input.rowsScanned,
+          next === undefined ? "exhausted" : "active",
+          this.timestamp(),
+        );
+      } else {
+        if (current.state === "accepted") return current;
+        if (
+          current.nextBeforeCursor !== expected ||
+          current.pagesScanned !== input.expectedPagesScanned ||
+          (current.state === "exhausted" && expected !== undefined)
+        ) {
+          throw new JournalFencingError("batch history recovery cursor changed concurrently");
+        }
+        const updated = this.db.prepare(
+          `UPDATE batch_race_recoveries
+              SET next_before_cursor = ?, pages_scanned = pages_scanned + 1,
+                  rows_scanned = rows_scanned + ?, state = ?, updated_at_ms = ?
+            WHERE channel_id = ? AND source_txid = ? AND source_output_index = ?
+              AND refund_txid = ? AND state = ?
+              AND next_before_cursor IS ? AND pages_scanned = ?`,
+        ).run(
+          next ?? null,
+          input.rowsScanned,
+          next === undefined ? "exhausted" : "active",
+          this.timestamp(),
+          input.channelId,
+          source.txid,
+          source.index,
+          input.refundTransactionId,
+          current.state,
+          expected ?? null,
+          input.expectedPagesScanned,
+        );
+        if (updated.changes !== 1) {
+          throw new JournalFencingError("batch history recovery progress lost its compare-and-swap");
+        }
+      }
+      return this.loadBatchRaceRecovery(input)!;
+    });
+    return advance.immediate();
+  }
+
   /**
    * Atomically adopts a fully verified merchant claim which spent the active
    * channel before the prepared client refund, and terminally supersedes that
@@ -5498,9 +5693,12 @@ export class PurchaseJournal {
    */
   completeBatchClaimRefundRace(input: Readonly<{
     channelId: string;
+    treasuryOperationKey: string;
     refundMovementId: string;
     expectedActiveOutpoint: Readonly<{ txid: string; index: number }>;
+    refundTransactionId: string;
     claimTransactionId: string;
+    finality: "accepted" | "depth-confirmed";
     continuationOutpoint: Readonly<{ txid: string; index: number }>;
     continuationScriptPublicKey: string;
     continuationFundingAmountAtomic: string;
@@ -5508,9 +5706,18 @@ export class PurchaseJournal {
   }>): Readonly<{
     channel: BatchChannelJournalRecord;
     refundMovement: BatchTreasuryMovementRecord;
+    treasuryObservationDetail: Readonly<Record<string, unknown>>;
   }> {
     const reconcile = this.db.transaction(() => {
+      assertTreasuryOperationKey(input.treasuryOperationKey);
+      if (input.treasuryOperationKey !== `batch.refund.${input.channelId}`) {
+        throw new JournalInvariantError("batch claim race Treasury operation does not match the channel");
+      }
+      requireBatchHash(input.refundTransactionId, "batch refund transaction ID");
       requireBatchHash(input.claimTransactionId, "batch claim transaction ID");
+      if (input.finality !== "accepted" && input.finality !== "depth-confirmed") {
+        throw new JournalInvariantError("batch claim race finality is invalid");
+      }
       const expected = normalizeBatchOutpoint(input.expectedActiveOutpoint, "batch claim source");
       const continuation = normalizeBatchOutpoint(input.continuationOutpoint, "batch claim continuation");
       if (continuation.txid !== input.claimTransactionId || continuation.index !== 1) {
@@ -5624,7 +5831,114 @@ export class PurchaseJournal {
           state: "failed_terminal",
         });
       }
-      return Object.freeze({ channel, refundMovement });
+
+      const treasuryObservationDetail = Object.freeze({
+        profile: "urn:sompi:batch-refund-observation:1",
+        operationKey: input.treasuryOperationKey,
+        refundTransactionId: input.refundTransactionId,
+        winningEffect: "merchant-claim",
+        winningTransactionId: input.claimTransactionId,
+        continuationOutpoint: continuation,
+        continuationFundingAmountAtomic: continuationFundingAtomic,
+        chainEvidenceDigest: input.chainEvidenceDigest,
+        chainEvidenceLevel: input.finality,
+      });
+      const detailJson = canonicalTreasuryObservationJson(treasuryObservationDetail);
+      if (Buffer.byteLength(detailJson) > 16_384) {
+        throw new JournalInvariantError("batch claim race Treasury observation is oversized");
+      }
+      const detailDigest = evidenceDigest(detailJson);
+      const operation = this.requireTreasuryOperation(input.treasuryOperationKey);
+      if (
+        operation.kind !== "batch_refund" ||
+        operation.transactionId !== input.refundTransactionId ||
+        !["submission_planned", "submitted", "failed_terminal"].includes(operation.state)
+      ) {
+        throw new JournalInvariantError("batch claim race Treasury operation is not the prepared refund");
+      }
+      this.db.prepare(
+        `INSERT OR IGNORE INTO treasury_operation_observations
+           (operation_key, status, detail_digest, detail_json, observed_at_ms)
+         VALUES (?, 'superseded', ?, ?, ?)`,
+      ).run(input.treasuryOperationKey, detailDigest, detailJson, this.timestamp());
+      if (operation.state !== "failed_terminal") {
+        const now = this.timestamp();
+        const updated = this.db.prepare(
+          `UPDATE treasury_operations
+              SET state = 'failed_terminal', submission_in_flight = 0,
+                  effect_capability_generation = NULL,
+                  completed_at_ms = ?, updated_at_ms = ?
+            WHERE operation_key = ? AND state = ?`,
+        ).run(now, now, input.treasuryOperationKey, operation.state);
+        if (updated.changes !== 1) {
+          throw new JournalInvariantError("batch claim race lost its Treasury supersession fence");
+        }
+        this.insertTreasuryOperationTransition(
+          input.treasuryOperationKey,
+          operation.state,
+          "failed_terminal",
+          "mutually_exclusive_chain_effect_accepted",
+          now,
+        );
+      } else {
+        const existing = this.db.prepare(
+          `SELECT detail_digest FROM treasury_operation_observations
+            WHERE operation_key = ? AND status = 'superseded'
+            ORDER BY sequence DESC LIMIT 1`,
+        ).get(input.treasuryOperationKey) as { detail_digest: string } | undefined;
+        if (existing?.detail_digest !== detailDigest) {
+          throw new JournalInvariantError("batch claim race Treasury evidence changed");
+        }
+      }
+
+      const recovery = this.loadBatchRaceRecovery({
+        channelId: input.channelId,
+        sourceOutpoint: expected,
+        refundTransactionId: input.refundTransactionId,
+      });
+      if (recovery?.state === "accepted") {
+        if (
+          recovery.winnerTransactionId !== input.claimTransactionId ||
+          recovery.evidenceDigest !== input.chainEvidenceDigest
+        ) {
+          throw new JournalInvariantError("batch claim race accepted evidence changed");
+        }
+      } else if (recovery) {
+        const updated = this.db.prepare(
+          `UPDATE batch_race_recoveries
+              SET state = 'accepted', winner_txid = ?, evidence_digest = ?, updated_at_ms = ?
+            WHERE channel_id = ? AND source_txid = ? AND source_output_index = ?
+              AND refund_txid = ? AND state IN ('active', 'exhausted')`,
+        ).run(
+          input.claimTransactionId,
+          input.chainEvidenceDigest,
+          this.timestamp(),
+          input.channelId,
+          expected.txid,
+          expected.index,
+          input.refundTransactionId,
+        );
+        if (updated.changes !== 1) {
+          throw new JournalInvariantError("batch claim race recovery state changed concurrently");
+        }
+      } else {
+        this.db.prepare(
+          `INSERT INTO batch_race_recoveries
+             (channel_id, source_txid, source_output_index, refund_txid,
+              next_before_cursor, pages_scanned, rows_scanned, state,
+              winner_txid, evidence_digest, updated_at_ms)
+           VALUES (?, ?, ?, ?, NULL, 0, 0, 'accepted', ?, ?, ?)`,
+        ).run(
+          input.channelId,
+          expected.txid,
+          expected.index,
+          input.refundTransactionId,
+          input.claimTransactionId,
+          input.chainEvidenceDigest,
+          this.timestamp(),
+        );
+      }
+      return Object.freeze({ channel, refundMovement, treasuryObservationDetail });
     });
     return reconcile.immediate();
   }

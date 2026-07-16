@@ -40,7 +40,7 @@ import {
   WalletBatchChainSource,
   type BatchClaimRaceSource,
 } from "../adapters/kaspa-x402/index.js";
-import { ChainEvidenceModule } from "../chain-evidence/module.js";
+import { ChainEvidenceModule, meets } from "../chain-evidence/module.js";
 import { JournalChainEvidenceStore } from "../chain-evidence/journal-store.js";
 import {
   HttpsAcceptedChainWitness,
@@ -136,6 +136,8 @@ export interface LiveBatchProofReport {
     readonly claimFeeAtomic: typeof BATCH_CLAIM_FEE_ATOMIC;
     readonly payoutAmountAtomic: "10000000";
     readonly continuation: LiveObservedOutpoint;
+    readonly chainEvidenceDigest: string;
+    readonly chainEvidenceLevel: "accepted" | "depth-confirmed" | "consensus-final";
   };
   readonly refundChannel: {
     readonly channelId: string;
@@ -343,7 +345,9 @@ export async function runLiveBatchProof(
     const chainProvider = liveBatchServerChainProvider(
       initialized,
       batchChain,
-      trackedEscrows
+      trackedEscrows,
+      chainEvidence,
+      claimChannel.channel,
     );
     const claimBuilder = new KaspaX402BatchClaimBuilder(
       merchantSigner,
@@ -494,6 +498,12 @@ export async function runLiveBatchProof(
     if (!claim.accepted || !claim.transactionId) {
       throw new Error("live batch claim was not accepted");
     }
+    const claimChainEvidence = await observeAcceptedBatchClaim({
+      chainEvidence,
+      channel: claimChannel.channel,
+      transactionId: claim.transactionId,
+      merchantAddress: initialized.config.wallets.merchantAddress,
+    });
     const continuation = await observeCurrentAddressOutpoint({
       wallet: initialized.observerWallet,
       address: claimChannel.channel.escrowAddress,
@@ -549,6 +559,8 @@ export async function runLiveBatchProof(
         claimFeeAtomic: BATCH_CLAIM_FEE_ATOMIC,
         payoutAmountAtomic: "10000000" as const,
         continuation,
+        chainEvidenceDigest: claimChainEvidence.detailDigest,
+        chainEvidenceLevel: claimChainEvidence.level,
       }),
       refundChannel: Object.freeze({
         channelId: refundChannel.channel.id,
@@ -730,8 +742,14 @@ function acceptedOperationOutpoint(input: {
 function liveBatchServerChainProvider(
   initialized: InitializedLiveProof,
   chain: WalletBatchChainSource,
-  escrowAddresses: Set<string>
+  escrowAddresses: Set<string>,
+  chainEvidence: ChainEvidenceModule,
+  channel: NonNullable<Awaited<ReturnType<typeof openChannel>>["channel"]>,
 ): ServerChainProvider {
+  // Channel capitalization was already accepted through Treasury/Chain
+  // Evidence before this provider is composed. Every successor claim must be
+  // added only after the independent evidence check below.
+  const independentlyAccepted = new Set<string>([channel.activeOutpoint.txid]);
   return {
     async getUtxo(outpoint) {
       const entries = await chain.getUtxos([...escrowAddresses]);
@@ -743,7 +761,9 @@ function liveBatchServerChainProvider(
             outpoint: found.outpoint,
             amount: found.amount,
             scriptPublicKey: found.scriptPublicKey,
-            finality: "accepted" as const,
+            finality: independentlyAccepted.has(outpoint.txid)
+              ? "accepted" as const
+              : "broadcast" as const,
           })
         : null;
     },
@@ -766,7 +786,17 @@ function liveBatchServerChainProvider(
         while (Date.now() < deadline) {
           const entries = await chain.getUtxos([...escrowAddresses]);
           if (entries.some((entry) => entry.outpoint.txid === transactionId && entry.outpoint.index === 1)) {
-            return Object.freeze({ transactionId, finality: "accepted" as const });
+            const accepted = await observeAcceptedBatchClaim({
+              chainEvidence,
+              channel,
+              transactionId,
+              merchantAddress: initialized.config.wallets.merchantAddress,
+            });
+            independentlyAccepted.add(transactionId);
+            return Object.freeze({
+              transactionId,
+              finality: accepted.level === "accepted" ? "accepted" as const : "confirmed" as const,
+            });
           }
           await delay(2_000);
         }
@@ -776,6 +806,64 @@ function liveBatchServerChainProvider(
       }
     },
   };
+}
+
+export interface LiveBatchClaimEvidenceChannel {
+  readonly id: string;
+  readonly activeOutpoint: Readonly<{ txid: string; index: number }>;
+  readonly activeScriptPublicKey: string;
+  readonly escrowAddress: string;
+}
+
+export async function observeAcceptedBatchClaim(input: Readonly<{
+  chainEvidence: ChainEvidenceModule;
+  channel: LiveBatchClaimEvidenceChannel;
+  transactionId: string;
+  merchantAddress: string;
+}>): Promise<Readonly<{
+  detailDigest: string;
+  level: "accepted" | "depth-confirmed" | "consensus-final";
+}>> {
+  const codec = new KaspaTestnet10AddressCodec();
+  const observed = await input.chainEvidence.observe({
+    operationId: `live-batch-claim:${input.channel.id}`,
+    operation: "recovery-release",
+    network: LIVE_NETWORK,
+    transactionId: input.transactionId,
+    expectedInputs: [Object.freeze({
+      transactionId: input.channel.activeOutpoint.txid,
+      index: input.channel.activeOutpoint.index,
+    })],
+    expectedOutputs: [
+      Object.freeze({
+        index: 0,
+        amountAtomic: "10000000",
+        scriptPublicKey: codec.scriptPublicKeyForAddress(input.merchantAddress, LIVE_NETWORK),
+        address: input.merchantAddress,
+      }),
+      Object.freeze({
+        index: 1,
+        amountAtomic: "28000000",
+        scriptPublicKey: input.channel.activeScriptPublicKey,
+        address: input.channel.escrowAddress,
+      }),
+    ],
+    watchedAddresses: [input.channel.escrowAddress, input.merchantAddress],
+    mechanism: "native-covenant",
+    protocolFinality: "accepted",
+    operatorFloor: "accepted",
+    signal: new AbortController().signal,
+  });
+  if (
+    observed.status !== "present" || !observed.level ||
+    !meets(observed.level, "accepted") ||
+    (observed.level !== "accepted" &&
+      observed.level !== "depth-confirmed" &&
+      observed.level !== "consensus-final")
+  ) {
+    throw new Error("live batch claim lacks independent accepted Chain Evidence");
+  }
+  return Object.freeze({ detailDigest: observed.detailDigest, level: observed.level });
 }
 
 function serverChannel(channel: NonNullable<Awaited<ReturnType<typeof openChannel>>["channel"]>): ServerChannelRecord {
@@ -907,6 +995,8 @@ function assertBatchReport(report: LiveBatchProofReport): void {
     report.claimChannel.authorizedCumulativeAtomic !== "16000000" ||
     report.claimChannel.chargedCumulativeAtomic !== "12000000" ||
     report.claimChannel.continuation.amountAtomic !== "28000000" ||
+    !/^sha256:[A-Za-z0-9_-]{43}$/.test(report.claimChannel.chainEvidenceDigest) ||
+    !meets(report.claimChannel.chainEvidenceLevel, "accepted") ||
     report.refundChannel.refundOutput.amountAtomic !== "38000000" ||
     BigInt(report.refundChannel.observedBeforeBoundaryDaa) > BigInt(report.refundChannel.refundTimeoutDaa) ||
     BigInt(report.refundChannel.observedAfterBoundaryDaa) <= BigInt(report.refundChannel.refundTimeoutDaa) ||

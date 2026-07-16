@@ -209,6 +209,11 @@ test("a broadcast batch claim cannot be abandoned or replaced", async () => {
     await store.saveChannel(channel);
     const attempt = batchClaimAttempt(channel);
     await store.saveClaimAttempt(attempt);
+    await assert.rejects(
+      store.abandonClaimAttempt(attempt.attemptId, "operator retry"),
+      /conflict/,
+    );
+    assert.deepEqual(await store.loadOpenClaimAttempt(channel.channelId), attempt);
     const broadcast = {
       ...attempt,
       status: "broadcast" as const,

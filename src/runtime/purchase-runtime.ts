@@ -213,6 +213,7 @@ export function createSompiPurchaseRuntime(
             batchChain,
             chainEvidence,
             config.finalityFloors.recoveryRelease,
+            journal,
             witnessFetch,
           ),
         ),

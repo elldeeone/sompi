@@ -242,11 +242,14 @@ export class BatchRefundTreasuryOperationAdapter implements TreasuryOperationAda
         signal: new AbortController().signal,
       });
       if (race.status === "claim") {
-        this.journal.completeBatchClaimRefundRace({
+        const applied = this.journal.completeBatchClaimRefundRace({
           channelId: channel.channelId,
+          treasuryOperationKey: intent.operationKey,
           refundMovementId: envelope.movementId,
           expectedActiveOutpoint: envelope.activeOutpoint,
+          refundTransactionId: envelope.transactionId,
           claimTransactionId: race.transactionId,
+          finality: race.finality,
           continuationOutpoint: race.continuationOutpoint,
           continuationScriptPublicKey: race.continuationScriptPublicKey,
           continuationFundingAmountAtomic: race.continuationFundingAmountAtomic,
@@ -254,17 +257,7 @@ export class BatchRefundTreasuryOperationAdapter implements TreasuryOperationAda
         });
         return Object.freeze({
           status: "superseded" as const,
-          detail: Object.freeze({
-            profile: "urn:sompi:batch-refund-observation:1",
-            operationKey: intent.operationKey,
-            refundTransactionId: envelope.transactionId,
-            winningEffect: "merchant-claim",
-            winningTransactionId: race.transactionId,
-            continuationOutpoint: race.continuationOutpoint,
-            continuationFundingAmountAtomic: race.continuationFundingAmountAtomic,
-            chainEvidenceDigest: race.detailDigest,
-            chainEvidenceLevel: race.finality,
-          }),
+          detail: applied.treasuryObservationDetail,
         });
       }
       return Object.freeze({

@@ -19,6 +19,7 @@ import {
   JOURNAL_SCHEMA_V10_SQL,
   JOURNAL_SCHEMA_V11_SQL,
   JOURNAL_SCHEMA_V12_SQL,
+  JOURNAL_SCHEMA_V13_SQL,
   JOURNAL_SCHEMA_V1_SQL,
   JOURNAL_SCHEMA_VERSION,
 } from "./journal-schema.js";
@@ -40,6 +41,7 @@ test("clean cutover rejects every superseded journal schema without mutation", (
       JOURNAL_SCHEMA_V10_SQL,
       JOURNAL_SCHEMA_V11_SQL,
       JOURNAL_SCHEMA_V12_SQL,
+      JOURNAL_SCHEMA_V13_SQL,
     ];
     for (let index = 0; index < schemas.length; index += 1) {
       const version = index + 1;

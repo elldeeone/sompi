@@ -164,7 +164,7 @@ surface.
   testnet first, followed by separately gated batch settlement.
 - OpenAPI 3.2 describes the canonical Purchase API; Arazzo follows only after
   the lifecycle stabilizes.
-- The alpha.8 cutover uses Journal epoch 13 and rejects epochs 1–12 without
+- The alpha.8 cutover uses Journal epoch 14 and rejects epochs 1–13 without
   migration or compatibility readers.
 - Complete deletion of Sompi x402 v1 at cutover; no compatibility layer.
 
