@@ -413,12 +413,12 @@ Gate:
 Purpose: describe the stable Purchase lifecycle for direct automation without
 adding another agent protocol.
 
-- [ ] Freeze the OpenAPI operation identifiers and terminal/recoverable states
+- [x] Freeze the OpenAPI operation identifiers and terminal/recoverable states
   after Phases 3–7 pass.
-- [ ] Add an Arazzo workflow for create -> status -> recover -> terminal
+- [x] Add an Arazzo workflow for create -> status -> recover -> terminal
   receipt.
-- [ ] Validate the Arazzo document against the canonical OpenAPI source.
-- [ ] Add one end-to-end workflow scenario covering a recoverable interruption.
+- [x] Validate the Arazzo document against the canonical OpenAPI source.
+- [x] Add one end-to-end workflow scenario covering a recoverable interruption.
 
 Gate:
 

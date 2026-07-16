@@ -1,0 +1,169 @@
+{
+  "arazzo": "1.1.0",
+  "info": {
+    "title": "Sompi interrupted Purchase recovery",
+    "summary": "Create, inspect, recover, and verify a terminal Purchase receipt.",
+    "description": "Uses only the authenticated, protocol-neutral Sompi Purchase API. The recovery step reconciles durable evidence and never authorizes blind resubmission.",
+    "version": "0.8.0"
+  },
+  "sourceDescriptions": [
+    {
+      "name": "sompi",
+      "url": "./sompi.openapi.json",
+      "type": "openapi"
+    }
+  ],
+  "workflows": [
+    {
+      "workflowId": "recoverInterruptedPurchase",
+      "summary": "Recover a Purchase that stopped in a recoverable state",
+      "description": "The scenario expects createPurchase to return a durable Purchase identity, confirms a recoverable interruption, invokes explicit recovery once, and then reads a terminal receipted state.",
+      "inputs": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requestKey",
+          "url"
+        ],
+        "properties": {
+          "requestKey": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._:-]{1,160}$",
+            "maxLength": 160
+          },
+          "url": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048,
+            "format": "uri"
+          },
+          "method": {
+            "type": "string",
+            "pattern": "^[A-Z][A-Z0-9!#$%&'*+.^_`|~-]{0,31}$",
+            "nullable": true
+          },
+          "bodyBase64": {
+            "type": "string",
+            "minLength": 4,
+            "maxLength": 1398104,
+            "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$",
+            "nullable": true
+          },
+          "mediaType": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "nullable": true
+          },
+          "expectedMerchant": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [],
+            "nullable": true,
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256,
+                "nullable": true
+              },
+              "origin": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048,
+                "format": "uri",
+                "nullable": true
+              }
+            }
+          }
+        }
+      },
+      "steps": [
+        {
+          "stepId": "createPurchase",
+          "operationId": "$sourceDescriptions.sompi.createPurchase",
+          "requestBody": {
+            "contentType": "application/json",
+            "payload": "$inputs"
+          },
+          "successCriteria": [
+            {
+              "condition": "$statusCode == 200"
+            }
+          ],
+          "outputs": {
+            "purchaseId": "$response.body#/id"
+          }
+        },
+        {
+          "stepId": "inspectRecoverablePurchase",
+          "operationId": "$sourceDescriptions.sompi.getPurchase",
+          "parameters": [
+            {
+              "name": "purchaseId",
+              "in": "path",
+              "value": "$steps.createPurchase.outputs.purchaseId"
+            }
+          ],
+          "successCriteria": [
+            {
+              "condition": "$statusCode == 200"
+            },
+            {
+              "condition": "$response.body#/state == 'failed_recoverable'"
+            }
+          ]
+        },
+        {
+          "stepId": "recoverPurchase",
+          "operationId": "$sourceDescriptions.sompi.recoverPurchase",
+          "parameters": [
+            {
+              "name": "purchaseId",
+              "in": "path",
+              "value": "$steps.createPurchase.outputs.purchaseId"
+            }
+          ],
+          "successCriteria": [
+            {
+              "condition": "$statusCode == 200"
+            }
+          ]
+        },
+        {
+          "stepId": "readTerminalReceipt",
+          "operationId": "$sourceDescriptions.sompi.getPurchase",
+          "parameters": [
+            {
+              "name": "purchaseId",
+              "in": "path",
+              "value": "$steps.createPurchase.outputs.purchaseId"
+            }
+          ],
+          "successCriteria": [
+            {
+              "condition": "$statusCode == 200"
+            },
+            {
+              "condition": "$response.body#/state == 'receipted'"
+            },
+            {
+              "context": "$response.body",
+              "condition": "$.receiptEvidence[*]",
+              "type": "jsonpath"
+            }
+          ],
+          "outputs": {
+            "purchase": "$response.body",
+            "receiptEvidence": "$response.body#/receiptEvidence"
+          }
+        }
+      ],
+      "outputs": {
+        "purchaseId": "$steps.createPurchase.outputs.purchaseId",
+        "purchase": "$steps.readTerminalReceipt.outputs.purchase",
+        "receiptEvidence": "$steps.readTerminalReceipt.outputs.receiptEvidence"
+      }
+    }
+  ]
+}

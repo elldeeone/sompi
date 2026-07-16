@@ -4,13 +4,13 @@ Last updated: **2026-07-16**
 
 ## Plain-English status
 
-**The alpha.8 clean-cutover goal is active; Phases A through G are complete.** The
+**The alpha.8 clean-cutover goal is active; Phases A through H are complete.** The
 landed Kaspa-x402 `0.1.0-alpha.8` release, published package integrities,
 immutable specifications, schemas, vectors, public APIs, and funded TN10
 evidence have been mapped into Sompi's ownership and acceptance boundaries in
 [`docs/architecture/KASPA_X402_INTEGRATION.md`](docs/architecture/KASPA_X402_INTEGRATION.md).
-The implementation is now moving through the API workflow description, funded
-Testnet-10, security, and release-readiness gates. Batch settlement is a
+The implementation is now moving through funded Testnet-10, security, and
+release-readiness gates. Batch settlement is a
 separate capital-backed channel lifecycle and is not treated as exact payment.
 
 ADR-0015 and the aligned architecture require a clean replacement of alpha.6,
@@ -20,7 +20,7 @@ support both
 canonical Purchase API and MCP is a thin untrusted compatibility adapter. No
 alpha.8 payment conformance claim has been made yet.
 
-Current verification: `npm test` passes all **431** tests (**430 pass**, one
+Current verification: `npm test` passes all **433** tests (**432 pass**, one
 documented privileged ownership skip) and the complete offline smoke. The
 authenticated loopback API, runtime-derived OpenAPI, operator-installed agent
 credential, HTTP/MCP parity, request limits, deadlines, and cancellation gates
@@ -54,6 +54,13 @@ persists original AP2 artifacts, and produces linked deterministic fulfilment
 and receipt evidence through the public alpha.8 server interfaces. Replay,
 substitution, expiry, issuer/profile mismatch, unavailable Authority, hostile
 Merchant text, and tampered mandate paths fail closed.
+
+Phase H adds a generated Arazzo 1.1 workflow over the same canonical API. It
+references only `createPurchase`, `getPurchase`, and `recoverPurchase`, validates
+against the pinned official 2026-04-15 schema and the generated OpenAPI source,
+and has an authenticated HTTP scenario that reaches a terminal receipt after a
+recoverable interruption. It introduces no A2A, UCP, OAuth, MCP-only behavior,
+or generic agent-protocol layer.
 
 The first human-present AP2 + Kaspa-x402 vertical remains testnet-only; the
 post-scan hardening gates pass through the bounded Authority, Purchase/Journal,

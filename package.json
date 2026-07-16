@@ -64,6 +64,8 @@
     "mcp:start": "node dist/index.js",
     "openapi:generate": "npm run build && node dist/openapi-main.js generate",
     "openapi:check": "node dist/openapi-main.js check",
+    "arazzo:generate": "npm run build && node dist/arazzo-main.js generate",
+    "arazzo:check": "node dist/arazzo-main.js check",
     "authority:init": "node dist/authority-main.js init",
     "authority:start": "node dist/authority-main.js",
     "smoke": "node dist/smoke.js",
