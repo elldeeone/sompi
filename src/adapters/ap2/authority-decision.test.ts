@@ -94,7 +94,53 @@ test("authority decision verification rejects byte tampering and fact substituti
   );
 });
 
-async function verifiedRequest(): Promise<{
+test("batch authority evidence rejects execution profile, channel epoch, ceiling, or finality substitution", async () => {
+  const channelId = "ab".repeat(32);
+  const channelEpochDigest = evidenceDigest("batch-channel-epoch");
+  const { request, facts, checkout } = await verifiedRequest({
+    effectiveFinalityFloor: "depth-confirmed",
+    executionPlanDigest: evidenceDigest("batch-execution-plan"),
+    executionMechanism: "channel-voucher",
+    executionProfile: "kaspa-escrow-v1:batch-settlement",
+    settlementAssurance: "channel-commitment",
+    maximumAuthorizedChargeAtomic: "12000000",
+    channelId,
+    channelEpochDigest,
+  });
+  const evidence = await issueAp2AuthorityDecisionEvidence({
+    request,
+    checkout,
+    choice: { decision: "approved", instrumentId: FIXED_INSTRUMENT_ID },
+    issuedAtSec: FIXED_NOW + 10,
+  }, AUTHORITY_SIGNER);
+  const verifier = decisionVerifier(FIXED_NOW + 11);
+  const expected = expectedInput(evidence, request, facts, "approved");
+  await verifier.verify(expected);
+
+  const substitutions: ReadonlyArray<Partial<AuthorityApprovalFacts>> = [
+    { executionProfile: "kaspa-exact-v2:standard-native" },
+    { maximumAuthorizedChargeAtomic: "12000001" },
+    { channelId: "cd".repeat(32) },
+    { channelEpochDigest: evidenceDigest("other-batch-channel-epoch") },
+    { effectiveFinalityFloor: "accepted" },
+  ];
+  for (const substitution of substitutions) {
+    await assert.rejects(
+      verifier.verify({
+        ...expected,
+        expected: {
+          ...expected.expected,
+          facts: { ...facts, ...substitution },
+        },
+      }),
+      /exact authority facts|different facts|does not match|was substituted/,
+    );
+  }
+});
+
+async function verifiedRequest(
+  factOverrides: Partial<AuthorityApprovalFacts> = {},
+): Promise<{
   request: ReturnType<typeof parseAuthorityApprovalRequest>;
   facts: AuthorityApprovalFacts;
   checkout: Awaited<ReturnType<typeof fixedVerifiedCheckout>>;
@@ -128,6 +174,7 @@ async function verifiedRequest(): Promise<{
     maximumAuthorizedChargeAtomic: checkout.terms.amountAtomic,
     channelId: null,
     channelEpochDigest: null,
+    ...factOverrides,
   };
   const sealed = sealAuthorityApprovalRequest({
     kind: "approval_request",

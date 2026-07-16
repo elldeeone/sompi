@@ -384,19 +384,19 @@ Gate:
 Purpose: carry the existing human-present authorization and fulfilment proof
 across both alpha.8 exact profiles and every batch voucher increment.
 
-- [ ] Preserve `sompi-authority` as deterministic and non-agentic, with its
+- [x] Preserve `sompi-authority` as deterministic and non-agentic, with its
   credential inaccessible to both API and MCP processes.
-- [ ] Bind Merchant, resource/request, amount or maximum charge, actual charge,
+- [x] Bind Merchant, resource/request, amount or maximum charge, actual charge,
   asset, network, expiry, Purchase identity, selected profile/channel epoch,
   fee bounds, and effective Finality Floor.
-- [ ] Verify Merchant-signed Checkout Terms and construct/verify the pinned
+- [x] Verify Merchant-signed Checkout Terms and construct/verify the pinned
   human-present AP2 closed mandates.
-- [ ] Store original AP2 artifacts as immutable Evidence Attachments and compare
+- [x] Store original AP2 artifacts as immutable Evidence Attachments and compare
   extracted canonical facts rather than trusting adapter output.
-- [ ] Extend the demo Merchant through public Kaspa-x402 server interfaces for
+- [x] Extend the demo Merchant through public Kaspa-x402 server interfaces for
   standard-native, additive, and batch.
-- [ ] Deliver deterministic resources and produce linked Merchant/AP2 receipts.
-- [ ] Fail closed on replay, substitution, expiry, issuer/profile mismatch,
+- [x] Deliver deterministic resources and produce linked Merchant/AP2 receipts.
+- [x] Fail closed on replay, substitution, expiry, issuer/profile mismatch,
   unavailable Authority, prompt injection, tampered mandate, and unavailable
   payment execution.
 

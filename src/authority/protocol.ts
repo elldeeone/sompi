@@ -69,7 +69,7 @@ export interface AuthorityApprovalFacts {
   readonly purchaseAuthorizationNonceDigest: Sha256Digest;
   /** Digest of Sompi's protocol-neutral canonical Purchase Authorization facts. */
   readonly purchaseAuthorizationFactsDigest: Sha256Digest;
-  /** Maximum non-price treasury outflow, including KIP-10 top-up and transaction fees. */
+  /** Maximum non-price treasury outflow for bounded network, staging, and recovery fees. */
   readonly additionalCostCeilingAtomic: string;
   /** Stronger of Merchant protocol finality and the operator floor. */
   readonly effectiveFinalityFloor: "accepted" | "depth-confirmed";

@@ -140,6 +140,9 @@ interface DemoMerchantEvidenceJoinsCommon {
   readonly x402PaymentRequirementsHash: Hash32Hex;
   readonly x402PaymentPayloadHash: Hash32Hex;
   readonly networkConfirmationId: Hash32Hex;
+  readonly executionProfile: string;
+  readonly maximumAuthorizedChargeAtomic: SompiString;
+  readonly actualChargeAtomic: SompiString;
   readonly settlementDigest: Sha256Digest;
   readonly resourceDigest: Sha256Digest;
   readonly checkoutReceiptDigest: Sha256Digest;
@@ -201,6 +204,7 @@ export interface DemoMerchantFixtureConfig {
   readonly exactProfile?: ExactProfile;
   readonly batchMinDepositSompi?: SompiString;
   readonly batchRefundTimeoutDaa?: SompiString;
+  readonly batchChargeAtomic?: SompiString;
   readonly claimBuilder?: ClaimTransactionBuilder;
   readonly serverPublicKey: string;
   readonly merchantCheckoutSigner: Ap2SigningIdentity;
@@ -227,18 +231,22 @@ interface BatchReceiptContext {
 
 type PaymentEvidence = Readonly<{
   scheme: "exact";
+  executionProfile: string;
   networkConfirmationId: Hash32Hex;
   paymentRequirementsHash: Hash32Hex;
   paymentPayloadHash: Hash32Hex;
   transactionId: Hash32Hex;
   paymentOutputIndex: number;
+  actualChargeAtomic: SompiString;
 }> | Readonly<{
   scheme: "batch-settlement";
+  executionProfile: string;
   networkConfirmationId: Hash32Hex;
   paymentRequirementsHash: Hash32Hex;
   paymentPayloadHash: Hash32Hex;
   commitmentId: Hash32Hex;
   channelId: Hash32Hex;
+  actualChargeAtomic: SompiString;
 }>;
 
 export class DemoMerchantError extends Error {
@@ -772,7 +780,9 @@ export class DemoMerchantFixture {
                 ...(paymentReceipt ? { [PAYMENT_RECEIPT_HEADER]: paymentReceipt } : {}),
               },
               body: Buffer.from(this.resourceBytes).toString("base64url"),
-              chargedAmount: checkout.terms.amountAtomic,
+              chargedAmount: this.config.paymentScheme === "batch-settlement"
+                ? this.config.batchChargeAtomic
+                : checkout.terms.amountAtomic,
             };
           } catch (error) {
             handlerFailure = error instanceof DemoMerchantError
@@ -862,6 +872,9 @@ export class DemoMerchantFixture {
       x402PaymentRequirementsHash: paymentEvidence.paymentRequirementsHash,
       x402PaymentPayloadHash: paymentEvidence.paymentPayloadHash,
       networkConfirmationId: paymentEvidence.networkConfirmationId,
+      executionProfile: paymentEvidence.executionProfile,
+      maximumAuthorizedChargeAtomic: checkout.terms.amountAtomic,
+      actualChargeAtomic: paymentEvidence.actualChargeAtomic,
       ...(paymentEvidence.scheme === "exact"
         ? {
             paymentScheme: "exact" as const,
@@ -990,11 +1003,13 @@ export class DemoMerchantFixture {
       assertExactPaymentJoinsCheckout({ ...input, paymentRequirement: input.paymentRequirement, exact });
       return Object.freeze({
         scheme: "exact",
+        executionProfile: `kaspa-exact-v2:${exact.profile}`,
         networkConfirmationId: exact.transactionId,
         paymentRequirementsHash: exact.paymentRequirementsHash,
         paymentPayloadHash: exact.paymentPayloadHash,
         transactionId: exact.transactionId,
         paymentOutputIndex: exact.paymentOutputIndex,
+        actualChargeAtomic: exact.amount,
       });
     }
 
@@ -1014,14 +1029,17 @@ export class DemoMerchantFixture {
       ...input,
       paymentRequirement: input.paymentRequirement,
       commitment,
+      expectedChargeAtomic: this.config.batchChargeAtomic!,
     });
     return Object.freeze({
       scheme: "batch-settlement",
+      executionProfile: "kaspa-escrow-v1:batch-settlement",
       networkConfirmationId: commitment.commitmentId,
       paymentRequirementsHash: commitment.paymentRequirementsHash,
       paymentPayloadHash: input.payment.paymentPayloadHash,
       commitmentId: commitment.commitmentId,
       channelId: commitment.channelId,
+      actualChargeAtomic: commitment.chargedAmount,
     });
   }
 
@@ -1230,6 +1248,7 @@ function assertBatchPaymentJoinsCheckout(input: {
   paymentRequirement: BatchPaymentRequirements;
   paymentPayload: PaymentPayload;
   resourceBody: Uint8Array;
+  expectedChargeAtomic: SompiString;
 }): void {
   const {
     payment,
@@ -1241,6 +1260,7 @@ function assertBatchPaymentJoinsCheckout(input: {
     paymentRequirement,
     paymentPayload,
     resourceBody,
+    expectedChargeAtomic,
   } = input;
   const wireSettlement = canonicalSettlement(response);
   const payloadHash = sha256Hex(stableStringify(paymentPayload));
@@ -1255,12 +1275,12 @@ function assertBatchPaymentJoinsCheckout(input: {
     payment.settlement.success !== true ||
     payment.settlement.transaction !== commitment.commitmentId ||
     payment.settlement.network !== checkout.terms.network ||
-    payment.settlement.amount !== checkout.terms.amountAtomic ||
+    payment.settlement.amount !== expectedChargeAtomic ||
     extension?.commitmentId !== commitment.commitmentId ||
     extension.channelState?.channelId !== commitment.channelId ||
     commitment.requestFingerprint !== requestHash ||
     commitment.paymentIdentifier !== paymentIdentifier ||
-    commitment.chargedAmount !== checkout.terms.amountAtomic ||
+    commitment.chargedAmount !== expectedChargeAtomic ||
     stableStringify(commitment.response) !== stableStringify(response) ||
     stableStringify(payment.response) !== stableStringify(response) ||
     stableStringify(wireSettlement) !== stableStringify(payment.settlement) ||
@@ -1434,9 +1454,13 @@ function validateConfiguration(config: DemoMerchantFixtureConfig): void {
     (config.paymentScheme === "exact" && config.claimBuilder !== undefined) ||
     (config.paymentScheme === "batch-settlement" &&
       (!POSITIVE_SOMPI_PATTERN.test(config.batchMinDepositSompi ?? "") ||
-        !POSITIVE_SOMPI_PATTERN.test(config.batchRefundTimeoutDaa ?? ""))) ||
+        !POSITIVE_SOMPI_PATTERN.test(config.batchRefundTimeoutDaa ?? "") ||
+        !POSITIVE_SOMPI_PATTERN.test(config.batchChargeAtomic ?? "") ||
+        BigInt(config.batchChargeAtomic ?? "0") > BigInt(config.amountAtomic))) ||
     (config.paymentScheme === "exact" &&
-      (config.batchMinDepositSompi !== undefined || config.batchRefundTimeoutDaa !== undefined)) ||
+      (config.batchMinDepositSompi !== undefined ||
+        config.batchRefundTimeoutDaa !== undefined ||
+        config.batchChargeAtomic !== undefined)) ||
     (config.exactProfile !== undefined &&
       config.exactProfile !== "standard-native" &&
       config.exactProfile !== "additive") ||

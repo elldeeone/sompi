@@ -4,14 +4,13 @@ Last updated: **2026-07-16**
 
 ## Plain-English status
 
-**The alpha.8 clean-cutover goal is active; Phases A through E are complete and
-the hermetic Phase F batch lifecycle is implemented.** The
+**The alpha.8 clean-cutover goal is active; Phases A through G are complete.** The
 landed Kaspa-x402 `0.1.0-alpha.8` release, published package integrities,
 immutable specifications, schemas, vectors, public APIs, and funded TN10
 evidence have been mapped into Sompi's ownership and acceptance boundaries in
 [`docs/architecture/KASPA_X402_INTEGRATION.md`](docs/architecture/KASPA_X402_INTEGRATION.md).
-The implementation is now moving through the remaining AP2/Merchant workflow,
-funded Testnet-10, security, and release-readiness gates. Batch settlement is a
+The implementation is now moving through the API workflow description, funded
+Testnet-10, security, and release-readiness gates. Batch settlement is a
 separate capital-backed channel lifecycle and is not treated as exact payment.
 
 ADR-0015 and the aligned architecture require a clean replacement of alpha.6,
@@ -21,7 +20,7 @@ support both
 canonical Purchase API and MCP is a thin untrusted compatibility adapter. No
 alpha.8 payment conformance claim has been made yet.
 
-Current verification: `npm test` passes all **428** tests (**427 pass**, one
+Current verification: `npm test` passes all **431** tests (**430 pass**, one
 documented privileged ownership skip) and the complete offline smoke. The
 authenticated loopback API, runtime-derived OpenAPI, operator-installed agent
 credential, HTTP/MCP parity, request limits, deadlines, and cancellation gates
@@ -44,6 +43,17 @@ response replays byte-for-byte after that epoch change. In-place top-up is
 deliberately unsupported until the public client exposes a general builder;
 Sompi rotates to a separately capitalized channel instead. No funded batch
 Testnet-10 conformance claim has been made yet.
+
+Phase G revalidates the complete human-present AP2 and merchant join across
+`standard-native`, corrected `additive`, and `batch-settlement`. The separate
+Authority signs and renders the selected execution profile, maximum authorized
+charge, channel epoch where applicable, fee ceiling, and effective finality
+floor. The demo Merchant records both the authorized maximum and actual batch
+charge, advances a reusable additive head by exactly the advertised payment,
+persists original AP2 artifacts, and produces linked deterministic fulfilment
+and receipt evidence through the public alpha.8 server interfaces. Replay,
+substitution, expiry, issuer/profile mismatch, unavailable Authority, hostile
+Merchant text, and tampered mandate paths fail closed.
 
 The first human-present AP2 + Kaspa-x402 vertical remains testnet-only; the
 post-scan hardening gates pass through the bounded Authority, Purchase/Journal,

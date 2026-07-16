@@ -114,6 +114,41 @@ test("the human display is exactly the independently signed Purchase decision", 
   }
 });
 
+test("batch approval displays and signs the channel epoch, charge ceiling, and assurance", async () => {
+  const channelId = "ab".repeat(32);
+  const channelEpochDigest = evidenceDigest("batch-channel-epoch");
+  const fixture = await authoritySystem(true, {
+    effectiveFinalityFloor: "depth-confirmed",
+    executionPlanDigest: evidenceDigest("batch-execution-plan"),
+    executionMechanism: "channel-voucher",
+    executionProfile: "kaspa-escrow-v1:batch-settlement",
+    settlementAssurance: "channel-commitment",
+    maximumAuthorizedChargeAtomic: "12000000",
+    channelId,
+    channelEpochDigest,
+  });
+  try {
+    const result = await fixture.module.request(fixture.input);
+    assert.equal(result.status, "decision");
+    if (result.status !== "decision") return;
+    assert.deepEqual(fixture.displayed?.execution, {
+      planDigest: evidenceDigest("batch-execution-plan"),
+      mechanism: "channel-voucher",
+      profile: "kaspa-escrow-v1:batch-settlement",
+      settlementAssurance: "channel-commitment",
+      maximumChargeAtomic: "12000000",
+      channelId,
+      channelEpochDigest,
+    });
+    assert.equal(fixture.displayed?.effectiveFinalityFloor, "depth-confirmed");
+    assert.equal(result.decision.facts.executionProfile, "kaspa-escrow-v1:batch-settlement");
+    assert.equal(result.decision.facts.channelEpochDigest, channelEpochDigest);
+    assert.equal(result.decision.evidence.factsDigest, authorityFactsDigest(result.decision.facts));
+  } finally {
+    await fixture.close();
+  }
+});
+
 test("human denial is signed, verified, and carries no fabricated AP2 mandate", async () => {
   const fixture = await authoritySystem(false);
   try {
@@ -245,7 +280,10 @@ test("durable authorization retries reconstruct one IPC request and do not promp
   }
 });
 
-async function authoritySystem(approve: boolean) {
+async function authoritySystem(
+  approve: boolean,
+  requestOverrides: Partial<PurchaseAuthorizationRequest> = {},
+) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-ap2-authority-"));
   const socketPath = path.join(directory, "authority.sock");
   const authentication = new StaticAuthenticationProvider();
@@ -269,6 +307,7 @@ async function authoritySystem(approve: boolean) {
     maximumAuthorizedChargeAtomic: checkout.terms.amountAtomic,
     createdAtMs: nowMs,
     expiresAtMs: checkout.expiresAtSec * 1_000,
+    ...requestOverrides,
   };
   let displayed: AuthorityApprovalDisplay | undefined;
   let calls = 0;

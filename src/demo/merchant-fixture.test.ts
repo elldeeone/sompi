@@ -5,6 +5,11 @@ import * as path from "node:path";
 import test from "node:test";
 
 import {
+  buildKip10AdditiveRedeemScript,
+  kip10AdditiveScriptPublicKey,
+  serializedScriptPublicKey,
+} from "@kaspa-x402/covenant";
+import {
   DirectModeClient,
   MemoryChannelStore,
   type DirectModeChannel,
@@ -29,6 +34,7 @@ import {
 } from "@kaspa-x402/core";
 import type {
   AddressCodec,
+  ExactHeadRecord,
   ExactTransactionVerifier,
   ServerChainProvider,
   VoucherVerifier,
@@ -58,6 +64,7 @@ import {
   evidenceDigest,
 } from "../purchase/identity.js";
 import type { PurchaseId, Sha256Digest } from "../purchase/types.js";
+import { KaspaTestnet10AddressCodec } from "../adapters/kaspa-x402/address-codec.js";
 import { SqliteMerchantServerStateStore } from "./merchant-server-store.js";
 import { SqliteDemoCommerceAuthorizationStore } from "./commerce-authorization-store.js";
 import {
@@ -72,6 +79,10 @@ import {
 const NOW_MS = FIXED_NOW * 1000;
 const PAY_TO = "kaspatest:qpumuen7l8wthtz45p3ftn58pvrs9xlumvkuu2xet8egzkcklqtes5z8rkmpd";
 const TRANSACTION_ID = "44".repeat(32);
+const ADDITIVE_TRANSACTION_ID = "66".repeat(32) as Hash32Hex;
+const ADDITIVE_HEAD_ID = "77".repeat(32) as Hash32Hex;
+const ADDITIVE_HEAD_TXID = "99".repeat(32) as Hash32Hex;
+const ADDITIVE_OWNER = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
 const PURCHASE_ID = assertPurchaseId("pur_AAAAAAAAAAAAAAAAAAAAAA");
 const SECOND_PURCHASE_ID = assertPurchaseId("pur_AQEBAQEBAQEBAQEBAQEBAQ");
 const PAYMENT_IDENTIFIER = createPaymentIdentifier(PURCHASE_ID, 1);
@@ -83,6 +94,7 @@ const CLAIM_TX = "88".repeat(32) as Hash32Hex;
 const ACTIVE_SCRIPT = `000020${"55".repeat(32)}`;
 const BATCH_TIMEOUT_DAA = "5000";
 const BATCH_FUNDING = "100000000";
+const BATCH_CHARGE = "12000000";
 
 test("demo Merchant joins real AP2 Checkout, mandates, exact settlement, resource, and receipts", async () => {
   const store = new SqliteMerchantServerStateStore(":memory:");
@@ -115,7 +127,7 @@ test("demo Merchant joins real AP2 Checkout, mandates, exact settlement, resourc
     assert.equal((decodedPayment.extensions as Record<string, unknown>).ap2, undefined);
 
     const paid = await merchant.handlePaid(request);
-    assert.equal(paid.response.status, 200);
+    assert.equal(paid.response.status, 200, stableStringify(paid.response));
     assert.equal(Buffer.from(paid.resource!.body).toString("utf8"), RESOURCE_BODY.toString("utf8"));
     assert.equal(paid.resource?.digest, evidenceDigest(RESOURCE_BODY));
     assert.equal(paid.settlement?.transaction, TRANSACTION_ID);
@@ -147,6 +159,9 @@ test("demo Merchant joins real AP2 Checkout, mandates, exact settlement, resourc
     );
     assert.equal(paid.evidence?.paymentIdentifier, PAYMENT_IDENTIFIER);
     assert.equal(paid.evidence?.transactionId, TRANSACTION_ID);
+    assert.equal(paid.evidence?.executionProfile, "kaspa-exact-v2:standard-native");
+    assert.equal(paid.evidence?.maximumAuthorizedChargeAtomic, "20000000");
+    assert.equal(paid.evidence?.actualChargeAtomic, "20000000");
     assert.equal(paid.evidence?.paymentOutputIndex, 0);
     assert.equal(paid.evidence?.resourceDigest, paid.resource?.digest);
     assert.match(paid.evidence!.x402PaymentRequirementsHash, /^[a-f0-9]{64}$/);
@@ -157,6 +172,43 @@ test("demo Merchant joins real AP2 Checkout, mandates, exact settlement, resourc
     assert.deepEqual(replay.settlement, paid.settlement);
     assert.deepEqual(replay.ap2Receipts, paid.ap2Receipts);
     assert.deepEqual(replay.evidence, paid.evidence);
+  } finally {
+    store.close();
+  }
+});
+
+test("demo Merchant joins AP2 authorization to a corrected additive head payment", async () => {
+  const store = new SqliteMerchantServerStateStore(":memory:");
+  const head = additiveHead();
+  await store.registerExactHead(head);
+  const merchant = await DemoMerchantFixture.create(additiveConfig(store, head));
+  try {
+    const offer = await merchant.offer(PURCHASE_ID);
+    const requiredHeader = offer.paymentRequired.headers["PAYMENT-REQUIRED"];
+    const required = decodePaymentRequiredHeader(requiredHeader);
+    const accepted = required.accepts[0];
+    assert.equal(accepted?.scheme, "exact");
+    assert.equal(accepted?.extra.binding, "kaspa-exact-v2");
+    assert.equal(accepted?.extra.profile, "additive");
+    assert.equal(accepted?.extra.headId, head.headId);
+    assert.equal(accepted?.extra.headAmount, head.currentAmount);
+
+    const commerceEvidence = await authorise(offer.checkout);
+    await presentAuthorization(merchant, offer, commerceEvidence, PAYMENT_IDENTIFIER);
+    const paid = await merchant.handlePaid(
+      paidRequest(offer, commerceEvidence, PAYMENT_IDENTIFIER)
+    );
+
+    assert.equal(paid.response.status, 200, stableStringify(paid.response));
+    assert.equal(paid.evidence?.paymentScheme, "exact");
+    assert.equal(paid.evidence?.transactionId, ADDITIVE_TRANSACTION_ID);
+    assert.equal(paid.evidence?.executionProfile, "kaspa-exact-v2:additive");
+    assert.equal(paid.evidence?.maximumAuthorizedChargeAtomic, "20000000");
+    assert.equal(paid.evidence?.actualChargeAtomic, "20000000");
+    const advanced = await store.loadExactHead(head.headId);
+    assert.deepEqual(advanced?.currentOutpoint, { txid: ADDITIVE_TRANSACTION_ID, index: 0 });
+    assert.equal(advanced?.currentAmount, "120000000");
+    assert.equal(advanced?.status, "available");
   } finally {
     store.close();
   }
@@ -201,21 +253,24 @@ test("demo Merchant joins AP2 authorization to one durable batch commitment and 
     assert.equal(paid.evidence?.paymentScheme, "batch-settlement");
     assert.equal(paid.evidence?.channelId, channel.id);
     assert.equal(paid.evidence?.commitmentId, paid.evidence?.networkConfirmationId);
+    assert.equal(paid.evidence?.maximumAuthorizedChargeAtomic, "20000000");
+    assert.equal(paid.evidence?.actualChargeAtomic, BATCH_CHARGE);
+    assert.equal(paid.evidence?.executionProfile, "kaspa-escrow-v1:batch-settlement");
     assert.equal(
       paid.ap2Receipts?.payment.networkConfirmationId,
       paid.evidence?.commitmentId
     );
     const settlement = decodePaymentResponseHeader(paid.response.headers["PAYMENT-RESPONSE"]);
     await client.applySettlement(payment, settlement);
-    assert.equal((await clientStore.loadChannels({}))[0]?.chargedCumulativeAmount, "20000000");
+    assert.equal((await clientStore.loadChannels({}))[0]?.chargedCumulativeAmount, BATCH_CHARGE);
 
     const preview = await merchant.previewBatchClaim(channel.id);
     assert.equal(preview.claimable, true);
-    assert.equal(preview.claimAmount, "20000000");
+    assert.equal(preview.claimAmount, BATCH_CHARGE);
     const claim = await merchant.executeBatchClaim(channel.id);
     assert.equal(claim.accepted, true);
     assert.equal(claim.transactionId, CLAIM_TX);
-    assert.equal(claim.channel.claimedCumulativeAmount, "20000000");
+    assert.equal(claim.channel.claimedCumulativeAmount, BATCH_CHARGE);
     assert.deepEqual(claim.channel.activeOutpoint, { txid: CLAIM_TX, index: 1 });
 
     const replay = await merchant.handlePaid({
@@ -511,17 +566,25 @@ function paymentPayload(
   requestHash: string,
   paymentIdentifier: string
 ): PaymentPayload {
-  const expiresAt = new Date((FIXED_NOW + 120) * 1000).toISOString();
+  const profile = accepted.extra.profile === "additive" ? "additive" : "standard-native";
+  const transactionId = profile === "additive" ? ADDITIVE_TRANSACTION_ID : TRANSACTION_ID;
+  const challengeId = profile === "additive"
+    ? String(accepted.extra.challengeId) as Hash32Hex
+    : undefined;
+  const expiresAt = profile === "additive"
+    ? String(accepted.extra.challengeExpiresAt)
+    : new Date((FIXED_NOW + 120) * 1000).toISOString();
   const authorizationDigest = exactRequestAuthorizationDigest({
     network: accepted.network,
-    profile: "standard-native",
-    transactionId: TRANSACTION_ID,
+    profile,
+    transactionId,
     paymentOutputIndex: 0,
     amount: accepted.amount,
     payTo: accepted.payTo,
     payToScriptPublicKey: String(accepted.extra.payToScriptPublicKey),
     paymentRequirementsHash: sha256Hex(stableStringify(accepted)),
     requestHash,
+    ...(challengeId ? { challengeId } : {}),
     inputIndex: 0,
     expiresAt,
   });
@@ -530,7 +593,8 @@ function paymentPayload(
     accepted,
     payload: {
       type: "exact-transaction",
-      profile: "standard-native",
+      profile,
+      ...(challengeId ? { challengeId } : {}),
       transaction: "prepared-exact-transaction",
       transactionEncoding: "kaspa-sdk-safe-json-v2.0.0",
       paymentOutputIndex: 0,
@@ -547,6 +611,85 @@ function paymentPayload(
       "payment-identifier": paymentIdentifierExtension({
         required: true,
         id: paymentIdentifier,
+      }),
+    },
+  };
+}
+
+function additiveHead(): ExactHeadRecord {
+  const redeemScript = buildKip10AdditiveRedeemScript({
+    ownerPublicKey: ADDITIVE_OWNER,
+    amount: "10000000",
+  }).toLowerCase();
+  const scriptPublicKey = serializedScriptPublicKey(
+    kip10AdditiveScriptPublicKey({ ownerPublicKey: ADDITIVE_OWNER, amount: "10000000" })
+  ).toLowerCase();
+  const codec = new KaspaTestnet10AddressCodec();
+  const payTo = codec.encodeScriptAddress({
+    network: DEMO_NETWORK,
+    scriptPublicKey: { version: 0, script: scriptPublicKey.slice(4) },
+    serializedScriptPublicKey: scriptPublicKey,
+  });
+  return {
+    headId: ADDITIVE_HEAD_ID,
+    network: DEMO_NETWORK,
+    payTo,
+    templateId: "kaspa-x402-kip10-additive-v1",
+    transactionEncoding: "kaspa-sdk-safe-json-v2.0.0",
+    currentOutpoint: { txid: ADDITIVE_HEAD_TXID, index: 0 },
+    currentAmount: "100000000",
+    scriptPublicKey,
+    redeemScript,
+    additiveThresholdSompi: "10000000",
+    version: "0",
+    status: "available",
+    createdAt: new Date(NOW_MS).toISOString(),
+    updatedAt: new Date(NOW_MS).toISOString(),
+  };
+}
+
+function additiveConfig(
+  store: SqliteMerchantServerStateStore,
+  head: ExactHeadRecord
+): DemoMerchantFixtureConfig {
+  const base = config(store);
+  return {
+    ...base,
+    payTo: head.payTo,
+    exactProfile: "additive",
+    addressCodec: new KaspaTestnet10AddressCodec(),
+    exactTransactionVerifier: {
+      verifyExactPayment: (request) => {
+        assert.equal(request.profile, "additive");
+        assert.equal(request.head?.headId, head.headId);
+        return {
+          transactionId: ADDITIVE_TRANSACTION_ID,
+          paymentOutput: {
+            amount: request.amount,
+            scriptPublicKey: head.scriptPublicKey,
+            address: head.payTo,
+          },
+          finality: "accepted",
+          payerAddress: PAY_TO,
+          requestAuthorization: {
+            authorizationId: exactRequestAuthorizationId(request.authorization),
+            digest: request.authorization.digest,
+            inputIndex: request.authorization.inputIndex,
+            publicKey: "11".repeat(32),
+          },
+          continuation: {
+            outpoint: { txid: ADDITIVE_TRANSACTION_ID, index: 0 },
+            amount: "120000000",
+            scriptPublicKey: head.scriptPublicKey,
+          },
+        };
+      },
+    },
+    chainProvider: {
+      ...base.chainProvider,
+      sendTransaction: async () => ({
+        transactionId: ADDITIVE_TRANSACTION_ID,
+        finality: "accepted",
       }),
     },
   };
@@ -638,6 +781,7 @@ function batchConfig(
     serverPublicKey: BATCH_SERVER_PUBLIC_KEY,
     batchMinDepositSompi: "1",
     batchRefundTimeoutDaa: BATCH_TIMEOUT_DAA,
+    batchChargeAtomic: BATCH_CHARGE,
     voucherVerifier: { verifyVoucher: () => true },
     chainProvider: {
       ...base.chainProvider,
@@ -653,7 +797,7 @@ function batchConfig(
         if (outpoint.txid === CLAIM_TX && outpoint.index === 1) {
           return {
             outpoint,
-            amount: "80000000",
+            amount: "88000000",
             scriptPublicKey: ACTIVE_SCRIPT,
             finality: "accepted" as const,
           };
