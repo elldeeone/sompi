@@ -5,6 +5,7 @@ import * as path from "node:path";
 import test from "node:test";
 
 import { PurchaseJournal } from "../../purchase/journal.js";
+import { evidenceDigest } from "../../purchase/identity.js";
 import type { TreasuryOperationRequest, TreasuryOperationView } from "../../treasury/operations.js";
 import { KaspaX402BatchCapitalModule } from "./batch-capital-module.js";
 import { SecureBatchChannelSigner } from "./batch-channel-signer.js";
@@ -14,7 +15,13 @@ const TXID = "55".repeat(32);
 
 test("batch capitalization durably separates deposit from Purchase authorization", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-batch-capital-"));
-  const journal = new PurchaseJournal(":memory:", { now: () => 1_800_000_000_000 });
+  const filename = path.join(directory, "purchase.sqlite");
+  const journalOptions = {
+    now: () => 1_800_000_000_000,
+    preparedMaterialDirectory: path.join(directory, "prepared"),
+  } as const;
+  const journal = new PurchaseJournal(filename, journalOptions);
+  let journalOpen = true;
   const calls: TreasuryOperationRequest[] = [];
   try {
     const signer = new SecureBatchChannelSigner(
@@ -27,7 +34,7 @@ test("batch capitalization durably separates deposit from Purchase authorization
       {
         execute: async (request) => {
           calls.push(request);
-          return completed(request);
+          return completed(journal, request);
         },
       },
       signer,
@@ -57,13 +64,69 @@ test("batch capitalization durably separates deposit from Purchase authorization
     assert.equal(calls.length, 2, "Treasury idempotency owns duplicate execute calls");
     assert.match(calls[0]!.operationKey, /^batch\.deposit\.[a-f0-9]{64}$/);
     assert.throws(() => module.topUpChannel(), /rotate to a separately funded channel/);
-  } finally {
     journal.close();
+    journalOpen = false;
+    const restarted = new PurchaseJournal(filename, journalOptions);
+    try {
+      assert.equal(
+        restarted.requireBatchTreasuryMovement(`batch-deposit:${first.channelId}`).evidenceDigest,
+        movement.evidenceDigest,
+      );
+    } finally {
+      restarted.close();
+    }
+  } finally {
+    if (journalOpen) journal.close();
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
 
-function completed(request: TreasuryOperationRequest): TreasuryOperationView {
+function completed(
+  journal: PurchaseJournal,
+  request: TreasuryOperationRequest,
+): TreasuryOperationView {
+  const policy = journal.installPolicy({
+    maxPerPaymentAtomic: "10000000",
+    maxPerHourAtomic: "10000000",
+    approvalAboveAtomic: "0",
+    allowlist: [request.destination],
+  });
+  journal.claimTreasuryOperationIntent({
+    operationKey: request.operationKey,
+    requestDigest: evidenceDigest(JSON.stringify(request)),
+    kind: request.kind,
+    destination: request.destination,
+    requestedAmountAtomic: request.amountAtomic,
+    feeCeilingAtomic: "1000",
+    retryLimit: 1,
+    policyDigest: policy.digest,
+  });
+  const claimed = journal.claimTreasuryOperationDriver(
+    request.operationKey,
+    "batch-capital-test",
+    60_000,
+  );
+  if (claimed.record.state !== "completed") {
+    const lease = claimed.lease!;
+    journal.recordPreparedTreasuryOperation(request.operationKey, {
+      bytes: Buffer.from("batch-capital-test", "utf8"),
+      transactionId: TXID,
+      amountAtomic: request.amountAtomic as string,
+      feeAtomic: "100",
+      policyDigest: policy.digest,
+    }, lease);
+    journal.planTreasuryOperationSubmission(request.operationKey, lease);
+    journal.claimTreasuryOperationEffectCapability(request.operationKey, lease);
+    journal.recordTreasuryOperationSubmissionAccepted(request.operationKey, TXID, lease);
+    journal.recordTreasuryOperationObservation(request.operationKey, "observed", {
+      transactionId: TXID,
+      amountAtomic: request.amountAtomic,
+      feeAtomic: "100",
+      finality: "accepted",
+    }, lease, "accepted");
+    journal.completeTreasuryOperation(request.operationKey, lease);
+    journal.releaseTreasuryOperationDriver(lease, request.operationKey);
+  }
   return Object.freeze({
     operationKey: request.operationKey,
     kind: request.kind,

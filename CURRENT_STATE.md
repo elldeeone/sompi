@@ -9,18 +9,18 @@ landed Kaspa-x402 `0.1.0-alpha.8` release, published package integrities,
 immutable specifications, schemas, vectors, public APIs, and funded TN10
 evidence have been mapped into Sompi's ownership and acceptance boundaries in
 [`docs/architecture/KASPA_X402_INTEGRATION.md`](docs/architecture/KASPA_X402_INTEGRATION.md).
-The implementation is now moving through funded Testnet-10, security, and
-release-readiness gates. Batch settlement is a
+Phase I is complete except for the funded additive-contention sub-gate. Phase J
+has completed its first formal full-branch security scan and the resulting
+remediation; the mandatory immutable post-fix rescan is next. Batch settlement is a
 separate capital-backed channel lifecycle and is not treated as exact payment.
 
 ADR-0015 and the aligned architecture require a clean replacement of alpha.6,
-support both
-`kaspa-exact-v2` profiles (`standard-native` and `additive`), and treats
+support both `kaspa-exact-v2` profiles (`standard-native` and `additive`), and treat
 `batch-settlement` as a separate gated lifecycle. HTTP/OpenAPI is now the
 canonical Purchase API and MCP is a thin untrusted compatibility adapter. No
 alpha.8 payment conformance claim has been made yet.
 
-Current verification: `npm test` passes all **434** tests (**433 pass**, one
+Current verification: `npm test` passes all **451** tests (**450 pass**, one
 documented privileged ownership skip) and the complete offline smoke. The
 authenticated loopback API, runtime-derived OpenAPI, operator-installed agent
 credential, HTTP/MCP parity, request limits, deadlines, and cancellation gates
@@ -80,6 +80,21 @@ The first human-present AP2 + Kaspa-x402 vertical remains testnet-only; the
 post-scan hardening gates pass through the bounded Authority, Purchase/Journal,
 Evidence, MCP, and direct-Treasury lifecycles.
 
+The formal diff scan of `fd7ba42...8e1214b` reviewed all 146 changed
+source-like files through 30 full-file receipts. It reported two findings: an
+empty current UTXO view could terminally retire a live batch channel, and
+cooperative-only API deadlines could retain every request permit. Both are now
+fixed. Empty UTXO views and protocol-store retirement requests fail closed
+without changing durable channel state; only corroborated Chain Evidence may
+advance or terminalize a channel. The API now has independent Purchase and
+control lanes, hard response deadlines, bounded overdue work, and abortable
+body reads. The same remediation also binds accepted-history transaction IDs
+to full transaction bodies, keeps broadcast claim attempts permanently fenced,
+and requires mechanism-specific durable evidence for every accepted batch
+Treasury Movement. The complete test, conformance, OpenAPI, Arazzo, local-proof,
+and 199-entry package-verification gates pass. A fresh post-fix scan is still
+required before the formal security gate is closed.
+
 Phases 0 through 6 were implemented through `4ebb82d`, including the stable
 Purchase module, clean Kaspa-x402 alpha.6 exact path, isolated interactive AP2
 Authority, demo Merchant, crash recovery, local vertical proof, and live
@@ -110,8 +125,9 @@ target contract.
   `1df2f9c`, `91f85cd`, `a3e5a20`, `081f619`, `eb96534`, and the post-review
   hardening commit `1151938`. The worktree is named and no remote branch was
   changed.
-- Latest implementation milestone: `4c6fc8f` (`Centralize trusted chain
-  evidence`).
+- Security-reviewed alpha.8 milestone: `8e1214b` (`Close alpha.8 security
+  review findings`). The current remediation milestone closes the two findings
+  from the subsequent complete branch scan and its mandatory hardening set.
 - Untouched post-scan baseline: `npm test` passed with 339 tests, one privileged
   ownership test skipped, and complete offline smoke.
 - Sealed deep scan: 21 findings, 8 medium and 13 low, no high/critical.
@@ -415,10 +431,12 @@ protocol behavior and did not spend additional testnet funds.
 
 ## Next action
 
-Complete Phase 3 on `phase-3-purchase-module`: audit the existing Purchase
-operations, add the authenticated OpenAPI-described API, reduce MCP to a
-least-authority compatibility adapter, and prove transport parity before the
-alpha.8 runtime cutover.
+Commit the verified security remediation, run a fresh immutable diff scan over
+the complete branch, and fix/rescan any surviving issue until clean. Then run
+the remaining funded additive-contention Testnet-10 proof, replace the stale
+alpha.6 public evidence with the final alpha.8 evidence set, and complete the
+Phase K documentation, clean-package, accepted-ADR, and branch-publication
+audit.
 
 ## Known external uncertainties
 

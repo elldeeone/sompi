@@ -1011,12 +1011,19 @@ export const JOURNAL_SCHEMA_V10_MIGRATION_SQL = `
     voucher_ceiling_atomic TEXT,
     transaction_id TEXT,
     prepared_digest TEXT,
-    evidence_digest TEXT REFERENCES evidence_artifacts(digest) ON DELETE RESTRICT,
+    evidence_digest TEXT,
     created_at_ms INTEGER NOT NULL,
     updated_at_ms INTEGER NOT NULL,
     UNIQUE (purchase_id, kind),
     CHECK (kind = 'voucher' OR purchase_id IS NULL),
-    CHECK (kind <> 'voucher' OR (maximum_authorized_atomic IS NOT NULL AND voucher_ceiling_atomic IS NOT NULL))
+    CHECK (kind <> 'voucher' OR (maximum_authorized_atomic IS NOT NULL AND voucher_ceiling_atomic IS NOT NULL)),
+    CHECK (
+      state <> 'accepted' OR (
+        transaction_id IS NOT NULL AND evidence_digest IS NOT NULL AND
+        (kind NOT IN ('deposit', 'topup', 'claim') OR
+          (active_txid_after IS NOT NULL AND active_output_index_after IS NOT NULL))
+      )
+    )
   ) STRICT;
 
   CREATE INDEX batch_movement_recovery

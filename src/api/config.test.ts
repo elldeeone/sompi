@@ -18,7 +18,8 @@ test("API environment accepts only loopback and a securely installed credential"
       SOMPI_API_HOST: "127.0.0.1",
       SOMPI_API_PORT: "7443",
       SOMPI_API_DEADLINE_MS: "90000",
-      SOMPI_API_MAX_CONCURRENCY: "4",
+      SOMPI_API_MAX_PURCHASE_CONCURRENCY: "4",
+      SOMPI_API_MAX_CONTROL_CONCURRENCY: "2",
       SOMPI_AGENT_API_CREDENTIAL: filename,
       SOMPI_OPERATOR_UID: String(stat.uid),
       SOMPI_RUNTIME_GID: String(stat.gid),
@@ -26,7 +27,8 @@ test("API environment accepts only loopback and a securely installed credential"
     const connection = purchaseApiConnectionConfigFromEnv(env, { allowSameUserForTests: true });
     assert.equal(connection.baseUrl, "http://127.0.0.1:7443");
     const listener = purchaseApiListenerConfigFromEnv(env, { allowSameUserForTests: true });
-    assert.equal(listener.maxConcurrency, 4);
+    assert.equal(listener.maxPurchaseConcurrency, 4);
+    assert.equal(listener.maxControlConcurrency, 2);
     assert.equal(listener.deadlineMs, 90_000);
     assert.throws(() => purchaseApiConnectionConfigFromEnv({ ...env, SOMPI_API_HOST: "0.0.0.0" }, { allowSameUserForTests: true }), /loopback/);
   } finally {

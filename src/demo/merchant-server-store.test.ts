@@ -203,6 +203,32 @@ test("batch settlement and claim attempts persist atomically across restart", as
   });
 });
 
+test("a broadcast batch claim cannot be abandoned or replaced", async () => {
+  await withStore(async (store) => {
+    const channel = batchChannel();
+    await store.saveChannel(channel);
+    const attempt = batchClaimAttempt(channel);
+    await store.saveClaimAttempt(attempt);
+    const broadcast = {
+      ...attempt,
+      status: "broadcast" as const,
+      transactionId: "ee".repeat(32),
+      finality: "broadcast" as const,
+    };
+    await store.saveClaimAttempt(broadcast);
+
+    await assert.rejects(
+      store.abandonClaimAttempt(attempt.attemptId, "operator retry"),
+      /conflict/,
+    );
+    assert.deepEqual(await store.loadOpenClaimAttempt(channel.channelId), broadcast);
+    await assert.rejects(
+      store.saveClaimAttempt({ ...attempt, attemptId: "ff".repeat(32) }),
+      /conflict/,
+    );
+  });
+});
+
 async function withStore(action: (store: SqliteMerchantServerStateStore) => Promise<void>): Promise<void> {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-exact-store-"));
   const filename = path.join(root, "state.sqlite");
@@ -287,7 +313,7 @@ function batchClaimAttempt(channel: ServerChannelRecord): ClaimAttemptRecord {
     chargedCumulativeAmount: channel.chargedCumulativeAmount,
     claimedCumulativeAmount: channel.claimedCumulativeAmount,
     signedMaxClaimable: channel.signedMaxClaimable,
-    voucherSignature: channel.voucherSignature,
+    ...(channel.voucherSignature ? { voucherSignature: channel.voucherSignature } : {}),
     channelStatus: channel.status,
     transaction: JSON.stringify({ claim: true }),
     continuationOutpoint: { txid: "ee".repeat(32), index: 1 },

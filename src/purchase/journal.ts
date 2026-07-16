@@ -5372,10 +5372,7 @@ export class PurchaseJournal {
     return save.immediate();
   }
 
-  /**
-   * Persists an SDK channel update and any on-chain successor Movement in one
-   * SQLite transaction. Voucher-only updates produce no chain Movement.
-   */
+  /** Persists only same-outpoint SDK state; successors require verified evidence. */
   saveBatchChannelWithLifecycleMovement(
     candidate: Readonly<BatchChannelJournalRecord>
   ): BatchChannelJournalRecord {
@@ -5384,49 +5381,18 @@ export class PurchaseJournal {
         .prepare("SELECT * FROM batch_channels WHERE channel_id = ?")
         .get(candidate.channelId) as BatchChannelRow | undefined;
       const previous = previousRow ? batchChannelFromRow(previousRow) : undefined;
-      const next = this.saveBatchChannel(candidate);
-      if (!previous || (
-        previous.activeOutpoint.txid === next.activeOutpoint.txid &&
-        previous.activeOutpoint.index === next.activeOutpoint.index
+      if (previous && (
+        previous.activeOutpoint.txid === candidate.activeOutpoint.txid &&
+        previous.activeOutpoint.index === candidate.activeOutpoint.index
       )) {
-        return next;
+        return this.saveBatchChannel(candidate);
       }
-      const kind: "claim" | "topup" =
-        BigInt(next.claimedCumulativeAtomic) > BigInt(previous.claimedCumulativeAtomic)
-          ? "claim"
-          : BigInt(next.fundingAmountAtomic) > BigInt(previous.fundingAmountAtomic)
-            ? "topup"
-            : (() => { throw new JournalInvariantError("batch successor is neither a claim nor a top-up"); })();
-      const movementId = `batch-${kind}:${next.channelId}:${next.activeOutpoint.txid}:${next.activeOutpoint.index}`;
-      const requestDigest = evidenceDigest(Buffer.from(JSON.stringify({
-        profile: "urn:sompi:batch-channel-successor:1",
-        kind,
-        channelId: next.channelId,
-        before: previous.activeOutpoint,
-        after: next.activeOutpoint,
-        fundingBefore: previous.fundingAmountAtomic,
-        fundingAfter: next.fundingAmountAtomic,
-        charged: next.chargedCumulativeAtomic,
-        claimedBefore: previous.claimedCumulativeAtomic,
-        claimedAfter: next.claimedCumulativeAtomic,
-      }), "utf8"));
-      const movement = this.planBatchTreasuryMovement({
-        movementId,
-        channelId: next.channelId,
-        kind,
-        requestDigest,
-        activeOutpointBefore: previous.activeOutpoint,
-      });
-      if (movement.state !== "accepted") {
-        this.advanceBatchTreasuryMovement({
-          movementId,
-          expectedState: movement.state,
-          state: "accepted",
-          activeOutpointAfter: next.activeOutpoint,
-          transactionId: next.activeOutpoint.txid,
-        });
+      if (previous) {
+        throw new JournalInvariantError(
+          "batch channel successors require a verified lifecycle transition",
+        );
       }
-      return next;
+      return this.saveBatchChannel(candidate);
     });
     return save.immediate();
   }
@@ -5454,15 +5420,27 @@ export class PurchaseJournal {
       if (existing && JSON.stringify(channel) !== JSON.stringify(normalizeBatchChannel(candidate, channel.updatedAtMs))) {
         throw new JournalInvariantError("accepted batch deposit conflicts with the active channel");
       }
+      const evidenceDigest = this.requireAcceptedTreasuryMovementEvidence(
+        channel.activeOutpoint.txid,
+      );
       const accepted = movement.state === "accepted"
-        ? movement
+        ? this.requireAcceptedBatchMovementEvidence(movement)
         : this.advanceBatchTreasuryMovement({
             movementId,
             expectedState: movement.state,
             state: "accepted",
             activeOutpointAfter: channel.activeOutpoint,
             transactionId: channel.activeOutpoint.txid,
+            evidenceDigest,
           });
+      if (
+        accepted.transactionId !== channel.activeOutpoint.txid ||
+        !accepted.activeOutpointAfter ||
+        accepted.activeOutpointAfter.txid !== channel.activeOutpoint.txid ||
+        accepted.activeOutpointAfter.index !== channel.activeOutpoint.index
+      ) {
+        throw new JournalInvariantError("accepted batch deposit does not match the active channel outpoint");
+      }
       return Object.freeze({ channel, movement: accepted });
     });
     return activate.immediate();
@@ -5472,6 +5450,7 @@ export class PurchaseJournal {
     channelId: string;
     movementId: string;
     transactionId: string;
+    chainEvidenceDigest: Sha256Digest;
   }>): Readonly<{
     channel: BatchChannelJournalRecord;
     movement: BatchTreasuryMovementRecord;
@@ -5492,15 +5471,19 @@ export class PurchaseJournal {
             updatedAtMs: this.timestamp(),
           });
       const accepted = movement.state === "accepted"
-        ? movement
+        ? this.requireAcceptedBatchMovementEvidence(movement)
         : this.advanceBatchTreasuryMovement({
             movementId: movement.movementId,
             expectedState: movement.state,
             state: "accepted",
             transactionId: input.transactionId,
+            evidenceDigest: input.chainEvidenceDigest,
           });
       if (accepted.transactionId !== input.transactionId) {
         throw new JournalInvariantError("accepted batch refund transaction changed");
+      }
+      if (accepted.evidenceDigest !== input.chainEvidenceDigest) {
+        throw new JournalInvariantError("accepted batch refund evidence changed");
       }
       return Object.freeze({ channel, movement: accepted });
     });
@@ -5521,6 +5504,7 @@ export class PurchaseJournal {
     continuationOutpoint: Readonly<{ txid: string; index: number }>;
     continuationScriptPublicKey: string;
     continuationFundingAmountAtomic: string;
+    chainEvidenceDigest: Sha256Digest;
   }>): Readonly<{
     channel: BatchChannelJournalRecord;
     refundMovement: BatchTreasuryMovementRecord;
@@ -5561,7 +5545,8 @@ export class PurchaseJournal {
           throw new JournalInvariantError("batch claim/refund race continuation violates channel accounting");
         }
         const { latestVoucher: _latestVoucher, ...withoutVoucher } = channel;
-        channel = this.saveBatchChannelWithLifecycleMovement({
+        const previous = channel;
+        channel = this.saveBatchChannel({
           ...withoutVoucher,
           activeOutpoint: continuation,
           activeScriptPublicKey: input.continuationScriptPublicKey,
@@ -5573,13 +5558,54 @@ export class PurchaseJournal {
           version: channel.version + 1,
           updatedAtMs: this.timestamp(),
         });
+        const movementId = `batch-claim:${channel.channelId}:${continuation.txid}:${continuation.index}`;
+        const requestDigest = evidenceDigest(Buffer.from(JSON.stringify({
+          profile: "urn:sompi:batch-channel-successor:1",
+          kind: "claim",
+          channelId: channel.channelId,
+          before: previous.activeOutpoint,
+          after: channel.activeOutpoint,
+          fundingBefore: previous.fundingAmountAtomic,
+          fundingAfter: channel.fundingAmountAtomic,
+          charged: channel.chargedCumulativeAtomic,
+          claimedBefore: previous.claimedCumulativeAtomic,
+          claimedAfter: channel.claimedCumulativeAtomic,
+        }), "utf8"));
+        const claimMovement = this.planBatchTreasuryMovement({
+          movementId,
+          channelId: channel.channelId,
+          kind: "claim",
+          requestDigest,
+          activeOutpointBefore: previous.activeOutpoint,
+        });
+        if (claimMovement.state === "accepted") {
+          this.requireAcceptedBatchMovementEvidence(claimMovement);
+        } else {
+          this.advanceBatchTreasuryMovement({
+            movementId,
+            expectedState: claimMovement.state,
+            state: "accepted",
+            activeOutpointAfter: channel.activeOutpoint,
+            transactionId: input.claimTransactionId,
+            evidenceDigest: input.chainEvidenceDigest,
+          });
+        }
       } else if (
         channel.fundingAmountAtomic !== continuationFundingAtomic ||
         channel.activeScriptPublicKey !== input.continuationScriptPublicKey ||
-        channel.claimedCumulativeAtomic !== channel.signedCumulativeAtomic ||
-        channel.chargedCumulativeAtomic !== channel.signedCumulativeAtomic
+        channel.claimedCumulativeAtomic !== channel.chargedCumulativeAtomic ||
+        channel.signedCumulativeAtomic !== "0"
       ) {
         throw new JournalInvariantError("previously applied batch claim conflicts with race evidence");
+      }
+      if (alreadyApplied) {
+        const claimMovement = this.requireBatchTreasuryMovement(
+          `batch-claim:${channel.channelId}:${continuation.txid}:${continuation.index}`,
+        );
+        this.requireAcceptedBatchMovementEvidence(claimMovement);
+        if (claimMovement.evidenceDigest !== input.chainEvidenceDigest) {
+          throw new JournalInvariantError("accepted batch claim evidence changed");
+        }
       }
 
       let refundMovement = this.requireBatchTreasuryMovement(input.refundMovementId);
@@ -5601,18 +5627,6 @@ export class PurchaseJournal {
       return Object.freeze({ channel, refundMovement });
     });
     return reconcile.immediate();
-  }
-
-  retireBatchChannel(channelId: string, reason = "retired_by_adapter"): BatchChannelJournalRecord {
-    const current = this.requireBatchChannel(channelId);
-    if (current.status === "retired") return current;
-    return this.saveBatchChannel({
-      ...current,
-      status: "retired",
-      retiredReason: requireBatchReason(reason),
-      version: current.version + 1,
-      updatedAtMs: this.timestamp(),
-    });
   }
 
   listRefundableBatchChannels(nowDaa: string): BatchChannelJournalRecord[] {
@@ -5726,11 +5740,23 @@ export class PurchaseJournal {
           throw new JournalInvariantError("batch actual charge exceeds the Purchase authorization");
         }
       }
-      if (input.evidenceDigest !== undefined) this.requireEvidence(input.evidenceDigest);
       if (input.transactionId !== undefined) requireBatchHash(input.transactionId, "batch movement transaction ID");
       const after = input.activeOutpointAfter === undefined
         ? current.activeOutpointAfter
         : normalizeBatchOutpoint(input.activeOutpointAfter, "batch movement successor");
+      if (input.state === "accepted") {
+        if (input.transactionId === undefined || input.evidenceDigest === undefined) {
+          throw new JournalInvariantError("accepted batch Movement lacks durable verified evidence");
+        }
+        if (["deposit", "topup", "claim"].includes(current.kind) && after === undefined) {
+          throw new JournalInvariantError("accepted batch Movement lacks its successor outpoint");
+        }
+        this.assertBatchMovementEvidence(
+          current.kind,
+          input.transactionId,
+          input.evidenceDigest,
+        );
+      }
       const result = this.db.prepare(
         `UPDATE batch_treasury_movements SET state = ?, actual_charge_atomic = ?,
            active_txid_after = ?, active_output_index_after = ?, transaction_id = ?,
@@ -5746,6 +5772,75 @@ export class PurchaseJournal {
       return this.requireBatchTreasuryMovement(current.movementId);
     });
     return advance.immediate();
+  }
+
+  private requireAcceptedTreasuryMovementEvidence(transactionId: string): Sha256Digest {
+    requireBatchHash(transactionId, "batch Treasury transaction ID");
+    const row = this.db.prepare(
+      `SELECT observation.detail_digest
+         FROM treasury_operations operation
+         JOIN treasury_operation_observations observation
+           ON observation.operation_key = operation.operation_key
+        WHERE operation.transaction_id = ?
+          AND operation.state = 'completed'
+          AND observation.status = 'observed'
+        ORDER BY observation.sequence DESC LIMIT 1`,
+    ).get(transactionId) as { detail_digest: Sha256Digest } | undefined;
+    if (!row) {
+      throw new JournalInvariantError("accepted batch deposit lacks Treasury observation evidence");
+    }
+    return row.detail_digest;
+  }
+
+  private assertBatchMovementEvidence(
+    kind: BatchTreasuryMovementKind,
+    transactionId: string,
+    proofDigest: Sha256Digest,
+  ): void {
+    assertDigest(proofDigest, "batch Movement evidence digest");
+    if (kind === "voucher") {
+      this.requireEvidence(proofDigest);
+      const verified = this.db.prepare(
+        "SELECT 1 AS present FROM evidence_verifications WHERE digest = ? LIMIT 1",
+      ).get(proofDigest) as { present: number } | undefined;
+      if (!verified) {
+        throw new JournalInvariantError("accepted batch voucher lacks verified Merchant evidence");
+      }
+      return;
+    }
+    if (kind === "deposit") {
+      if (this.requireAcceptedTreasuryMovementEvidence(transactionId) !== proofDigest) {
+        throw new JournalInvariantError("batch deposit evidence does not match Treasury observation");
+      }
+      return;
+    }
+    const evidence = this.db.prepare(
+      `SELECT 1 AS present FROM chain_evidence
+        WHERE detail_digest = ? AND transaction_id = ? AND status = 'present'
+          AND level IN ('accepted', 'depth-confirmed', 'consensus-final')
+        LIMIT 1`,
+    ).get(proofDigest, transactionId) as { present: number } | undefined;
+    if (!evidence) {
+      throw new JournalInvariantError("accepted batch Movement lacks matching Chain Evidence");
+    }
+  }
+
+  private requireAcceptedBatchMovementEvidence(
+    movement: BatchTreasuryMovementRecord,
+  ): BatchTreasuryMovementRecord {
+    if (
+      movement.state !== "accepted" ||
+      movement.transactionId === undefined ||
+      movement.evidenceDigest === undefined
+    ) {
+      throw new JournalInvariantError("accepted batch Movement lacks durable verified evidence");
+    }
+    this.assertBatchMovementEvidence(
+      movement.kind,
+      movement.transactionId,
+      movement.evidenceDigest,
+    );
+    return movement;
   }
 
   private insertBatchChannelTransition(
@@ -6696,6 +6791,13 @@ export class PurchaseJournal {
           `Treasury Operation ${operation.operationKey} observation facts are inconsistent`
         );
       }
+    }
+
+    const acceptedBatchMovements = this.db.prepare(
+      "SELECT * FROM batch_treasury_movements WHERE state = 'accepted' ORDER BY movement_id",
+    ).all() as BatchTreasuryMovementRow[];
+    for (const row of acceptedBatchMovements) {
+      this.requireAcceptedBatchMovementEvidence(batchMovementFromRow(row));
     }
 
     const artifacts = this.db.prepare("SELECT * FROM evidence_artifacts").all() as EvidenceArtifactRow[];

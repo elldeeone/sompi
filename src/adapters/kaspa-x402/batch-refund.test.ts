@@ -5,10 +5,14 @@ import * as path from "node:path";
 import test from "node:test";
 
 import type { ChainEvidenceModule } from "../../chain-evidence/module.js";
+import { CHAIN_EVIDENCE_PROFILE, type ChainEvidenceRecord } from "../../chain-evidence/types.js";
 import { evidenceDigest } from "../../purchase/identity.js";
 import { PurchaseJournal } from "../../purchase/journal.js";
 import type { TreasuryOperationRecord } from "../../treasury/operation-journal.js";
-import type { TreasuryOperationView } from "../../treasury/operations.js";
+import type {
+  TreasuryOperationRequest,
+  TreasuryOperationView,
+} from "../../treasury/operations.js";
 import type { KaspaWallet } from "../../wallet.js";
 import { KaspaX402BatchCapitalModule } from "./batch-capital-module.js";
 import { SecureBatchChannelSigner } from "./batch-channel-signer.js";
@@ -92,9 +96,11 @@ test("batch refund is prepared from public alpha.8 covenant primitives only afte
     );
     await assert.rejects(uncorroborated.prepare(intent), /not independently unlocked/);
 
+    const refundEvidence = evidenceDigest("accepted-refund");
+    recordAcceptedEvidence(fixture.journal, prepared.transactionId, refundEvidence);
     await adapter.commit(intent, prepared.bytes, {
       transactionId: prepared.transactionId,
-      chainEvidenceDigest: evidenceDigest("accepted-refund"),
+      chainEvidenceDigest: refundEvidence,
     });
     assert.equal(fixture.journal.requireBatchTreasuryMovement(movementId).state, "accepted");
     assert.equal(fixture.journal.requireBatchChannel(fixture.channelId).status, "refunded");
@@ -128,6 +134,8 @@ test("accepted merchant claim atomically advances the channel and supersedes a c
       client: async () => ({ submitTransaction: async () => { throw new Error("not used"); } }),
     } as unknown as KaspaWallet;
     const claimTransactionId = "66".repeat(32);
+    const claimEvidence = evidenceDigest("accepted-claim");
+    recordAcceptedEvidence(fixture.journal, claimTransactionId, claimEvidence);
     const adapter = new BatchRefundTreasuryOperationAdapter(
       fixture.journal,
       wallet,
@@ -148,7 +156,7 @@ test("accepted merchant claim atomically advances the channel and supersedes a c
           continuationOutpoint: { txid: claimTransactionId, index: 1 },
           continuationScriptPublicKey: current.activeScriptPublicKey,
           continuationFundingAmountAtomic: "800000",
-          detailDigest: evidenceDigest("accepted-claim"),
+          detailDigest: claimEvidence,
         }),
       },
     );
@@ -169,6 +177,14 @@ test("accepted merchant claim atomically advances the channel and supersedes a c
       `batch-claim:${fixture.channelId}:${claimTransactionId}:1`,
     );
     assert.equal(claimMovement.state, "accepted");
+
+    const replayed = await adapter.observe(intent, prepared.bytes);
+    assert.equal(replayed.status, "superseded");
+    assert.equal(replayed.detail.winningTransactionId, claimTransactionId);
+    assert.deepEqual(
+      fixture.journal.requireBatchChannel(fixture.channelId).activeOutpoint,
+      { txid: claimTransactionId, index: 1 },
+    );
   } finally {
     fixture.close();
   }
@@ -197,30 +213,28 @@ test("batch refund module persists a non-Purchase Movement before Treasury execu
 
 async function channelFixture() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-batch-refund-"));
-  const journal = new PurchaseJournal(":memory:", { now: () => 1_800_000_000_000 });
+  const journal = new PurchaseJournal(":memory:", {
+    now: () => 1_800_000_000_000,
+    preparedMaterialDirectory: path.join(directory, "prepared"),
+    operatorManifestIdentity: {
+      revision: 1,
+      digest: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    },
+    admission: {
+      authorityPreauthSockets: 32,
+      authorityPrompts: 4,
+      prevalidationPurchases: 128,
+      evidenceBytes: 67_108_864,
+      directTreasuryRetries: 3,
+    },
+  });
   const signer = new SecureBatchChannelSigner(
     directory,
     () => 1_800_000_000_000,
     () => Uint8Array.from({ length: 32 }, (_, index) => index === 31 ? 1 : 0),
   );
   const capital = new KaspaX402BatchCapitalModule(journal, {
-    execute: async (request) => ({
-      operationKey: request.operationKey,
-      kind: request.kind,
-      state: "completed",
-      summary: "completed",
-      destination: request.destination,
-      requestedAmountAtomic: request.amountAtomic,
-      feeCeilingAtomic: "1000",
-      amountAtomic: request.amountAtomic as string,
-      feeAtomic: "100",
-      transactionId: DEPOSIT_TXID,
-      retryCount: 0,
-      recoveryRequired: false,
-      safeToRetry: false,
-      cancellationRequested: false,
-      preparationFenced: false,
-    }),
+    execute: async (request) => completedTreasury(journal, request, DEPOSIT_TXID),
   }, signer, undefined, () => 1_800_000_000_000);
   const result = await capital.openChannel({
     operationKey: "refund-fixture",
@@ -241,6 +255,102 @@ async function channelFixture() {
       fs.rmSync(directory, { recursive: true, force: true });
     },
   };
+}
+
+function completedTreasury(
+  journal: PurchaseJournal,
+  request: TreasuryOperationRequest,
+  transactionId: string,
+): TreasuryOperationView {
+  const policy = journal.installPolicy({
+    maxPerPaymentAtomic: "10000000",
+    maxPerHourAtomic: "10000000",
+    approvalAboveAtomic: "0",
+    allowlist: [request.destination],
+  });
+  journal.claimTreasuryOperationIntent({
+    operationKey: request.operationKey,
+    requestDigest: evidenceDigest(JSON.stringify(request)),
+    kind: request.kind,
+    destination: request.destination,
+    requestedAmountAtomic: request.amountAtomic,
+    feeCeilingAtomic: "1000",
+    retryLimit: 1,
+    policyDigest: policy.digest,
+  });
+  const claim = journal.claimTreasuryOperationDriver(
+    request.operationKey,
+    "batch-refund-test",
+    60_000,
+  );
+  if (claim.record.state !== "completed") {
+    const lease = claim.lease!;
+    journal.recordPreparedTreasuryOperation(request.operationKey, {
+      bytes: Buffer.from("batch-refund-deposit", "utf8"),
+      transactionId,
+      amountAtomic: request.amountAtomic as string,
+      feeAtomic: "100",
+      policyDigest: policy.digest,
+    }, lease);
+    journal.planTreasuryOperationSubmission(request.operationKey, lease);
+    journal.claimTreasuryOperationEffectCapability(request.operationKey, lease);
+    journal.recordTreasuryOperationSubmissionAccepted(request.operationKey, transactionId, lease);
+    journal.recordTreasuryOperationObservation(request.operationKey, "observed", {
+      transactionId,
+      amountAtomic: request.amountAtomic,
+      feeAtomic: "100",
+      finality: "accepted",
+    }, lease, "accepted");
+    journal.completeTreasuryOperation(request.operationKey, lease);
+    journal.releaseTreasuryOperationDriver(lease, request.operationKey);
+  }
+  return Object.freeze({
+    operationKey: request.operationKey,
+    kind: request.kind,
+    state: "completed",
+    summary: "completed",
+    destination: request.destination,
+    requestedAmountAtomic: request.amountAtomic,
+    feeCeilingAtomic: "1000",
+    amountAtomic: request.amountAtomic as string,
+    feeAtomic: "100",
+    transactionId,
+    retryCount: 0,
+    recoveryRequired: false,
+    safeToRetry: false,
+    cancellationRequested: false,
+    preparationFenced: false,
+  });
+}
+
+function recordAcceptedEvidence(
+  journal: PurchaseJournal,
+  transactionId: string,
+  detailDigest: ReturnType<typeof evidenceDigest>,
+): void {
+  const record: ChainEvidenceRecord = {
+    profile: CHAIN_EVIDENCE_PROFILE,
+    operationId: `recovery:${transactionId}`,
+    operation: "recovery-release",
+    transactionId,
+    status: "present",
+    level: "accepted",
+    view: "historical",
+    mechanism: "native-covenant",
+    protocolFinality: "accepted",
+    operatorFloor: "accepted",
+    effectiveFloor: "accepted",
+    primaryProfile: "test-primary",
+    witnessProfile: "test-witness",
+    blockHash: "77".repeat(32),
+    acceptingBlockHash: "88".repeat(32),
+    acceptingBlockDaaScore: "500000001",
+    virtualDaaScore: "500000002",
+    outputsDigest: evidenceDigest(`outputs:${transactionId}`),
+    detailDigest,
+    observedAtMs: 1_800_000_000_000,
+  };
+  journal.recordChainEvidence(record);
 }
 
 function refundIntent(channelId: string): TreasuryOperationRecord {

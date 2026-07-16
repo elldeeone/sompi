@@ -17,6 +17,7 @@ import { meets } from "../../chain-evidence/module.js";
 import type { FinalityFloor } from "../../chain-evidence/types.js";
 import { evidenceDigest } from "../../purchase/identity.js";
 import type { PurchaseJournal } from "../../purchase/journal.js";
+import type { Sha256Digest } from "../../purchase/types.js";
 import type {
   PreparedTreasuryOperationMaterial,
   TreasuryOperationRecord,
@@ -249,6 +250,7 @@ export class BatchRefundTreasuryOperationAdapter implements TreasuryOperationAda
           continuationOutpoint: race.continuationOutpoint,
           continuationScriptPublicKey: race.continuationScriptPublicKey,
           continuationFundingAmountAtomic: race.continuationFundingAmountAtomic,
+          chainEvidenceDigest: race.detailDigest,
         });
         return Object.freeze({
           status: "superseded" as const,
@@ -308,6 +310,10 @@ export class BatchRefundTreasuryOperationAdapter implements TreasuryOperationAda
       channelId: envelope.channelId,
       movementId: envelope.movementId,
       transactionId: envelope.transactionId,
+      chainEvidenceDigest: requireDigest(
+        observedDetail.chainEvidenceDigest,
+        "batch refund Chain Evidence digest",
+      ),
     });
   }
 
@@ -317,6 +323,13 @@ export class BatchRefundTreasuryOperationAdapter implements TreasuryOperationAda
     if (!HASH32.test(channelId)) throw new Error("batch refund channel ID is invalid");
     return this.journal.requireBatchChannel(channelId);
   }
+}
+
+function requireDigest(value: unknown, label: string): Sha256Digest {
+  if (typeof value !== "string" || !/^sha256:[A-Za-z0-9_-]{43}$/.test(value)) {
+    throw new Error(`${label} is invalid`);
+  }
+  return value as Sha256Digest;
 }
 
 export class KaspaX402BatchRefundModule {

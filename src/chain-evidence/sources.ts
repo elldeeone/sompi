@@ -131,13 +131,33 @@ export class WrpcOperatorChainObserver implements OperatorChainObserver {
         if (matches.length !== 1 || String(matches[0].acceptingBlockHash).toLowerCase() !== witness.acceptingBlockHash) {
           return nonPresent("unknown", "kaspa-operator-wrpc-v1", digest({ result: "accepted-history-conflict", transactionId: request.transactionId }), readTime(this.now()));
         }
-        const block = await rpc.getBlock({ hash: witness.acceptingBlockHash, includeTransactions: false });
+        const [block, transactionBlock] = await Promise.all([
+          rpc.getBlock({ hash: witness.acceptingBlockHash, includeTransactions: false }),
+          rpc.getBlock({ hash: witness.blockHash, includeTransactions: true }),
+        ]);
         const header = block.block.header;
         const headerHash = String(header.hash).toLowerCase();
         const acceptingDaa = BigInt(header.daaScore);
         if (headerHash !== witness.acceptingBlockHash || acceptingDaa.toString() !== witness.acceptingBlockDaaScore || virtualDaa < acceptingDaa) {
           return nonPresent("unknown", "kaspa-operator-wrpc-v1", digest({ result: "accepting-block-conflict", transactionId: request.transactionId }), readTime(this.now()));
         }
+        const containing = record(transactionBlock.block, "wRPC transaction block");
+        const containingHeader = record(containing.header, "wRPC transaction block header");
+        if (String(containingHeader.hash ?? "").toLowerCase() !== witness.blockHash) {
+          return nonPresent("unknown", "kaspa-operator-wrpc-v1", digest({ result: "transaction-block-conflict", transactionId: request.transactionId }), readTime(this.now()));
+        }
+        const transactions = array(containing.transactions, "wRPC accepted block transactions");
+        const transactionMatches = transactions.filter((transaction) => {
+          try {
+            return deriveTransactionId(transaction) === request.transactionId;
+          } catch {
+            return false;
+          }
+        });
+        if (transactionMatches.length !== 1) {
+          return nonPresent("unknown", "kaspa-operator-wrpc-v1", digest({ result: "accepted-transaction-body-conflict", transactionId: request.transactionId }), readTime(this.now()));
+        }
+        validateWrpcTransaction(transactionMatches[0], request);
         const level = virtualDaa - acceptingDaa >= this.depth ? "depth-confirmed" as const : "accepted" as const;
         return Object.freeze({
           status: "present" as const, level, view: "historical" as const,
@@ -232,6 +252,19 @@ function validateWrpcTransaction(transaction: unknown, request: Readonly<ChainEv
     const serialized = `${Number(script.version).toString(16).padStart(4, "0")}${String(script.script).toLowerCase()}`;
     if (!output || BigInt(output.value as string | number | bigint).toString() !== expected.amountAtomic || serialized !== expected.scriptPublicKey) {
       throw new Error("wRPC mempool output differs from the prepared transaction");
+    }
+  }
+  if (request.expectedInputs) {
+    const inputs = array(value.inputs, "wRPC inputs").map((entry) => record(entry, "wRPC input"));
+    for (const expected of request.expectedInputs) {
+      const matches = inputs.filter((input) => {
+        const outpoint = record(input.previousOutpoint, "wRPC previous outpoint");
+        return String(outpoint.transactionId ?? "").toLowerCase() === expected.transactionId &&
+          Number(outpoint.index) === expected.index;
+      });
+      if (matches.length !== 1) {
+        throw new Error("wRPC input differs from the prepared transaction");
+      }
     }
   }
 }

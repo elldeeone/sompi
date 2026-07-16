@@ -701,6 +701,9 @@ export class SqliteMerchantServerStateStore implements ServerStateStore {
         "SELECT status FROM batch_claim_attempts WHERE attempt_id = ?",
       ).get(attemptId) as { status: string } | undefined;
       if (!current || current.status === "applied") return;
+      if (current.status !== "pending") {
+        throw new DemoMerchantStoreError("conflict");
+      }
       this.db.prepare("DELETE FROM batch_claim_attempts WHERE attempt_id = ?").run(attemptId);
     });
     this.runWrite(abandon);

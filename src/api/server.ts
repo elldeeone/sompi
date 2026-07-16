@@ -16,7 +16,8 @@ import {
 import { agentApiCredentialMatches, type AgentApiCredential } from "./credential.js";
 
 const DEFAULT_DEADLINE_MS = 120_000;
-const DEFAULT_MAX_CONCURRENCY = 8;
+const DEFAULT_MAX_PURCHASE_CONCURRENCY = 8;
+const DEFAULT_MAX_CONTROL_CONCURRENCY = 2;
 const DEFAULT_MAX_CONNECTIONS = 32;
 const PURCHASE_PATH = /^\/purchases\/(pur_[A-Za-z0-9_-]{22})(\/recover)?$/;
 
@@ -26,7 +27,10 @@ export interface PurchaseApiServerOptions {
   readonly host?: "127.0.0.1" | "::1";
   readonly port?: number;
   readonly deadlineMs?: number;
-  readonly maxConcurrency?: number;
+  /** Concurrent create-Purchase requests. */
+  readonly maxPurchaseConcurrency?: number;
+  /** Reserved status/recovery requests, independent of create-Purchase work. */
+  readonly maxControlConcurrency?: number;
   /** Hard bound on retained pre-authentication TCP sockets. */
   readonly maxConnections?: number;
   /** Operator-only diagnostic sink. Error details are never returned to the caller. */
@@ -52,19 +56,28 @@ export async function startPurchaseApiServer(options: PurchaseApiServerOptions):
   const host = options.host ?? "127.0.0.1";
   const port = options.port ?? 7442;
   const deadlineMs = positiveInteger(options.deadlineMs ?? DEFAULT_DEADLINE_MS, "API deadline");
-  const maxConcurrency = positiveInteger(options.maxConcurrency ?? DEFAULT_MAX_CONCURRENCY, "API concurrency");
+  const maxPurchaseConcurrency = positiveInteger(
+    options.maxPurchaseConcurrency ?? DEFAULT_MAX_PURCHASE_CONCURRENCY,
+    "API Purchase concurrency"
+  );
+  const maxControlConcurrency = positiveInteger(
+    options.maxControlConcurrency ?? DEFAULT_MAX_CONTROL_CONCURRENCY,
+    "API control concurrency"
+  );
+  const totalConcurrency = maxPurchaseConcurrency + maxControlConcurrency;
   const maxConnections = positiveInteger(
-    options.maxConnections ?? Math.max(DEFAULT_MAX_CONNECTIONS, maxConcurrency * 4),
+    options.maxConnections ?? Math.max(DEFAULT_MAX_CONNECTIONS, totalConcurrency * 4),
     "API connection limit"
   );
-  if (maxConnections < maxConcurrency) {
-    throw new PurchaseApiServerError("Purchase API connection limit cannot be below request concurrency");
+  if (maxConnections < totalConcurrency) {
+    throw new PurchaseApiServerError("Purchase API connection limit cannot be below total request concurrency");
   }
   if (host !== "127.0.0.1" && host !== "::1") throw new PurchaseApiServerError("Purchase API must bind to loopback");
   if (!Number.isInteger(port) || port < 0 || port > 65_535) throw new PurchaseApiServerError("Purchase API port is invalid");
   if (!options.application || !options.credential) throw new PurchaseApiServerError("Purchase API dependencies are unavailable");
 
-  let active = 0;
+  const purchaseLane = apiLane(maxPurchaseConcurrency);
+  const controlLane = apiLane(maxControlConcurrency);
   const requestTimeout = deadlineMs + 5_000;
   const server = http.createServer({ requestTimeout, headersTimeout: Math.min(10_000, requestTimeout) }, (request, response) => {
     void (async () => {
@@ -74,25 +87,55 @@ export async function startPurchaseApiServer(options: PurchaseApiServerOptions):
         writeError(response, 401, "UNAUTHENTICATED", "A valid agent API credential is required.", false);
         return;
       }
-      if (active >= maxConcurrency) {
+      const lane = isPurchaseCreation(request) ? purchaseLane : controlLane;
+      if (lane.active >= lane.maximum) {
         writeError(response, 429, "API_BUSY", "The Purchase API is at its concurrency limit.", true);
         return;
       }
-      active += 1;
+      if (lane.overdue.size >= lane.maximum) {
+        writeError(response, 503, "API_RECOVERY_SATURATED", "Prior timed-out work is still reconciling.", true);
+        return;
+      }
+      lane.active += 1;
       const timeout = AbortSignal.timeout(deadlineMs);
       const disconnected = new AbortController();
       const abort = () => disconnected.abort(new Error("Purchase API client disconnected"));
       request.once("aborted", abort);
-      response.once("close", () => { if (!response.writableEnded) abort(); });
+      const responseClosed = () => { if (!response.writableEnded) abort(); };
+      response.once("close", responseClosed);
       const signal = AbortSignal.any([timeout, disconnected.signal]);
+      let settled = false;
+      let detached = false;
+      const operation = routeRequest(options.application, request, signal);
+      void operation.then(
+        () => {
+          settled = true;
+          lane.overdue.delete(operation);
+        },
+        (error: unknown) => {
+          settled = true;
+          lane.overdue.delete(operation);
+          if (detached) {
+            try { options.onRequestError?.(error); } catch { /* diagnostics cannot alter recovery */ }
+          }
+        }
+      );
       try {
-        await routeRequest(options.application, request, response, signal);
+        const view = await raceWithSignal(operation, signal);
+        signal.throwIfAborted();
+        writeView(response, view);
       } catch (error) {
         try { options.onRequestError?.(error); } catch { /* diagnostics cannot alter the API result */ }
-        if (!response.headersSent) writeMappedError(response, error, timeout.aborted);
-        else response.destroy();
+        if (!response.destroyed && !response.headersSent) writeMappedError(response, error, timeout.aborted);
+        else if (!response.destroyed) response.destroy();
       } finally {
-        active -= 1;
+        request.off("aborted", abort);
+        response.off("close", responseClosed);
+        if (!settled) {
+          detached = true;
+          lane.overdue.add(operation);
+        }
+        lane.active -= 1;
       }
     })().catch(() => {
       if (!response.headersSent) writeError(response, 500, "INTERNAL_ERROR", "Sompi failed safely.", false);
@@ -133,9 +176,8 @@ export async function startPurchaseApiServer(options: PurchaseApiServerOptions):
 async function routeRequest(
   application: PurchaseApplication,
   request: http.IncomingMessage,
-  response: http.ServerResponse,
   signal: AbortSignal
-): Promise<void> {
+): Promise<unknown> {
   const method = request.method ?? "";
   const target = request.url ?? "";
   if (target.includes("?") || target.includes("#") || target.includes("%")) {
@@ -146,19 +188,16 @@ async function routeRequest(
       throw new HttpBoundaryError(400, "INVALID_CONTENT_TYPE", "Content-Type must be application/json.", false);
     }
     const input = parsePurchaseCreateRequest(await readJsonBody(request, signal));
-    writeView(response, await application.purchase(input, signal));
-    return;
+    return application.purchase(input, signal);
   }
   const match = PURCHASE_PATH.exec(target);
   if (match && method === "GET" && match[2] === undefined) {
     rejectBody(request);
-    writeView(response, await application.status(match[1], signal));
-    return;
+    return application.status(match[1], signal);
   }
   if (match && method === "POST" && match[2] === "/recover") {
     rejectBody(request);
-    writeView(response, await application.recover(match[1], signal));
-    return;
+    return application.recover(match[1], signal);
   }
   if (target === "/purchases" || match) {
     throw new HttpBoundaryError(405, "METHOD_NOT_ALLOWED", "The method is not supported for this resource.", false);
@@ -173,26 +212,60 @@ async function readJsonBody(request: http.IncomingMessage, signal: AbortSignal):
   }
   const chunks: Buffer[] = [];
   let length = 0;
-  for await (const value of request) {
-    signal.throwIfAborted();
-    const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
-    length += chunk.byteLength;
-    if (length > MAX_PURCHASE_API_BODY_BYTES) {
-      throw new HttpBoundaryError(413, "REQUEST_TOO_LARGE", "The request body exceeds the limit.", false);
-    }
-    chunks.push(chunk);
-  }
-  let bytes = Buffer.concat(chunks, length);
+  let bytes = Buffer.alloc(0);
+  const abortRead = () => request.destroy(
+    signal.reason instanceof Error ? signal.reason : new Error("Purchase API request aborted")
+  );
+  signal.addEventListener("abort", abortRead, { once: true });
   try {
-    if (bytes.byteLength === 0) throw new HttpBoundaryError(400, "INVALID_JSON", "A JSON request body is required.", false);
-    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
-  } catch (error) {
-    if (error instanceof HttpBoundaryError) throw error;
-    throw new HttpBoundaryError(400, "INVALID_JSON", "The request body is not valid UTF-8 JSON.", false);
+    for await (const value of request) {
+      signal.throwIfAborted();
+      const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+      length += chunk.byteLength;
+      if (length > MAX_PURCHASE_API_BODY_BYTES) {
+        throw new HttpBoundaryError(413, "REQUEST_TOO_LARGE", "The request body exceeds the limit.", false);
+      }
+      chunks.push(chunk);
+    }
+    signal.throwIfAborted();
+    bytes = Buffer.concat(chunks, length);
+    try {
+      if (bytes.byteLength === 0) throw new HttpBoundaryError(400, "INVALID_JSON", "A JSON request body is required.", false);
+      return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
+    } catch (error) {
+      if (error instanceof HttpBoundaryError) throw error;
+      throw new HttpBoundaryError(400, "INVALID_JSON", "The request body is not valid UTF-8 JSON.", false);
+    }
   } finally {
+    signal.removeEventListener("abort", abortRead);
     bytes.fill(0);
     for (const chunk of chunks) chunk.fill(0);
   }
+}
+
+async function raceWithSignal<T>(operation: Promise<T>, signal: AbortSignal): Promise<T> {
+  signal.throwIfAborted();
+  let rejectAbort!: (reason: unknown) => void;
+  const aborted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
+  const abort = () => rejectAbort(signal.reason ?? new Error("Purchase API request aborted"));
+  signal.addEventListener("abort", abort, { once: true });
+  try {
+    return await Promise.race([operation, aborted]);
+  } finally {
+    signal.removeEventListener("abort", abort);
+  }
+}
+
+function isPurchaseCreation(request: http.IncomingMessage): boolean {
+  return request.method === "POST" && request.url === "/purchases";
+}
+
+function apiLane(maximum: number): {
+  active: number;
+  readonly maximum: number;
+  readonly overdue: Set<Promise<unknown>>;
+} {
+  return { active: 0, maximum, overdue: new Set() };
 }
 
 function rejectBody(request: http.IncomingMessage): void {

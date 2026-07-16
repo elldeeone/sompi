@@ -48,13 +48,19 @@ export class JournalBatchChannelStore implements ChannelStore {
   }
 
   async retireChannel(channelId: Hash32Hex, reason?: string): Promise<void> {
-    this.journal.retireBatchChannel(channelId, reason ?? "retired_by_kaspa_x402");
+    // Kaspa-x402 calls this after its current-UTXO lookup cannot find the
+    // active outpoint. That lookup is only a provisional observation. It is
+    // deliberately not allowed to terminalize Sompi's durable channel state.
+    this.journal.requireBatchChannel(channelId);
+    void reason;
+    throw new Error("batch channel retirement requires corroborated Chain Evidence");
   }
 
   async deleteChannel(channelId: Hash32Hex): Promise<void> {
-    // Clean cutover keeps immutable channel history. The SDK delete contract is
-    // represented as retirement rather than physical deletion.
-    this.journal.retireBatchChannel(channelId, "deleted_by_kaspa_x402");
+    // Clean cutover keeps immutable channel history. The protocol store seam
+    // cannot delete or retire it without a Sompi-owned verified transition.
+    this.journal.requireBatchChannel(channelId);
+    throw new Error("batch channel deletion requires corroborated Chain Evidence");
   }
 
   async listRefundableChannels(nowDaa?: SompiString): Promise<DirectModeChannel[]> {

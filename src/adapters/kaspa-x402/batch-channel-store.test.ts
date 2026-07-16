@@ -3,6 +3,7 @@ import test from "node:test";
 import type { DirectModeChannel } from "@kaspa-x402/client";
 import type { Hash32Hex, SignatureHex } from "@kaspa-x402/core";
 
+import { evidenceDigest } from "../../purchase/identity.js";
 import { PurchaseJournal } from "../../purchase/journal.js";
 import { JournalBatchChannelStore } from "./batch-channel-store.js";
 
@@ -44,7 +45,7 @@ test("journal ChannelStore persists monotonic channel state without private keys
   }
 });
 
-test("journal ChannelStore advances continuation epoch and uses strict refund DAA", async () => {
+test("journal ChannelStore refuses an unverified continuation and keeps strict refund DAA", async () => {
   let now = 1_800_000_000_000;
   const journal = new PurchaseJournal(":memory:", { now: () => now });
   const store = new JournalBatchChannelStore(journal, () => now);
@@ -52,22 +53,19 @@ test("journal ChannelStore advances continuation epoch and uses strict refund DA
     await store.saveChannel(channel());
     const [active] = await store.loadChannels({});
     now += 1;
-    await store.saveChannel({
-      ...active,
-      activeOutpoint: { txid: "88".repeat(32) as Hash32Hex, index: 0 },
-      fundingAmount: "900",
-      claimedCumulativeAmount: "100",
-      chargedCumulativeAmount: "100",
-      signedCumulativeAmount: "0",
-      latestVoucher: undefined,
-    });
-    assert.equal(journal.requireBatchChannel(HASH).epoch, 1);
-    const claim = journal.requireBatchTreasuryMovement(
-      `batch-claim:${HASH}:${"88".repeat(32)}:0`
+    await assert.rejects(
+      store.saveChannel({
+        ...active,
+        activeOutpoint: { txid: "88".repeat(32) as Hash32Hex, index: 0 },
+        fundingAmount: "900",
+        claimedCumulativeAmount: "100",
+        chargedCumulativeAmount: "100",
+        signedCumulativeAmount: "0",
+        latestVoucher: undefined,
+      }),
+      /verified lifecycle transition/,
     );
-    assert.equal(claim.state, "accepted");
-    assert.deepEqual(claim.activeOutpointBefore, { txid: TXID, index: 0 });
-    assert.deepEqual(claim.activeOutpointAfter, { txid: "88".repeat(32), index: 0 });
+    assert.equal(journal.requireBatchChannel(HASH).epoch, 0);
     assert.deepEqual(await store.listRefundableChannels("500000000"), []);
     assert.equal((await store.listRefundableChannels("500000001")).length, 1);
   } finally {
@@ -75,22 +73,73 @@ test("journal ChannelStore advances continuation epoch and uses strict refund DA
   }
 });
 
-test("journal ChannelStore records a verified top-up successor as a distinct Movement", async () => {
+test("journal ChannelStore refuses an SDK-supplied top-up successor", async () => {
   const journal = new PurchaseJournal(":memory:");
   const store = new JournalBatchChannelStore(journal);
   try {
     await store.saveChannel(channel());
     const [active] = await store.loadChannels({});
-    await store.saveChannel({
-      ...active!,
-      activeOutpoint: { txid: "aa".repeat(32) as Hash32Hex, index: 0 },
-      fundingAmount: "1200",
-    });
-    const topup = journal.requireBatchTreasuryMovement(
-      `batch-topup:${HASH}:${"aa".repeat(32)}:0`
+    await assert.rejects(
+      store.saveChannel({
+        ...active!,
+        activeOutpoint: { txid: "aa".repeat(32) as Hash32Hex, index: 0 },
+        fundingAmount: "1200",
+      }),
+      /verified lifecycle transition/,
     );
-    assert.equal(topup.kind, "topup");
-    assert.equal(topup.state, "accepted");
+    assert.deepEqual(journal.requireBatchChannel(HASH).activeOutpoint, {
+      txid: TXID,
+      index: 0,
+    });
+  } finally {
+    journal.close();
+  }
+});
+
+test("protocol store absence cannot retire or delete a live refundable channel", async () => {
+  const journal = new PurchaseJournal(":memory:");
+  const store = new JournalBatchChannelStore(journal);
+  try {
+    await store.saveChannel(channel());
+    await assert.rejects(
+      store.retireChannel(HASH, "active outpoint not found"),
+      /requires corroborated Chain Evidence/
+    );
+    await assert.rejects(
+      store.deleteChannel(HASH),
+      /requires corroborated Chain Evidence/
+    );
+
+    assert.equal(journal.requireBatchChannel(HASH).status, "active");
+    assert.equal((await store.listRefundableChannels("500000001")).length, 1);
+    assert.equal((await store.loadChannels({ status: "active" })).length, 1);
+  } finally {
+    journal.close();
+  }
+});
+
+test("accepted batch Movements require mechanism-specific durable evidence", async () => {
+  const journal = new PurchaseJournal(":memory:");
+  const store = new JournalBatchChannelStore(journal);
+  try {
+    await store.saveChannel(channel());
+    const movement = journal.planBatchTreasuryMovement({
+      movementId: `batch-refund:${HASH}`,
+      channelId: HASH,
+      kind: "refund",
+      requestDigest: evidenceDigest("batch-refund-without-evidence"),
+      activeOutpointBefore: { txid: TXID, index: 0 },
+    });
+    assert.throws(
+      () => journal.advanceBatchTreasuryMovement({
+        movementId: movement.movementId,
+        expectedState: "planned",
+        state: "accepted",
+        transactionId: "88".repeat(32),
+      }),
+      /durable verified evidence/,
+    );
+    assert.equal(journal.requireBatchTreasuryMovement(movement.movementId).state, "planned");
   } finally {
     journal.close();
   }

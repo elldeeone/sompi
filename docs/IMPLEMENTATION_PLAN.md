@@ -1,6 +1,6 @@
 # Sompi AP2 + Kaspa-x402 implementation plan
 
-Status: **Alpha.8 clean cutover Phases 3-5 verified; Phase 6 in progress**
+Status: **Alpha.8 clean cutover Phases 3-8 verified; funded and security closure in progress**
 
 Architecture: [`docs/architecture/SOMPI_ARCHITECTURE.md`](architecture/SOMPI_ARCHITECTURE.md)
 
@@ -471,6 +471,15 @@ testnet product.
 - [ ] Run clean install/build/test/package verification from the produced
   tarball and review every accepted ADR against the final implementation.
 - [ ] Keep mainnet fail-closed and record remaining non-alpha readiness limits.
+
+Evidence in progress (2026-07-16): the first complete formal diff scan covered
+all 146 changed source-like files through 30 full-file receipts. Its two
+reportable findings and three mandatory-hardening defects are remediated in the
+current branch. `npm test` passes 451 tests (450 pass, one documented
+privileged ownership skip), and conformance, OpenAPI, Arazzo, local proof, and
+the 199-entry packed artifact all pass. The required immutable post-fix scan
+remains open, so the security and release-readiness checkboxes are not yet
+closed.
 
 Gate:
 

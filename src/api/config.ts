@@ -12,7 +12,8 @@ export interface PurchaseApiListenerConfig extends PurchaseApiConnectionConfig {
   readonly host: "127.0.0.1" | "::1";
   readonly port: number;
   readonly deadlineMs: number;
-  readonly maxConcurrency: number;
+  readonly maxPurchaseConcurrency: number;
+  readonly maxControlConcurrency: number;
 }
 
 export class PurchaseApiConfigError extends Error {
@@ -57,7 +58,18 @@ export function purchaseApiListenerConfigFromEnv(
     host: (url.hostname === "[::1]" || url.hostname === "::1" ? "::1" : "127.0.0.1") as "127.0.0.1" | "::1",
     port: Number(url.port),
     deadlineMs: numeric(env.SOMPI_API_DEADLINE_MS ?? "120000", "Sompi API deadline", 1_000, 600_000),
-    maxConcurrency: numeric(env.SOMPI_API_MAX_CONCURRENCY ?? "8", "Sompi API concurrency", 1, 64),
+    maxPurchaseConcurrency: numeric(
+      env.SOMPI_API_MAX_PURCHASE_CONCURRENCY ?? "8",
+      "Sompi API Purchase concurrency",
+      1,
+      64
+    ),
+    maxControlConcurrency: numeric(
+      env.SOMPI_API_MAX_CONTROL_CONCURRENCY ?? "2",
+      "Sompi API control concurrency",
+      1,
+      16
+    ),
   });
 }
 

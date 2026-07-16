@@ -66,6 +66,14 @@ test("batch chain source fails closed on unsynced or non-Testnet-10 evidence", a
   await assert.rejects(wrongDag.getUtxos([ADDRESS]), /Testnet-10/);
 });
 
+test("batch chain source never promotes an empty current view to channel absence", async () => {
+  const source = new WalletBatchChainSource(provider({ entries: [] }));
+  await assert.rejects(
+    source.getUtxos([ADDRESS]),
+    /absence requires corroborated Chain Evidence/
+  );
+});
+
 function provider(options: Readonly<{
   entries: readonly unknown[];
   isSynced?: boolean;

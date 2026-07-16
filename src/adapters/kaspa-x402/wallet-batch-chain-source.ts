@@ -90,6 +90,14 @@ export class WalletBatchChainSource implements BatchActiveUtxoSource {
     if (!Array.isArray(response.entries) || response.entries.length > MAX_UTXOS) {
       throw new Error("batch UTXO response count is invalid");
     }
+    // The alpha.8 funding-provider seam can express returned UTXOs, but it
+    // cannot distinguish proven spend from stale, pruned, or unavailable
+    // negative evidence. Passing an empty array to DirectModeClient would let
+    // that provisional observation retire durable channel state. Sompi's
+    // Chain Evidence module is the only authority for a terminal absence.
+    if (response.entries.length === 0) {
+      throw new Error("batch UTXO absence requires corroborated Chain Evidence");
+    }
 
     const seen = new Set<string>();
     return response.entries.map((value, index) => {

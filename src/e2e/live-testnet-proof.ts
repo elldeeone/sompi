@@ -1263,7 +1263,7 @@ export async function createLivePurchaseIngress(
     host: "127.0.0.1",
     port: 0,
     deadlineMs: PROOF_TIMEOUT_MS,
-    maxConcurrency: 4,
+    maxPurchaseConcurrency: 4,
     onRequestError,
   });
   const apiClient = new PurchaseApiClient({

@@ -30,7 +30,8 @@ async function main(): Promise<void> {
       host: listener.host,
       port: listener.port,
       deadlineMs: listener.deadlineMs,
-      maxConcurrency: listener.maxConcurrency,
+      maxPurchaseConcurrency: listener.maxPurchaseConcurrency,
+      maxControlConcurrency: listener.maxControlConcurrency,
     });
     let closing = false;
     const close = async () => {
