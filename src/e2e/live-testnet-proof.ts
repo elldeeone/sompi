@@ -78,6 +78,7 @@ import { AUTHORITY_MAC_KEY_BYTES } from "../authority/protocol.js";
 import { SqliteAuthorityDecisionStore } from "../authority/decision-store.js";
 import { SqliteAuthorityReplayStore } from "../authority/replay-store.js";
 import { AuthorityService } from "../authority/service.js";
+import { AUTHORITY_DECISION_TRANSPORT_TIMEOUT_MS } from "../authority/transport.js";
 import { SqliteDemoCommerceAuthorizationStore } from "../demo/commerce-authorization-store.js";
 import { SqliteMerchantServerStateStore } from "../demo/merchant-server-store.js";
 import {
@@ -1297,7 +1298,7 @@ export function createExternalLiveAuthority(
     replayStore: replay,
     transport: new AuthorityUnixDecisionClient({
       socketPath: options.socketPath,
-      timeoutMs: AUTHORITY_TIMEOUT_MS,
+      timeoutMs: AUTHORITY_DECISION_TRANSPORT_TIMEOUT_MS,
       expectedSocketOwnerUserId: options.expectedSocketOwnerUserId,
       socketGroupId: options.socketGroupId,
     }),
