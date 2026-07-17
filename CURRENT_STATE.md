@@ -99,11 +99,11 @@ README. No mainnet transaction was broadcast and no mainnet claim is made.
 
 ## Verification and security
 
-The latest complete test baseline before final release closure is 479 tests:
-478 pass and one documented privileged ownership test is skipped when the host
-cannot change file ownership. The offline smoke, OpenAPI 3.2, Arazzo 1.1,
-Kaspa-x402 conformance, packed-artifact, and funded evidence validators are part
-of the release gate.
+The clean release verifier passes 479 tests: 478 pass and one documented
+privileged ownership test is skipped when the host cannot change file
+ownership. It also passes offline smoke, OpenAPI 3.2, Arazzo 1.1,
+Kaspa-x402 conformance, all five funded evidence reports, zero production
+advisories, a 201-file packed artifact, and clean-install/import verification.
 
 The sealed full-branch security review covered every changed source-like file
 and reported three Low/P3 availability issues. The branch bounds Chain Evidence
@@ -139,13 +139,7 @@ satisfied.
 
 ## Current closeout
 
-The remaining mechanical closeout is:
-
-1. run the complete clean release verifier against the final committed source;
-2. confirm every checked Phase 9/10 acceptance item has direct test or recorded
-   evidence;
-3. commit the final evidence/documentation state;
-4. push `phase-3-purchase-module`.
-
-No implementation, funding, sibling-repository, deployment, or security-review
-blocker remains.
+Every Phase 9/10 acceptance item has direct test or recorded evidence. The
+remaining action is the authorized final commit and push of
+`phase-3-purchase-module`. No implementation, funding, sibling-repository,
+deployment, or security-review blocker remains.

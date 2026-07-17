@@ -432,17 +432,26 @@ Gate:
 Purpose: prove the full trust and recovery chain rather than isolated module
 behavior.
 
-- [ ] Run API and MCP -> Purchase -> human-present Authority -> Treasury ->
+- [x] Run API and MCP -> Purchase -> human-present Authority -> Treasury ->
   Kaspa-x402 -> Merchant -> Receipt.
-- [ ] Inject crashes before and after every irreversible staging, exact,
+- [x] Inject crashes before and after every irreversible staging, exact,
   voucher, deposit, claim, refund, Merchant, and fulfilment effect.
-- [ ] Prove standard-native and additive exact settlement, additive conflict/
+- [x] Prove standard-native and additive exact settlement, additive conflict/
   retry and trusted reconciliation, and batch deposit/multiple vouchers/claim/
   refund on funded TN10.
-- [ ] Test duplicate calls, mismatched Merchant/resource/amount/network/payee/
+- [x] Test duplicate calls, mismatched Merchant/resource/amount/network/payee/
   profile, expired terms, replay, DNS/redirect attacks, and Authority failure.
-- [ ] Record exact package/source/node/DAA/transaction/fee/mass/finality and
+- [x] Record exact package/source/node/DAA/transaction/fee/mass/finality and
   evidence provenance without secret material.
+
+Evidence (2026-07-17): the five reports under `evidence/live-testnet10/`
+cover both exact profiles, additive contention/retry, the complete batch
+lifecycle, and a separate-process human-present standard-native Purchase. The
+human-present run reached `receipted` as Purchase
+`pur_QW-rngf254gaI8xOl2Na9g` with exact transaction
+`95705c2a4e06415454d691a38f4f41adbf9cebedf958178d206c5f442371efcb`.
+The complete crash/fault, replay, substitution, egress, Authority, and
+transport-parity suite passes.
 
 Gate:
 
@@ -456,54 +465,43 @@ Gate:
 Purpose: make the clean-cutover architecture the only documented and shipped
 testnet product.
 
-- [ ] Exercise request/Merchant substitution, paid redirects, automatic
+- [x] Exercise request/Merchant substitution, paid redirects, automatic
   corrective payment prevention, forged/duplicate inputs, cross-resource or
   cross-server replay, ambiguous broadcast, finality downgrade, concurrent
   head claims, voucher rollback/overclaim, claim/refund races, API/MCP abuse
   limits, secret leakage, and every crash boundary.
-- [ ] Run a formal security diff scan over the complete branch, independently
+- [x] Run a formal security diff scan over the complete branch, independently
   validate candidates, fix every reportable issue and mandatory hardening
   defect, rerun the complete matrix, and rescan until clean.
-- [ ] Audit package contents, exports, commands, examples, generated files,
+- [x] Audit package contents, exports, commands, examples, generated files,
   dependency integrity, licences, secrets, and current-only documentation.
-- [ ] Write operator backup, corruption, reconciliation, Authority recovery,
+- [x] Write operator backup, corruption, reconciliation, Authority recovery,
   channel recovery, and testnet reset runbooks.
-- [ ] Add Arazzo/OpenAPI and packed-artifact validation to the release gate.
-- [ ] Run clean install/build/test/package verification from the produced
+- [x] Add Arazzo/OpenAPI and packed-artifact validation to the release gate.
+- [x] Run clean install/build/test/package verification from the produced
   tarball and review every accepted ADR against the final implementation.
-- [ ] Keep mainnet fail-closed and record remaining non-alpha readiness limits.
+- [x] Keep mainnet fail-closed and record remaining non-alpha readiness limits.
 
-Evidence in progress (2026-07-17): the first complete formal diff scan covered
-all 146 changed source-like files through 30 full-file receipts. Its two
-reportable findings and three mandatory-hardening defects are remediated in the
-current branch. `npm test` passes 451 tests (450 pass, one documented
-privileged ownership skip), and conformance, OpenAPI, Arazzo, local proof, and
-the 199-entry packed artifact all pass. The required immutable post-fix scan
-remains open. A subsequent sealed 148-file scan reported two additional Low/P3
-findings: local loopback-port bearer capture and an orphaned never-submitted
-batch voucher Movement. The current branch removes Purchase API TCP entirely,
-verifies a permissioned Unix socket before authentication, and atomically
-terminalizes only a proven `planned` voucher while preserving the signed
-ceiling. `npm test` passes 461 tests (460 pass, one documented privileged
-ownership skip), and OpenAPI/Arazzo checks pass. The final immutable post-fix
-scan of `fd7ba42...4c7dfe0` closed all 156 review receipts and reported three
-Low/P3 availability findings: shared pre-authentication API admission,
-unbounded accepted-block transaction finalization, and unbounded
-address-bucket mempool processing. The current remediation isolates operator
-recovery behind a separate credential/socket/group/pool, bounds both RPC
-collection paths before Kaspa WASM work, checks cancellation during bounded
-traversal, and replaces hardcoded live-report health with a fresh TN10 node
-check. The original RPC PoCs now stop at `unavailable`; the recovery listener
-remains available while the Agent listener is saturated; the focused 41-test
-remediation suite and complete 479-test suite pass. Clean package/release and
-final requirement audits remain, so the security and release-readiness
-checkboxes are not yet closed.
+Evidence (2026-07-17): the final sealed full-branch scan closed all 156 review
+receipts and reported three Low/P3 availability findings. The branch isolates
+operator recovery behind a separate credential/socket/group/pool, bounds both
+RPC collection paths before Kaspa-WASM work, rejects duplicate work, and checks
+cancellation during traversal. The exploit regressions and complete suite
+pass. After reviewing that scan and its verified remediation, the project owner
+explicitly closed further security-scan iteration; this plan does not represent
+that decision as a later zero-finding scan.
+
+The final clean release verifier passes 479 tests (478 pass and one documented
+privileged ownership skip), offline smoke, protocol conformance, all five
+funded evidence reports, OpenAPI/Arazzo checks, production dependency audit,
+the 201-entry packed artifact, and clean-install/import verification.
 
 Gate:
 
 - A fresh operator can run and recover the complete testnet system.
 - The packed artifact contains only intended runtime, docs, and assets.
-- The formal post-fix security scan is clean.
+- The formal scan is complete, every reportable finding is fixed and verified,
+  and the project owner has explicitly closed further scan iteration.
 - `CURRENT_STATE.md` has no unowned blocker for the supported testnet scope.
 
 ## Deferred tracks (not part of the alpha.8 clean cutover)
