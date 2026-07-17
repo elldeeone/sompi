@@ -1,7 +1,12 @@
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { loadAgentApiCredential, type AgentApiCredential } from "./credential.js";
+import {
+  loadAgentApiCredential,
+  loadRecoveryApiCredential,
+  type AgentApiCredential,
+  type RecoveryApiCredential,
+} from "./credential.js";
 import { validatePurchaseApiSocketPath } from "./socket.js";
 
 export interface PurchaseApiConnectionConfig {
@@ -15,6 +20,16 @@ export interface PurchaseApiListenerConfig extends PurchaseApiConnectionConfig {
   readonly deadlineMs: number;
   readonly maxPurchaseConcurrency: number;
   readonly maxControlConcurrency: number;
+}
+
+export interface PurchaseRecoveryApiListenerConfig {
+  readonly socketPath: string;
+  readonly expectedServerUserId: number;
+  readonly runtimeGroupId: number;
+  readonly credential: RecoveryApiCredential;
+  readonly deadlineMs: number;
+  readonly maxControlConcurrency: number;
+  readonly maxConnections: number;
 }
 
 export class PurchaseApiConfigError extends Error {
@@ -104,6 +119,52 @@ export function purchaseApiListenerConfigFromEnv(
       16
     ),
   });
+}
+
+export function purchaseRecoveryApiListenerConfigFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  options: Readonly<{ allowSameUserForTests?: boolean }> = {}
+): PurchaseRecoveryApiListenerConfig {
+  const configuredSocketPath = required(env, "SOMPI_RECOVERY_API_SOCKET");
+  try {
+    validatePurchaseApiSocketPath(configuredSocketPath);
+  } catch (cause) {
+    throw new PurchaseApiConfigError("Sompi recovery API socket path is invalid", { cause });
+  }
+  const operatorUserId = numeric(required(env, "SOMPI_OPERATOR_UID"), "operator user ID", 0, 0x7fffffff);
+  const expectedServerUserId = numeric(required(env, "SOMPI_API_UID"), "API server user ID", 0, 0x7fffffff);
+  const runtimeGroupId = numeric(required(env, "SOMPI_RECOVERY_GID"), "recovery group ID", 0, 0x7fffffff);
+  const agentRuntimeGroupId = numeric(required(env, "SOMPI_RUNTIME_GID"), "runtime group ID", 0, 0x7fffffff);
+  const socketPath = path.resolve(configuredSocketPath);
+  if (socketPath === path.resolve(required(env, "SOMPI_API_SOCKET"))) {
+    throw new PurchaseApiConfigError("Sompi recovery API requires a distinct socket path");
+  }
+  if (!options.allowSameUserForTests && runtimeGroupId === agentRuntimeGroupId) {
+    throw new PurchaseApiConfigError("Sompi recovery API requires a distinct operator-only group");
+  }
+  const currentUserId = typeof process.getuid === "function" ? process.getuid() : undefined;
+  if (!options.allowSameUserForTests && currentUserId !== expectedServerUserId) {
+    throw new PurchaseApiConfigError("Sompi recovery API server must run as the configured API user");
+  }
+  const filename = path.resolve(required(env, "SOMPI_RECOVERY_API_CREDENTIAL"));
+  try {
+    return Object.freeze({
+      socketPath,
+      expectedServerUserId,
+      runtimeGroupId,
+      credential: loadRecoveryApiCredential(filename, {
+        expectedOwnerUserId: operatorUserId,
+        runtimeGroupId,
+        ...(options.allowSameUserForTests ? { allowSameUserForTests: true } : {}),
+      }),
+      deadlineMs: numeric(env.SOMPI_RECOVERY_API_DEADLINE_MS ?? "120000", "Sompi recovery API deadline", 1_000, 600_000),
+      maxControlConcurrency: numeric(env.SOMPI_RECOVERY_API_MAX_CONCURRENCY ?? "2", "Sompi recovery API concurrency", 1, 16),
+      maxConnections: numeric(env.SOMPI_RECOVERY_API_MAX_CONNECTIONS ?? "8", "Sompi recovery API connection limit", 1, 64),
+    });
+  } catch (cause) {
+    if (cause instanceof PurchaseApiConfigError) throw cause;
+    throw new PurchaseApiConfigError("Sompi recovery API credential is unavailable", { cause });
+  }
 }
 
 function required(env: NodeJS.ProcessEnv, name: string): string {

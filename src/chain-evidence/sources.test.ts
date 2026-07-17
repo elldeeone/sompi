@@ -204,6 +204,104 @@ test("address-bucket mempool evidence deduplicates one matching transaction", as
   assert.equal(evidence.level, "provisional");
 });
 
+test("accepted-block work budget rejects oversized RPC arrays before WASM finalization", async () => {
+  const { request, transaction } = fixture();
+  const accepting = "33".repeat(32);
+  const containing = "22".repeat(32);
+  let finalized = 0;
+  const originalFinalize = Transaction.prototype.finalize;
+  Transaction.prototype.finalize = function (...args: Parameters<typeof originalFinalize>) {
+    finalized += 1;
+    return originalFinalize.apply(this, args);
+  };
+  try {
+    const observer = new WrpcOperatorChainObserver({
+      rpc: { client: async () => ({
+        getServerInfo: async () => ({ isSynced: true, hasUtxoIndex: true, networkId: "testnet-10", virtualDaaScore: 120n }),
+        getVirtualChainFromBlock: async () => ({
+          acceptedTransactionIds: [{ acceptingBlockHash: accepting, acceptedTransactionIds: [request.transactionId] }],
+        }),
+        getBlock: async ({ hash }: any) => hash === accepting
+          ? ({ block: { header: { hash: accepting, daaScore: 100n } } })
+          : ({ block: { header: { hash: containing, daaScore: 99n }, transactions: Array.from({ length: 4_097 }, () => transaction) } }),
+      } as any) },
+      depthConfirmationDaa: 10,
+      now: () => 1_800_000_000_000,
+    });
+    const evidence = await observer.observe(request, acceptedWitness(request, accepting, containing));
+    assert.equal(evidence.status, "unavailable");
+    assert.equal(finalized, 0);
+  } finally {
+    Transaction.prototype.finalize = originalFinalize;
+  }
+});
+
+test("mempool work budget rejects oversized and duplicate buckets before WASM finalization", async () => {
+  const { request, transaction } = fixture();
+  let finalized = 0;
+  const originalFinalize = Transaction.prototype.finalize;
+  Transaction.prototype.finalize = function (...args: Parameters<typeof originalFinalize>) {
+    finalized += 1;
+    return originalFinalize.apply(this, args);
+  };
+  try {
+    for (const entries of [
+      [{ address: request.watchedAddresses[0], sending: Array.from({ length: 2_049 }, () => ({ transaction })), receiving: [] }],
+      [
+        { address: request.watchedAddresses[0], sending: [], receiving: [] },
+        { address: request.watchedAddresses[0], sending: [{ transaction }], receiving: [] },
+      ],
+    ]) {
+      const observer = new WrpcOperatorChainObserver({
+        rpc: { client: async () => ({
+          getServerInfo: async () => ({ isSynced: true, hasUtxoIndex: true, networkId: "testnet-10", virtualDaaScore: 120n }),
+          getUtxosByAddresses: async () => ({ entries: [] }),
+          getMempoolEntriesByAddresses: async () => ({ entries }),
+        } as any) },
+        depthConfirmationDaa: 10,
+        now: () => 1_800_000_000_000,
+      });
+      assert.equal((await observer.observe(request, absentWitness())).status, "unavailable");
+      assert.equal(finalized, 0);
+    }
+  } finally {
+    Transaction.prototype.finalize = originalFinalize;
+  }
+});
+
+test("bounded mempool traversal honors cancellation after native work begins", async () => {
+  const { request, transaction } = fixture();
+  const abort = new AbortController();
+  let finalized = 0;
+  const originalFinalize = Transaction.prototype.finalize;
+  Transaction.prototype.finalize = function (...args: Parameters<typeof originalFinalize>) {
+    finalized += 1;
+    const result = originalFinalize.apply(this, args);
+    abort.abort(new Error("test cancellation"));
+    return result;
+  };
+  try {
+    const observer = new WrpcOperatorChainObserver({
+      rpc: { client: async () => ({
+        getServerInfo: async () => ({ isSynced: true, hasUtxoIndex: true, networkId: "testnet-10", virtualDaaScore: 120n }),
+        getUtxosByAddresses: async () => ({ entries: [] }),
+        getMempoolEntriesByAddresses: async () => ({ entries: [{
+          address: request.watchedAddresses[0],
+          sending: Array.from({ length: 10 }, () => ({ transaction })),
+          receiving: [],
+        }] }),
+      } as any) },
+      depthConfirmationDaa: 10,
+      now: () => 1_800_000_000_000,
+    });
+    const evidence = await observer.observe({ ...request, signal: abort.signal }, absentWitness());
+    assert.equal(evidence.status, "unavailable");
+    assert.equal(finalized, 1);
+  } finally {
+    Transaction.prototype.finalize = originalFinalize;
+  }
+});
+
 function fixture(): { request: ChainEvidenceRequest; transaction: Record<string, any> } {
   const script = `20${"44".repeat(32)}ac`;
   const transaction = {
@@ -248,6 +346,22 @@ function absentWitness() {
     status: "absent" as const,
     sourceProfile: "test-witness-v1",
     detailDigest: `sha256:${"A".repeat(43)}`,
+    observedAtMs: 1_800_000_000_000,
+  });
+}
+function acceptedWitness(request: ChainEvidenceRequest, acceptingBlockHash: string, blockHash: string) {
+  return Object.freeze({
+    status: "present" as const,
+    level: "accepted" as const,
+    view: "historical" as const,
+    sourceProfile: "test-witness-v1",
+    transactionId: request.transactionId,
+    blockHash,
+    acceptingBlockHash,
+    acceptingBlockDaaScore: "100",
+    virtualDaaScore: "120",
+    outputsDigest: `sha256:${"A".repeat(43)}`,
+    detailDigest: `sha256:${"B".repeat(43)}`,
     observedAtMs: 1_800_000_000_000,
   });
 }

@@ -41,8 +41,11 @@ test("operator CLI exposes only preview, provision, install, status, and offline
   assert.deepEqual(parseOperatorArguments(["agent-credential", "agent.json", "0", "1000"]), {
     kind: "agent-credential", filename: "agent.json", operatorUid: 0, runtimeGid: 1000,
   });
+  assert.deepEqual(parseOperatorArguments(["recovery-credential", "recovery.json", "0", "1001"]), {
+    kind: "recovery-credential", filename: "recovery.json", operatorUid: 0, recoveryGid: 1001,
+  });
   assert.deepEqual(parseOperatorArguments(["owner-key"]), { kind: "owner-key" });
-  for (const args of [[], ["install"], ["status", "x", "-1", "1"], ["agent-credential", "x", "-1", "1"], ["owner-key", "extra"], ["start"]]) {
+  for (const args of [[], ["install"], ["status", "x", "-1", "1"], ["agent-credential", "x", "-1", "1"], ["recovery-credential", "x", "-1", "1"], ["owner-key", "extra"], ["start"]]) {
     assert.throws(() => parseOperatorArguments(args), CliArgumentError);
   }
   assert.match(OPERATOR_USAGE, /^usage: sompi-operator/);

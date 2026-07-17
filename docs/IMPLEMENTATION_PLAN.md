@@ -486,8 +486,18 @@ verifies a permissioned Unix socket before authentication, and atomically
 terminalizes only a proven `planned` voucher while preserving the signed
 ceiling. `npm test` passes 461 tests (460 pass, one documented privileged
 ownership skip), and OpenAPI/Arazzo checks pass. The final immutable post-fix
-scan is still required, so the security and release-readiness checkboxes are
-not yet closed.
+scan of `fd7ba42...4c7dfe0` closed all 156 review receipts and reported three
+Low/P3 availability findings: shared pre-authentication API admission,
+unbounded accepted-block transaction finalization, and unbounded
+address-bucket mempool processing. The current remediation isolates operator
+recovery behind a separate credential/socket/group/pool, bounds both RPC
+collection paths before Kaspa WASM work, checks cancellation during bounded
+traversal, and replaces hardcoded live-report health with a fresh TN10 node
+check. The original RPC PoCs now stop at `unavailable`; the recovery listener
+remains available while the Agent listener is saturated; the focused 41-test
+remediation suite and complete 479-test suite pass. Clean package/release and
+final requirement audits remain, so the security and release-readiness
+checkboxes are not yet closed.
 
 Gate:
 

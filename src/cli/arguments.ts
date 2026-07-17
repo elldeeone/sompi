@@ -15,6 +15,7 @@ export const OPERATOR_USAGE = [
   "       sompi-operator install CANDIDATE_DIR MANIFEST.json EXPECTED_DIGEST OPERATOR_UID RUNTIME_UID RUNTIME_GID",
   "       sompi-operator status MANIFEST.json OPERATOR_UID RUNTIME_GID",
   "       sompi-operator agent-credential FILE OPERATOR_UID RUNTIME_GID",
+  "       sompi-operator recovery-credential FILE OPERATOR_UID RECOVERY_GID",
   "       sompi-operator owner-key",
   "       sompi-operator --help",
 ].join("\n");
@@ -34,6 +35,7 @@ export type OperatorCliCommand =
   | Readonly<{ kind: "install"; bundle: string; manifest: string; digest: string; operatorUid: number; runtimeUid: number; runtimeGid: number }>
   | Readonly<{ kind: "status"; manifest: string; operatorUid: number; runtimeGid: number }>
   | Readonly<{ kind: "agent-credential"; filename: string; operatorUid: number; runtimeGid: number }>
+  | Readonly<{ kind: "recovery-credential"; filename: string; operatorUid: number; recoveryGid: number }>
   | Readonly<{ kind: "owner-key" }>
   | Readonly<{ kind: "help" }>;
 
@@ -95,6 +97,14 @@ export function parseOperatorArguments(args: readonly string[]): OperatorCliComm
       filename: args[1],
       operatorUid: numericArgument(args[2], "operator UID"),
       runtimeGid: numericArgument(args[3], "runtime GID"),
+    });
+  }
+  if (args.length === 4 && args[0] === "recovery-credential") {
+    return Object.freeze({
+      kind: "recovery-credential",
+      filename: args[1],
+      operatorUid: numericArgument(args[2], "operator UID"),
+      recoveryGid: numericArgument(args[3], "recovery GID"),
     });
   }
   if (args.length === 7 && args[0] === "install") {

@@ -50,6 +50,15 @@ different local principal from winning a predictable loopback port and
 capturing the bearer. Public OAuth, UCP, A2A, and a generic agent protocol are
 not introduced.
 
+The trusted API process hosts two transport-isolated Unix listeners over that
+one canonical Purchase application. The Agent listener carries all three
+operations for direct API and MCP clients. A second operator-only recovery
+listener carries only `status` and `recover`, has a different filesystem group,
+credential, pre-authentication connection pool, and control-work budget, and is
+required for payment-capable startup. Saturating the lower-trust Agent listener
+therefore cannot consume the operator's recovery admission. This is transport
+isolation, not a second Purchase or recovery implementation.
+
 `sompi-mcp` remains a stateless compatibility adapter over the same Purchase
 interface. It exposes only `purchase`, `purchase_status`, and
 `purchase_recover`. It owns no Purchase state, recovery behavior, authority
@@ -63,7 +72,9 @@ UID and owns the Journal, wallet, Treasury, protocol adapters, and Authority
 client projection. `sompi-mcp` runs as a separate non-root UID that can only
 traverse the shared IPC directory, connect to the API socket, and read the
 least-authority credential. The operator remains a third administrative
-principal and owns the immutable manifest and API credential file.
+principal and owns the immutable manifest plus separate Agent and recovery
+credential files. The MCP principal cannot traverse the protected recovery
+directory or read its credential.
 
 This amends ADR-0002, ADR-0003, and ADR-0008 where they describe MCP as the
 primary or only agent-facing interface. Their deep Purchase module, protocol

@@ -6,9 +6,18 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 
-import { generateAgentApiCredential, type AgentApiCredential } from "./credential.js";
+import {
+  generateAgentApiCredential,
+  generateRecoveryApiCredential,
+  type AgentApiCredential,
+} from "./credential.js";
 import type { PurchaseApplication } from "./contracts.js";
-import { startPurchaseApiServer, type PurchaseApiServerOptions, type RunningPurchaseApiServer } from "./server.js";
+import {
+  startPurchaseApiServer,
+  startPurchaseRecoveryApiServer,
+  type PurchaseApiServerOptions,
+  type RunningPurchaseApiServer,
+} from "./server.js";
 import type { PurchaseView } from "../purchase/types.js";
 
 test("authenticated HTTP routes call one canonical Purchase application over the permissioned socket", async () => {
@@ -164,6 +173,60 @@ test("pre-authentication Unix sockets are bounded separately from request concur
   } finally {
     for (const socket of sockets) socket.destroy();
     await running.close();
+  }
+});
+
+test("operator recovery remains available while the lower-trust agent listener is saturated", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-api-isolated-recovery-"));
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+  const gid = typeof process.getgid === "function" ? process.getgid() : 0;
+  fs.chownSync(directory, uid, gid);
+  fs.chmodSync(directory, 0o710);
+  const application = fakeApplication();
+  const agentCredential = generateAgentApiCredential();
+  const recoveryCredential = generateRecoveryApiCredential();
+  const agent = await startPurchaseApiServer({
+    application,
+    credential: agentCredential,
+    socketPath: path.join(directory, "agent.sock"),
+    expectedServerUserId: uid,
+    runtimeGroupId: gid,
+    maxPurchaseConcurrency: 1,
+    maxControlConcurrency: 1,
+    maxConnections: 2,
+  });
+  const recovery = await startPurchaseRecoveryApiServer({
+    application,
+    credential: recoveryCredential,
+    socketPath: path.join(directory, "recovery.sock"),
+    expectedServerUserId: uid,
+    runtimeGroupId: gid,
+    maxControlConcurrency: 1,
+    maxConnections: 2,
+  });
+  const hostile: net.Socket[] = [];
+  try {
+    for (let index = 0; index < 2; index += 1) {
+      const socket = net.createConnection(agent.socketPath);
+      socket.on("error", () => {});
+      socket.write("GET / HTTP/1.1\r\nHost: sompi.local\r\n");
+      hostile.push(socket);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const auth = { authorization: `Bearer ${recoveryCredential.token}` };
+    assert.equal((await apiRequest(recovery.socketPath, "GET", `/purchases/${fakeView().id}`, auth)).status, 200);
+    assert.equal((await apiRequest(recovery.socketPath, "POST", `/purchases/${fakeView().id}/recover`, auth)).status, 200);
+    assert.equal((await apiRequest(recovery.socketPath, "POST", "/purchases", {
+      ...auth,
+      "content-type": "application/json",
+    }, JSON.stringify({ requestKey: "forbidden", url: "https://merchant.example/" }))).status, 404);
+    assert.equal((await apiRequest(recovery.socketPath, "GET", `/purchases/${fakeView().id}`, {
+      authorization: `Bearer ${agentCredential.token}`,
+    })).status, 401);
+  } finally {
+    for (const socket of hostile) socket.destroy();
+    await Promise.all([agent.close(), recovery.close()]);
+    fs.rmSync(directory, { recursive: true, force: true });
   }
 });
 

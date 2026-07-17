@@ -1709,7 +1709,13 @@ function assertPreSpendDurability(
   }
 }
 
-async function assertLiveNodeReady(wallet: KaspaWallet): Promise<void> {
+export async function assertLiveNodeReady(wallet: KaspaWallet): Promise<Readonly<{
+  serverVersion: string;
+  networkId: typeof LIVE_SDK_NETWORK;
+  virtualDaaScore: bigint;
+  isSynced: true;
+  hasUtxoIndex: true;
+}>> {
   const info = await wallet.serverInfo();
   const rpc = await wallet.client();
   const dag = await rpc.getBlockDagInfo();
@@ -1721,6 +1727,13 @@ async function assertLiveNodeReady(wallet: KaspaWallet): Promise<void> {
   ) {
     throw new Error("live proof RPC is not a synced UTXO-indexed Testnet-10 node");
   }
+  return Object.freeze({
+    serverVersion: String(info.serverVersion),
+    networkId: LIVE_SDK_NETWORK,
+    virtualDaaScore: BigInt(info.virtualDaaScore),
+    isSynced: true as const,
+    hasUtxoIndex: true as const,
+  });
 }
 
 function writePolicyOnce(filename: string, policy: Record<string, unknown>): void {

@@ -11,6 +11,9 @@ import type {
 const HASH32 = /^[a-f0-9]{64}$/;
 const UINT = /^(?:0|[1-9][0-9]*)$/;
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
+const MAX_ACCEPTED_BLOCK_TRANSACTIONS = 4_096;
+const MAX_MEMPOOL_ADDRESS_BUCKETS = 16;
+const MAX_MEMPOOL_TRANSACTIONS = 2_048;
 
 export interface HttpsAcceptedChainWitnessOptions {
   readonly baseUrl: string;
@@ -147,17 +150,26 @@ export class WrpcOperatorChainObserver implements OperatorChainObserver {
           return nonPresent("unknown", "kaspa-operator-wrpc-v1", digest({ result: "transaction-block-conflict", transactionId: request.transactionId }), readTime(this.now()));
         }
         const transactions = array(containing.transactions, "wRPC accepted block transactions");
-        const transactionMatches = transactions.filter((transaction) => {
+        if (transactions.length > MAX_ACCEPTED_BLOCK_TRANSACTIONS) {
+          throw new Error("wRPC accepted block exceeds the Chain Evidence work budget");
+        }
+        let transactionMatch: unknown;
+        let transactionMatches = 0;
+        for (const transaction of transactions) {
+          request.signal.throwIfAborted();
           try {
-            return deriveTransactionId(transaction) === request.transactionId;
+            if (deriveTransactionId(transaction) === request.transactionId) {
+              transactionMatch = transaction;
+              transactionMatches += 1;
+            }
           } catch {
-            return false;
+            // A malformed non-target entry cannot establish the expected body.
           }
-        });
-        if (transactionMatches.length !== 1) {
+        }
+        if (transactionMatches !== 1) {
           return nonPresent("unknown", "kaspa-operator-wrpc-v1", digest({ result: "accepted-transaction-body-conflict", transactionId: request.transactionId }), readTime(this.now()));
         }
-        validateWrpcTransaction(transactionMatches[0], request);
+        validateWrpcTransaction(transactionMatch, request);
         const level = virtualDaa - acceptingDaa >= this.depth ? "depth-confirmed" as const : "accepted" as const;
         return Object.freeze({
           status: "present" as const, level, view: "historical" as const,
@@ -199,8 +211,12 @@ export class WrpcOperatorChainObserver implements OperatorChainObserver {
         includeOrphanPool: true,
         filterTransactionPool: false,
       });
-      const transactions = mempoolTransactionsByAddress(pool.entries as unknown[], request.watchedAddresses);
-      const match = transactions.get(request.transactionId);
+      const match = findMempoolTransaction(
+        pool.entries as unknown[],
+        request.watchedAddresses,
+        request.transactionId,
+        request.signal
+      );
       if (match) {
         validateWrpcTransaction(match, request);
         return Object.freeze({
@@ -248,28 +264,47 @@ function validateWitnessTransaction(transaction: Record<string, unknown>, reques
  * mempool entries for each requested address. The same transaction may appear
  * in more than one bucket, so identity-deduplicate it before matching.
  */
-function mempoolTransactionsByAddress(
+function findMempoolTransaction(
   values: unknown[],
-  watchedAddresses: readonly string[]
-): ReadonlyMap<string, unknown> {
+  watchedAddresses: readonly string[],
+  expectedTransactionId: string,
+  signal: AbortSignal
+): unknown | undefined {
+  if (values.length > MAX_MEMPOOL_ADDRESS_BUCKETS) {
+    throw new Error("wRPC mempool address buckets exceed the Chain Evidence work budget");
+  }
   const watched = new Set(watchedAddresses);
-  const transactions = new Map<string, unknown>();
+  const buckets: Array<readonly unknown[]> = [];
+  const returnedAddresses = new Set<string>();
+  let entryCount = 0;
   for (const value of values) {
     const bucket = record(value, "wRPC mempool address bucket");
     const address = String(bucket.address ?? "");
     if (!watched.has(address)) throw new Error("wRPC mempool returned an unexpected address bucket");
-    const entries = [
-      ...array(bucket.sending, "wRPC sending mempool entries"),
-      ...array(bucket.receiving, "wRPC receiving mempool entries"),
-    ];
+    if (returnedAddresses.has(address)) throw new Error("wRPC mempool returned a duplicate address bucket");
+    returnedAddresses.add(address);
+    const sending = array(bucket.sending, "wRPC sending mempool entries");
+    const receiving = array(bucket.receiving, "wRPC receiving mempool entries");
+    entryCount += sending.length + receiving.length;
+    if (entryCount > MAX_MEMPOOL_TRANSACTIONS) {
+      throw new Error("wRPC mempool transactions exceed the Chain Evidence work budget");
+    }
+    buckets.push(sending, receiving);
+  }
+  const observedIds = new Set<string>();
+  let match: unknown;
+  for (const entries of buckets) {
     for (const value of entries) {
+      signal.throwIfAborted();
       const entry = record(value, "wRPC address mempool entry");
       const transaction = entry.transaction;
       const transactionId = deriveTransactionId(transaction);
-      transactions.set(transactionId, transaction);
+      if (observedIds.has(transactionId)) continue;
+      observedIds.add(transactionId);
+      if (transactionId === expectedTransactionId) match = transaction;
     }
   }
-  return transactions;
+  return match;
 }
 
 function validateWrpcTransaction(transaction: unknown, request: Readonly<ChainEvidenceRequest>): void {

@@ -55,6 +55,7 @@ import {
   LIVE_TREASURY_FEE_CEILING_ATOMIC,
   LiveMerchantExactVerifier,
   additiveHeadId,
+  assertLiveNodeReady,
   assertPublicReportExcludesPrivateState,
   bootstrapLiveProof,
   driveLiveTreasuryOperation,
@@ -439,7 +440,7 @@ export async function runLiveAdditiveContentionProof(
     }
     const finalHead = requireStateAdvancedHead(state, advanced, retry);
     const finalObservation = requireStateObservation(state.finalObservation, finalHead, "retry");
-    const node = await initialized.merchantWallet.serverInfo();
+    const node = await assertLiveNodeReady(initialized.merchantWallet);
 
     const report: LiveAdditiveContentionReport = Object.freeze({
       profile: REPORT_PROFILE,
@@ -447,10 +448,10 @@ export async function runLiveAdditiveContentionProof(
       network: LIVE_NETWORK,
       chainProvenance: Object.freeze({
         nodeVersion: String(node.serverVersion),
-        nodeNetwork: "testnet-10" as const,
+        nodeNetwork: node.networkId,
         nodeVirtualDaaScore: String(node.virtualDaaScore),
-        nodeSynced: true as const,
-        nodeUtxoIndex: true as const,
+        nodeSynced: node.isSynced,
+        nodeUtxoIndex: node.hasUtxoIndex,
       }),
       protocol: Object.freeze({
         binding: "kaspa-exact-v2" as const,

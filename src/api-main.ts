@@ -3,9 +3,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { purchaseApiListenerConfigFromEnv, PurchaseApiConfigError } from "./api/config.js";
+import {
+  purchaseApiListenerConfigFromEnv,
+  purchaseRecoveryApiListenerConfigFromEnv,
+  PurchaseApiConfigError,
+} from "./api/config.js";
 import { createPurchaseApplication } from "./api/contracts.js";
-import { startPurchaseApiServer } from "./api/server.js";
+import { startPurchaseApiServer, startPurchaseRecoveryApiServer } from "./api/server.js";
 import { SompiRuntimeConfigError, purchaseRuntimeConfigFromEnv } from "./runtime/config.js";
 import { createSompiPurchaseRuntime } from "./runtime/purchase-runtime.js";
 
@@ -21,11 +25,24 @@ if (process.argv[2] === "help" || process.argv[2] === "--help") {
 async function main(): Promise<void> {
   let runtime: ReturnType<typeof createSompiPurchaseRuntime> | undefined;
   let api: Awaited<ReturnType<typeof startPurchaseApiServer>> | undefined;
+  let recoveryApi: Awaited<ReturnType<typeof startPurchaseRecoveryApiServer>> | undefined;
   try {
     const listener = purchaseApiListenerConfigFromEnv();
+    const recoveryListener = purchaseRecoveryApiListenerConfigFromEnv();
     runtime = createSompiPurchaseRuntime(purchaseRuntimeConfigFromEnv());
+    const application = createPurchaseApplication(runtime.purchase);
+    recoveryApi = await startPurchaseRecoveryApiServer({
+      application,
+      credential: recoveryListener.credential,
+      socketPath: recoveryListener.socketPath,
+      expectedServerUserId: recoveryListener.expectedServerUserId,
+      runtimeGroupId: recoveryListener.runtimeGroupId,
+      deadlineMs: recoveryListener.deadlineMs,
+      maxControlConcurrency: recoveryListener.maxControlConcurrency,
+      maxConnections: recoveryListener.maxConnections,
+    });
     api = await startPurchaseApiServer({
-      application: createPurchaseApplication(runtime.purchase),
+      application,
       credential: listener.credential,
       socketPath: listener.socketPath,
       expectedServerUserId: listener.expectedServerUserId,
@@ -39,6 +56,7 @@ async function main(): Promise<void> {
       if (closing) return;
       closing = true;
       await api?.close();
+      await recoveryApi?.close();
       await runtime?.close();
     };
     const shutdown = () => { void close().then(() => process.exit(0), () => fatal("Sompi API could not close cleanly.")); };
@@ -47,6 +65,7 @@ async function main(): Promise<void> {
     console.error(`sompi API ${packageVersion()} ready on its configured local socket`);
   } catch (error) {
     await api?.close().catch(() => undefined);
+    await recoveryApi?.close().catch(() => undefined);
     await runtime?.close().catch(() => undefined);
     if (error instanceof PurchaseApiConfigError || error instanceof SompiRuntimeConfigError) fatal(error.message);
     fatal("Sompi API could not start. Inspect the local operator configuration.");

@@ -4,16 +4,21 @@ Last updated: **2026-07-17**
 
 ## Plain-English status
 
-**The alpha.8 clean-cutover goal is active; Phases A through H are complete.** The
+**The alpha.8 clean-cutover goal is active; Phases A through I are complete and
+Phase J remediation is verified locally.** The
 landed Kaspa-x402 `0.1.0-alpha.8` release, published package integrities,
 immutable specifications, schemas, vectors, public APIs, and funded TN10
 evidence have been mapped into Sompi's ownership and acceptance boundaries in
 [`docs/architecture/KASPA_X402_INTEGRATION.md`](docs/architecture/KASPA_X402_INTEGRATION.md).
-Phase I is complete except for the funded additive-contention sub-gate. Phase J
-has completed another formal full-branch security scan. Its two Low/P3 findings
-are fixed locally and the mandatory immutable post-fix rescan is next. Batch
-settlement is a separate capital-backed channel lifecycle and is not treated as
-exact payment.
+Funded TN10 evidence now includes both exact profiles, additive contention with
+one accepted winner and an explicit retry against the advanced head, and the
+separate batch deposit/voucher/claim/refund lifecycle. The final sealed
+full-branch scan reported three Low/P3 availability findings. Their bounded
+Chain Evidence work and independently admitted operator-recovery listener fixes,
+plus the mandatory live-report health correction, are implemented and verified
+locally. The clean-tree release and Phase A-K completion audit are next. Batch
+settlement remains a separate capital-backed channel lifecycle and is not
+treated as exact payment.
 
 ADR-0015 and the aligned architecture require a clean replacement of alpha.6,
 support both `kaspa-exact-v2` profiles (`standard-native` and `additive`), and treat
@@ -21,13 +26,15 @@ support both `kaspa-exact-v2` profiles (`standard-native` and `additive`), and t
 canonical Purchase API and MCP is a thin untrusted compatibility adapter. No
 alpha.8 payment conformance claim has been made yet.
 
-Current verification: `npm test` passes all **461** tests (**460 pass**, one
+Current verification: `npm test` passes all **479** tests (**478 pass**, one
 documented privileged ownership skip) and the complete offline smoke. The
-authenticated API now runs only over a pre-provisioned permissioned Unix
-socket; the loopback TCP path is deleted. Socket owner/group/mode/path identity,
-operator-installed agent credential, HTTP/MCP parity, request limits,
-deadlines, and cancellation gates pass. Both `kaspa-exact-v2` profiles now run
-through the alpha.8 SDK contract,
+authenticated API now runs only over two pre-provisioned permissioned Unix
+sockets: the Agent/MCP listener and a separately grouped, credentialed, bounded
+operator-only status/recovery listener over the same canonical Purchase
+application. The loopback TCP path is deleted. Socket owner/group/mode/path
+identity, operator-installed credentials, HTTP/MCP parity, request limits,
+deadlines, cancellation, and recovery-admission isolation pass. Both
+`kaspa-exact-v2` profiles run through the alpha.8 SDK contract,
 and Treasury owns policy capacity, vault staging, attempt-scoped funding,
 external-effect fencing, abandoned-stage recovery, and cancellation semantics
 behind one Purchase-facing deep module. Cancellation before an external effect
@@ -83,7 +90,23 @@ The first human-present AP2 + Kaspa-x402 vertical remains testnet-only; the
 post-scan hardening gates pass through the bounded Authority, Purchase/Journal,
 Evidence, MCP, and direct-Treasury lifecycles.
 
-The formal diff scan of `fd7ba42...8e1214b` reviewed all 146 changed
+The final sealed diff scan of `fd7ba42...4c7dfe0` closed all 156 changed-file
+review receipts and reported three Low/P3 findings: lower-trust
+pre-authentication Agent connections could consume the only API connection
+pool; an untrusted operator wRPC node could trigger unbounded Kaspa-WASM
+finalization for accepted block bodies; and address-bucket mempool responses
+could trigger equivalent unbounded work and retention. Sompi now requires a
+transport-isolated operator-recovery listener with its own credential,
+filesystem group, connection pool, and route allowlist; bounds accepted-block
+and mempool collections before WASM construction; rejects duplicate buckets;
+and checks cancellation during bounded traversal. The original RPC PoCs stop at
+`unavailable`, the isolated recovery regression passes under Agent-socket
+saturation, and the live additive report derives final node health from a fresh
+synced, indexed TN10 check. The complete 479-test suite and focused 41-test
+remediation suite pass. The sealed scan and source-backed fix report remain
+outside the repository under the native Codex Security artifact directory.
+
+The earlier formal diff scan of `fd7ba42...8e1214b` reviewed all 146 changed
 source-like files through 30 full-file receipts. It reported two findings: an
 empty current UTXO view could terminally retire a live batch channel, and
 cooperative-only API deadlines could retain every request permit. Both are now
@@ -142,9 +165,10 @@ target contract.
   `1df2f9c`, `91f85cd`, `a3e5a20`, `081f619`, `eb96534`, and the post-review
   hardening commit `1151938`. The worktree is named and no remote branch was
   changed.
-- Security-reviewed alpha.8 milestones: `8e1214b` and `015107a`. The current
-  uncommitted remediation closes the two Low/P3 findings from the latest
-  complete branch scan; its immutable post-fix rescan is the next gate.
+- Security-reviewed alpha.8 milestones include `8e1214b`, `015107a`, and the
+  final funded-contention head `4c7dfe0`. The sealed final scan covers
+  `fd7ba42...4c7dfe0`; the current verified remediation closes its three Low/P3
+  findings and mandatory live-report correction.
 - Untouched post-scan baseline: `npm test` passed with 339 tests, one privileged
   ownership test skipped, and complete offline smoke.
 - Sealed deep scan: 21 findings, 8 medium and 13 low, no high/critical.
@@ -448,12 +472,10 @@ protocol behavior and did not spend additional testnet funds.
 
 ## Next action
 
-Commit the verified security remediation, run a fresh immutable diff scan over
-the complete branch, and fix/rescan any surviving issue until clean. Then run
-the remaining funded additive-contention Testnet-10 proof, replace the stale
-alpha.6 public evidence with the final alpha.8 evidence set, and complete the
-Phase K documentation, clean-package, accepted-ADR, and branch-publication
-audit.
+Commit the verified final security remediation, run the clean-tree release
+gate, replace stale current-facing evidence with the final alpha.8 evidence
+set, and complete the Phase A-K requirement, documentation, accepted-ADR,
+package, and branch-publication audit.
 
 ## Known external uncertainties
 

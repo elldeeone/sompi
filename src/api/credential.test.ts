@@ -7,8 +7,12 @@ import test from "node:test";
 import {
   agentApiCredentialMatches,
   canonicalAgentApiCredentialBytes,
+  canonicalRecoveryApiCredentialBytes,
   generateAgentApiCredential,
+  generateRecoveryApiCredential,
   loadAgentApiCredential,
+  loadRecoveryApiCredential,
+  recoveryApiCredentialMatches,
 } from "./credential.js";
 
 test("operator-installed agent credential loads only from a stable owner-only test file", () => {
@@ -33,6 +37,32 @@ test("operator-installed agent credential loads only from a stable owner-only te
       runtimeGroupId: stat.gid,
       allowSameUserForTests: true,
     }), /permissions or identity/);
+  } finally {
+    bytes.fill(0);
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("operator recovery credential is cryptographically and structurally separate from the agent credential", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-recovery-credential-"));
+  const filename = path.join(directory, "recovery.json");
+  const credential = generateRecoveryApiCredential();
+  const bytes = canonicalRecoveryApiCredentialBytes(credential);
+  try {
+    fs.writeFileSync(filename, bytes, { mode: 0o600, flag: "wx" });
+    const stat = fs.statSync(filename);
+    const loaded = loadRecoveryApiCredential(filename, {
+      expectedOwnerUserId: stat.uid,
+      runtimeGroupId: stat.gid,
+      allowSameUserForTests: true,
+    });
+    assert.deepEqual(loaded, credential);
+    assert.equal(recoveryApiCredentialMatches(loaded, `Bearer ${credential.token}`), true);
+    assert.throws(() => loadAgentApiCredential(filename, {
+      expectedOwnerUserId: stat.uid,
+      runtimeGroupId: stat.gid,
+      allowSameUserForTests: true,
+    }), /agent API credential is invalid/);
   } finally {
     bytes.fill(0);
     fs.rmSync(directory, { recursive: true, force: true });

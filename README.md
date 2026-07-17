@@ -203,6 +203,12 @@ Operator Manifest. See `operator.example.json` and the operator runbook.
 | `SOMPI_OPERATOR_MANIFEST` | Operator-owned canonical manifest path |
 | `SOMPI_OPERATOR_UID` | Expected distinct manifest owner UID |
 | `SOMPI_RUNTIME_GID` | Fixed read-only manifest group GID |
+| `SOMPI_API_UID` | Trusted Purchase API process UID |
+| `SOMPI_API_SOCKET` | Agent-facing permissioned Unix socket path |
+| `SOMPI_AGENT_API_CREDENTIAL` | Operator-installed least-authority Agent bearer file |
+| `SOMPI_RECOVERY_API_SOCKET` | Operator-only status/recovery Unix socket path |
+| `SOMPI_RECOVERY_API_CREDENTIAL` | Operator-installed recovery bearer file |
+| `SOMPI_RECOVERY_GID` | Operator-only recovery socket/credential group GID |
 | `SOMPI_AUTHORITY_CLIENT_DIR` | MCP-owned IPC MAC copy and public trust store |
 | `SOMPI_AUTHORITY_RUNTIME_DIR` | Shared socket directory |
 | `SOMPI_AUTHORITY_SOCKET` | Authority Unix socket path |

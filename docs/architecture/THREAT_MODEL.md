@@ -42,6 +42,11 @@ tool inputs, calls only the permissioned Purchase API socket with a
 least-authority bearer, and projects status. It has no Journal, wallet,
 Treasury, manifest, protocol, or Authority capability.
 
+The operator-only recovery socket is a distinct admission boundary inside the
+trusted API process. It has its own filesystem group, bearer, connection pool,
+and status/recovery-only route scope. The MCP principal cannot reach it, so
+pre-authentication load on the Agent socket cannot deny operator recovery.
+
 ### Trusted Authority zone
 
 A separate deterministic process with its own credential and authenticated

@@ -10,6 +10,7 @@ import {
   LIVE_ADDITIVE_HEAD_AMOUNT_ATOMIC,
   LIVE_NETWORK,
   LiveMerchantExactVerifier,
+  assertLiveNodeReady,
   assertPrivateFile,
   bootstrapLiveProof,
   driveLiveTreasuryOperation,
@@ -50,6 +51,30 @@ import type {
 } from "../treasury/operations.js";
 
 const TEST_NODE_URL = "ws://127.0.0.1:17210/";
+
+test("live node readiness derives reportable health only from a fresh TN10 DAG check", async () => {
+  const wallet = (network: string, synced = true, indexed = true) => ({
+    serverInfo: async () => ({
+      serverVersion: "rusty-kaspad test",
+      virtualDaaScore: 123n,
+      isSynced: synced,
+      hasUtxoIndex: indexed,
+    }),
+    client: async () => ({
+      getBlockDagInfo: async () => ({ network, sink: "11".repeat(32) }),
+    }),
+  }) as unknown as KaspaWallet;
+  assert.deepEqual(await assertLiveNodeReady(wallet("testnet-10")), {
+    serverVersion: "rusty-kaspad test",
+    networkId: "testnet-10",
+    virtualDaaScore: 123n,
+    isSynced: true,
+    hasUtxoIndex: true,
+  });
+  await assert.rejects(() => assertLiveNodeReady(wallet("mainnet")), /synced UTXO-indexed Testnet-10/);
+  await assert.rejects(() => assertLiveNodeReady(wallet("testnet-10", false)), /synced UTXO-indexed Testnet-10/);
+  await assert.rejects(() => assertLiveNodeReady(wallet("testnet-10", true, false)), /synced UTXO-indexed Testnet-10/);
+});
 
 test("live proof initialization is owner-only, fresh, and restart-stable before any spend", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-live-proof-init-"));

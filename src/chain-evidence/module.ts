@@ -186,7 +186,7 @@ function validateRequest(request: Readonly<ChainEvidenceRequest>): void {
     }
     indexes.add(output.index);
   }
-  if (!Array.isArray(request.watchedAddresses) || request.watchedAddresses.length < 1 || request.watchedAddresses.some((value) => typeof value !== "string" || value.length > 256)) {
+  if (!Array.isArray(request.watchedAddresses) || request.watchedAddresses.length < 1 || request.watchedAddresses.length > 16 || request.watchedAddresses.some((value) => typeof value !== "string" || value.length > 256)) {
     throw new ChainEvidenceError("Chain Evidence watched addresses are invalid");
   }
   if (request.signal?.aborted) request.signal.throwIfAborted();

@@ -10,7 +10,11 @@ import {
   provisionOperatorCandidate,
 } from "./operator/provisioning.js";
 import { generateOwnerKey } from "./vault.js";
-import { AgentApiCredentialInstallError, installAgentApiCredential } from "./operator/agent-credential.js";
+import {
+  ApiCredentialInstallError,
+  installAgentApiCredential,
+  installRecoveryApiCredential,
+} from "./operator/api-credential.js";
 
 try {
   const command = parseOperatorArguments(process.argv.slice(2));
@@ -37,12 +41,16 @@ try {
       operatorUserId: command.operatorUid,
       runtimeGroupId: command.runtimeGid,
     }) }); break;
+    case "recovery-credential": print({ status: "installed", ...installRecoveryApiCredential(command.filename, {
+      operatorUserId: command.operatorUid,
+      runtimeGroupId: command.recoveryGid,
+    }) }); break;
   }
 } catch (error) {
   if (error instanceof CliArgumentError) {
     process.stderr.write(`fatal: ${error.message}\n${OPERATOR_USAGE}\n`);
     process.exitCode = 2;
-  } else if (error instanceof OperatorProvisioningError || error instanceof OperatorManifestError || error instanceof AgentApiCredentialInstallError) {
+  } else if (error instanceof OperatorProvisioningError || error instanceof OperatorManifestError || error instanceof ApiCredentialInstallError) {
     process.stderr.write(`fatal: ${error.message}\n`);
     process.exitCode = 1;
   } else {

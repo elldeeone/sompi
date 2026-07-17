@@ -174,14 +174,15 @@ Responsibilities:
 
 - expose `POST /purchases`, `GET /purchases/{purchaseId}`, and
   `POST /purchases/{purchaseId}/recover`;
-- authenticate an operator-installed least-authority agent credential;
+- authenticate an operator-installed least-authority Agent credential and a
+  distinct operator-recovery credential;
 - validate the shared canonical request and result schemas;
 - enforce request size, concurrency, deadline, cancellation, and structured
   error limits;
 - call the Purchase module and return deterministic secret-free projections;
-- bind only to a pre-provisioned, permissioned Unix-domain socket whose owner,
-  group, mode, and path identity are verified before the bearer credential is
-  sent;
+- bind the Agent surface and the status/recovery-only operator surface to
+  separate pre-provisioned Unix-domain sockets whose owner, group, mode, path
+  identity, credential, connection pool, and work budget are independent;
 - publish the canonical OpenAPI 3.2 description.
 
 It owns transport authentication and projection only. It does not implement
@@ -374,6 +375,10 @@ controlled wRPC node and an independently operated HTTPS accepted-chain witness,
 then retains every accepted fact required for later recovery. The unauthenticated
 LAN route to `ws://10.0.3.26` cannot mint accepted evidence alone. Pruned,
 missing, contradictory, or unavailable history never becomes proof of absence.
+A small Sompi-owned work budget rejects oversized accepted-block and mempool
+collections before Kaspa WASM construction; abort checks remain inside each
+bounded traversal. Upstream transport or consensus limits do not substitute for
+this application boundary.
 A public/mainnet profile requires an independently verified evidence plane or
 equivalent locally verified inclusion/finality source.
 

@@ -14,7 +14,12 @@ import {
   assertPurchaseView,
   parsePurchaseCreateRequest,
 } from "./contracts.js";
-import { agentApiCredentialMatches, type AgentApiCredential } from "./credential.js";
+import {
+  agentApiCredentialMatches,
+  recoveryApiCredentialMatches,
+  type AgentApiCredential,
+  type RecoveryApiCredential,
+} from "./credential.js";
 import {
   installAndVerifyPurchaseApiSocket,
   preparePurchaseApiSocketDirectory,
@@ -43,6 +48,16 @@ export interface PurchaseApiServerOptions extends PurchaseApiSocketAccess {
   readonly onRequestError?: (error: unknown) => void;
 }
 
+export interface PurchaseRecoveryApiServerOptions extends PurchaseApiSocketAccess {
+  readonly application: PurchaseApplication;
+  readonly credential: RecoveryApiCredential;
+  readonly socketPath: string;
+  readonly deadlineMs?: number;
+  readonly maxControlConcurrency?: number;
+  readonly maxConnections?: number;
+  readonly onRequestError?: (error: unknown) => void;
+}
+
 export interface RunningPurchaseApiServer {
   readonly server: http.Server;
   readonly socketPath: string;
@@ -57,11 +72,26 @@ export class PurchaseApiServerError extends Error {
 }
 
 export async function startPurchaseApiServer(options: PurchaseApiServerOptions): Promise<RunningPurchaseApiServer> {
+  return startPurchaseApiListener(options, "agent");
+}
+
+export async function startPurchaseRecoveryApiServer(
+  options: PurchaseRecoveryApiServerOptions
+): Promise<RunningPurchaseApiServer> {
+  return startPurchaseApiListener(options, "operator-recovery");
+}
+
+async function startPurchaseApiListener(
+  options: PurchaseApiServerOptions | PurchaseRecoveryApiServerOptions,
+  audience: "agent" | "operator-recovery"
+): Promise<RunningPurchaseApiServer> {
   const deadlineMs = positiveInteger(options.deadlineMs ?? DEFAULT_DEADLINE_MS, "API deadline");
-  const maxPurchaseConcurrency = positiveInteger(
-    options.maxPurchaseConcurrency ?? DEFAULT_MAX_PURCHASE_CONCURRENCY,
-    "API Purchase concurrency"
-  );
+  const maxPurchaseConcurrency = audience === "agent"
+    ? positiveInteger(
+        (options as PurchaseApiServerOptions).maxPurchaseConcurrency ?? DEFAULT_MAX_PURCHASE_CONCURRENCY,
+        "API Purchase concurrency"
+      )
+    : 0;
   const maxControlConcurrency = positiveInteger(
     options.maxControlConcurrency ?? DEFAULT_MAX_CONTROL_CONCURRENCY,
     "API control concurrency"
@@ -82,12 +112,21 @@ export async function startPurchaseApiServer(options: PurchaseApiServerOptions):
   const server = http.createServer({ requestTimeout, headersTimeout: Math.min(10_000, requestTimeout) }, (request, response) => {
     void (async () => {
       setSecurityHeaders(response);
-      if (!agentApiCredentialMatches(options.credential, header(request, "authorization"))) {
+      const authorized = audience === "agent"
+        ? agentApiCredentialMatches(options.credential as AgentApiCredential, header(request, "authorization"))
+        : recoveryApiCredentialMatches(options.credential as RecoveryApiCredential, header(request, "authorization"));
+      if (!authorized) {
         response.setHeader("www-authenticate", "Bearer");
-        writeError(response, 401, "UNAUTHENTICATED", "A valid agent API credential is required.", false);
+        writeError(
+          response,
+          401,
+          "UNAUTHENTICATED",
+          `A valid ${audience === "agent" ? "agent" : "recovery"} API credential is required.`,
+          false
+        );
         return;
       }
-      const lane = isPurchaseCreation(request) ? purchaseLane : controlLane;
+      const lane = audience === "agent" && isPurchaseCreation(request) ? purchaseLane : controlLane;
       if (lane.active >= lane.maximum) {
         writeError(response, 429, "API_BUSY", "The Purchase API is at its concurrency limit.", true);
         return;
@@ -106,7 +145,7 @@ export async function startPurchaseApiServer(options: PurchaseApiServerOptions):
       const signal = AbortSignal.any([timeout, disconnected.signal]);
       let settled = false;
       let detached = false;
-      const operation = routeRequest(options.application, request, signal);
+      const operation = routeRequest(options.application, request, signal, audience);
       void operation.then(
         () => {
           settled = true;
@@ -186,14 +225,15 @@ export async function startPurchaseApiServer(options: PurchaseApiServerOptions):
 async function routeRequest(
   application: PurchaseApplication,
   request: http.IncomingMessage,
-  signal: AbortSignal
+  signal: AbortSignal,
+  audience: "agent" | "operator-recovery"
 ): Promise<unknown> {
   const method = request.method ?? "";
   const target = request.url ?? "";
   if (target.includes("?") || target.includes("#") || target.includes("%")) {
     throw new HttpBoundaryError(400, "INVALID_TARGET", "The request target is invalid.", false);
   }
-  if (method === "POST" && target === "/purchases") {
+  if (audience === "agent" && method === "POST" && target === "/purchases") {
     if (header(request, "content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
       throw new HttpBoundaryError(400, "INVALID_CONTENT_TYPE", "Content-Type must be application/json.", false);
     }
@@ -208,6 +248,9 @@ async function routeRequest(
   if (match && method === "POST" && match[2] === "/recover") {
     rejectBody(request);
     return application.recover(match[1], signal);
+  }
+  if (audience === "operator-recovery" && target === "/purchases") {
+    throw new HttpBoundaryError(404, "NOT_FOUND", "The resource does not exist.", false);
   }
   if (target === "/purchases" || match) {
     throw new HttpBoundaryError(405, "METHOD_NOT_ALLOWED", "The method is not supported for this resource.", false);
