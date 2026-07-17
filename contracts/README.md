@@ -34,7 +34,7 @@ with rolling-window state.
 
 3. **Integrated testnet evidence.** The release E2E exercises durable
    genesis/top-up, capped withdrawal/staging, recovery, and exact payment
-   through the same journaled path shipped to MCP. There is no second
+   through the same journaled Treasury path used by Purchase. There is no second
    non-journaled live-send harness.
 
 ## When a contract changes

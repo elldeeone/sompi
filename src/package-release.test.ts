@@ -89,6 +89,82 @@ test("MCP production code has only the canonical API client capability", () => {
   }
 });
 
+test("current documentation exposes only the API-first alpha.8 cutover", () => {
+  const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+  for (const required of [
+    "Kaspa-x402 `0.1.0-alpha.8`",
+    "`standard-native`",
+    "`additive`",
+    "Kaspa-x402 batch settlement",
+    "`POST /purchases`",
+    "`GET /purchases/{purchaseId}`",
+    "`POST /purchases/{purchaseId}/recover`",
+    "`purchase_status`",
+    "`purchase_recover`",
+  ]) {
+    assert.ok(readme.includes(required), `README is missing ${required}`);
+  }
+
+  const currentDocuments = [
+    "CURRENT_STATE.md",
+    "README.md",
+    "contracts/README.md",
+    "docs/agent-interaction-ux.md",
+    "docs/vault-poc.md",
+    "docs/architecture/PURCHASE_JOURNAL.md",
+    "docs/conformance/PROTOCOL_CONFORMANCE.md",
+    "docs/runbooks/AUTHORITY.md",
+    "docs/runbooks/CHANNEL_RECOVERY.md",
+    "docs/runbooks/JOURNAL.md",
+    "docs/runbooks/OPERATOR_PROVISIONING.md",
+    "docs/runbooks/README.md",
+    "docs/runbooks/RECONCILIATION.md",
+    "docs/runbooks/STAGING_RECOVERY.md",
+    "docs/runbooks/TESTNET_RESET.md",
+  ];
+  const forbidden = [
+    "MCP-owned",
+    "MCP Purchase state",
+    "SOMPI_DATA_DIR",
+    "/var/lib/sompi-mcp",
+    "`payment_status`",
+    "`get_address`",
+    "`get_balance`",
+    "`await_payment`",
+    "`verify_payment`",
+    "`send_payment`",
+    "`vault_status`",
+    "`vault_deposit`",
+    "`vault_send`",
+    "`treasury_operation_status`",
+    "`treasury_operation_recover`",
+    "`estimate_fee`",
+    "`network_status`",
+    "`get_policy`",
+  ];
+  for (const relative of currentDocuments) {
+    const source = fs.readFileSync(path.join(ROOT, relative), "utf8");
+    for (const value of forbidden) {
+      assert.equal(source.includes(value), false, `${relative} contains obsolete ${value}`);
+    }
+    for (const match of source.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)) {
+      const target = match[1]?.split("#", 1)[0];
+      if (!target || /^(?:https?:|mailto:)/.test(target)) continue;
+      assert.equal(
+        fs.existsSync(path.resolve(path.dirname(path.join(ROOT, relative)), target)),
+        true,
+        `${relative} contains a broken local link to ${target}`,
+      );
+    }
+  }
+
+  const journal = fs.readFileSync(
+    path.join(ROOT, "docs", "architecture", "PURCHASE_JOURNAL.md"),
+    "utf8",
+  );
+  assert.match(journal, /only supported schema is epoch \*\*14\*\*/);
+});
+
 function sourceFiles(directory: string): string[] {
   const result: string[] = [];
   for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {

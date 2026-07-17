@@ -1,42 +1,32 @@
-# Protocol conformance evidence
+# Protocol conformance
 
-Run the reproducible gate with:
+Run:
 
-```sh
+```bash
 npm run test:conformance
 ```
 
-The first run needs network access to fetch the exact AP2 commit, Python 3.12,
-and locked public-PyPI wheels into the private external cache. After that cache
-is warm, prove download-free replay with:
+The gate verifies:
 
-```sh
+- AP2 v0.2 source, schema, Python dependency, mandate, and receipt provenance;
+- TypeScript/Python AP2 artifact interoperability for the pinned profile;
+- all four Kaspa-x402 `0.1.0-alpha.8` packages and npm integrity values;
+- Kaspa-x402 source/release identity;
+- unmodified exact HTTP and full-consensus standard-native/additive vectors;
+- Sompi Payment Identifier and Purchase binding.
+
+The first run requires Git, Python 3.12, `uv`, and network access. It fills a
+private external cache from the exact recorded sources and public PyPI lock.
+After that, require download-free replay with:
+
+```bash
 SOMPI_CONFORMANCE_OFFLINE=1 npm run test:conformance
 ```
 
-The same command is included in the packed npm artifact with the minimal
-runner, fixed fixtures, Python lock, and exact Kaspa-x402 vectors it needs.
-`git` and `uv` must be installed. The first run needs network access to fetch
-the exact AP2 commit and locked Python wheels into a private external cache;
-set `SOMPI_CONFORMANCE_OFFLINE=1` to require an already warmed cache.
-
-The runner checks out AP2 at the exact recorded commit into an external cache
-and validates the upstream `pyproject.toml` and `uv.lock` hashes. The upstream
-lock records a private package registry, so it is provenance rather than an
-installation input. A separate committed public-PyPI lock pins the same AP2
-Python dependencies and all transitives exactly; the runner applies it with
-`uv sync --frozen` and Python 3.12. It then runs both directions of the AP2
-TypeScript/Python mandate test and verifies Sompi's two receipt roles plus their
-issuer-JWT references in the pinned Python `ReceiptClient`.
-
-For Kaspa-x402, the gate checks all four published alpha.8 package versions and
-npm lockfile SRI values, package source and release identities, the unmodified
-additive exact HTTP vector, and the full-consensus standard-native v0/additive
-v1 vector. Sompi's adapter suites separately prove the required official
-Payment Identifier correlation and Purchase bindings.
-
-Exact machine-readable provenance and claim boundaries are in
+Machine-readable provenance and claim boundaries are in
 [`test/conformance/provenance.json`](../../test/conformance/provenance.json).
-Passing this gate proves the recorded offline profiles only. It is not a live
-testnet result, general AP2 interoperability, or standardized native-KAS AP2
-support.
+
+Passing this gate proves only the pinned offline profiles. Funded network
+evidence is separate. It does not prove general AP2 interoperability,
+standardized native-KAS AP2 support, mainnet readiness, or third-party
+deployment compatibility.

@@ -204,7 +204,7 @@ path.
   outlive takeover, compound Purchases remain counted, Vault preparation
   outcomes are exhaustive, and waiter takeover drives the lease it acquired.
 - [x] Bump the clean-cutover Journal schema to epoch 10 and reject epochs 1–9
-  untouched; verify migration and restart behavior.
+  untouched; verify fresh initialization and restart behavior.
 - [x] Rerun the three canonical follow-up PoCs, the Treasury takeover safety
   PoC, focused lifecycle suites, the complete npm test, all 13 offline smoke
   checks, package verification, and the pinned live Testnet-10 proof.
@@ -491,7 +491,7 @@ pass. After reviewing that scan and its verified remediation, the project owner
 explicitly closed further security-scan iteration; this plan does not represent
 that decision as a later zero-finding scan.
 
-The final clean release verifier passes 479 tests (478 pass and one documented
+The final clean release verifier passes 480 tests (479 pass and one documented
 privileged ownership skip), offline smoke, protocol conformance, all five
 funded evidence reports, OpenAPI/Arazzo checks, production dependency audit,
 the 201-entry packed artifact, and clean-install/import verification.

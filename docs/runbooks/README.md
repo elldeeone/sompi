@@ -1,28 +1,26 @@
 # Operator runbooks
 
-These runbooks apply only to Sompi's human-present AP2 + Kaspa-x402 alpha.8
-runtime on Kaspa testnet-10. The normal Purchase path supports both exact
-profiles. Batch settlement is a separately capitalized, explicitly authorized
-channel lifecycle.
+These procedures apply to the Testnet-10 alpha.8 runtime. They do not enable
+mainnet.
 
-- [`AUTHORITY.md`](AUTHORITY.md): separate OS users, credential ownership,
-  startup, verification, backup, and key rotation.
-- [`OPERATOR_PROVISIONING.md`](OPERATOR_PROVISIONING.md): immutable manifest,
-  vault bootstrap, OS ownership, digest approval, and static-drift recovery.
-- [`JOURNAL.md`](JOURNAL.md): consistent backup, restore validation, and
-  corruption response for all MCP-side durable state.
-- [`RECONCILIATION.md`](RECONCILIATION.md): safe recovery of interrupted
-  Purchases and direct Treasury Movements.
-- [`STAGING_RECOVERY.md`](STAGING_RECOVERY.md): exact/no-exact candidate race,
-  immutable return sweep, finality, fee accounting, and escalation for an
-  already-observed staging output.
-- [`CHANNEL_RECOVERY.md`](CHANNEL_RECOVERY.md): additive-head contention and
-  batch claim/refund recovery without rebuilding, rebroadcasting, or silently
-  rotating protocol state.
-- [`TESTNET_RESET.md`](TESTNET_RESET.md): create a fresh isolated testnet runtime
-  without deleting or partially reusing the old durable state.
+Start with:
 
-Expiry blocks new Merchant authorization, Treasury staging, and exact-payment
-preparation/signing/submission. It does not erase an existing staging UTXO; the
-dedicated recovery runbook describes the narrowly authorized return sweep.
-None of these procedures enables mainnet.
+1. [`OPERATOR_PROVISIONING.md`](OPERATOR_PROVISIONING.md) — install the
+   manifest, API credentials, runtime identity, and vault configuration.
+2. [`AUTHORITY.md`](AUTHORITY.md) — isolate and operate the human-present
+   signer.
+3. [`JOURNAL.md`](JOURNAL.md) — back up and restore API-owned state.
+4. [`RECONCILIATION.md`](RECONCILIATION.md) — recover one interrupted Purchase.
+
+Mechanism-specific procedures:
+
+- [`STAGING_RECOVERY.md`](STAGING_RECOVERY.md) — recover an already-created
+  exact-payment staging output.
+- [`CHANNEL_RECOVERY.md`](CHANNEL_RECOVERY.md) — recover additive-head and batch
+  channel state.
+- [`TESTNET_RESET.md`](TESTNET_RESET.md) — start a new isolated testnet runtime
+  without mutating the old one.
+
+MCP is not an operator surface. It has only the Agent API credential and the
+three Purchase tools. Use the separate operator recovery socket for privileged
+status and recovery work.

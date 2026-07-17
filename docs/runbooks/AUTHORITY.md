@@ -1,306 +1,169 @@
-# Trusted Authority operations
+# Trusted Authority
 
-Status: initial testnet-10 operator runbook
+Scope: human-present AP2 on Kaspa Testnet-10.
 
-Sompi's human-present AP2 mode requires two distinct, non-root OS users. The
-`sompi-authority` user owns the approval signer and displays the approval
-ceremony in a trusted terminal. The `sompi-mcp` user owns the Agent-facing MCP
-process and cannot read that signer. A dedicated group grants access only to
-the authenticated Unix socket.
+`sompi-authority` is a separate deterministic process. It owns the AP2 signing
+key, displays the exact Purchase facts, and signs only after the human types
+the displayed Purchase ID.
 
-This separation is a security invariant, not an optional hardening step. The
-production composition root refuses to start as root or when the authority
-socket owner UID equals the MCP UID.
+The agent, MCP process, and API process must not hold the Authority signing
+key. Only `sompi-api` receives the Authority client MAC copy and public trust
+store. `sompi-mcp` talks only to the Purchase API.
 
-## Filesystem topology
+## Principals
 
-The following layout keeps all three security contexts disjoint:
-
-| Context | Example path | Owner and mode |
+| Principal | Owns | Must not access |
 |---|---|---|
-| Authority private state | `/var/lib/sompi-authority/private` | `sompi-authority:sompi-authority`, `0700`; files `0600` |
-| MCP client credentials | `/var/lib/sompi-mcp-authority-client` | `sompi-mcp:sompi-mcp`, `0700`; files `0600` |
-| Shared socket runtime | `/run/sompi-authority` | `sompi-authority:sompi-ipc`, `0710` |
-| Authority socket | `/run/sompi-authority/authority.sock` | `sompi-authority:sompi-ipc`, `0660` |
-| MCP Purchase state | `/var/lib/sompi-mcp/testnet-10` | `sompi-mcp:sompi-mcp`, `0700` |
+| operator/root | manifest and API credentials | live agent session |
+| `sompi-authority` | signer, decision/replay stores, server MAC copy | wallet and Journal |
+| `sompi-api` | Journal, wallet/vault, protocol adapters, Authority client copy | Authority signer |
+| `sompi-mcp` | agent API credential and stdio transport | Journal, wallet, Authority IPC, recovery credential |
 
-The client directory contains only a separate IPC MAC-key copy and public
-trust store. It never contains, links to, or shares a parent with
-`authority-private.jwk.json`. The IPC group has traverse permission on the
-runtime directory, not write permission: it can connect to the `0660` socket
-but cannot unlink or replace it.
+Use distinct non-root UIDs for the three services. Use three different groups:
 
-## One-time installation
+- an Authority IPC group shared only by Authority and API;
+- an Agent API group shared by API and MCP;
+- an operator-recovery group shared by API and the operator only.
 
-Run these account and directory commands as root. Adapt the installed package
-path in later commands, but keep the ownership and separation unchanged.
+## Suggested layout
 
-```bash
-groupadd --system sompi-ipc
-useradd --system --home-dir /var/lib/sompi-authority --create-home \
-  --shell /usr/sbin/nologin sompi-authority
-useradd --system --home-dir /var/lib/sompi-mcp --create-home \
-  --shell /usr/sbin/nologin sompi-mcp
-usermod --append --groups sompi-ipc sompi-authority
-usermod --append --groups sompi-ipc sompi-mcp
+| Path | Owner | Mode |
+|---|---|---|
+| `/var/lib/sompi-authority/private` | `sompi-authority` | directory `0700`, files `0600` |
+| `/var/lib/sompi-api/authority-client` | `sompi-api` | directory `0700`, files `0600` |
+| API data directory from the Operator Manifest | `sompi-api` | directory `0700`, files `0600` |
+| `/run/sompi-authority` | `sompi-authority:AUTHORITY_IPC_GROUP` | `0710` |
+| `/run/sompi-authority/authority.sock` | `sompi-authority:AUTHORITY_IPC_GROUP` | `0660` |
+| `/run/sompi-api` | `sompi-api:AGENT_API_GROUP` | `0710` |
+| `/run/sompi-recovery` | `sompi-api:RECOVERY_GROUP` | `0710` |
 
-install -d -o sompi-authority -g sompi-authority -m 0700 \
-  /var/lib/sompi-authority/private
-install -d -o sompi-authority -g sompi-authority -m 0700 \
-  /var/lib/sompi-mcp-authority-client
-install -d -o sompi-authority -g sompi-authority -m 0700 \
-  /run/sompi-authority
-install -d -o sompi-mcp -g sompi-mcp -m 0700 \
-  /var/lib/sompi-mcp/testnet-10
-```
+The Authority private directory, API client directory, and socket directory
+must be disjoint canonical paths. Do not use symlinks or hard links.
 
-`/run` is normally ephemeral. On a systemd host, persist the runtime-directory
-rule `d /run/sompi-authority 0710 sompi-authority sompi-ipc -` in
-`/etc/tmpfiles.d/sompi-authority.conf` and apply it with
-`systemd-tmpfiles --create /etc/tmpfiles.d/sompi-authority.conf`. Otherwise the
-operator must recreate the directory with the exact owner and mode above after
-every reboot, before starting the authority.
+## Initialize
 
-Initialise once as the authority user. `sompi-authority init` deliberately
-refuses to overwrite any credential.
+Create the private, client, and runtime directories as the Authority owner.
+Then initialize once:
 
 ```bash
 sudo -u sompi-authority env \
-  HOME=/var/lib/sompi-authority \
   SOMPI_AUTHORITY_PRIVATE_DIR=/var/lib/sompi-authority/private \
-  SOMPI_AUTHORITY_CLIENT_DIR=/var/lib/sompi-mcp-authority-client \
+  SOMPI_AUTHORITY_CLIENT_DIR=/var/lib/sompi-api/authority-client \
   SOMPI_AUTHORITY_RUNTIME_DIR=/run/sompi-authority \
   SOMPI_AUTHORITY_SOCKET=/run/sompi-authority/authority.sock \
   SOMPI_AUTHORITY_ISSUER=urn:sompi:authority:local \
   SOMPI_AUTHORITY_SIGNING_KID=authority-signing-key-1 \
-  /opt/sompi/node_modules/.bin/sompi-authority init
+  sompi-authority init
 ```
 
-The command prints the new public authority trust entry, never the private
-key. Store that public entry with the Merchant's checkout key and its two
-distinct receipt keys. Install the resulting JSON array atomically as both:
+Initialization refuses to overwrite credentials. It prints public trust
+material only.
 
-- `/var/lib/sompi-authority/private/trust.json`, owned by
-  `sompi-authority:sompi-authority`, mode `0600`; and
-- `/var/lib/sompi-mcp-authority-client/trust.json`, owned by
-  `sompi-mcp:sompi-mcp`, mode `0600`.
+Install the final trusted public keys in both trust stores:
 
-Each entry has the strict shape `{role, issuer, kid, publicJwk}`. The initial
-profile permits roles `authority`, `merchant-checkout`, `merchant-receipt`, and
-`payment-receipt`. Trust only keys obtained through an authenticated operator
-channel. Never accept a key URL or key embedded in Merchant content.
+- Authority private trust store: owned by `sompi-authority`;
+- Authority client trust store: owned by `sompi-api`.
 
-After installing the final trust files, remove the redundant one-entry
-bootstrap file and transfer only the separate client MAC copy and `trust.json`
-to the MCP user. Initialization resets all three bootstrap directories to
-`0700`, so this explicit finalization step is required:
+The roles are closed: `authority`, `merchant-checkout`, `merchant-receipt`, and
+`payment-receipt`. Install keys only through an authenticated operator channel.
+Never trust a key embedded in Merchant content.
 
-```bash
-rm /var/lib/sompi-mcp-authority-client/authority-public-trust-entry.json
-chown -R sompi-mcp:sompi-mcp /var/lib/sompi-mcp-authority-client
-chmod 0700 /var/lib/sompi-mcp-authority-client
-chmod 0600 \
-  /var/lib/sompi-mcp-authority-client/ipc-mac.key \
-  /var/lib/sompi-mcp-authority-client/trust.json
+After initialization, transfer only `ipc-mac.key` and `trust.json` in the
+client directory to `sompi-api`. The API must not be able to traverse the
+Authority private directory. MCP must not be able to traverse either Authority
+directory.
 
-chown sompi-authority:sompi-ipc /run/sompi-authority
-chmod 0710 /run/sompi-authority
-```
+## Start order
 
-Do not copy with hard links. The authority and MCP MAC/trust files must be
-different filesystem entries even though each pair initially has matching
-content.
+### 1. Authority
 
-## Start and verify
-
-Start the authority first in a dedicated trusted terminal. It is intentionally
-a foreground human-approval process: each approval shows the exact canonical
-Purchase facts and succeeds only when the operator types the exact Purchase
-ID. Do not redirect its input from the Agent, the MCP process, or Merchant
-content.
+Run the Authority in a dedicated foreground terminal:
 
 ```bash
-AUTHORITY_UID=$(id -u sompi-authority)
-IPC_GID=$(getent group sompi-ipc | cut -d: -f3)
-
 sudo -u sompi-authority env \
-  HOME=/var/lib/sompi-authority \
   SOMPI_AUTHORITY_PRIVATE_DIR=/var/lib/sompi-authority/private \
-  SOMPI_AUTHORITY_CLIENT_DIR=/var/lib/sompi-mcp-authority-client \
+  SOMPI_AUTHORITY_CLIENT_DIR=/var/lib/sompi-api/authority-client \
   SOMPI_AUTHORITY_RUNTIME_DIR=/run/sompi-authority \
   SOMPI_AUTHORITY_SOCKET=/run/sompi-authority/authority.sock \
-  SOMPI_AUTHORITY_SOCKET_GID="$IPC_GID" \
+  SOMPI_AUTHORITY_SOCKET_GID=AUTHORITY_IPC_GID \
   SOMPI_AUTHORITY_ISSUER=urn:sompi:authority:local \
   SOMPI_AUTHORITY_SIGNING_KID=authority-signing-key-1 \
   SOMPI_AUTHORITY_IPC_KEY_ID=authority-ipc-key-1 \
   SOMPI_AUTHORITY_INSTRUMENT_ID=kaspa:testnet-10:vault-treasury \
-  /opt/sompi/node_modules/.bin/sompi-authority
+  sompi-authority
 ```
 
-While it is listening, run the packaged boundary verifier as root:
+Do not pipe stdin or expose this terminal to the agent.
 
-```bash
-node /opt/sompi/scripts/verify-authority-isolation.js \
-  --authority-user sompi-authority \
-  --mcp-user sompi-mcp \
-  --ipc-group sompi-ipc \
-  --private-dir /var/lib/sompi-authority/private \
-  --client-dir /var/lib/sompi-mcp-authority-client \
-  --runtime-dir /run/sompi-authority \
-  --socket /run/sompi-authority/authority.sock
+### 2. Purchase API
+
+Start `sompi-api` as the trusted API UID. It receives:
+
+- the Operator Manifest and its operator/runtime identities;
+- the Agent and recovery socket/credential configuration;
+- the Authority client directory, socket, issuer, and key identifiers.
+
+The API refuses root, same-UID Authority, unsafe state, missing recovery
+transport, and every network except Testnet-10.
+
+### 3. MCP compatibility
+
+Start `sompi-mcp` as a different non-root UID with only:
+
+```text
+SOMPI_API_SOCKET
+SOMPI_AGENT_API_CREDENTIAL
+SOMPI_OPERATOR_UID
+SOMPI_API_UID
+SOMPI_RUNTIME_GID
 ```
 
-Do not start the MCP service unless this reports `status: pass` and
-`signingKeyReadableByMcp: false`. The verifier also opens a zero-frame socket
-connection as the MCP user to prove effective group access; this cannot request
-or approve a Purchase. It requires the client directory to contain exactly
-`ipc-mac.key` and `trust.json` and confirms the MCP user has no write access to
-the runtime directory.
+Do not give MCP the Operator Manifest, recovery socket, recovery credential,
+Authority paths, wallet paths, node configuration, or protocol credentials.
 
-The MCP process needs the matching public identifiers and numeric socket
-ownership, plus its normal policy, Merchant, egress, wallet, and RPC settings:
+## Approval
 
-```bash
-sudo -u sompi-mcp env \
-  HOME=/var/lib/sompi-mcp \
-  SOMPI_NETWORK=testnet-10 \
-  SOMPI_OPERATOR_MANIFEST=/etc/sompi/operator-manifest.json \
-  SOMPI_OPERATOR_UID=0 \
-  SOMPI_RUNTIME_GID="$IPC_GID" \
-  SOMPI_AUTHORITY_CLIENT_DIR=/var/lib/sompi-mcp-authority-client \
-  SOMPI_AUTHORITY_RUNTIME_DIR=/run/sompi-authority \
-  SOMPI_AUTHORITY_SOCKET=/run/sompi-authority/authority.sock \
-  SOMPI_AUTHORITY_SOCKET_UID="$AUTHORITY_UID" \
-  SOMPI_AUTHORITY_SOCKET_GID="$IPC_GID" \
-  SOMPI_AUTHORITY_ISSUER=urn:sompi:authority:local \
-  SOMPI_AUTHORITY_IPC_KEY_ID=authority-ipc-key-1 \
-  SOMPI_AUTHORITY_INSTRUMENT_ID=kaspa:testnet-10:vault-treasury \
-  /opt/sompi/node_modules/.bin/sompi-mcp
-```
+For every request:
 
-The manifest's two receipt issuers must be distinct and must match separate
-trusted keys. The first release fails closed on every network except testnet-10.
+1. Read the Merchant, URL, method, request fingerprint, amount, payee, network,
+   expiry, profile/channel facts, finality floor, and additional-cost ceiling.
+2. Type the exact displayed Purchase ID only if every fact is intended.
+3. Any other input denies the request.
 
-## Hermetic release proof
+An approval in chat, MCP, HTTP, or Merchant content has no authority.
 
-The source/CI proof uses a digest-pinned Node 22 container, installs the locked
-dependencies, builds the current source snapshot, and provisions two real
-non-root users plus one IPC group. It starts both production executables and
-emits one secret-free JSON report on stdout:
+After interruption, read Purchase status first. Use `recover` only with the
+same Purchase ID. Never create a replacement payment to clear ambiguity.
 
-```bash
-(umask 077; ./test/authority-isolation/run-container-proof.sh \
-  > /tmp/sompi-authority-isolation-proof.json)
-```
+## Backup and rotation
 
-The proof fails unless all of these facts are observed in the disposable
-container:
+Stop Authority before backing up its complete private directory. Preserve the
+signer, server MAC copy, trust store, replay database, and decision database in
+one encrypted offline backup. Back up API runtime state separately using
+[`JOURNAL.md`](JOURNAL.md).
 
-- authority initialization and the listening socket run under the authority
-  UID;
-- only the MAC and public trust copies are transferred to the MCP UID;
-- the release root verifier passes and the MCP UID can connect;
-- the MCP UID cannot read the private JWK, create a runtime entry, or unlink
-  the authority socket;
-- the real `sompi-mcp` production composition reaches its ready state as the
-  distinct MCP UID; and
-- `sompi-mcp` startup as root or with the authority UID fails closed.
+Rotation is a coordinated stop:
 
-This Docker proof is a source/CI asset rather than an installed operator
-command. The root verifier is included in the packed release and remains the
-required check on the real host. The report records the image digest, source
-snapshot and built-tree digests, entrypoint/verifier/runbook digests, numeric
-identities, checks, and limitations; it never contains credential bytes,
-generated wallet keys, or authority/MCP stderr.
+1. stop MCP, API, and Authority;
+2. back up Authority and API state separately;
+3. initialize a new Authority path and key ID;
+4. retain old public keys while old evidence must remain verifiable;
+5. transfer only the new client MAC copy and trust store to API;
+6. restart in Authority -> API -> MCP order.
 
-## Funded Testnet-10 approval proof
+Do not overwrite credentials in place or combine private Authority state with
+API backups.
 
-The funded proof uses the same separate-process Authority boundary while
-executing a real standard-native Purchase on Testnet-10. It requires a clean
-committed source tree, Docker, an interactive terminal, an explicitly supplied
-TN10 node, and an existing funded source wallet outside the repository:
+## Compromise
 
-```bash
-STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-STATE="$HOME/.local/state/sompi/alpha8-human-present-$STAMP"
-REPORT="$HOME/.local/state/sompi/reports/human-present-$STAMP.json"
-SOMPI_NODE_URL='ws://127.0.0.1:17210/' \
-  ./test/human-present-live-testnet/run-container-proof.sh \
-  "$STATE" "$HOME/.sompi/testnet-10" "$REPORT"
-```
+- MCP compromise exposes only the least-authority Agent API credential.
+- API compromise exposes payment keys and the Authority client MAC copy, but
+  not the Authority signer.
+- Authority compromise invalidates trust in decisions from that key.
 
-Read the complete terminal display and type its exact Purchase ID before the
-bounded Authority request expires. Do not pipe input, auto-approve, reuse an
-expired Purchase ID, or delete a surviving run identity. A failed or
-interrupted run keeps its private proof root for reconciliation; use a fresh
-root for a new explicit proof.
+Stop affected services, preserve evidence, rotate the compromised boundary,
+and reconcile every possible external effect. Do not delete state or resubmit
+payments manually.
 
-The retained JSON is mode `0600` and contains public facts only. Before adding
-it to release evidence, verify `receipted` state, Testnet-10 identity, the
-selected exact profile, exact Merchant gain, Authority mode and isolation
-booleans, transaction identity, and the Authority decision-store join. Never
-commit the proof root, source wallet, decision database, signed wire payloads,
-or key material.
-
-## Normal approval and recovery
-
-1. Leave the authority terminal visible to the human operator.
-2. Read every displayed Merchant, URL, request fingerprint, atomic KAS amount,
-   payee, expiry, and additional-cost ceiling.
-3. Type the exact Purchase ID only when all fields are intended. Any other
-   input denies.
-4. A request marked `recoveryRetry: true` is the same durable request being
-   reacquired after interruption; compare its fields again before approval.
-5. Use `purchase_status` or `purchase_recover` from MCP after a restart. Never
-   delete the Purchase Journal or submit a payment manually to make progress.
-
-Authority IPC requests are authenticated, freshness-bound, replay-protected,
-and deterministic. A retry uses the same durable request identity; it does not
-give the MCP process a new approval surface.
-
-## Backup
-
-Stop the authority before backing up its private directory. Copy it to an
-encrypted, offline destination while preserving ownership and mode. It
-contains the signing key, server MAC copy, trust store, replay database, and
-decision database. Back up the MCP Purchase state separately using the journal
-procedure in [`JOURNAL.md`](JOURNAL.md).
-
-Never back up a live SQLite database by copying only its main file while WAL is
-active. Never place authority private state in the same archive or access
-policy as the MCP client directory.
-
-## Rotation
-
-Rotation is a coordinated stop operation:
-
-1. stop MCP and authority;
-2. back up both durable stores;
-3. initialise a new, empty authority path with a new signing `kid` and IPC key;
-4. retain the old public authority key in both trust stores so historical
-   evidence remains verifiable, and add the new public key;
-5. transfer only the new client MAC copy and public trust store to the MCP
-   owner;
-6. switch both processes to the new paths and identifiers;
-7. rerun the isolation verifier before resuming Purchases.
-
-Do not overwrite key files in place or mix a new server MAC copy with an old
-client copy. Remove an old public verification key only after the retention
-period for every Purchase it signed has ended.
-
-## Suspected compromise
-
-- Stop both processes and preserve the Purchase Journal, authority databases,
-  logs, trust files, and filesystem metadata as evidence.
-- If only the MCP user is compromised, assume its wallet/vault execution key
-  and client MAC copy are exposed. The separate authority signer is not
-  automatically compromised; verify that with the root boundary checker.
-- If the authority private directory may be exposed, treat all decisions from
-  that key as suspect, rotate to a new issuer/key, and require explicit
-  operator reconciliation before continuing.
-- Do not erase, recreate, or blindly resubmit ambiguous effects. Follow
-  [`RECONCILIATION.md`](RECONCILIATION.md).
-
-This runbook proves local process and credential separation. It does not claim
-hardware-backed signing, passkey security, mainnet readiness, or protection
-against a host root compromise.
+This runbook does not claim hardware-backed signing, passkey security, mainnet
+readiness, or protection from host-root compromise.

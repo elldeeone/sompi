@@ -99,7 +99,7 @@ README. No mainnet transaction was broadcast and no mainnet claim is made.
 
 ## Verification and security
 
-The clean release verifier passes 479 tests: 478 pass and one documented
+The clean release verifier passes 480 tests: 479 pass and one documented
 privileged ownership test is skipped when the host cannot change file
 ownership. It also passes offline smoke, OpenAPI 3.2, Arazzo 1.1,
 Kaspa-x402 conformance, all five funded evidence reports, zero production
@@ -140,6 +140,5 @@ satisfied.
 ## Current closeout
 
 Every Phase 9/10 acceptance item has direct test or recorded evidence. The
-remaining action is the authorized final commit and push of
-`phase-3-purchase-module`. No implementation, funding, sibling-repository,
-deployment, or security-review blocker remains.
+`phase-3-purchase-module` branch is published for review. No implementation,
+funding, sibling-repository, deployment, or security-review blocker remains.

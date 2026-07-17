@@ -33,10 +33,10 @@ sompi-operator install CANDIDATE_DIR /etc/sompi/operator-manifest.json \
 Installation refuses existing runtime or manifest targets. It verifies the
 generated Agent key, template, zero-state address, owner key, and static vault
 configuration digest before moving runtime state. Runtime state becomes
-mode-`0700`/`0600` and MCP-owned. The manifest directory/file become
-operator-owned, group-readable, and not writable by MCP.
+mode-`0700`/`0600` and API-owned. The manifest becomes operator-owned,
+group-readable by the API runtime, and not writable by API or MCP.
 
-Check the installed boundary before starting MCP:
+Check the installed boundary before starting the API:
 
 ```bash
 sompi-operator status /etc/sompi/operator-manifest.json OPERATOR_UID RUNTIME_GID
@@ -49,8 +49,8 @@ nor `sompi-mcp` repairs unsafe directory permissions at startup.
 
 ```bash
 install -d -o SOMPI_OPERATOR_USER -g SOMPI_RUNTIME_GROUP -m 0750 /etc/sompi
-install -d -o SOMPI_OPERATOR_USER -g SOMPI_RUNTIME_GROUP -m 0710 /run/sompi-api
-install -d -o SOMPI_OPERATOR_USER -g SOMPI_RECOVERY_GROUP -m 0710 /run/sompi-recovery
+install -d -o SOMPI_API_USER -g SOMPI_RUNTIME_GROUP -m 0710 /run/sompi-api
+install -d -o SOMPI_API_USER -g SOMPI_RECOVERY_GROUP -m 0710 /run/sompi-recovery
 sompi-operator agent-credential \
   /etc/sompi/agent-api.json OPERATOR_UID RUNTIME_GID
 sompi-operator recovery-credential \

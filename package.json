@@ -1,7 +1,7 @@
 {
   "name": "@elldeeone/sompi",
   "version": "0.8.0",
-  "description": "Deterministic agent treasury and purchasing for AP2 and Kaspa-x402 exact on Kaspa testnet-10.",
+  "description": "Deterministic AP2 and Kaspa-x402 purchasing on Kaspa Testnet-10.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -9,6 +9,9 @@
   },
   "keywords": [
     "kaspa",
+    "ap2",
+    "x402",
+    "api",
     "mcp",
     "agent",
     "payments",
