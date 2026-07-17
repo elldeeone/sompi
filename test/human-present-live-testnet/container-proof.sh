@@ -210,7 +210,13 @@ runuser -u "$mcp_user" -- env \
     --human-present-authority
 
 kill -TERM "$authority_process"
-wait "$authority_process"
+if wait "$authority_process"; then
+  :
+else
+  authority_status=$?
+  [[ "$authority_status" -eq 143 ]] \
+    || fail "authority exited unexpectedly during clean shutdown ($authority_status)"
+fi
 authority_process=""
 [[ ! -s /tmp/authority.stdout ]] || fail "authority wrote unexpected stdout"
 
