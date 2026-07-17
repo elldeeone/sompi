@@ -4,9 +4,8 @@ Last updated: **2026-07-17**
 
 ## Plain-English status
 
-The Sompi alpha.8 clean cutover is implemented on
-`phase-3-purchase-module`. The active product is an API-first modular monolith
-centred on the stable Purchase module:
+The Sompi alpha.8 Purchase implementation is merged into `main`. The active
+product is an API-first modular monolith centred on the stable Purchase module:
 
 - `sompi-api` is the canonical authenticated Purchase API;
 - `sompi-mcp` is a thin, untrusted compatibility wrapper over that API;
@@ -123,7 +122,7 @@ describe the active runtime.
 
 ## Release/readiness boundary
 
-This branch is a testnet alpha implementation. It does not:
+This release is a testnet alpha implementation. It does not:
 
 - publish an npm package;
 - deploy a public service;
@@ -139,6 +138,7 @@ satisfied.
 
 ## Current closeout
 
-Every Phase 9/10 acceptance item has direct test or recorded evidence. The
-`phase-3-purchase-module` branch is published for review. No implementation,
-funding, sibling-repository, deployment, or security-review blocker remains.
+Every Phase 0–10 acceptance item has direct test or recorded evidence. The
+implementation is merged into and pushed to `main`. No implementation,
+funding, sibling-repository, or security-review blocker remains within the
+approved alpha.8 scope.
