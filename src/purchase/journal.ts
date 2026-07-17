@@ -5752,9 +5752,12 @@ export class PurchaseJournal {
         const funding = BigInt(channel.fundingAmountAtomic);
         const signed = BigInt(channel.signedCumulativeAtomic);
         const claimed = BigInt(channel.claimedCumulativeAtomic);
+        const charged = BigInt(channel.chargedCumulativeAtomic);
+        const claim = funding - continuationFunding;
         if (
           continuationFunding >= funding ||
-          funding - continuationFunding !== signed - claimed ||
+          claim <= 0n ||
+          claim > signed - claimed ||
           input.continuationScriptPublicKey !== channel.activeScriptPublicKey
         ) {
           throw new JournalInvariantError("batch claim/refund race continuation violates channel accounting");
@@ -5766,8 +5769,8 @@ export class PurchaseJournal {
           activeOutpoint: continuation,
           activeScriptPublicKey: input.continuationScriptPublicKey,
           fundingAmountAtomic: continuationFundingAtomic,
-          chargedCumulativeAtomic: channel.signedCumulativeAtomic,
-          claimedCumulativeAtomic: channel.signedCumulativeAtomic,
+          chargedCumulativeAtomic: (charged > claimed + claim ? charged : claimed + claim).toString(),
+          claimedCumulativeAtomic: (claimed + claim).toString(),
           signedCumulativeAtomic: "0",
           epoch: channel.epoch + 1,
           version: channel.version + 1,

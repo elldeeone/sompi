@@ -46,7 +46,8 @@ All four published tarballs report Git source
 `06cc127bc669837e0969ed0eafc6942c2baeacae`. These identities have different
 purposes and must not be conflated:
 
-- package behavior is bound to the npm tarball integrity and `gitHead`;
+- package behavior is bound to the npm tarball integrity and independently
+  reproduced byte-for-byte from the exact `gitHead` source revision;
 - immutable specifications, schemas, vectors, and release evidence are bound
   to the release tag and its content lock;
 - Rusty Kaspa consensus evidence is bound to

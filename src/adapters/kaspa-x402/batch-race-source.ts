@@ -280,17 +280,18 @@ function validateClaimCandidate(
     const funding = atomic(channel.fundingAmountAtomic, "channel funding", true);
     const signed = atomic(channel.signedCumulativeAtomic, "channel signed voucher ceiling");
     const claimed = atomic(channel.claimedCumulativeAtomic, "channel claimed amount");
-    if (claimed >= signed) return undefined;
-    const claim = signed - claimed;
-    const expectedContinuation = funding - claim;
+    const charged = atomic(channel.chargedCumulativeAtomic, "channel charged amount");
+    if (claimed > charged || claimed >= signed) return undefined;
     const payoutAmount = atomic(payout.amountAtomic, "claim payout", true);
     const continuationAmount = atomic(continuation.amountAtomic, "claim continuation", true);
+    if (continuationAmount >= funding) return undefined;
+    const claim = funding - continuationAmount;
     const fee = funding - payoutAmount - continuationAmount;
     if (
       payout.address !== channel.payTo ||
       continuation.address !== channel.escrowAddress ||
       continuation.scriptPublicKey !== channel.activeScriptPublicKey ||
-      continuationAmount !== expectedContinuation ||
+      claim > signed - claimed ||
       fee <= 0n || fee >= claim || payoutAmount + fee !== claim
     ) return undefined;
     return Object.freeze({

@@ -115,9 +115,9 @@ test("accepted merchant claim atomically advances the channel and supersedes a c
     const current = fixture.journal.requireBatchChannel(fixture.channelId);
     fixture.journal.saveBatchChannel({
       ...current,
-      chargedCumulativeAtomic: "0",
-      signedCumulativeAtomic: "200000",
-      latestVoucher: { amountAtomic: "200000", signature: "11".repeat(64) },
+      chargedCumulativeAtomic: "100000",
+      signedCumulativeAtomic: "250000",
+      latestVoucher: { amountAtomic: "250000", signature: "11".repeat(64) },
       version: current.version + 1,
       updatedAtMs: current.updatedAtMs,
     });
@@ -155,7 +155,7 @@ test("accepted merchant claim atomically advances the channel and supersedes a c
           finality: "accepted",
           continuationOutpoint: { txid: claimTransactionId, index: 1 },
           continuationScriptPublicKey: current.activeScriptPublicKey,
-          continuationFundingAmountAtomic: "800000",
+          continuationFundingAmountAtomic: "900000",
           detailDigest: claimEvidence,
         }),
       },
@@ -196,9 +196,9 @@ test("accepted merchant claim atomically advances the channel and supersedes a c
     assert.equal(observed.detail.winningTransactionId, claimTransactionId);
     const channel = fixture.journal.requireBatchChannel(fixture.channelId);
     assert.deepEqual(channel.activeOutpoint, { txid: claimTransactionId, index: 1 });
-    assert.equal(channel.fundingAmountAtomic, "800000");
-    assert.equal(channel.chargedCumulativeAtomic, "200000");
-    assert.equal(channel.claimedCumulativeAtomic, "200000");
+    assert.equal(channel.fundingAmountAtomic, "900000");
+    assert.equal(channel.chargedCumulativeAtomic, "100000");
+    assert.equal(channel.claimedCumulativeAtomic, "100000");
     assert.equal(channel.signedCumulativeAtomic, "0");
     assert.equal(channel.latestVoucher, undefined);
     assert.equal(fixture.journal.requireBatchTreasuryMovement(movementId).state, "failed_terminal");

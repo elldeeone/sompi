@@ -339,8 +339,8 @@ export class KaspaX402BatchPaymentModule implements KaspaPaymentModule {
     if (payment.scheme !== "batch-settlement" || payment.openedChannel || !payment.channel || payment.paymentPayload.payload.type !== "voucher") {
       throw new Error("batch Purchase must use an already accepted channel epoch");
     }
-    const movement = boundedSigner.requireMovement();
     const payload = payment.paymentPayload.payload;
+    const movement = boundedSigner.ensureMovement(payment.channel, payload.voucher.amount);
     const executionId = sha256Hex(stableStringify(payment.paymentPayload));
     const envelope: PersistedBatchEnvelope = {
       paymentRequired: structuredClone(payment.paymentRequired),
@@ -652,27 +652,39 @@ class AuthorizedVoucherSigner implements ChannelSigner {
   async randomNonce(): Promise<never> { throw new Error("batch Purchase cannot create channel nonce"); }
 
   async signVoucher(request: Parameters<ChannelSigner["signVoucher"]>[0]) {
-    if (this.movement) throw new Error("batch Purchase cannot sign more than one voucher");
-    if (
-      request.channel.id !== this.input.authorizedChannelId ||
-      digestChannelEpoch(request.channel) !== this.input.authorizedChannelEpochDigest
-    ) {
-      throw new Error("batch channel epoch differs from the Trusted Authority approval");
-    }
-    this.movement = this.authorizer.authorize({
-      purchaseId: this.input.purchaseId,
-      channel: request.channel,
-      maximumAuthorizedAtomic: this.input.amountAtomic,
-      voucherCeilingAtomic: request.amount,
-      requirementsDigest: this.requirementsDigest,
-      requestHash: this.input.requestHash,
-    });
+    this.ensureMovement(request.channel, request.amount);
     return this.signer.signVoucher(request);
   }
 
-  requireMovement(): BatchTreasuryMovementRecord {
-    if (!this.movement) throw new Error("batch voucher was not durably authorized before signing");
-    return this.movement;
+  ensureMovement(
+    channel: DirectModeChannel,
+    voucherCeilingAtomic: string,
+  ): BatchTreasuryMovementRecord {
+    if (
+      channel.id !== this.input.authorizedChannelId ||
+      digestChannelEpoch(channel) !== this.input.authorizedChannelEpochDigest
+    ) {
+      throw new Error("batch channel epoch differs from the Trusted Authority approval");
+    }
+    if (this.movement) {
+      if (
+        this.movement.voucherCeilingAtomic !== voucherCeilingAtomic ||
+        this.movement.maximumAuthorizedAtomic !== this.input.amountAtomic
+      ) {
+        throw new Error("batch Purchase cannot authorize conflicting voucher terms");
+      }
+      return this.movement;
+    }
+    const movement = this.authorizer.authorize({
+      purchaseId: this.input.purchaseId,
+      channel,
+      maximumAuthorizedAtomic: this.input.amountAtomic,
+      voucherCeilingAtomic,
+      requirementsDigest: this.requirementsDigest,
+      requestHash: this.input.requestHash,
+    });
+    this.movement = movement;
+    return movement;
   }
 }
 

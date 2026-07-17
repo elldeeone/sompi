@@ -137,6 +137,40 @@ test("an accepted claim may reconcile the highest disclosed voucher before respo
   assert.equal(evidenceCalls, 1);
 });
 
+test("accepted older claim remains recoverable after a stale positive view advanced the local ceiling", async () => {
+  const inflated = {
+    ...channel(),
+    signedCumulativeAtomic: "250000",
+    latestVoucher: { amountAtomic: "250000", signature: "88".repeat(64) },
+  };
+  let evidenceCalls = 0;
+  const source = new HttpsBatchClaimRaceSource(
+    "https://history.example/",
+    { getVirtualDaaScore: async () => "1", getUtxos: async () => [] },
+    {
+      observe: async () => {
+        evidenceCalls += 1;
+        return {
+          status: "present",
+          level: "accepted",
+          detailDigest: evidenceDigest("accepted-older-claim"),
+        };
+      },
+    } as unknown as ChainEvidenceModule,
+    "accepted",
+    recoveryStore(),
+    async () => new Response(JSON.stringify([claimTransaction()]), { status: 200 }),
+  );
+
+  const result = await source.observeClaimWinner({
+    channel: inflated,
+    refundTransactionId: "77".repeat(32),
+    signal: new AbortController().signal,
+  });
+  assert.equal(result.status, "claim");
+  assert.equal(evidenceCalls, 1);
+});
+
 test("claim history is streamed under a hard byte ceiling", async () => {
   const source = new HttpsBatchClaimRaceSource(
     "https://history.example/",

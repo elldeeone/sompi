@@ -63,6 +63,10 @@ test("batch capitalization durably separates deposit from Purchase authorization
     assert.equal(movement.purchaseId, undefined);
     assert.equal(calls.length, 2, "Treasury idempotency owns duplicate execute calls");
     assert.match(calls[0]!.operationKey, /^batch\.deposit\.[a-f0-9]{64}$/);
+    await assert.rejects(
+      module.openChannel({ ...request, serverPublicKey: "33".repeat(32) }),
+      /operation binding/
+    );
     assert.throws(() => module.topUpChannel(), /rotate to a separately funded channel/);
     journal.close();
     journalOpen = false;

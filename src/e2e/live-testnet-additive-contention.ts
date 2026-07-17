@@ -533,10 +533,17 @@ export function assertLiveAdditiveContentionReport(
     report.candidates[1].label !== "second" ||
     report.candidates[0].headOutpoint !== report.candidates[1].headOutpoint ||
     report.candidates[0].headVersion !== report.candidates[1].headVersion ||
+    report.initialHead.outpoint.split(":")[0] !== report.initialHead.transactionId ||
+    report.candidates.some((candidate) =>
+      candidate.headOutpoint !== report.initialHead.outpoint ||
+      candidate.headVersion !== report.initialHead.version ||
+      candidate.headAmountAtomic !== report.initialHead.amountAtomic
+    ) ||
     report.candidates[0].transactionId === report.candidates[1].transactionId ||
     report.winner.transactionId !== report.candidates[0].transactionId ||
     report.loser.transactionId !== report.candidates[1].transactionId ||
     report.winner.status !== 200 ||
+    report.winner.successorOutpoint !== `${report.winner.transactionId}:0` ||
     report.loser.status !== 402 ||
     report.winner.merchantGainAtomic !== LIVE_PRICE_ATOMIC ||
     BigInt(report.winner.successorAmountAtomic) - BigInt(report.initialHead.amountAtomic) !==
@@ -547,7 +554,12 @@ export function assertLiveAdditiveContentionReport(
     report.loser.stagingOutpointStillUnspent !== true ||
     report.loser.correctiveHeadOutpoint !== report.winner.successorOutpoint ||
     report.explicitRetry.status !== 200 ||
+    report.explicitRetry.transactionId === report.winner.transactionId ||
     report.explicitRetry.priorHeadOutpoint !== report.winner.successorOutpoint ||
+    report.explicitRetry.headOutpoint !== report.winner.successorOutpoint ||
+    report.explicitRetry.headVersion !== report.loser.correctiveHeadVersion ||
+    report.explicitRetry.headAmountAtomic !== report.winner.successorAmountAtomic ||
+    report.explicitRetry.successorOutpoint !== `${report.explicitRetry.transactionId}:0` ||
     BigInt(report.explicitRetry.successorAmountAtomic) - BigInt(report.winner.successorAmountAtomic) !==
       BigInt(LIVE_PRICE_ATOMIC) ||
     (report.explicitRetry.successorFinality !== "accepted" &&

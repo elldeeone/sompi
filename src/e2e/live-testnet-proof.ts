@@ -1028,7 +1028,7 @@ export async function createLiveMerchant(
   if (!additiveHead) throw new Error("live KIP-10 additive head is not durably observed");
   const outpoint = parseOutpoint(additiveHead.outpoint);
   if (exactProfile === "additive") {
-    await store.registerExactHead(Object.freeze({
+    const bootstrap = Object.freeze({
       headId: additiveHeadId(initialized.config, additiveHead.outpoint),
       network: LIVE_NETWORK,
       payTo: initialized.config.additiveHead.address,
@@ -1043,7 +1043,21 @@ export async function createLiveMerchant(
       status: "available",
       createdAt: initialized.config.createdAt,
       updatedAt: initialized.config.createdAt,
-    }) satisfies ExactHeadRecord);
+    }) satisfies ExactHeadRecord;
+    const existing = await store.loadExactHead(bootstrap.headId);
+    if (!existing) {
+      await store.registerExactHead(bootstrap);
+    } else if (
+      existing.network !== bootstrap.network ||
+      existing.payTo !== bootstrap.payTo ||
+      existing.templateId !== bootstrap.templateId ||
+      existing.transactionEncoding !== bootstrap.transactionEncoding ||
+      existing.scriptPublicKey !== bootstrap.scriptPublicKey ||
+      existing.redeemScript !== bootstrap.redeemScript ||
+      existing.additiveThresholdSompi !== bootstrap.additiveThresholdSompi
+    ) {
+      throw new Error("durable additive head identity conflicts with live-proof configuration");
+    }
   }
   const payTo = exactProfile === "additive"
     ? initialized.config.additiveHead.address

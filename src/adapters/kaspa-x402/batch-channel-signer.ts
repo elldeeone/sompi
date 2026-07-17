@@ -23,8 +23,9 @@ interface PersistedChannelKey {
 }
 
 interface PersistedOperationKey {
-  readonly version: 1;
+  readonly version: 2;
   readonly operationKey: string;
+  readonly requestDigest: string;
   readonly publicKey: string;
 }
 
@@ -50,15 +51,19 @@ export class SecureBatchChannelSigner implements ChannelSigner {
    * operation. A retry after a crash therefore reconstructs the same channel
    * identity instead of funding another escrow.
    */
-  async ensureChannelKey(operationKey: string): Promise<ChannelKey> {
-    if (!OPERATION_KEY.test(operationKey)) throw new Error("batch channel operation key is invalid");
+  async ensureChannelKey(operationKey: string, requestDigest: string): Promise<ChannelKey> {
+    if (
+      !OPERATION_KEY.test(operationKey) ||
+      !/^sha256:[A-Za-z0-9_-]{43}$/.test(requestDigest)
+    ) throw new Error("batch channel operation binding is invalid");
     const filename = operationFilename(operationKey);
     if (this.directory.fileExists(filename)) {
       const bytes = this.directory.readFile(filename, MAX_KEY_BYTES);
       try {
         const parsed = JSON.parse(bytes.toString("utf8")) as Partial<PersistedOperationKey>;
         if (
-          parsed.version !== 1 || parsed.operationKey !== operationKey ||
+          parsed.version !== 2 || parsed.operationKey !== operationKey ||
+          parsed.requestDigest !== requestDigest ||
           typeof parsed.publicKey !== "string" || !/^[a-f0-9]{64}$/.test(parsed.publicKey)
         ) {
           throw new Error("batch channel operation binding is invalid");
@@ -72,8 +77,9 @@ export class SecureBatchChannelSigner implements ChannelSigner {
 
     const key = await this.createChannelKey();
     const binding: PersistedOperationKey = {
-      version: 1,
+      version: 2,
       operationKey,
+      requestDigest,
       publicKey: key.publicKey,
     };
     try {
@@ -85,7 +91,7 @@ export class SecureBatchChannelSigner implements ChannelSigner {
       return key;
     } catch (error) {
       // Another process may have durably won the same operation identity.
-      if (this.directory.fileExists(filename)) return this.ensureChannelKey(operationKey);
+      if (this.directory.fileExists(filename)) return this.ensureChannelKey(operationKey, requestDigest);
       throw error;
     }
   }

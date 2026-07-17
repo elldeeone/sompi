@@ -47,11 +47,19 @@ test("batch signer reuses the durable key bound to a capitalization operation", 
       generated += 1;
       return Uint8Array.from({ length: 32 }, (_, index) => index === 31 ? generated : 0);
     });
-    const first = await signer.ensureChannelKey("batch-channel.demo");
-    const second = await signer.ensureChannelKey("batch-channel.demo");
+    const digest = "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const first = await signer.ensureChannelKey("batch-channel.demo", digest);
+    const second = await signer.ensureChannelKey("batch-channel.demo", digest);
     assert.deepEqual(second, first);
     assert.equal(generated, 1);
     assert.equal(fs.readdirSync(directory).length, 2);
+    await assert.rejects(
+      signer.ensureChannelKey(
+        "batch-channel.demo",
+        "sha256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+      ),
+      /operation binding/
+    );
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }

@@ -520,6 +520,50 @@ test("live Merchant composition validates before any funded Purchase begins", as
       } as unknown as LiveMerchantExactVerifier,
       "additive"
     );
+    const [registered] = await exactStore.listExactHeads();
+    assert.ok(registered);
+    const successorTransactionId = "36".repeat(32);
+    const successorAmount = (
+      BigInt(registered.currentAmount) + BigInt(LIVE_ADDITIVE_THRESHOLD_ATOMIC)
+    ).toString();
+    await exactStore.applyExactHeadLineage({
+      headId: registered.headId,
+      expectedVersion: registered.version,
+      expectedOutpoint: registered.currentOutpoint,
+      expectedAmount: registered.currentAmount,
+      steps: [{
+        transactionId: successorTransactionId,
+        spentOutpoint: registered.currentOutpoint,
+        successor: {
+          outpoint: { txid: successorTransactionId, index: 0 },
+          amount: successorAmount,
+          scriptPublicKey: registered.scriptPublicKey,
+        },
+        finality: "accepted",
+      }],
+      observedAt: "2026-07-17T00:00:00.000Z",
+    });
+    const persistedAdvanced = await exactStore.loadExactHead(registered.headId);
+    assert.ok(persistedAdvanced);
+
+    await createLiveMerchant(
+      initialized,
+      {
+        version: 1,
+        runId: initialized.config.runId,
+        updatedAt: new Date().toISOString(),
+        additiveHead,
+      },
+      exactStore,
+      authorizationStore,
+      {
+        verifyExactPayment: async () => {
+          throw new Error("composition restart test must not verify a payment");
+        },
+      } as unknown as LiveMerchantExactVerifier,
+      "additive"
+    );
+    assert.deepEqual(await exactStore.loadExactHead(registered.headId), persistedAdvanced);
     await closeInitialized(initialized);
   } finally {
     exactStore.close();

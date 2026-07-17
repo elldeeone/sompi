@@ -217,7 +217,8 @@ export async function runLiveBatchProof(
       Date.now
     );
     const merchantKey = await merchantSigner.ensureChannelKey(
-      `batch-merchant:${initialized.config.runId}`
+      `batch-merchant:${initialized.config.runId}`,
+      evidenceDigest(`batch-merchant-key:${initialized.config.runId}`),
     );
     const batchChain = new WalletBatchChainSource(initialized.observerWallet);
     const claimRace: BatchClaimRaceSource = {

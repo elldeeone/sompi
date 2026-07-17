@@ -137,6 +137,19 @@ function merge(
     const level = primary.level === "depth-confirmed" && witness.level === "depth-confirmed"
       ? "depth-confirmed" as const
       : "accepted" as const;
+    if (!meets(level, effectiveFloor)) {
+      return freezeRecord({
+        ...base,
+        status: "unknown",
+        detailDigest: digest({
+          ...base,
+          result: "effective-finality-floor-pending",
+          level,
+          primary: primary.detailDigest,
+          witness: witness.detailDigest,
+        }),
+      });
+    }
     return freezeRecord({
       ...base,
       status: "present",

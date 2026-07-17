@@ -102,6 +102,25 @@ test("effective floor strengthens Merchant requirements and retained accepted ev
   assert.equal(retained.view, "historical");
 });
 
+test("fresh accepted evidence remains nonterminal below the operator finality floor", async () => {
+  const request = {
+    ...fixtureRequest(),
+    protocolFinality: "accepted" as const,
+    operatorFloor: "depth-confirmed" as const,
+  };
+  const accepted = sourceAccepted(request, "accepted");
+  const result = await new ChainEvidenceModule(
+    { observe: async () => accepted("primary") },
+    { observe: async () => accepted("witness") },
+    memoryStore(),
+    () => 1_800_000_000_000
+  ).observe(request);
+
+  assert.equal(result.status, "unknown");
+  assert.equal(result.level, undefined);
+  assert.equal(result.effectiveFloor, "depth-confirmed");
+});
+
 test("retained evidence cannot be replayed for different output or mechanism facts", async () => {
   const request = fixtureRequest();
   const store = memoryStore();

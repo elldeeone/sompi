@@ -18,13 +18,16 @@ const { SUPPORTED_PROTOCOL_PROFILES } = await import(
 const provenancePath = path.join(root, "test/conformance/provenance.json");
 const provenance = readJson(provenancePath);
 const ap2 = provenance.ap2;
+const kaspaX402 = provenance.kaspaX402;
 const expectedRepository = "https://github.com/google-agentic-commerce/AP2.git";
+const expectedKaspaX402Repository = "https://github.com/elldeeone/kaspa-x402.git";
 const offline = process.env.SOMPI_CONFORMANCE_OFFLINE === "1";
 const cacheRoot = path.resolve(
   process.env.SOMPI_CONFORMANCE_CACHE ??
     path.join(os.homedir(), ".cache", "sompi", "protocol-conformance")
 );
 const checkout = path.join(cacheRoot, `ap2-${SUPPORTED_PROTOCOL_PROFILES.ap2.gitCommit}`);
+const kaspaX402Checkout = path.join(cacheRoot, `kaspa-x402-${kaspaX402.sourceCommit}`);
 const lockPath = path.join(root, ap2.conformanceLock.path);
 const environment = path.join(
   cacheRoot,
@@ -42,6 +45,9 @@ fs.mkdirSync(cacheRoot, { recursive: true, mode: 0o700 });
 assertPrivateOwnedDirectory(cacheRoot, "protocol conformance cache");
 ensureExactAp2Checkout(checkout);
 validateAp2Checkout(checkout);
+ensureExactKaspaX402Checkout(kaspaX402Checkout);
+validateKaspaX402Checkout(kaspaX402Checkout);
+verifyKaspaX402PublishedPackages(kaspaX402Checkout);
 syncPythonEnvironment(environment);
 
 const work = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-protocol-conformance-"));
@@ -88,7 +94,7 @@ process.stdout.write(
   [
     "Protocol conformance passed.",
     `AP2: v0.2.0 @ ${ap2.commit} (Python 3.12, closed Human Present round trip and receipts).`,
-    `Kaspa-x402: 0.1.0-alpha.8 @ ${provenance.kaspaX402.sourceCommit} (offline exact HTTP and full-consensus profile vectors).`,
+    `Kaspa-x402: 0.1.0-alpha.8 @ ${provenance.kaspaX402.sourceCommit} (published packages reproduced byte-for-byte; offline exact HTTP and full-consensus profile vectors).`,
     "Claim boundary: no live testnet, general AP2, standardized native-KAS AP2, or mainnet claim.",
     "",
   ].join("\n")
@@ -147,6 +153,107 @@ function validateAp2Checkout(directory) {
   for (const [relativePath, digest] of Object.entries(ap2.upstreamFiles)) {
     assertFileDigest(path.join(directory, relativePath), digest, `AP2 ${relativePath}`);
   }
+}
+
+function ensureExactKaspaX402Checkout(directory) {
+  if (fs.existsSync(directory)) return;
+  if (offline) {
+    throw new Error("offline conformance requested but the exact Kaspa-x402 checkout is not cached");
+  }
+  const temporary = `${directory}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
+  try {
+    fs.mkdirSync(temporary, { recursive: false, mode: 0o700 });
+    run("git", ["init", "--quiet", temporary]);
+    run("git", ["-C", temporary, "remote", "add", "origin", expectedKaspaX402Repository]);
+    run("git", [
+      "-C",
+      temporary,
+      "fetch",
+      "--quiet",
+      "--depth=1",
+      "origin",
+      kaspaX402.sourceCommit,
+    ]);
+    run("git", [
+      "-C",
+      temporary,
+      "-c",
+      "advice.detachedHead=false",
+      "checkout",
+      "--quiet",
+      "--detach",
+      "FETCH_HEAD",
+    ]);
+    fs.renameSync(temporary, directory);
+  } catch (error) {
+    fs.rmSync(temporary, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function validateKaspaX402Checkout(directory) {
+  assertPrivateOwnedDirectory(directory, "cached Kaspa-x402 checkout");
+  assertEqual(
+    capture("git", ["-C", directory, "remote", "get-url", "origin"]),
+    expectedKaspaX402Repository,
+    "cached Kaspa-x402 origin",
+  );
+  assertEqual(
+    capture("git", ["-C", directory, "rev-parse", "HEAD"]),
+    kaspaX402.sourceCommit,
+    "cached Kaspa-x402 commit",
+  );
+  assertEqual(
+    capture("git", ["-C", directory, "status", "--porcelain", "--untracked-files=no"]),
+    "",
+    "cached Kaspa-x402 tracked worktree",
+  );
+}
+
+function verifyKaspaX402PublishedPackages(directory) {
+  const installArgs = ["ci", "--ignore-scripts", "--no-audit", "--no-fund"];
+  if (offline) installArgs.push("--offline");
+  run("npm", installArgs, { cwd: directory });
+  for (const packageName of ["core", "covenant", "client", "server"]) {
+    run("npm", ["--workspace", `@kaspa-x402/${packageName}`, "run", "build"], {
+      cwd: directory,
+    });
+    const published = path.join(root, "node_modules", "@kaspa-x402", packageName);
+    const rebuilt = path.join(directory, "packages", packageName);
+    const expectedFiles = ["LICENSE", "README.md", "dist/index.d.ts", "dist/index.js", "package.json"];
+    assertEqual(
+      packageFiles(published).join("\n"),
+      expectedFiles.join("\n"),
+      `published @kaspa-x402/${packageName} file set`,
+    );
+    for (const relativePath of expectedFiles) {
+      const publishedFile = path.join(published, relativePath);
+      const rebuiltFile = path.join(rebuilt, relativePath);
+      assertFileDigest(
+        rebuiltFile,
+        `sha256:${createHash("sha256").update(fs.readFileSync(publishedFile)).digest("hex")}`,
+        `rebuilt @kaspa-x402/${packageName}/${relativePath}`,
+      );
+    }
+  }
+}
+
+function packageFiles(directory) {
+  const files = [];
+  const visit = (current, prefix) => {
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        visit(path.join(current, entry.name), relativePath);
+      } else if (entry.isFile()) {
+        files.push(relativePath);
+      } else {
+        throw new Error(`published package contains a non-regular entry: ${relativePath}`);
+      }
+    }
+  };
+  visit(directory, "");
+  return files.sort();
 }
 
 function syncPythonEnvironment(directory) {

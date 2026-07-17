@@ -113,6 +113,54 @@ test("batch module signs one authorized voucher against an existing epoch and ap
   assert.equal((await store.loadChannels({}))[0]?.chargedCumulativeAmount, "12");
 });
 
+test("retained voucher reuse still creates the new Purchase-bound Movement", async () => {
+  const retained = {
+    ...channel(),
+    signedCumulativeAmount: "60",
+    latestVoucher: { amount: "60", signature: SIGNATURE },
+  };
+  const authorizations: Array<Record<string, unknown>> = [];
+  let signatures = 0;
+  const module = new KaspaX402BatchPaymentModule({
+    store: new MemoryChannelStore([retained]),
+    signer: {
+      ...signer(),
+      async signVoucher(request) {
+        signatures += 1;
+        return signer().signVoucher(request);
+      },
+    },
+    addressCodec: {
+      scriptPublicKeyForAddress: () => SCRIPT,
+      encodeScriptAddress: () => "kaspatest:escrow",
+    },
+    chain: {
+      getVirtualDaaScore: async () => "400000000",
+      getUtxos: async () => [{
+        outpoint: { txid: ACTIVE_TX, index: 0 },
+        amount: "1000",
+        scriptPublicKey: SCRIPT,
+        address: "kaspatest:escrow",
+      }],
+    },
+    authorizer: {
+      authorize(input: Parameters<JournalBatchVoucherAuthorizer["authorize"]>[0]) {
+        authorizations.push(structuredClone(input) as Record<string, unknown>);
+        return movement(input.purchaseId, input.voucherCeilingAtomic);
+      },
+    } as never,
+    claimFeeReserveAtomic: "10",
+    transport: disabledTransport(),
+  });
+
+  const prepared = await module.prepare(input());
+  const envelope = JSON.parse(Buffer.from(prepared.preparedBytes).toString("utf8"));
+  assert.equal(envelope.voucherCeilingAtomic, "60");
+  assert.equal(authorizations.length, 1);
+  assert.equal(authorizations[0]?.voucherCeilingAtomic, "60");
+  assert.equal(signatures, 0);
+});
+
 test("batch module refuses a channel epoch not approved by Trusted Authority", async () => {
   const selected = { ...channel(), id: "99".repeat(32) as Hash32Hex };
   await assert.rejects(

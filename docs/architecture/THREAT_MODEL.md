@@ -2,7 +2,7 @@
 
 Status: current implementation threat model
 
-Applies to: human-present AP2 v0.2 + Kaspa-x402 exact on testnet
+Applies to: human-present AP2 v0.2 + Kaspa-x402 exact and separately gated batch settlement on testnet
 
 ## Security objective
 
@@ -129,7 +129,9 @@ stored in journal plaintext.
 | Manifest path/provenance substitution | Operator ownership, safe ancestors/modes/links, descriptor-stable canonical read, digest binding | Symlink, hardlink, rename, chmod, owner and byte substitution |
 | Cleartext Merchant authorization | HTTPS-only production projection from Operator Manifest | HTTP configuration and redirect downgrade attempts |
 | Provisional observation terminalizes state | Chain Evidence Finality Floor; mempool never terminal | Mempool exact/vault/staging/wallet observations |
-| Merchant lowers finality | Effective floor is max(operator floor, supported Merchant requirement) | Merchant-selected mempool with stronger operator floor |
+| Merchant lowers finality | Effective floor is max(operator floor, supported Merchant requirement) on fresh and recovery evidence | Merchant-selected accepted evidence with stronger operator floor |
+| Stale batch epoch signs an unusable voucher | Voucher authorization binds the active epoch; accepted spender recovery derives the actual claim from verified outputs | stale-positive UTXO, retained older claim, and restart recovery |
+| Voucher ceiling is treated as paid value | Journal records the actual accepted charge/claim delta separately from the signed ceiling | below-ceiling claim and retained-voucher tests |
 | Approval omits finality policy | Display and sign the effective floor in canonical Authority/AP2 evidence | Substitute Merchant requirement or operator floor after approval |
 | Spent output erases history | Persist accepted transaction/spend/continuation evidence before terminal transition | Spend accepted output, prune node history, restart and reconcile |
 | RPC error treated as absence | Typed unknown/unavailable distinct from corroborated absence | timeout, disconnect, not-indexed, pruned cursor and malformed response |
@@ -214,7 +216,6 @@ must not enter x402/Kaspa-x402 wire objects. ADR-0010 records the exact mapping.
 - protecting a host already controlled by an administrator/root attacker;
 - autonomous/open mandate constraint evaluation;
 - passkey RP/origin/recovery security;
-- batch channel authorization and claims;
 - third-party production Merchant trust onboarding;
 - mainnet economic or operational safety claims.
 

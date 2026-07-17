@@ -604,10 +604,7 @@ export class SqliteMerchantServerStateStore implements ServerStateStore {
       ? validateBatchPaymentIdentifier(record.paymentIdentifier, commitment)
       : undefined;
     const commit = this.db.transaction(() => {
-      const current = this.requireBatchChannelRow(record.expected.channelId);
-      if (!matchesExpectedBatchChannel(current, record.expected)) {
-        throw new DemoMerchantStoreError("conflict");
-      }
+      const current = this.loadBatchChannelRow(record.expected.channelId);
       const existingCommitment = this.db.prepare(
         "SELECT record_json FROM batch_commitments WHERE commitment_id = ?",
       ).get(commitment.commitmentId) as JsonRow | undefined;
@@ -618,18 +615,35 @@ export class SqliteMerchantServerStateStore implements ServerStateStore {
       if (existingCommitment) {
         if (
           existingCommitment.record_json !== stableJson(commitment) ||
-          stableJson(current) !== stableJson(channel) ||
+          !current || stableJson(current) !== stableJson(channel) ||
           (identifier === undefined) !== (existingIdentifier === undefined) ||
           (identifier && existingIdentifier?.record_json !== stableJson(identifier))
         ) throw new DemoMerchantStoreError("conflict");
         return;
       }
+      const createsFirstChannel = current === undefined && expectedAbsentBatchChannel(record.expected);
+      if (!createsFirstChannel && (!current || !matchesExpectedBatchChannel(current, record.expected))) {
+        throw new DemoMerchantStoreError("conflict");
+      }
       if (existingIdentifier) throw new DemoMerchantStoreError("conflict");
+      if (createsFirstChannel) {
+        this.db.prepare(
+          `INSERT INTO batch_channels
+             (channel_id, active_txid, active_output_index, status, record_json)
+           VALUES (?, ?, ?, ?, ?)`
+        ).run(
+          channel.channelId,
+          channel.activeOutpoint.txid,
+          channel.activeOutpoint.index,
+          channel.status,
+          stableJson(channel),
+        );
+      }
       this.db.prepare(
         "INSERT INTO batch_commitments (commitment_id, channel_id, record_json) VALUES (?, ?, ?)",
       ).run(commitment.commitmentId, commitment.channelId, stableJson(commitment));
       if (identifier) this.insertPaymentIdentifier(identifier);
-      this.writeBatchChannel(channel);
+      if (!createsFirstChannel) this.writeBatchChannel(channel);
     });
     this.runWrite(commit);
   }
@@ -1243,6 +1257,14 @@ function matchesExpectedBatchChannel(
     current.activeOutpoint.index === expected.activeOutpoint.index &&
     current.activeScriptPublicKey === expected.activeScriptPublicKey &&
     current.status === expected.status
+  );
+}
+
+function expectedAbsentBatchChannel(expected: SettlementCommit["expected"]): boolean {
+  return (
+    expected.chargedCumulativeAmount === "0" &&
+    expected.claimedCumulativeAmount === "0" &&
+    expected.signedMaxClaimable === "0"
   );
 }
 

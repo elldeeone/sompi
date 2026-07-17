@@ -81,7 +81,18 @@ export class KaspaX402BatchCapitalModule {
     if (BigInt(input.refundTimeoutDaa) >= 500000000000n) {
       throw new Error("batch refund timeout must remain below the consensus timestamp boundary");
     }
-    const key = await this.signer.ensureChannelKey(input.operationKey);
+    const operationDigest = evidenceDigest(stableStringify({
+      profile: "urn:sompi:batch-channel-capital-operation:2",
+      operationKey: input.operationKey,
+      origin: input.origin,
+      resourceUrl: input.resourceUrl ?? null,
+      serverPublicKey: input.serverPublicKey,
+      payTo: input.payTo,
+      refundAddress: input.refundAddress,
+      refundTimeoutDaa: input.refundTimeoutDaa,
+      amountAtomic: input.amountAtomic,
+    }));
+    const key = await this.signer.ensureChannelKey(input.operationKey, operationDigest);
     const salt = sha256Hex(`sompi:batch-channel-salt:v1\0${input.operationKey}\0${key.publicKey}`) as Hash32Hex;
     const config: ChannelConfig = Object.freeze({
       network: NETWORK,

@@ -17,6 +17,7 @@ import type {
   TreasuryStagingRecoveryModule,
 } from "../../purchase/coordinator.js";
 import type { Sha256Digest } from "../../purchase/types.js";
+import { evidenceDigest } from "../../purchase/identity.js";
 import type {
   JournalObservedStagingSource,
 } from "./exact-attempt-funding-bridge.js";
@@ -92,6 +93,9 @@ export class KaspaStagingRecoveryModule
       if (actual !== expected) {
         throw new Error(`${label} differs across staging recovery facts`);
       }
+    }
+    if (evidenceDigest(input.paymentRequirements) !== metadata.paymentRequirementsDigest) {
+      throw new Error("PAYMENT-REQUIRED differs from the signed staging metadata");
     }
     const requirement = exactRequirement(input, this.options.finalityFloor);
     const selection: ImmutableExactPaymentSelection = input.exactPayment
@@ -291,6 +295,18 @@ function exactCandidate(
   });
   if (!retry.ok || payload.value.payload.type !== "exact-transaction") {
     throw new Error("exact payment envelope is not a valid immutable retry");
+  }
+  const suppliedRequired = validatePaymentRequired(
+    parsePaymentRequiredHeaderValue(
+      strictAscii(input.paymentRequirements, "PAYMENT-REQUIRED"),
+      { supportedNetworks: [NETWORK], supportedSchemes: [SCHEME] },
+    ).paymentRequired,
+  );
+  if (
+    !suppliedRequired.ok ||
+    stableStringify(required.value) !== stableStringify(suppliedRequired.value)
+  ) {
+    throw new Error("exact payment envelope PAYMENT-REQUIRED differs from recovery evidence");
   }
   if (
     payload.value.payload.transactionEncoding !== ABANDONED_STAGING_RECOVERY_ENCODING ||

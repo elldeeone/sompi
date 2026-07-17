@@ -203,6 +203,70 @@ test("batch settlement and claim attempts persist atomically across restart", as
   });
 });
 
+test("first batch settlement atomically creates an absent channel and commitment", async () => {
+  await withStore(async (store) => {
+    const initial = batchChannel();
+    const channel = {
+      ...initial,
+      chargedCumulativeAmount: "12",
+      signedMaxClaimable: "20",
+      voucherSignature: "99".repeat(64),
+    } satisfies ServerChannelRecord;
+    const settlement = {
+      success: true,
+      transaction: "aa".repeat(32),
+      network: "kaspa:testnet-10",
+      amount: "12",
+    } as const;
+    const commitment = {
+      commitmentId: "aa".repeat(32),
+      channelId: channel.channelId,
+      requestFingerprint: "bb".repeat(32),
+      paymentRequirementsHash: "cc".repeat(32),
+      activeOutpoint: channel.activeOutpoint,
+      activeScriptPublicKey: channel.activeScriptPublicKey,
+      voucher: { amount: "20", signature: channel.voucherSignature },
+      chargedAmount: "12",
+      chargedCumulativeBefore: "0",
+      chargedCumulativeAfter: "12",
+      claimedCumulativeAmount: "0",
+      settlement,
+      response: { status: 200, headers: {}, body: "resource" },
+    } satisfies BatchCommitmentRecord;
+
+    await store.commitSettlement({
+      channel,
+      commitment,
+      expected: {
+        channelId: channel.channelId,
+        chargedCumulativeAmount: "0",
+        claimedCumulativeAmount: "0",
+        signedMaxClaimable: "0",
+        activeOutpoint: channel.activeOutpoint,
+        activeScriptPublicKey: channel.activeScriptPublicKey,
+        status: "active",
+      },
+    });
+    await store.commitSettlement({
+      channel,
+      commitment,
+      expected: {
+        channelId: channel.channelId,
+        chargedCumulativeAmount: "0",
+        claimedCumulativeAmount: "0",
+        signedMaxClaimable: "0",
+        activeOutpoint: channel.activeOutpoint,
+        activeScriptPublicKey: channel.activeScriptPublicKey,
+        status: "active",
+      },
+    });
+
+    assert.deepEqual(await store.loadChannel(channel.channelId), channel);
+    assert.deepEqual(await store.loadCommitment(commitment.commitmentId), commitment);
+    assert.equal(store.integrityCheck(), true);
+  });
+});
+
 test("a broadcast batch claim cannot be abandoned or replaced", async () => {
   await withStore(async (store) => {
     const channel = batchChannel();

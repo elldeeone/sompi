@@ -82,6 +82,7 @@
     },
     "checks": [
       "published package versions and lockfile SRI equal the central supported profile",
+      "all files in the four published packages reproduce byte-for-byte from the exact independently fetched source commit",
       "the unmodified alpha.8 exact HTTP vector decodes and validates through the public package seam",
       "the full-consensus vector proves standard-native v0 and additive v1 economics",
       "Sompi adapter tests independently bind the official Payment Identifier extension and Purchase context"

@@ -40,6 +40,55 @@ test("additive contention report binds one winner, one absent loser, and a fresh
     /candidate evidence is invalid/
   );
 
+  const brokenInitialLineage = structuredClone(report);
+  (brokenInitialLineage.initialHead as any).outpoint = `${"ab".repeat(32)}:0`;
+  assert.throws(
+    () => assertLiveAdditiveContentionReport(brokenInitialLineage),
+    /invariants changed/
+  );
+
+  const brokenCandidateLineage = structuredClone(report);
+  (brokenCandidateLineage.candidates[1] as any).headVersion = "1";
+  assert.throws(
+    () => assertLiveAdditiveContentionReport(brokenCandidateLineage),
+    /invariants changed/
+  );
+
+  const brokenWinnerSuccessor = structuredClone(report);
+  (brokenWinnerSuccessor.winner as any).successorOutpoint = `${"ac".repeat(32)}:0`;
+  assert.throws(
+    () => assertLiveAdditiveContentionReport(brokenWinnerSuccessor),
+    /invariants changed/
+  );
+
+  const brokenRetryPrior = structuredClone(report);
+  (brokenRetryPrior.explicitRetry as any).priorHeadOutpoint = `${"ad".repeat(32)}:0`;
+  assert.throws(
+    () => assertLiveAdditiveContentionReport(brokenRetryPrior),
+    /invariants changed/
+  );
+
+  const brokenRetryVersion = structuredClone(report);
+  (brokenRetryVersion.explicitRetry as any).headVersion = "2";
+  assert.throws(
+    () => assertLiveAdditiveContentionReport(brokenRetryVersion),
+    /invariants changed/
+  );
+
+  const brokenRetryAmount = structuredClone(report);
+  (brokenRetryAmount.explicitRetry as any).headAmountAtomic = "120000001";
+  assert.throws(
+    () => assertLiveAdditiveContentionReport(brokenRetryAmount),
+    /invariants changed/
+  );
+
+  const brokenRetrySuccessor = structuredClone(report);
+  (brokenRetrySuccessor.explicitRetry as any).successorOutpoint = `${"ae".repeat(32)}:0`;
+  assert.throws(
+    () => assertLiveAdditiveContentionReport(brokenRetrySuccessor),
+    /invariants changed/
+  );
+
   const secret = structuredClone(report);
   (secret as any).nodeUrl = "ws://private-node";
   assert.throws(

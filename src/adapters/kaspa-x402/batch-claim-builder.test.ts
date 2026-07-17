@@ -25,6 +25,7 @@ import {
 } from "@kaspa-x402/server";
 
 import { Transaction } from "../../kaspa-wasm.js";
+import { evidenceDigest } from "../../purchase/identity.js";
 import { KaspaTestnet10AddressCodec } from "./address-codec.js";
 import { KaspaX402BatchClaimBuilder } from "./batch-claim-builder.js";
 import { SecureBatchChannelSigner } from "./batch-channel-signer.js";
@@ -89,8 +90,14 @@ async function withClaimFixture(
     deterministicEntropy()
   );
   try {
-    const client = await signer.ensureChannelKey("batch-claim-client");
-    const merchant = await signer.ensureChannelKey("batch-claim-merchant");
+    const client = await signer.ensureChannelKey(
+      "batch-claim-client",
+      evidenceDigest("batch-claim-client-key"),
+    );
+    const merchant = await signer.ensureChannelKey(
+      "batch-claim-merchant",
+      evidenceDigest("batch-claim-merchant-key"),
+    );
     const codec = new KaspaTestnet10AddressCodec();
     const config: ChannelConfig = {
       network: "kaspa:testnet-10",
