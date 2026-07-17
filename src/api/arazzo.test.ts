@@ -1,4 +1,7 @@
 import * as assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import test from "node:test";
 
 import { PurchaseApiClient } from "./client.js";
@@ -66,9 +69,17 @@ test("Arazzo recovery scenario runs create, status, recover, and terminal receip
     },
   };
   const credential = generateAgentApiCredential();
-  const running = await startPurchaseApiServer({ application, credential, port: 0 });
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-arazzo-api-"));
+  const access = {
+    expectedServerUserId: typeof process.getuid === "function" ? process.getuid() : 0,
+    runtimeGroupId: typeof process.getgid === "function" ? process.getgid() : 0,
+  };
+  fs.chownSync(directory, access.expectedServerUserId, access.runtimeGroupId);
+  fs.chmodSync(directory, 0o710);
+  const socketPath = path.join(directory, "api.sock");
+  const running = await startPurchaseApiServer({ application, credential, socketPath, ...access });
   try {
-    const client = new PurchaseApiClient({ baseUrl: running.baseUrl, credential });
+    const client = new PurchaseApiClient({ socketPath, credential, ...access });
     const inputs: PurchaseCreateRequest = {
       requestKey: "workflow:recoverable",
       url: "https://merchant.example/paid-resource",
@@ -96,6 +107,7 @@ test("Arazzo recovery scenario runs create, status, recover, and terminal receip
     assert.deepEqual(terminal?.receiptEvidence, [RECEIPT_DIGEST]);
   } finally {
     await running.close();
+    fs.rmSync(directory, { recursive: true, force: true });
   }
 });
 

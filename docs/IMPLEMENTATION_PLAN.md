@@ -248,8 +248,9 @@ compatibility adapter.
 - [x] Expose `POST /purchases`, `GET /purchases/{purchaseId}`, and
   `POST /purchases/{purchaseId}/recover` from `sompi-api`.
 - [x] Add OpenAPI 3.2 generated or verified from the same canonical schemas.
-- [x] Add operator-installed least-authority agent authentication and
-  loopback/operator-socket-safe binding defaults.
+- [x] Add operator-installed least-authority agent authentication over a
+  pre-provisioned permissioned Unix socket; remove the loopback TCP path and
+  verify the socket identity before sending the bearer.
 - [x] Enforce idempotency, body/evidence limits, concurrency admission,
   deadlines, cancellation, and secret-free errors at the HTTP seam.
 - [x] Reduce `sompi-mcp` to `purchase`, `purchase_status`, and
@@ -472,14 +473,21 @@ testnet product.
   tarball and review every accepted ADR against the final implementation.
 - [ ] Keep mainnet fail-closed and record remaining non-alpha readiness limits.
 
-Evidence in progress (2026-07-16): the first complete formal diff scan covered
+Evidence in progress (2026-07-17): the first complete formal diff scan covered
 all 146 changed source-like files through 30 full-file receipts. Its two
 reportable findings and three mandatory-hardening defects are remediated in the
 current branch. `npm test` passes 451 tests (450 pass, one documented
 privileged ownership skip), and conformance, OpenAPI, Arazzo, local proof, and
 the 199-entry packed artifact all pass. The required immutable post-fix scan
-remains open, so the security and release-readiness checkboxes are not yet
-closed.
+remains open. A subsequent sealed 148-file scan reported two additional Low/P3
+findings: local loopback-port bearer capture and an orphaned never-submitted
+batch voucher Movement. The current branch removes Purchase API TCP entirely,
+verifies a permissioned Unix socket before authentication, and atomically
+terminalizes only a proven `planned` voucher while preserving the signed
+ceiling. `npm test` passes 461 tests (460 pass, one documented privileged
+ownership skip), and OpenAPI/Arazzo checks pass. The final immutable post-fix
+scan is still required, so the security and release-readiness checkboxes are
+not yet closed.
 
 Gate:
 

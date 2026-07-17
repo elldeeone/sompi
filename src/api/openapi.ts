@@ -20,7 +20,6 @@ export function sompiOpenApiDocument(version: string): Readonly<Record<string, u
       version,
       description: "Authenticated, protocol-neutral Purchase lifecycle for Sompi.",
     },
-    servers: [{ url: "http://127.0.0.1:7442", description: "Default local service" }],
     security: [{ AgentCredential: [] }],
     paths: {
       "/purchases": {

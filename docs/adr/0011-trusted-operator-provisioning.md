@@ -3,6 +3,8 @@
 - Status: Accepted
 - Date: 2026-07-13
 - Amends: ADR-0008
+- Amended by: ADR-0015 (`sompi-api` owns the runtime state; `sompi-mcp` receives
+  only the Purchase API capability)
 
 ## Context
 

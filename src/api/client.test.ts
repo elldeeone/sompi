@@ -1,51 +1,106 @@
 import * as assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as http from "node:http";
+import * as os from "node:os";
+import * as path from "node:path";
 import test from "node:test";
 
 import { PurchaseApiClient, PurchaseApiClientError } from "./client.js";
 import { generateAgentApiCredential } from "./credential.js";
+import type { PurchaseApplication } from "./contracts.js";
+import { startPurchaseApiServer } from "./server.js";
 import type { PurchaseView } from "../purchase/types.js";
 
-test("API client sends fixed authenticated no-redirect requests and validates results", async () => {
+test("API client authenticates over a verified permissioned Unix socket", async () => {
+  const fixture = socketFixture();
   const credential = generateAgentApiCredential();
-  const calls: Array<{ input: Parameters<typeof fetch>[0]; init?: RequestInit }> = [];
-  const fetcher: typeof fetch = async (input, init) => {
-    calls.push({ input, init });
-    const body = JSON.stringify(fakeView());
-    return new Response(body, {
-      status: 200,
-      headers: { "content-type": "application/json", "content-length": String(Buffer.byteLength(body)) },
-    }) as Response;
+  const calls: string[] = [];
+  const application: PurchaseApplication = {
+    async purchase() { calls.push("purchase"); return fakeView(); },
+    async status() { calls.push("status"); return fakeView(); },
+    async recover() { calls.push("recover"); return fakeView(); },
   };
-  // Native Response.url is immutable, so wrap it with the effective target.
-  const effectiveFetch: typeof fetch = async (input, init) => {
-    const response = await fetcher(input, init);
-    return new Proxy(response, { get(target, property, receiver) {
-      if (property === "url") return String(input);
-      const value = Reflect.get(target, property, target);
-      return typeof value === "function" ? value.bind(target) : value;
-    } }) as Response;
-  };
-  const client = new PurchaseApiClient({ baseUrl: "http://127.0.0.1:7442", credential, fetch: effectiveFetch });
-  assert.equal((await client.purchase({ requestKey: "api:one", url: "https://merchant.example/" })).id, fakeView().id);
-  assert.equal(calls[0].init?.redirect, "error");
-  assert.equal((calls[0].init?.headers as Record<string, string>).authorization, `Bearer ${credential.token}`);
+  const running = await startPurchaseApiServer({ application, credential, ...fixture.access, socketPath: fixture.socketPath });
+  try {
+    const client = new PurchaseApiClient({ credential, ...fixture.access, socketPath: fixture.socketPath });
+    assert.equal((await client.purchase({ requestKey: "api:one", url: "https://merchant.example/" })).id, fakeView().id);
+    assert.equal((await client.status(fakeView().id)).id, fakeView().id);
+    assert.deepEqual(calls, ["purchase", "status"]);
+  } finally {
+    await running.close();
+    fixture.close();
+  }
 });
 
-test("API client rejects redirected, oversized, and malformed responses", async () => {
+test("API client rejects an insecure socket directory before disclosing its bearer", async () => {
+  const fixture = socketFixture();
   const credential = generateAgentApiCredential();
-  const redirected: typeof fetch = async () => new Proxy(new Response("{}", {
-    status: 200, headers: { "content-type": "application/json" },
-  }), { get(target, property, receiver) {
-    if (property === "url") return "http://127.0.0.1:7442/elsewhere";
-    if (property === "redirected") return true;
-    const value = Reflect.get(target, property, target);
-    return typeof value === "function" ? value.bind(target) : value;
-  } }) as Response;
-  const client = new PurchaseApiClient({ baseUrl: "http://127.0.0.1:7442", credential, fetch: redirected });
-  await assert.rejects(() => client.status(fakeView().id), (error: unknown) =>
-    error instanceof PurchaseApiClientError && error.code === "UNEXPECTED_RESPONSE_TARGET");
-  assert.throws(() => new PurchaseApiClient({ baseUrl: "http://merchant.example", credential }), /loopback/);
+  let observedAuthorization: string | undefined;
+  const server = http.createServer((request, response) => {
+    observedAuthorization = request.headers.authorization;
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify(fakeView()));
+  });
+  await listen(server, fixture.socketPath);
+  fs.chownSync(fixture.socketPath, fixture.access.expectedServerUserId, fixture.access.runtimeGroupId);
+  fs.chmodSync(fixture.socketPath, 0o660);
+  fs.chmodSync(fixture.directory, 0o770);
+  try {
+    const client = new PurchaseApiClient({ credential, ...fixture.access, socketPath: fixture.socketPath });
+    await assert.rejects(() => client.status(fakeView().id), (error: unknown) =>
+      error instanceof PurchaseApiClientError && error.code === "API_UNAVAILABLE");
+    assert.equal(observedAuthorization, undefined);
+  } finally {
+    await close(server);
+    fixture.close();
+  }
 });
+
+test("API client rejects oversized and malformed local responses", async () => {
+  const fixture = socketFixture();
+  const credential = generateAgentApiCredential();
+  const server = http.createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "text/plain" });
+    response.end("not-json");
+  });
+  await listen(server, fixture.socketPath);
+  fs.chownSync(fixture.socketPath, fixture.access.expectedServerUserId, fixture.access.runtimeGroupId);
+  fs.chmodSync(fixture.socketPath, 0o660);
+  fs.chmodSync(fixture.directory, 0o710);
+  try {
+    const client = new PurchaseApiClient({ credential, ...fixture.access, socketPath: fixture.socketPath });
+    await assert.rejects(() => client.status(fakeView().id), (error: unknown) =>
+      error instanceof PurchaseApiClientError && error.code === "INVALID_API_RESPONSE");
+  } finally {
+    await close(server);
+    fixture.close();
+  }
+});
+
+function socketFixture() {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-api-client-"));
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+  const gid = typeof process.getgid === "function" ? process.getgid() : 0;
+  fs.chownSync(directory, uid, gid);
+  fs.chmodSync(directory, 0o710);
+  return {
+    directory,
+    socketPath: path.join(directory, "api.sock"),
+    access: { expectedServerUserId: uid, runtimeGroupId: gid },
+    close: () => fs.rmSync(directory, { recursive: true, force: true }),
+  } as const;
+}
+
+function listen(server: http.Server, socketPath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(socketPath, () => { server.off("error", reject); resolve(); });
+  });
+}
+
+function close(server: http.Server): Promise<void> {
+  return new Promise((resolve) => server.close(() => resolve()));
+}
 
 function fakeView(): PurchaseView {
   return {

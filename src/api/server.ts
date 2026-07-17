@@ -1,3 +1,4 @@
+import * as fs from "node:fs";
 import * as http from "node:http";
 
 import {
@@ -14,6 +15,12 @@ import {
   parsePurchaseCreateRequest,
 } from "./contracts.js";
 import { agentApiCredentialMatches, type AgentApiCredential } from "./credential.js";
+import {
+  installAndVerifyPurchaseApiSocket,
+  preparePurchaseApiSocketDirectory,
+  removeOwnedPurchaseApiSocket,
+  type PurchaseApiSocketAccess,
+} from "./socket.js";
 
 const DEFAULT_DEADLINE_MS = 120_000;
 const DEFAULT_MAX_PURCHASE_CONCURRENCY = 8;
@@ -21,17 +28,16 @@ const DEFAULT_MAX_CONTROL_CONCURRENCY = 2;
 const DEFAULT_MAX_CONNECTIONS = 32;
 const PURCHASE_PATH = /^\/purchases\/(pur_[A-Za-z0-9_-]{22})(\/recover)?$/;
 
-export interface PurchaseApiServerOptions {
+export interface PurchaseApiServerOptions extends PurchaseApiSocketAccess {
   readonly application: PurchaseApplication;
   readonly credential: AgentApiCredential;
-  readonly host?: "127.0.0.1" | "::1";
-  readonly port?: number;
+  readonly socketPath: string;
   readonly deadlineMs?: number;
   /** Concurrent create-Purchase requests. */
   readonly maxPurchaseConcurrency?: number;
   /** Reserved status/recovery requests, independent of create-Purchase work. */
   readonly maxControlConcurrency?: number;
-  /** Hard bound on retained pre-authentication TCP sockets. */
+  /** Hard bound on retained pre-authentication local sockets. */
   readonly maxConnections?: number;
   /** Operator-only diagnostic sink. Error details are never returned to the caller. */
   readonly onRequestError?: (error: unknown) => void;
@@ -39,9 +45,7 @@ export interface PurchaseApiServerOptions {
 
 export interface RunningPurchaseApiServer {
   readonly server: http.Server;
-  readonly host: "127.0.0.1" | "::1";
-  readonly port: number;
-  readonly baseUrl: string;
+  readonly socketPath: string;
   close(): Promise<void>;
 }
 
@@ -53,8 +57,6 @@ export class PurchaseApiServerError extends Error {
 }
 
 export async function startPurchaseApiServer(options: PurchaseApiServerOptions): Promise<RunningPurchaseApiServer> {
-  const host = options.host ?? "127.0.0.1";
-  const port = options.port ?? 7442;
   const deadlineMs = positiveInteger(options.deadlineMs ?? DEFAULT_DEADLINE_MS, "API deadline");
   const maxPurchaseConcurrency = positiveInteger(
     options.maxPurchaseConcurrency ?? DEFAULT_MAX_PURCHASE_CONCURRENCY,
@@ -72,8 +74,6 @@ export async function startPurchaseApiServer(options: PurchaseApiServerOptions):
   if (maxConnections < totalConcurrency) {
     throw new PurchaseApiServerError("Purchase API connection limit cannot be below total request concurrency");
   }
-  if (host !== "127.0.0.1" && host !== "::1") throw new PurchaseApiServerError("Purchase API must bind to loopback");
-  if (!Number.isInteger(port) || port < 0 || port > 65_535) throw new PurchaseApiServerError("Purchase API port is invalid");
   if (!options.application || !options.credential) throw new PurchaseApiServerError("Purchase API dependencies are unavailable");
 
   const purchaseLane = apiLane(maxPurchaseConcurrency);
@@ -144,28 +144,38 @@ export async function startPurchaseApiServer(options: PurchaseApiServerOptions):
   });
   server.maxConnections = maxConnections;
   server.maxHeadersCount = 32;
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(port, host, () => {
-      server.off("error", reject);
-      resolve();
+  let socketIdentity: { dev: bigint; ino: bigint } | undefined;
+  try {
+    preparePurchaseApiSocketDirectory(options.socketPath, options);
+    if (fs.existsSync(options.socketPath)) {
+      throw new PurchaseApiServerError("Purchase API socket path already exists");
+    }
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(options.socketPath, () => {
+        server.off("error", reject);
+        resolve();
+      });
     });
-  });
-  const address = server.address();
-  if (!address || typeof address === "string") {
-    server.close();
-    throw new PurchaseApiServerError("Purchase API did not bind to TCP loopback");
+    const created = fs.lstatSync(options.socketPath, { bigint: true });
+    socketIdentity = { dev: created.dev, ino: created.ino };
+    installAndVerifyPurchaseApiSocket(options.socketPath, options, socketIdentity);
+  } catch (cause) {
+    if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
+    removeOwnedPurchaseApiSocket(options.socketPath, socketIdentity);
+    if (cause instanceof PurchaseApiServerError) throw cause;
+    throw new PurchaseApiServerError("Purchase API could not establish its secure local socket");
   }
-  const effectiveHost = host === "::1" ? "[::1]" : host;
   let closePromise: Promise<void> | undefined;
   return Object.freeze({
     server,
-    host,
-    port: address.port,
-    baseUrl: `http://${effectiveHost}:${address.port}`,
+    socketPath: options.socketPath,
     close() {
       closePromise ??= new Promise<void>((resolve, reject) => {
-        server.close((error) => error ? reject(error) : resolve());
+        server.close((error) => {
+          removeOwnedPurchaseApiSocket(options.socketPath, socketIdentity);
+          error ? reject(error) : resolve();
+        });
         server.closeIdleConnections();
       });
       return closePromise;

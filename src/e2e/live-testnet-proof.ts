@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as net from "node:net";
+import * as os from "node:os";
 import * as path from "node:path";
 import { createHash } from "node:crypto";
 
@@ -1257,22 +1258,35 @@ export async function createLivePurchaseIngress(
   onRequestError?: (error: unknown) => void
 ): Promise<{ readonly application: PurchaseApplication; close(): Promise<void> }> {
   const credential = generateAgentApiCredential();
+  const apiDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-live-api-"));
+  const socketPath = path.join(apiDirectory, "api.sock");
+  const access = {
+    expectedServerUserId: typeof process.getuid === "function" ? process.getuid() : 0,
+    runtimeGroupId: typeof process.getgid === "function" ? process.getgid() : 0,
+  };
+  fs.chownSync(apiDirectory, access.expectedServerUserId, access.runtimeGroupId);
+  fs.chmodSync(apiDirectory, 0o710);
   const api = await startPurchaseApiServer({
     application: createPurchaseApplication(coordinator),
     credential,
-    host: "127.0.0.1",
-    port: 0,
+    socketPath,
+    ...access,
     deadlineMs: PROOF_TIMEOUT_MS,
     maxPurchaseConcurrency: 4,
     onRequestError,
   });
   const apiClient = new PurchaseApiClient({
-    baseUrl: api.baseUrl,
+    socketPath,
+    ...access,
     credential,
     timeoutMs: PROOF_TIMEOUT_MS + 5_000,
   });
+  const closeApi = async () => {
+    await api.close();
+    fs.rmSync(apiDirectory, { recursive: true, force: true });
+  };
   if (mode === "http-api") {
-    return Object.freeze({ application: apiClient, close: () => api.close() });
+    return Object.freeze({ application: apiClient, close: closeApi });
   }
   const server = createSompiMcpServer(apiClient, "alpha8-live-proof");
   const client = new Client({ name: "sompi-alpha8-live-proof", version: "1" });
@@ -1301,7 +1315,7 @@ export async function createLivePurchaseIngress(
     async close() {
       await client.close();
       await server.close();
-      await api.close();
+      await closeApi();
     },
   });
 }

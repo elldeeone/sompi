@@ -27,8 +27,9 @@ async function main(): Promise<void> {
     api = await startPurchaseApiServer({
       application: createPurchaseApplication(runtime.purchase),
       credential: listener.credential,
-      host: listener.host,
-      port: listener.port,
+      socketPath: listener.socketPath,
+      expectedServerUserId: listener.expectedServerUserId,
+      runtimeGroupId: listener.runtimeGroupId,
       deadlineMs: listener.deadlineMs,
       maxPurchaseConcurrency: listener.maxPurchaseConcurrency,
       maxControlConcurrency: listener.maxControlConcurrency,
@@ -43,7 +44,7 @@ async function main(): Promise<void> {
     const shutdown = () => { void close().then(() => process.exit(0), () => fatal("Sompi API could not close cleanly.")); };
     process.once("SIGINT", shutdown);
     process.once("SIGTERM", shutdown);
-    console.error(`sompi API ${packageVersion()} ready at ${api.baseUrl}`);
+    console.error(`sompi API ${packageVersion()} ready on its configured local socket`);
   } catch (error) {
     await api?.close().catch(() => undefined);
     await runtime?.close().catch(() => undefined);

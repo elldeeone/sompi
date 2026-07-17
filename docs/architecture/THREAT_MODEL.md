@@ -33,12 +33,14 @@ unaccounted treasury movement.
 Includes the LLM, prompts, MCP caller, Merchant-provided prose, and tool
 arguments. Fully untrusted. It may initiate and observe only.
 
-### Sompi MCP zone
+### Sompi API and MCP zones
 
-Validates tool inputs, applies egress policy, calls the Purchase module, and
-projects status. It is deterministic code but remains exposed to agent and
-Merchant input. It has treasury execution capability but no authority signing
-credential.
+`sompi-api` is the trusted Purchase runtime principal. It owns the Journal,
+egress enforcement, Treasury and protocol adapters, and the client side of the
+Authority IPC seam. `sompi-mcp` is a different untrusted principal: it validates
+tool inputs, calls only the permissioned Purchase API socket with a
+least-authority bearer, and projects status. It has no Journal, wallet,
+Treasury, manifest, protocol, or Authority capability.
 
 ### Trusted Authority zone
 

@@ -34,17 +34,21 @@ The deep Purchase module retains exactly these domain operations:
 - `status`;
 - `recover`.
 
-The canonical remote interface is authenticated HTTP:
+The canonical interface is authenticated HTTP carried over a permissioned
+Unix-domain socket:
 
 - `POST /purchases`;
 - `GET /purchases/{purchaseId}`;
 - `POST /purchases/{purchaseId}/recover`.
 
 OpenAPI 3.2 describes that interface from the same canonical request, result,
-and error schemas used by runtime validation. The first runtime binds locally
-or through an operator-controlled socket by default and uses an
-operator-installed least-authority credential. Public OAuth, UCP, A2A, and a
-generic agent protocol are not introduced.
+and error schemas used by runtime validation. The runtime does not expose a
+loopback TCP listener: the server and client verify the pre-provisioned Unix
+socket directory, socket owner, shared runtime group, mode, and path identity
+before the least-authority bearer is sent. This clean cutover prevents a
+different local principal from winning a predictable loopback port and
+capturing the bearer. Public OAuth, UCP, A2A, and a generic agent protocol are
+not introduced.
 
 `sompi-mcp` remains a stateless compatibility adapter over the same Purchase
 interface. It exposes only `purchase`, `purchase_status`, and
@@ -53,6 +57,13 @@ credential, wallet capability, AP2 decision, or Kaspa-x402 mechanism. In the
 production topology it calls the local Purchase API using an
 operator-installed least-authority agent credential. Deleting MCP later must
 not change Purchase behavior.
+
+The process principals are distinct. `sompi-api` runs as the installed runtime
+UID and owns the Journal, wallet, Treasury, protocol adapters, and Authority
+client projection. `sompi-mcp` runs as a separate non-root UID that can only
+traverse the shared IPC directory, connect to the API socket, and read the
+least-authority credential. The operator remains a third administrative
+principal and owns the immutable manifest and API credential file.
 
 This amends ADR-0002, ADR-0003, and ADR-0008 where they describe MCP as the
 primary or only agent-facing interface. Their deep Purchase module, protocol

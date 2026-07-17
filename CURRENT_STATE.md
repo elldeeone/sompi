@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: **2026-07-16**
+Last updated: **2026-07-17**
 
 ## Plain-English status
 
@@ -10,9 +10,10 @@ immutable specifications, schemas, vectors, public APIs, and funded TN10
 evidence have been mapped into Sompi's ownership and acceptance boundaries in
 [`docs/architecture/KASPA_X402_INTEGRATION.md`](docs/architecture/KASPA_X402_INTEGRATION.md).
 Phase I is complete except for the funded additive-contention sub-gate. Phase J
-has completed its first formal full-branch security scan and the resulting
-remediation; the mandatory immutable post-fix rescan is next. Batch settlement is a
-separate capital-backed channel lifecycle and is not treated as exact payment.
+has completed another formal full-branch security scan. Its two Low/P3 findings
+are fixed locally and the mandatory immutable post-fix rescan is next. Batch
+settlement is a separate capital-backed channel lifecycle and is not treated as
+exact payment.
 
 ADR-0015 and the aligned architecture require a clean replacement of alpha.6,
 support both `kaspa-exact-v2` profiles (`standard-native` and `additive`), and treat
@@ -20,11 +21,13 @@ support both `kaspa-exact-v2` profiles (`standard-native` and `additive`), and t
 canonical Purchase API and MCP is a thin untrusted compatibility adapter. No
 alpha.8 payment conformance claim has been made yet.
 
-Current verification: `npm test` passes all **451** tests (**450 pass**, one
+Current verification: `npm test` passes all **461** tests (**460 pass**, one
 documented privileged ownership skip) and the complete offline smoke. The
-authenticated loopback API, runtime-derived OpenAPI, operator-installed agent
-credential, HTTP/MCP parity, request limits, deadlines, and cancellation gates
-pass. Both `kaspa-exact-v2` profiles now run through the alpha.8 SDK contract,
+authenticated API now runs only over a pre-provisioned permissioned Unix
+socket; the loopback TCP path is deleted. Socket owner/group/mode/path identity,
+operator-installed agent credential, HTTP/MCP parity, request limits,
+deadlines, and cancellation gates pass. Both `kaspa-exact-v2` profiles now run
+through the alpha.8 SDK contract,
 and Treasury owns policy capacity, vault staging, attempt-scoped funding,
 external-effect fencing, abandoned-stage recovery, and cancellation semantics
 behind one Purchase-facing deep module. Cancellation before an external effect
@@ -95,6 +98,20 @@ Treasury Movement. The complete test, conformance, OpenAPI, Arazzo, local-proof,
 and 199-entry package-verification gates pass. A fresh post-fix scan is still
 required before the formal security gate is closed.
 
+The subsequent sealed scan of `fd7ba42...015107a` reviewed all 148 changed
+source-like files and reported two Low/P3 findings. First, a different local
+principal could win the predictable loopback port, capture MCP's
+least-authority bearer, and replay it after the real API started. Sompi now has
+no Purchase API TCP listener: the trusted API runtime and untrusted MCP use a
+pre-provisioned `0710` Unix-socket directory and a `0660` socket, with distinct
+API/MCP UIDs and identity verification before every authenticated request.
+Second, cancelling or expiring a prepared batch Purchase left its never-
+submitted voucher Movement `planned`, fencing the funded channel epoch. The
+same SQLite transaction now moves only a `planned` Purchase-bound voucher to
+`failed_terminal`, preserves the monotonic signed ceiling, and refuses any
+Movement that might have reached the Merchant. Focused exploit regressions and
+the complete test/OpenAPI/Arazzo gates pass; the post-fix rescan remains open.
+
 Phases 0 through 6 were implemented through `4ebb82d`, including the stable
 Purchase module, clean Kaspa-x402 alpha.6 exact path, isolated interactive AP2
 Authority, demo Merchant, crash recovery, local vertical proof, and live
@@ -125,9 +142,9 @@ target contract.
   `1df2f9c`, `91f85cd`, `a3e5a20`, `081f619`, `eb96534`, and the post-review
   hardening commit `1151938`. The worktree is named and no remote branch was
   changed.
-- Security-reviewed alpha.8 milestone: `8e1214b` (`Close alpha.8 security
-  review findings`). The current remediation milestone closes the two findings
-  from the subsequent complete branch scan and its mandatory hardening set.
+- Security-reviewed alpha.8 milestones: `8e1214b` and `015107a`. The current
+  uncommitted remediation closes the two Low/P3 findings from the latest
+  complete branch scan; its immutable post-fix rescan is the next gate.
 - Untouched post-scan baseline: `npm test` passed with 339 tests, one privileged
   ownership test skipped, and complete offline smoke.
 - Sealed deep scan: 21 findings, 8 medium and 13 low, no high/critical.

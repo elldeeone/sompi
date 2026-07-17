@@ -39,7 +39,7 @@ async function main(): Promise<void> {
     process.once("SIGINT", shutdown);
     process.once("SIGTERM", shutdown);
     await server.connect(transport);
-    console.error(`sompi MCP compatibility adapter ready: api=${config.baseUrl}`);
+    console.error("sompi MCP compatibility adapter ready on the configured local API socket");
   } catch (error) {
     if (error instanceof PurchaseApiConfigError) fatal(error.message);
     fatal("Sompi MCP could not start. Inspect the local API configuration.");

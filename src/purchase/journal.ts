@@ -3238,6 +3238,10 @@ export class PurchaseJournal {
 
       const now = this.timestamp();
       const detailDigest = this.findCheckoutTerms(purchaseId)?.checkoutDigest;
+      this.terminalizeNeverSubmittedBatchVoucherMovement(
+        purchaseId,
+        now
+      );
       for (const effect of effects) {
         if (effect.state === "planned" || effect.state === "retryable") {
           this.updateEffectState(
@@ -4619,6 +4623,10 @@ export class PurchaseJournal {
       }
       const now = this.timestamp();
       const reason = "reservation_expired_before_submission";
+      this.terminalizeNeverSubmittedBatchVoucherMovement(
+        purchase.id,
+        now
+      );
       this.transitionAttemptInternal(
         attempt,
         "failed",
@@ -6028,6 +6036,46 @@ export class PurchaseJournal {
     return batchMovementFromRow(row);
   }
 
+  /**
+   * Close only the Purchase-bound voucher intent whose Merchant submission is
+   * proven not to have started. The channel's monotonic signed ceiling is not
+   * rewound: a signature may already exist even though no external effect did.
+   */
+  private terminalizeNeverSubmittedBatchVoucherMovement(
+    purchaseId: PurchaseId,
+    now: number
+  ): void {
+    const rows = this.db.prepare(
+      `SELECT * FROM batch_treasury_movements
+        WHERE purchase_id = ? AND kind = 'voucher'
+        ORDER BY movement_id`
+    ).all(purchaseId) as BatchTreasuryMovementRow[];
+    if (rows.length > 1) {
+      throw new JournalInvariantError(
+        `Purchase ${purchaseId} owns multiple batch voucher Movements`
+      );
+    }
+    const row = rows[0];
+    if (!row) return;
+    const movement = batchMovementFromRow(row);
+    if (movement.state === "failed_terminal") return;
+    if (movement.state !== "planned") {
+      throw new JournalEffectBusyError(
+        `Purchase ${purchaseId} has a possible batch voucher effect ${movement.movementId}`
+      );
+    }
+    const updated = this.db.prepare(
+      `UPDATE batch_treasury_movements
+          SET state = 'failed_terminal', updated_at_ms = ?
+        WHERE movement_id = ? AND state = 'planned'`
+    ).run(now, movement.movementId);
+    if (updated.changes !== 1) {
+      throw new JournalFencingError(
+        "batch voucher terminalization lost its compare-and-swap"
+      );
+    }
+  }
+
   advanceBatchTreasuryMovement(input: Readonly<{
     movementId: string;
     expectedState: BatchTreasuryMovementState;
@@ -7153,6 +7201,19 @@ export class PurchaseJournal {
     const fulfilment = this.findFulfilment(purchaseId);
     const receipts = this.receipts(purchaseId);
     const receiptSet = this.findReceiptSet(purchaseId);
+    if (["cancelled", "expired", "denied", "failed_terminal"].includes(state)) {
+      const openVoucher = this.db.prepare(
+        `SELECT movement_id FROM batch_treasury_movements
+          WHERE purchase_id = ? AND kind = 'voucher'
+            AND state IN ('planned', 'submitted', 'ambiguous')
+          LIMIT 1`
+      ).get(purchaseId) as { movement_id: string } | undefined;
+      if (openVoucher) {
+        throw new JournalInvariantError(
+          `terminal Purchase ${purchaseId} retains open batch voucher Movement ${openVoucher.movement_id}`
+        );
+      }
+    }
 
     if (state === "terms_bound" && (!terms || !executionPlan)) {
       throw new JournalInvariantError(`Purchase ${purchaseId} cannot enter terms_bound without Checkout Terms`);

@@ -78,7 +78,8 @@ The canonical authenticated HTTP projection of the Purchase module's
 `purchase`, `status`, and `recover` operations. Its OpenAPI description and
 runtime validation share the same schemas. MCP is a stateless compatibility
 projection over the same operations, not a separate lifecycle or authority
-surface.
+surface. Production HTTP is carried only over a pre-provisioned permissioned
+Unix socket; loopback TCP is not a supported transport.
 
 ### Purchase Authorization
 

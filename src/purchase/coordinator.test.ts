@@ -53,7 +53,8 @@ import {
   type AuthorityReplayStore,
 } from "../authority/protocol.js";
 import { EgressPolicy } from "./egress-policy.js";
-import { evidenceDigest, assertPurchaseRequestKey } from "./identity.js";
+import { JournalBatchVoucherAuthorizer } from "../adapters/kaspa-x402/batch-payment-module.js";
+import { evidenceDigest, assertPurchaseRequestKey, createPurchaseId } from "./identity.js";
 import { PurchaseJournal, type JournalFaultPoint } from "./journal.js";
 import type { CheckoutTerms, PurchaseId, PurchaseIntent, PurchaseModule } from "./types.js";
 
@@ -176,6 +177,76 @@ test("caller cancellation before an external Treasury effect atomically releases
       "abandoned"
     );
   });
+});
+
+test("cancelled prepared batch voucher terminalizes its Movement without rewinding the signed ceiling", async () => {
+  await withFixture(async ({ coordinator, dependencies, intent, journal }) => {
+    dependencies.executionMechanism = "channel-voucher";
+    const cancellation = new AbortController();
+    dependencies.onExactPrepared = () => {
+      persistPreparedVoucher(journal, dependencies.lastPurchaseId);
+      cancellation.abort();
+    };
+    const batchIntent = {
+      ...intent,
+      requestKey: assertPurchaseRequestKey("test:coordinator:cancelled-batch-voucher"),
+    };
+
+    await assert.rejects(
+      coordinator.purchase(batchIntent, cancellation.signal),
+      (error: unknown) => error instanceof Error && error.name === "AbortError"
+    );
+
+    const purchase = journal.findPurchaseByRequestKey(batchIntent.requestKey);
+    assert.ok(purchase);
+    assert.equal(purchase.state, "cancelled");
+    assert.equal(
+      journal.requireBatchTreasuryMovement(`batch-voucher:${purchase.id}`).state,
+      "failed_terminal"
+    );
+    const channel = journal.requireBatchChannel(TEST_BATCH_CHANNEL_ID);
+    assert.equal(channel.signedCumulativeAtomic, "60");
+    assert.equal(channel.latestVoucher?.amountAtomic, "60");
+    assert.equal(planNextVoucherOnSameEpoch(journal, 0x51).state, "planned");
+    assert.equal((await coordinator.recover(purchase.id)).state, "cancelled");
+  });
+});
+
+test("expired prepared batch voucher terminalizes its Movement without rewinding the signed ceiling", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-batch-voucher-expiry-"));
+  fs.chmodSync(directory, 0o700);
+  let now = NOW;
+  const journal = new PurchaseJournal(path.join(directory, "purchase.sqlite"), { now: () => now });
+  const dependencies = new FakeDependencies();
+  dependencies.executionMechanism = "channel-voucher";
+  dependencies.termsExpiresAt = new Date(NOW + 1_000).toISOString();
+  dependencies.onExactPrepared = () => persistPreparedVoucher(journal, dependencies.lastPurchaseId);
+  const transition = journal.transitionPurchase.bind(journal);
+  journal.transitionPurchase = ((...args: Parameters<PurchaseJournal["transitionPurchase"]>) => {
+    const result = transition(...args);
+    if (args[2] === "execution_prepared") now = NOW + 1_001;
+    return result;
+  }) as PurchaseJournal["transitionPurchase"];
+  const coordinator = makeCoordinator(journal, dependencies, () => now);
+  try {
+    const expired = await coordinator.purchase({
+      ...makeIntent(),
+      requestKey: assertPurchaseRequestKey("test:coordinator:expired-batch-voucher"),
+    });
+    assert.equal(expired.state, "expired");
+    assert.equal(
+      journal.requireBatchTreasuryMovement(`batch-voucher:${expired.id}`).state,
+      "failed_terminal"
+    );
+    const channel = journal.requireBatchChannel(TEST_BATCH_CHANNEL_ID);
+    assert.equal(channel.signedCumulativeAtomic, "60");
+    assert.equal(channel.latestVoucher?.amountAtomic, "60");
+    assert.equal(planNextVoucherOnSameEpoch(journal, 0x52).state, "planned");
+    assert.equal((await coordinator.recover(expired.id)).state, "expired");
+  } finally {
+    journal.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("caller cancellation after a possible Treasury effect preserves reconciliation state", async () => {
@@ -1496,6 +1567,110 @@ function artifact(
       detailDigest,
     },
   };
+}
+
+const TEST_BATCH_CHANNEL_ID = "11".repeat(32);
+const TEST_BATCH_ACTIVE_TX = "22".repeat(32);
+
+function persistPreparedVoucher(journal: PurchaseJournal, purchaseId: PurchaseId): void {
+  let channel;
+  try {
+    channel = journal.requireBatchChannel(TEST_BATCH_CHANNEL_ID);
+  } catch {
+    channel = journal.saveBatchChannel({
+      channelId: TEST_BATCH_CHANNEL_ID,
+      origin: "https://merchant.example",
+      resourceUrl: "https://merchant.example/resource",
+      network: "kaspa:testnet-10",
+      asset: "KAS",
+      templateId: "kaspa-x402-escrow-v1",
+      clientPublicKey: "33".repeat(32),
+      serverPublicKey: "44".repeat(32),
+      payTo: TESTNET_PAYEE,
+      refundAddress: "kaspatest:refund",
+      refundTimeoutDaa: "500000000",
+      salt: "55".repeat(32),
+      activeOutpoint: { txid: TEST_BATCH_ACTIVE_TX, index: 0 },
+      activeScriptPublicKey: `000020${"66".repeat(32)}`,
+      escrowAddress: "kaspatest:batch-escrow",
+      fundingSource: "vault-treasury",
+      fundingAmountAtomic: "1000",
+      chargedCumulativeAtomic: "0",
+      claimedCumulativeAtomic: "0",
+      signedCumulativeAtomic: "0",
+      status: "active",
+      epoch: 0,
+      version: 1,
+      createdAtMs: NOW,
+      updatedAtMs: NOW,
+    });
+  }
+  new JournalBatchVoucherAuthorizer(journal, "10").authorize({
+    purchaseId,
+    channel: {
+      id: channel.channelId,
+      origin: channel.origin,
+      resourceUrl: channel.resourceUrl,
+      config: {
+        network: channel.network,
+        asset: channel.asset,
+        templateId: channel.templateId,
+        clientPublicKey: channel.clientPublicKey,
+        serverPublicKey: channel.serverPublicKey,
+        payTo: channel.payTo,
+        refundAddress: channel.refundAddress,
+        refundTimeoutDaa: channel.refundTimeoutDaa,
+        salt: channel.salt,
+      },
+      clientPublicKey: channel.clientPublicKey,
+      serverPublicKey: channel.serverPublicKey,
+      activeScriptPublicKey: channel.activeScriptPublicKey,
+      escrowAddress: channel.escrowAddress,
+      fundingSource: channel.fundingSource,
+      fundingAmount: channel.fundingAmountAtomic,
+      chargedCumulativeAmount: channel.chargedCumulativeAtomic,
+      claimedCumulativeAmount: channel.claimedCumulativeAtomic,
+      signedCumulativeAmount: channel.signedCumulativeAtomic,
+      activeOutpoint: channel.activeOutpoint,
+      refundTimeoutDaa: channel.refundTimeoutDaa,
+      templateId: channel.templateId,
+      status: channel.status,
+    } as Parameters<JournalBatchVoucherAuthorizer["authorize"]>[0]["channel"],
+    maximumAuthorizedAtomic: "60",
+    voucherCeilingAtomic: "60",
+    requirementsDigest: evidenceDigest(`test:batch-requirements:${purchaseId}`),
+    requestHash: "99".repeat(32),
+  });
+  journal.saveBatchChannel({
+    ...channel,
+    signedCumulativeAtomic: "60",
+    latestVoucher: { amountAtomic: "60", signature: "77".repeat(64) },
+    version: channel.version + 1,
+    updatedAtMs: NOW,
+  });
+}
+
+function planNextVoucherOnSameEpoch(journal: PurchaseJournal, seed: number) {
+  const purchaseId = createPurchaseId(new Uint8Array(16).fill(seed));
+  journal.createPurchase({
+    id: purchaseId,
+    requestKey: assertPurchaseRequestKey(`test:coordinator:next-batch-voucher:${seed}`),
+    resourceUrl: "https://merchant.example/resource",
+    method: "GET",
+    resourceFingerprint: evidenceDigest(`test:next-batch-resource:${seed}`),
+    expectedMerchantId: "merchant:test",
+    expectedMerchantOrigin: "https://merchant.example",
+  });
+  return journal.planBatchTreasuryMovement({
+    movementId: `batch-voucher:${purchaseId}`,
+    channelId: TEST_BATCH_CHANNEL_ID,
+    purchaseId,
+    kind: "voucher",
+    requestDigest: evidenceDigest(`test:next-batch-movement:${seed}`),
+    activeOutpointBefore: { txid: TEST_BATCH_ACTIVE_TX, index: 0 },
+    maximumAuthorizedAtomic: "70",
+    voucherCeilingAtomic: "70",
+  });
 }
 
 function makeIntent(): PurchaseIntent {

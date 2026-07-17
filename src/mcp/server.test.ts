@@ -1,4 +1,7 @@
 import * as assert from "node:assert/strict";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import test from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -83,9 +86,17 @@ test("MCP passes request cancellation to the API client", async () => {
 
 test("HTTP and MCP return the same canonical view through the production API seam", async () => {
   const credential = generateAgentApiCredential();
-  const running = await startPurchaseApiServer({ application: fakeApplication(), credential, port: 0 });
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-mcp-api-"));
+  const socketPath = path.join(directory, "api.sock");
+  const access = {
+    expectedServerUserId: typeof process.getuid === "function" ? process.getuid() : 0,
+    runtimeGroupId: typeof process.getgid === "function" ? process.getgid() : 0,
+  };
+  fs.chownSync(directory, access.expectedServerUserId, access.runtimeGroupId);
+  fs.chmodSync(directory, 0o710);
+  const running = await startPurchaseApiServer({ application: fakeApplication(), credential, socketPath, ...access });
   try {
-    const client = new PurchaseApiClient({ baseUrl: running.baseUrl, credential });
+    const client = new PurchaseApiClient({ socketPath, credential, ...access });
     const direct = await client.status(fakeView().id);
     const registrar = new CapturingRegistrar();
     registerSompiTools(registrar, client);
@@ -93,6 +104,7 @@ test("HTTP and MCP return the same canonical view through the production API sea
     assert.deepEqual(throughMcp, direct);
   } finally {
     await running.close();
+    fs.rmSync(directory, { recursive: true, force: true });
   }
 });
 

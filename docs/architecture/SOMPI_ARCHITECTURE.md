@@ -179,7 +179,9 @@ Responsibilities:
 - enforce request size, concurrency, deadline, cancellation, and structured
   error limits;
 - call the Purchase module and return deterministic secret-free projections;
-- bind to loopback or an operator-controlled local socket by default;
+- bind only to a pre-provisioned, permissioned Unix-domain socket whose owner,
+  group, mode, and path identity are verified before the bearer credential is
+  sent;
 - publish the canonical OpenAPI 3.2 description.
 
 It owns transport authentication and projection only. It does not implement
