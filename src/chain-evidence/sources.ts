@@ -199,10 +199,10 @@ export class WrpcOperatorChainObserver implements OperatorChainObserver {
         includeOrphanPool: true,
         filterTransactionPool: false,
       });
-      const matches = pool.entries.filter((entry) => deriveTransactionId(entry.transaction) === request.transactionId);
-      if (matches.length > 1) return nonPresent("unknown", "kaspa-operator-wrpc-v1", digest({ result: "duplicate-mempool-identity", transactionId: request.transactionId }), readTime(this.now()));
-      if (matches.length === 1) {
-        validateWrpcTransaction(matches[0].transaction, request);
+      const transactions = mempoolTransactionsByAddress(pool.entries as unknown[], request.watchedAddresses);
+      const match = transactions.get(request.transactionId);
+      if (match) {
+        validateWrpcTransaction(match, request);
         return Object.freeze({
           status: "present" as const, level: "provisional" as const, view: "current" as const,
           sourceProfile: "kaspa-operator-wrpc-v1", transactionId: request.transactionId,
@@ -243,13 +243,41 @@ function validateWitnessTransaction(transaction: Record<string, unknown>, reques
   }
 }
 
+/**
+ * Rusty Kaspa returns one address bucket with `sending` and `receiving`
+ * mempool entries for each requested address. The same transaction may appear
+ * in more than one bucket, so identity-deduplicate it before matching.
+ */
+function mempoolTransactionsByAddress(
+  values: unknown[],
+  watchedAddresses: readonly string[]
+): ReadonlyMap<string, unknown> {
+  const watched = new Set(watchedAddresses);
+  const transactions = new Map<string, unknown>();
+  for (const value of values) {
+    const bucket = record(value, "wRPC mempool address bucket");
+    const address = String(bucket.address ?? "");
+    if (!watched.has(address)) throw new Error("wRPC mempool returned an unexpected address bucket");
+    const entries = [
+      ...array(bucket.sending, "wRPC sending mempool entries"),
+      ...array(bucket.receiving, "wRPC receiving mempool entries"),
+    ];
+    for (const value of entries) {
+      const entry = record(value, "wRPC address mempool entry");
+      const transaction = entry.transaction;
+      const transactionId = deriveTransactionId(transaction);
+      transactions.set(transactionId, transaction);
+    }
+  }
+  return transactions;
+}
+
 function validateWrpcTransaction(transaction: unknown, request: Readonly<ChainEvidenceRequest>): void {
   const value = record(transaction, "wRPC transaction");
   const outputs = array(value.outputs, "wRPC outputs").map((entry) => record(entry, "wRPC output"));
   for (const expected of request.expectedOutputs) {
     const output = outputs[expected.index];
-    const script = record(output?.scriptPublicKey, "wRPC output script");
-    const serialized = `${Number(script.version).toString(16).padStart(4, "0")}${String(script.script).toLowerCase()}`;
+    const serialized = wrpcSerializedScript(output?.scriptPublicKey);
     if (!output || BigInt(output.value as string | number | bigint).toString() !== expected.amountAtomic || serialized !== expected.scriptPublicKey) {
       throw new Error("wRPC mempool output differs from the prepared transaction");
     }
@@ -267,6 +295,29 @@ function validateWrpcTransaction(transaction: unknown, request: Readonly<ChainEv
       }
     }
   }
+}
+
+function wrpcSerializedScript(value: unknown): string {
+  if (typeof value === "string") {
+    const serialized = value.toLowerCase();
+    if (serialized.length < 4 || serialized.length % 2 !== 0 || !/^[a-f0-9]+$/.test(serialized)) {
+      throw new Error("wRPC output script is invalid");
+    }
+    return serialized;
+  }
+  const script = record(value, "wRPC output script");
+  const version = Number(script.version);
+  const body = String(script.script ?? "").toLowerCase();
+  if (
+    !Number.isSafeInteger(version) ||
+    version < 0 ||
+    version > 0xffff ||
+    body.length % 2 !== 0 ||
+    !/^[a-f0-9]*$/.test(body)
+  ) {
+    throw new Error("wRPC output script is invalid");
+  }
+  return `${version.toString(16).padStart(4, "0")}${body}`;
 }
 
 function deriveTransactionId(value: unknown): string {

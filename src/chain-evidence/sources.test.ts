@@ -8,6 +8,16 @@ import type { ChainEvidenceRecord, ChainEvidenceRequest } from "./types.js";
 
 test("HTTPS accepted history and operator wRPC corroborate the exact transaction and anchor", async () => {
   const { request, transaction } = fixture();
+  const acceptedBlockTransaction = {
+    ...transaction,
+    outputs: transaction.outputs.map((output: {
+      value: bigint;
+      scriptPublicKey: { version: number; script: string };
+    }) => ({
+      ...output,
+      scriptPublicKey: `${Number(output.scriptPublicKey.version).toString(16).padStart(4, "0")}${output.scriptPublicKey.script}`,
+    })),
+  };
   const accepting = "33".repeat(32);
   const containing = "22".repeat(32);
   const fetcher: typeof fetch = async (input) => {
@@ -35,7 +45,9 @@ test("HTTPS accepted history and operator wRPC corroborate the exact transaction
       : ({
           block: {
             header: { hash: containing, daaScore: 99n },
-            transactions: includeTransactions ? [transaction] : [],
+            // Rusty Kaspa serializes ScriptPublicKey as canonical hex in
+            // accepted block transaction bodies, unlike current-UTXO views.
+            transactions: includeTransactions ? [acceptedBlockTransaction] : [],
           },
         }),
   };
@@ -152,6 +164,46 @@ test("a live exact UTXO prevents a lagging 404 witness from becoming absence", a
   assert.equal(evidence.level, "provisional");
 });
 
+test("empty address-bucket mempool evidence independently proves operator absence", async () => {
+  const { request } = fixture();
+  const observer = new WrpcOperatorChainObserver({
+    rpc: { client: async () => ({
+      getServerInfo: async () => ({ isSynced: true, hasUtxoIndex: true, networkId: "testnet-10", virtualDaaScore: 120n }),
+      getUtxosByAddresses: async () => ({ entries: [] }),
+      getMempoolEntriesByAddresses: async () => ({ entries: [{
+        address: request.watchedAddresses[0],
+        sending: [],
+        receiving: [],
+      }] }),
+    } as any) },
+    depthConfirmationDaa: 10,
+    now: () => 1_800_000_000_000,
+  });
+  const evidence = await observer.observe(request, absentWitness());
+  assert.equal(evidence.status, "absent");
+});
+
+test("address-bucket mempool evidence deduplicates one matching transaction", async () => {
+  const { request, transaction } = fixture();
+  const entry = { transaction };
+  const observer = new WrpcOperatorChainObserver({
+    rpc: { client: async () => ({
+      getServerInfo: async () => ({ isSynced: true, hasUtxoIndex: true, networkId: "testnet-10", virtualDaaScore: 120n }),
+      getUtxosByAddresses: async () => ({ entries: [] }),
+      getMempoolEntriesByAddresses: async () => ({ entries: [{
+        address: request.watchedAddresses[0],
+        sending: [entry],
+        receiving: [entry],
+      }] }),
+    } as any) },
+    depthConfirmationDaa: 10,
+    now: () => 1_800_000_000_000,
+  });
+  const evidence = await observer.observe(request, absentWitness());
+  assert.equal(evidence.status, "present");
+  assert.equal(evidence.level, "provisional");
+});
+
 function fixture(): { request: ChainEvidenceRequest; transaction: Record<string, any> } {
   const script = `20${"44".repeat(32)}ac`;
   const transaction = {
@@ -191,6 +243,14 @@ function fixture(): { request: ChainEvidenceRequest; transaction: Record<string,
 }
 
 function json(value: unknown): Response { return new Response(JSON.stringify(value), { status: 200, headers: { "content-type": "application/json" } }); }
+function absentWitness() {
+  return Object.freeze({
+    status: "absent" as const,
+    sourceProfile: "test-witness-v1",
+    detailDigest: `sha256:${"A".repeat(43)}`,
+    observedAtMs: 1_800_000_000_000,
+  });
+}
 function memoryStore() {
   const records: ChainEvidenceRecord[] = [];
   return {

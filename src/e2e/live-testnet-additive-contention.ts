@@ -40,7 +40,11 @@ import { PolicyEngine } from "../policy.js";
 import { createPaymentIdentifier, createPurchaseId } from "../purchase/identity.js";
 import type { PurchaseId } from "../purchase/types.js";
 import { TreasuryOperationModule } from "../treasury/operations.js";
-import { WalletTreasuryOperationAdapter } from "../treasury/operation-adapters.js";
+import {
+  VaultDepositTreasuryOperationAdapter,
+  VaultSendTreasuryOperationAdapter,
+  WalletTreasuryOperationAdapter,
+} from "../treasury/operation-adapters.js";
 import {
   LIVE_ADDITIONAL_COST_CEILING_ATOMIC,
   LIVE_ADDITIVE_HEAD_AMOUNT_ATOMIC,
@@ -246,6 +250,14 @@ export async function runLiveAdditiveContentionProof(
         key: keyStore.create({ purchaseId, paymentIdentifier }),
       });
     });
+    const statePath = path.join(initialized.layout.root, "contention", "state.json");
+    const persistedState = readContentionStateFile(statePath);
+    if (
+      persistedState &&
+      (persistedState.version !== 1 || persistedState.runId !== initialized.config.runId)
+    ) {
+      throw new Error("contention proof state belongs to a different run");
+    }
     const stagingModule = contentionStagingModule(
       initialized,
       bootstrap.journal,
@@ -258,6 +270,11 @@ export async function runLiveAdditiveContentionProof(
         journal: bootstrap.journal,
         module: stagingModule,
         binding,
+        persisted: binding.label === "first"
+          ? persistedState?.first
+          : binding.label === "second"
+            ? persistedState?.second
+            : persistedState?.retry,
         onProgress: options.onProgress,
       }));
     }
@@ -267,7 +284,6 @@ export async function runLiveAdditiveContentionProof(
     const merchantStore = new SqliteMerchantServerStateStore(merchantStorePath);
     close.push(() => merchantStore.close());
     const originalHead = await registerInitialHead(initialized, initialHead, merchantStore);
-    const statePath = path.join(initialized.layout.root, "contention", "state.json");
     let state = readContentionState(
       statePath,
       initialized.config.runId,
@@ -641,9 +657,73 @@ async function stageCandidate(input: {
     readonly paymentIdentifier: string;
     readonly key: ReturnType<StagingKeyStore["create"]>;
   };
+  readonly persisted?: PreparedCandidate;
   readonly onProgress?: (message: string) => void;
 }): Promise<StagedCandidate> {
   const operationKey = `live:${input.initialized.config.runId}:contention:${input.binding.label}:staging`;
+  const requestHash = sha256Hex(stableStringify({
+    scope: "sompi:live-additive-contention-request:v1",
+    purchaseId: input.binding.purchaseId,
+    paymentIdentifier: input.binding.paymentIdentifier,
+    url: RESOURCE_URL,
+    method: "GET",
+  })) as Hash32Hex;
+  if (input.persisted) {
+    const operation = input.journal.findTreasuryOperation(operationKey);
+    if (
+      !operation ||
+      operation.state !== "completed" ||
+      operation.transactionId !== input.persisted.outpoint.txid
+    ) {
+      throw new Error(`persisted ${input.binding.label} staging operation is not complete`);
+    }
+    const prepared = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(
+      input.journal.readPreparedTreasuryOperation(operationKey)
+    )) as Record<string, any>;
+    const stagingFeeAtomic = requiredAtomic(
+      prepared?.prepared?.feeAtomic,
+      "contention staging fee"
+    );
+    const candidate = input.persisted;
+    if (
+      candidate.label !== input.binding.label ||
+      candidate.purchaseId !== input.binding.purchaseId ||
+      candidate.paymentIdentifier !== input.binding.paymentIdentifier ||
+      candidate.requestHash !== requestHash ||
+      candidate.operationKey !== operationKey ||
+      candidate.keyReference !== input.binding.key.keyReference ||
+      candidate.address !== input.binding.key.address ||
+      candidate.publicKey !== input.binding.key.publicKey ||
+      candidate.scriptPublicKey !== input.binding.key.scriptPublicKey ||
+      candidate.stagingFeeAtomic !== stagingFeeAtomic ||
+      !HASH32.test(candidate.outpoint.txid) ||
+      !Number.isSafeInteger(candidate.outpoint.index) ||
+      candidate.outpoint.index < 0 ||
+      candidate.observed.transactionId !== candidate.outpoint.txid ||
+      candidate.observed.outpoint !== `${candidate.outpoint.txid}:${candidate.outpoint.index}` ||
+      candidate.observed.address !== candidate.address ||
+      candidate.observed.amountAtomic !== STAGING_AMOUNT_ATOMIC ||
+      BigInt(candidate.observed.blockDaaScore) <= 0n ||
+      BigInt(candidate.observed.virtualDaaScore) < BigInt(candidate.observed.blockDaaScore) ||
+      (candidate.observed.finality !== "accepted" && candidate.observed.finality !== "confirmed")
+    ) {
+      throw new Error(`persisted ${input.binding.label} staging evidence is invalid`);
+    }
+    return Object.freeze({
+      label: candidate.label,
+      purchaseId: candidate.purchaseId,
+      paymentIdentifier: candidate.paymentIdentifier,
+      requestHash: candidate.requestHash,
+      operationKey: candidate.operationKey,
+      keyReference: candidate.keyReference,
+      address: candidate.address,
+      publicKey: candidate.publicKey,
+      scriptPublicKey: candidate.scriptPublicKey,
+      outpoint: candidate.outpoint,
+      observed: candidate.observed,
+      stagingFeeAtomic: candidate.stagingFeeAtomic,
+    });
+  }
   const request = Object.freeze({
     operationKey,
     kind: "wallet_send" as const,
@@ -664,13 +744,6 @@ async function stageCandidate(input: {
     input.journal.readPreparedTreasuryOperation(operationKey)
   )) as Record<string, any>;
   const stagingFeeAtomic = requiredAtomic(prepared?.prepared?.feeAtomic, "contention staging fee");
-  const requestHash = sha256Hex(stableStringify({
-    scope: "sompi:live-additive-contention-request:v1",
-    purchaseId: input.binding.purchaseId,
-    paymentIdentifier: input.binding.paymentIdentifier,
-    url: RESOURCE_URL,
-    method: "GET",
-  })) as Hash32Hex;
   return Object.freeze({
     label: input.binding.label,
     purchaseId: input.binding.purchaseId,
@@ -692,6 +765,9 @@ function contentionStagingModule(
   journal: Parameters<typeof stageCandidate>[0]["journal"],
   allowlist: readonly string[]
 ): TreasuryOperationModule {
+  const runPolicy = JSON.parse(
+    fs.readFileSync(initialized.layout.purchasePolicyPath, "utf8")
+  ) as Record<string, unknown>;
   const chainEvidence = new ChainEvidenceModule(
     new WrpcOperatorChainObserver({ rpc: initialized.treasuryWallet, depthConfirmationDaa: 10 }),
     new HttpsAcceptedChainWitness({
@@ -704,12 +780,30 @@ function contentionStagingModule(
   return new TreasuryOperationModule({
     journal,
     policy: new PolicyEngine({
-      maxSompiPerTx: BigInt(STAGING_AMOUNT_ATOMIC),
-      maxSompiPerHour: BigInt(STAGING_AMOUNT_ATOMIC) * 3n,
+      // Contention staging shares the run's Purchase Journal and therefore
+      // shares its already-reserved head/deposit capacity. Keep the exact
+      // operator ceilings while narrowing only the destination allowlist to
+      // these three disposable staging keys.
+      maxSompiPerTx: BigInt(String(runPolicy.maxSompiPerTx)),
+      maxSompiPerHour: BigInt(String(runPolicy.maxSompiPerHour)),
       allowlist: [...allowlist],
       requireApprovalAboveSompi: 0n,
     }),
-    adapters: [new WalletTreasuryOperationAdapter(initialized.treasuryWallet, chainEvidence, "accepted")],
+    adapters: [
+      new WalletTreasuryOperationAdapter(initialized.treasuryWallet, chainEvidence, "accepted"),
+      new VaultSendTreasuryOperationAdapter(
+        initialized.vault,
+        initialized.treasuryWallet,
+        chainEvidence,
+        "accepted"
+      ),
+      new VaultDepositTreasuryOperationAdapter(
+        initialized.vault,
+        initialized.treasuryWallet,
+        chainEvidence,
+        "accepted"
+      ),
+    ],
     feeCeilingAtomic: LIVE_TREASURY_FEE_CEILING_ATOMIC,
   });
 }
@@ -758,18 +852,8 @@ function readContentionState(
   originalHead: ExactHeadRecord,
   staged: readonly StagedCandidate[]
 ): ContentionProofState | undefined {
-  if (!fs.existsSync(filename)) return undefined;
-  const stat = fs.lstatSync(filename);
-  if (!stat.isFile() || stat.isSymbolicLink() || stat.size <= 0 || stat.size > MAX_REPORT_BYTES) {
-    throw new Error("contention proof state file is invalid");
-  }
-  let value: unknown;
-  try {
-    value = JSON.parse(fs.readFileSync(filename, "utf8"));
-  } catch (error) {
-    throw new Error("contention proof state is malformed", { cause: error });
-  }
-  const state = value as ContentionProofState;
+  const state = readContentionStateFile(filename);
+  if (!state) return undefined;
   if (
     state.version !== 1 ||
     state.runId !== runId ||
@@ -807,6 +891,21 @@ function readContentionState(
   return Object.freeze(state);
 }
 
+function readContentionStateFile(filename: string): ContentionProofState | undefined {
+  if (!fs.existsSync(filename)) return undefined;
+  const stat = fs.lstatSync(filename);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size <= 0 || stat.size > MAX_REPORT_BYTES) {
+    throw new Error("contention proof state file is invalid");
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(fs.readFileSync(filename, "utf8"));
+  } catch (error) {
+    throw new Error("contention proof state is malformed", { cause: error });
+  }
+  return Object.freeze(value as ContentionProofState);
+}
+
 function writeContentionState(filename: string, state: ContentionProofState): void {
   const encoded = JSON.stringify(state);
   if (
@@ -832,9 +931,13 @@ function requirePreparedStateCandidate(
     candidate.requestHash !== staged.requestHash ||
     candidate.keyReference !== staged.keyReference ||
     candidate.address !== staged.address ||
+    candidate.publicKey !== staged.publicKey ||
     candidate.scriptPublicKey !== staged.scriptPublicKey ||
+    candidate.operationKey !== staged.operationKey ||
+    candidate.stagingFeeAtomic !== staged.stagingFeeAtomic ||
     candidate.outpoint.txid !== staged.outpoint.txid ||
     candidate.outpoint.index !== staged.outpoint.index ||
+    JSON.stringify(candidate.observed) !== JSON.stringify(staged.observed) ||
     candidate.headOutpoint.txid !== expectedHead.currentOutpoint.txid ||
     candidate.headOutpoint.index !== expectedHead.currentOutpoint.index ||
     candidate.headVersion !== expectedHead.version ||
@@ -1179,7 +1282,11 @@ async function proveLosingCandidateAbsent(
     depthConfirmationDaa: 10,
   }).observe(request, witness);
   if (witness.status !== "absent" || operator.status !== "absent") {
-    throw new Error("losing contention candidate is not independently proven absent");
+    throw new Error(
+      `losing contention candidate is not independently proven absent ` +
+      `(witness=${witness.status}/${witness.sourceProfile}, ` +
+      `operator=${operator.status}/${operator.sourceProfile})`
+    );
   }
   const unspent = await observeCurrentAddressOutpoint({
     wallet: initialized.observerWallet,
