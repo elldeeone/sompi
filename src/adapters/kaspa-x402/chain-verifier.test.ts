@@ -390,18 +390,18 @@ async function makeFixture(options: FixtureOptions = {}): Promise<Fixture> {
       generatePrivateKey: () => FIXED_PRIVATE_KEY,
     });
     const key = keyStore.create({ purchaseId: PURCHASE_ID, paymentIdentifier: PAYMENT_IDENTIFIER });
-    const borrowRedeemScript = buildKip10AdditiveRedeemScript({
+    const headRedeemScript = buildKip10AdditiveRedeemScript({
       ownerPublicKey: OWNER_PUBLIC_KEY,
       amount: THRESHOLD,
     }).toLowerCase();
-    const borrowScriptPublicKey = serializedScriptPublicKey(
+    const headScriptPublicKey = serializedScriptPublicKey(
       kip10AdditiveScriptPublicKey({ ownerPublicKey: OWNER_PUBLIC_KEY, amount: THRESHOLD })
     ).toLowerCase();
     const codec = new KaspaTestnet10AddressCodec();
     const merchantAddress = codec.encodeScriptAddress({
       network: "kaspa:testnet-10",
-      scriptPublicKey: { version: 0, script: borrowScriptPublicKey.slice(4) },
-      serializedScriptPublicKey: borrowScriptPublicKey,
+      scriptPublicKey: { version: 0, script: headScriptPublicKey.slice(4) },
+      serializedScriptPublicKey: headScriptPublicKey,
     });
     const body = Uint8Array.from(REQUEST_BODY);
     const fingerprint = requestFingerprint({
@@ -422,7 +422,7 @@ async function makeFixture(options: FixtureOptions = {}): Promise<Fixture> {
         binding: "kaspa-exact-v2" as const,
         profile: "additive" as const,
         transactionEncoding: "kaspa-sdk-safe-json-v2.0.0" as const,
-        payToScriptPublicKey: borrowScriptPublicKey,
+        payToScriptPublicKey: headScriptPublicKey,
         paymentOutputIndex: 0 as const,
         finality: "accepted" as const,
         templateId: "kaspa-x402-kip10-additive-v1" as const,
@@ -430,8 +430,8 @@ async function makeFixture(options: FixtureOptions = {}): Promise<Fixture> {
         headVersion: "0",
         expectedHeadOutpoint: { txid: BORROW_TXID, index: 0 },
         headAmount: BORROW_AMOUNT,
-        headScriptPublicKey: borrowScriptPublicKey,
-        headRedeemScript: borrowRedeemScript,
+        headScriptPublicKey,
+        headRedeemScript,
         challengeId: "56".repeat(32),
         challengeExpiresAt: "2099-01-01T00:00:00.000Z",
         additiveThresholdSompi: THRESHOLD,
@@ -450,7 +450,7 @@ async function makeFixture(options: FixtureOptions = {}): Promise<Fixture> {
         resourceUrl: RESOURCE_URL,
         amount: AMOUNT,
         payTo: merchantAddress,
-        payToScriptPublicKey: borrowScriptPublicKey,
+        payToScriptPublicKey: headScriptPublicKey,
         paymentOutputIndex: 0,
         requestHash,
         paymentRequirementsHash: sha256Hex(stableStringify(accepted)),

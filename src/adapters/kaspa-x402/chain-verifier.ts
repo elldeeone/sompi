@@ -766,7 +766,7 @@ function parseExactPayment(
     if (price < threshold) throw error("artifact_mismatch", "Merchant price is below additive threshold");
     const headScript = canonicalScript(extra.headScriptPublicKey, "head script public key");
     const headRedeem = canonicalHex(extra.headRedeemScript, "head redeem script");
-    validateKip10Reservation(headRedeem, headScript, threshold);
+    validateKip10Head(headRedeem, headScript, threshold);
     if (headScript !== merchantScript) throw error("artifact_mismatch", "additive payTo is not the head script");
     const headSignature = payToScriptHashSignatureScript(
       headRedeem,
@@ -1166,7 +1166,7 @@ function outputAmount(value: unknown, label: string): bigint {
   return uint64(requireRecord(value, label).value, `${label} amount`, { positive: true });
 }
 
-function validateKip10Reservation(
+function validateKip10Head(
   redeemScript: string,
   scriptPublicKey: string,
   additiveThreshold: bigint
@@ -1178,7 +1178,7 @@ function validateKip10Reservation(
     redeemScript.slice(ownerEnd, ownerEnd + KIP10_AFTER_OWNER.length) !== KIP10_AFTER_OWNER ||
     !redeemScript.endsWith(KIP10_SUFFIX)
   ) {
-    throw error("artifact_mismatch", "borrow redeem script is not the pinned KIP-10 additive template");
+    throw error("artifact_mismatch", "head redeem script is not the pinned KIP-10 additive template");
   }
   const ownerPublicKey = redeemScript.slice(ownerStart, ownerEnd);
   if (!/^[a-f0-9]{64}$/.test(ownerPublicKey)) {
@@ -1195,10 +1195,10 @@ function validateKip10Reservation(
       kip10AdditiveScriptPublicKey({ ownerPublicKey, amount: additiveThreshold })
     ).toLowerCase();
   } catch (cause) {
-    throw error("artifact_mismatch", "KIP-10 reservation parameters are invalid", { cause });
+    throw error("artifact_mismatch", "KIP-10 head parameters are invalid", { cause });
   }
   if (redeemScript !== expectedRedeem || scriptPublicKey !== expectedScript) {
-    throw error("artifact_mismatch", "KIP-10 borrow script does not match reservation facts");
+    throw error("artifact_mismatch", "KIP-10 head script does not match the advertised head facts");
   }
 }
 

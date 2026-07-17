@@ -358,11 +358,11 @@ async function withBridgeFixture(
       paymentIdentifier: PAYMENT_ID,
     });
     const builder = new ExactTransactionBuilder({ keyStore });
-    const borrowRedeemScript = buildKip10AdditiveRedeemScript({
+    const headRedeemScript = buildKip10AdditiveRedeemScript({
       ownerPublicKey: OWNER_PUBLIC_KEY,
       amount: THRESHOLD,
     }).toLowerCase();
-    const borrowScriptPublicKey = serializedScriptPublicKey(
+    const headScriptPublicKey = serializedScriptPublicKey(
       kip10AdditiveScriptPublicKey({
         ownerPublicKey: OWNER_PUBLIC_KEY,
         amount: THRESHOLD,
@@ -370,8 +370,8 @@ async function withBridgeFixture(
     ).toLowerCase();
     const payTo = new KaspaTestnet10AddressCodec().encodeScriptAddress({
       network: "kaspa:testnet-10",
-      scriptPublicKey: { version: 0, script: borrowScriptPublicKey.slice(4) },
-      serializedScriptPublicKey: borrowScriptPublicKey,
+      scriptPublicKey: { version: 0, script: headScriptPublicKey.slice(4) },
+      serializedScriptPublicKey: headScriptPublicKey,
     });
     const request: ExactTransactionPaymentRequest = {
       network: "kaspa:testnet-10",
@@ -380,7 +380,7 @@ async function withBridgeFixture(
       resourceUrl: "https://merchant.example/resource",
       amount: PRICE,
       payTo,
-      payToScriptPublicKey: borrowScriptPublicKey,
+      payToScriptPublicKey: headScriptPublicKey,
       paymentOutputIndex: 0,
       requestHash: REQUEST_HASH,
       paymentRequirementsHash: "45".repeat(32),
@@ -392,8 +392,8 @@ async function withBridgeFixture(
         headVersion: "0",
         expectedHeadOutpoint: { txid: BORROW_TXID, index: 0 },
         headAmount: "100000000",
-        headScriptPublicKey: borrowScriptPublicKey,
-        headRedeemScript: borrowRedeemScript,
+        headScriptPublicKey,
+        headRedeemScript,
         additiveThresholdSompi: THRESHOLD,
         challengeId: "56".repeat(32),
         challengeExpiresAt: "2099-01-01T00:00:00.000Z",
