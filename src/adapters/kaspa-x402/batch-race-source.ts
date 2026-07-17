@@ -107,12 +107,17 @@ export class HttpsBatchClaimRaceSource implements BatchClaimRaceSource {
       entry.outpoint.index === channel.activeOutpoint.index
     );
     if (active.length > 1) return unknown("duplicate-active-channel-utxo");
+    let activeObserved = false;
     if (active.length === 1) {
       if (
         active[0]!.amount !== channel.fundingAmountAtomic ||
         active[0]!.scriptPublicKey !== channel.activeScriptPublicKey
       ) return unknown("active-channel-utxo-mismatch");
-      return Object.freeze({ status: "unspent", detailDigest: digest("active-channel-unspent") });
+      // Current UTXO presence is provisional. A stale or malicious index can
+      // still report the already-spent source, so retained accepted history
+      // must get a chance to prove a winning claim before this observation is
+      // treated as unspent.
+      activeObserved = true;
     }
 
     const recoveryKey = Object.freeze({
@@ -183,7 +188,11 @@ export class HttpsBatchClaimRaceSource implements BatchClaimRaceSource {
         ...(next === undefined ? {} : { nextBeforeCursor: next }),
         rowsScanned: history.length,
       });
-      if (progress.state === "exhausted") return unknown("accepted-history-exhausted");
+      if (progress.state === "exhausted") {
+        return activeObserved
+          ? Object.freeze({ status: "unspent", detailDigest: digest("active-channel-unspent") })
+          : unknown("accepted-history-exhausted");
+      }
       before = progress.nextBeforeCursor;
       pagesScanned = progress.pagesScanned;
     }

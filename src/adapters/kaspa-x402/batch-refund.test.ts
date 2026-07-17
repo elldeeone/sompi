@@ -234,6 +234,35 @@ test("accepted merchant claim atomically advances the channel and supersedes a c
   }
 });
 
+test("an accepted claim above the recorded charge is preserved but fences the successor channel", async () => {
+  const fixture = await channelFixture();
+  try {
+    const race = await preparedClaimRace(fixture, {
+      chargedCumulativeAtomic: "100000",
+      signedCumulativeAtomic: "250000",
+      continuationFundingAmountAtomic: "800000",
+    });
+    const observed = await race.adapter.observe(race.intent, race.prepared.bytes);
+    assert.equal(observed.status, "superseded");
+
+    const channel = fixture.journal.requireBatchChannel(fixture.channelId);
+    assert.deepEqual(channel.activeOutpoint, { txid: race.claimTransactionId, index: 1 });
+    assert.equal(channel.fundingAmountAtomic, "800000");
+    assert.equal(channel.chargedCumulativeAtomic, "100000");
+    assert.equal(channel.claimedCumulativeAtomic, "200000");
+    assert.equal(channel.signedCumulativeAtomic, "0");
+    assert.equal(channel.latestVoucher, undefined);
+    assert.equal(channel.status, "suspicious");
+    assert.equal(channel.retiredReason, "merchant-claim-does-not-match-active-charge");
+
+    const replayed = await race.adapter.observe(race.intent, race.prepared.bytes);
+    assert.equal(replayed.status, "superseded");
+    assert.deepEqual(fixture.journal.requireBatchChannel(fixture.channelId), channel);
+  } finally {
+    fixture.close();
+  }
+});
+
 test("a crash during claim adoption rolls back channel, Movement, recovery, and Treasury state", async () => {
   let inject = false;
   const fixture = await channelFixture({
@@ -360,13 +389,21 @@ async function channelFixture(options: Readonly<{
 
 async function preparedClaimRace(
   fixture: Awaited<ReturnType<typeof channelFixture>>,
+  options: Readonly<{
+    chargedCumulativeAtomic?: string;
+    signedCumulativeAtomic?: string;
+    continuationFundingAmountAtomic?: string;
+  }> = {},
 ) {
   const current = fixture.journal.requireBatchChannel(fixture.channelId);
+  const chargedCumulativeAtomic = options.chargedCumulativeAtomic ?? "0";
+  const signedCumulativeAtomic = options.signedCumulativeAtomic ?? "200000";
+  const continuationFundingAmountAtomic = options.continuationFundingAmountAtomic ?? "800000";
   fixture.journal.saveBatchChannel({
     ...current,
-    chargedCumulativeAtomic: "0",
-    signedCumulativeAtomic: "200000",
-    latestVoucher: { amountAtomic: "200000", signature: "11".repeat(64) },
+    chargedCumulativeAtomic,
+    signedCumulativeAtomic,
+    latestVoucher: { amountAtomic: signedCumulativeAtomic, signature: "11".repeat(64) },
     version: current.version + 1,
     updatedAtMs: current.updatedAtMs,
   });
@@ -403,7 +440,7 @@ async function preparedClaimRace(
         finality: "accepted" as const,
         continuationOutpoint: { txid: claimTransactionId, index: 1 },
         continuationScriptPublicKey: current.activeScriptPublicKey,
-        continuationFundingAmountAtomic: "800000",
+        continuationFundingAmountAtomic,
         detailDigest: claimEvidence,
       }),
     },

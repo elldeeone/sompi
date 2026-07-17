@@ -64,7 +64,47 @@ test("batch claim-race source discovers a spender but trusts it only after exact
   assert.equal(evidenceCalls, 1);
 });
 
-test("an unspent active channel avoids history lookup and an invalid spender fails closed", async () => {
+test("a stale positive active UTXO cannot suppress an accepted claim", async () => {
+  let fetchCalls = 0;
+  let evidenceCalls = 0;
+  const stale = new HttpsBatchClaimRaceSource(
+    "https://history.example/",
+    {
+      getVirtualDaaScore: async () => "1",
+      getUtxos: async () => [{
+        outpoint: { txid: ACTIVE_TXID, index: 0 },
+        amount: "1000000",
+        scriptPublicKey: SCRIPT,
+        address: ESCROW,
+      }],
+    },
+    {
+      observe: async () => {
+        evidenceCalls += 1;
+        return {
+          status: "present",
+          level: "accepted",
+          detailDigest: evidenceDigest("accepted-claim-despite-stale-utxo"),
+        };
+      },
+    } as unknown as ChainEvidenceModule,
+    "accepted",
+    recoveryStore(),
+    async () => {
+      fetchCalls += 1;
+      return new Response(JSON.stringify([claimTransaction()]), { status: 200 });
+    },
+  );
+  assert.equal((await stale.observeClaimWinner({
+    channel: channel(),
+    refundTransactionId: "77".repeat(32),
+    signal: new AbortController().signal,
+  })).status, "claim");
+  assert.equal(fetchCalls, 1);
+  assert.equal(evidenceCalls, 1);
+});
+
+test("a corroborated unspent channel remains unspent and an invalid spender fails closed", async () => {
   let fetchCalls = 0;
   const live = new HttpsBatchClaimRaceSource(
     "https://history.example/",
@@ -87,7 +127,7 @@ test("an unspent active channel avoids history lookup and an invalid spender fai
     refundTransactionId: "77".repeat(32),
     signal: new AbortController().signal,
   })).status, "unspent");
-  assert.equal(fetchCalls, 0);
+  assert.equal(fetchCalls, 1);
 
   const malformed = new HttpsBatchClaimRaceSource(
     "https://history.example/",

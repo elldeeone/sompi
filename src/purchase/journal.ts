@@ -230,8 +230,16 @@ function normalizeBatchChannel(
   const charged = requireBatchAtomic(value.chargedCumulativeAtomic, "batch charged amount");
   const claimed = requireBatchAtomic(value.claimedCumulativeAtomic, "batch claimed amount");
   const signed = requireBatchAtomic(value.signedCumulativeAtomic, "batch signed amount");
-  if (charged < claimed || signed < charged - claimed || funding < charged - claimed) {
+  const suspicious = value.status === "suspicious";
+  const unclaimedCharge = charged > claimed ? charged - claimed : 0n;
+  if (
+    (!suspicious && charged < claimed) ||
+    (!suspicious && (signed < unclaimedCharge || funding < unclaimedCharge))
+  ) {
     throw new JournalInvariantError("batch channel accounting is inconsistent");
+  }
+  if (suspicious && (signed !== 0n || value.latestVoucher !== undefined || value.retiredReason === undefined)) {
+    throw new JournalInvariantError("suspicious batch channel is not durably fenced");
   }
   if (value.latestVoucher) {
     if (requireBatchAtomic(value.latestVoucher.amountAtomic, "batch voucher amount") !== signed) {
@@ -5754,6 +5762,7 @@ export class PurchaseJournal {
         const claimed = BigInt(channel.claimedCumulativeAtomic);
         const charged = BigInt(channel.chargedCumulativeAtomic);
         const claim = funding - continuationFunding;
+        const expectedClaim = charged - claimed;
         if (
           continuationFunding >= funding ||
           claim <= 0n ||
@@ -5762,6 +5771,7 @@ export class PurchaseJournal {
         ) {
           throw new JournalInvariantError("batch claim/refund race continuation violates channel accounting");
         }
+        const chargeMismatch = claim !== expectedClaim;
         const { latestVoucher: _latestVoucher, ...withoutVoucher } = channel;
         const previous = channel;
         channel = this.saveBatchChannel({
@@ -5769,9 +5779,13 @@ export class PurchaseJournal {
           activeOutpoint: continuation,
           activeScriptPublicKey: input.continuationScriptPublicKey,
           fundingAmountAtomic: continuationFundingAtomic,
-          chargedCumulativeAtomic: (charged > claimed + claim ? charged : claimed + claim).toString(),
+          chargedCumulativeAtomic: charged.toString(),
           claimedCumulativeAtomic: (claimed + claim).toString(),
           signedCumulativeAtomic: "0",
+          ...(chargeMismatch ? {
+            status: "suspicious" as const,
+            retiredReason: "merchant-claim-does-not-match-active-charge",
+          } : {}),
           epoch: channel.epoch + 1,
           version: channel.version + 1,
           updatedAtMs: this.timestamp(),
@@ -5786,6 +5800,8 @@ export class PurchaseJournal {
           fundingBefore: previous.fundingAmountAtomic,
           fundingAfter: channel.fundingAmountAtomic,
           charged: channel.chargedCumulativeAtomic,
+          acceptedClaimAtomic: claim.toString(),
+          chargeMismatch,
           claimedBefore: previous.claimedCumulativeAtomic,
           claimedAfter: channel.claimedCumulativeAtomic,
         }), "utf8"));
@@ -5811,8 +5827,15 @@ export class PurchaseJournal {
       } else if (
         channel.fundingAmountAtomic !== continuationFundingAtomic ||
         channel.activeScriptPublicKey !== input.continuationScriptPublicKey ||
-        channel.claimedCumulativeAtomic !== channel.chargedCumulativeAtomic ||
-        channel.signedCumulativeAtomic !== "0"
+        channel.signedCumulativeAtomic !== "0" ||
+        channel.latestVoucher !== undefined ||
+        (
+          channel.claimedCumulativeAtomic !== channel.chargedCumulativeAtomic &&
+          (
+            channel.status !== "suspicious" ||
+            channel.retiredReason !== "merchant-claim-does-not-match-active-charge"
+          )
+        )
       ) {
         throw new JournalInvariantError("previously applied batch claim conflicts with race evidence");
       }
