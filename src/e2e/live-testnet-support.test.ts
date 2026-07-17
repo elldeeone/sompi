@@ -18,6 +18,7 @@ import {
   readProgress,
   readPrivateJsonState,
   reconcileLiveChainMilestoneInclusion,
+  sha256Hex,
   verifyLiveChainMilestoneInclusion,
   writeAtomicJson,
   type LiveChainMilestone,
@@ -31,7 +32,12 @@ import {
   writeLiveTestnetProofReport,
   type LiveTestnetProofReport,
 } from "./live-testnet-proof.js";
-import { KaspaTestnet10AddressCodec } from "../adapters/kaspa-x402/index.js";
+import {
+  ExactTransactionBuilder,
+  KaspaTestnet10AddressCodec,
+  SOMPI_EXACT_FEE_POLICY,
+  StagingKeyStore,
+} from "../adapters/kaspa-x402/index.js";
 import { SUPPORTED_PROTOCOL_PROFILES } from "../protocols/profiles.js";
 import { assertPurchaseId, createPaymentIdentifier } from "../purchase/identity.js";
 import { SqliteMerchantServerStateStore } from "../demo/merchant-server-store.js";
@@ -483,6 +489,123 @@ test("Merchant verifier rejects an additive head outside configured live state b
       /differs from the configured profile/
     );
     await closeInitialized(initialized);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("Merchant verifier refuses a first-seen accepted output without a durable pre-submission plan", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-live-merchant-accepted-shortcut-"));
+  try {
+    const now = Date.parse("2030-01-01T00:00:00.000Z");
+    const purchaseId = assertPurchaseId("pur_AAAAAAAAAAAAAAAAAAAAAA");
+    const paymentIdentifier = createPaymentIdentifier(purchaseId, 1);
+    const keyStore = new StagingKeyStore({
+      directory: path.join(root, "keys"),
+      now: () => now,
+      generatePrivateKey: () => "01".padStart(64, "0"),
+    });
+    const staging = keyStore.create({ purchaseId, paymentIdentifier });
+    const codec = new KaspaTestnet10AddressCodec();
+    const payTo = "kaspatest:qq2n2shqkghczyel57af242ffs50x5uj07w7ezg7kwm8frwt5xhljqa3d68et";
+    const payToScriptPublicKey = codec.scriptPublicKeyForAddress(payTo, LIVE_NETWORK).toLowerCase();
+    const requestHash = "41".repeat(32);
+    const paymentRequirementsHash = "42".repeat(32);
+    const amount = "20000000";
+    const builder = new ExactTransactionBuilder({ keyStore, now: () => now });
+    const built = await builder.build({
+      purchaseId,
+      paymentIdentifier,
+      request: {
+        network: LIVE_NETWORK,
+        profile: "standard-native",
+        origin: "https://merchant.example",
+        resourceUrl: "https://merchant.example/report",
+        amount,
+        payTo,
+        payToScriptPublicKey,
+        paymentOutputIndex: 0,
+        requestHash,
+        paymentRequirementsHash,
+        authorizationExpiresAt: "2099-01-01T00:00:00.000Z",
+        requiredFinality: "accepted",
+        fundingSource: "vault-treasury",
+      },
+      staging: {
+        outpoint: { txid: "43".repeat(32), index: 0 },
+        amountAtomic: (BigInt(amount) + BigInt(SOMPI_EXACT_FEE_POLICY.feeSompi)).toString(),
+        scriptPublicKey: staging.scriptPublicKey,
+        address: staging.address,
+        blockDaaScore: "500000000",
+        keyReference: staging.keyReference,
+      },
+      additionalCostCeilingAtomic: "2050000",
+      stagingTransactionFeeAtomic: "50000",
+    });
+    const wallet = {
+      networkId: "testnet-10",
+      client: async () => ({
+        getUtxosByAddresses: async () => ({
+          entries: [{
+            outpoint: { transactionId: built.transactionId, index: 0 },
+            amount,
+            scriptPublicKey: { version: 0, script: payToScriptPublicKey.slice(4) },
+            blockDaaScore: 500000001n,
+          }],
+        }),
+      }),
+      serverInfo: async () => ({ virtualDaaScore: 500000002n }),
+    } as unknown as KaspaWallet;
+    const verifier = new LiveMerchantExactVerifier({
+      wallet,
+      statePath: path.join(root, "merchant-verifier.json"),
+      expected: { profile: "standard-native", payTo, payToScriptPublicKey },
+      now: () => now,
+    });
+    const verificationRequest = {
+      network: LIVE_NETWORK,
+      profile: "standard-native",
+      transaction: built.transaction,
+      transactionEncoding: "kaspa-sdk-safe-json-v2.0.0",
+      paymentOutputIndex: 0,
+      amount,
+      payTo,
+      payToScriptPublicKey,
+      requiredFinality: "accepted",
+      requestHash,
+      paymentRequirementsHash,
+      authorization: built.authorization,
+    } satisfies ExactTransactionVerificationRequest;
+
+    await assert.rejects(
+      verifier.verifyExactPayment(verificationRequest),
+      /accepted exact output requires a durable pre-submission plan/
+    );
+
+    writeAtomicJson(path.join(root, "merchant-verifier.json"), {
+      version: 2,
+      transactionId: built.transactionId,
+      transactionDigest: sha256Hex(built.transaction),
+      binding: {
+        profile: "standard-native",
+        requestHash,
+        paymentRequirementsHash,
+        requestAuthorizationDigest: built.authorization.digest,
+        requestAuthorizationPublicKey: staging.publicKey,
+        payerAddress: staging.address,
+        staging: {
+          outpoint: `${"43".repeat(32)}:0`,
+          amountAtomic: (BigInt(amount) + BigInt(SOMPI_EXACT_FEE_POLICY.feeSompi)).toString(),
+          scriptPublicKey: staging.scriptPublicKey,
+        },
+      },
+      paymentOutpoint: `${built.transactionId}:0`,
+      state: "planned",
+      plannedAt: "2030-01-01T00:00:00.000Z",
+    });
+    const replayed = await verifier.verifyExactPayment(verificationRequest);
+    assert.equal(replayed.transactionId, built.transactionId);
+    assert.equal(verifier.state().state, "observed");
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

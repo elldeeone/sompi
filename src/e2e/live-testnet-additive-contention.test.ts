@@ -26,6 +26,22 @@ test("additive contention report binds one winner, one absent loser, and a fresh
     /invariants changed/
   );
 
+  for (const field of ["purchaseId", "paymentIdentifier", "requestHash"] as const) {
+    const reusedAuthorization = structuredClone(report);
+    (reusedAuthorization.explicitRetry as any)[field] = report.candidates[0][field];
+    assert.throws(
+      () => assertLiveAdditiveContentionReport(reusedAuthorization),
+      /invariants changed/
+    );
+  }
+
+  const collidingInitialAuthorization = structuredClone(report);
+  (collidingInitialAuthorization.candidates[1] as any).purchaseId = report.candidates[0].purchaseId;
+  assert.throws(
+    () => assertLiveAdditiveContentionReport(collidingInitialAuthorization),
+    /invariants changed/
+  );
+
   const missingAbsence = structuredClone(report);
   (missingAbsence.loser as any).operatorObservation = "unknown";
   assert.throws(
@@ -44,6 +60,20 @@ test("additive contention report binds one winner, one absent loser, and a fresh
   (brokenInitialLineage.initialHead as any).outpoint = `${"ab".repeat(32)}:0`;
   assert.throws(
     () => assertLiveAdditiveContentionReport(brokenInitialLineage),
+    /invariants changed/
+  );
+
+  const invalidInitialAddress = structuredClone(report);
+  (invalidInitialAddress.initialHead as any).address = "kaspatest:not-a-real-address";
+  assert.throws(
+    () => assertLiveAdditiveContentionReport(invalidInitialAddress),
+    /initial head evidence is invalid/
+  );
+
+  const wrongNetwork = structuredClone(report);
+  (wrongNetwork as any).network = "kaspa:mainnet";
+  assert.throws(
+    () => assertLiveAdditiveContentionReport(wrongNetwork),
     /invariants changed/
   );
 
@@ -114,8 +144,12 @@ function fixture(): LiveAdditiveContentionReport {
     headAmountAtomic: string
   ) => Object.freeze({
     label,
-    purchaseId: `pur_${label}_${"a".repeat(40)}`,
-    paymentIdentifier: `pay_${label}_${"b".repeat(39)}`,
+    purchaseId: label === "first"
+      ? "pur_AAAAAAAAAAAAAAAAAAAAAA"
+      : label === "second"
+        ? "pur_BBBBBBBBBBBBBBBBBBBBBB"
+        : "pur_CCCCCCCCCCCCCCCCCCCCCC",
+    paymentIdentifier: `pay_${label === "first" ? "D" : label === "second" ? "E" : "F"}${"a".repeat(42)}`,
     requestHash: label === "first" ? "88".repeat(32) : label === "second" ? "99".repeat(32) : "aa".repeat(32),
     stagingOutpoint: `${stagingTx}:0`,
     transactionId,
@@ -148,7 +182,7 @@ function fixture(): LiveAdditiveContentionReport {
     initialHead: Object.freeze({
       transactionId: initialTx,
       outpoint: `${initialTx}:0`,
-      address: "kaspatest:head",
+      address: "kaspatest:qq2n2shqkghczyel57af242ffs50x5uj07w7ezg7kwm8frwt5xhljqa3d68et",
       amountAtomic: "100000000",
       blockDaaScore: "515999000",
       virtualDaaScore: "516000000",

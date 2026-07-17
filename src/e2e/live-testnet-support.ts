@@ -731,19 +731,17 @@ export class LiveMerchantExactVerifier implements ExactTransactionVerifier {
     try {
       const existing = readMerchantVerifierState(this.statePath);
       const transactionDigest = sha256Hex(request.transaction);
-      if (
-        existing &&
-        (existing.transactionId !== parsed.transactionId ||
-          existing.transactionDigest !== transactionDigest)
-      ) {
-        throw new Error("Merchant verifier state is bound to a different exact transaction");
-      }
+      const binding = merchantVerifierBinding(request, parsed);
+      if (existing) assertMerchantVerifierStateMatches(existing, parsed.transactionId, transactionDigest, binding);
       let observation = await findRpcOutpoint(
         this.wallet,
         request.payTo,
         parsed.transactionId,
         request.paymentOutputIndex
       );
+      if (observation && !existing) {
+        throw new Error("accepted exact output requires a durable pre-submission plan");
+      }
       if (!observation) {
         if (parsed.headInput) {
           await this.assertInputExists(
@@ -764,9 +762,10 @@ export class LiveMerchantExactVerifier implements ExactTransactionVerifier {
       }
       if (!existing) {
         writeAtomicJson(this.statePath, {
-          version: 1,
+          version: 2,
           transactionId: parsed.transactionId,
           transactionDigest,
+          binding,
           paymentOutpoint: `${parsed.transactionId}:${request.paymentOutputIndex}`,
           ...(request.profile === "additive"
             ? { continuationOutpoint: `${parsed.transactionId}:0` }
@@ -805,9 +804,10 @@ export class LiveMerchantExactVerifier implements ExactTransactionVerifier {
       }
       const info = await this.wallet.serverInfo();
       const state = Object.freeze({
-        version: 1 as const,
+        version: 2 as const,
         transactionId: parsed.transactionId,
         transactionDigest,
+        binding,
         paymentOutpoint: `${parsed.transactionId}:${request.paymentOutputIndex}`,
         ...(request.profile === "additive"
           ? { continuationOutpoint: `${parsed.transactionId}:0` }
@@ -1080,9 +1080,10 @@ export class LiveMerchantExactVerifier implements ExactTransactionVerifier {
 }
 
 export interface MerchantVerifierState {
-  readonly version: 1;
+  readonly version: 2;
   readonly transactionId: string;
   readonly transactionDigest: string;
+  readonly binding: MerchantVerifierBinding;
   readonly paymentOutpoint: string;
   readonly continuationOutpoint?: string;
   readonly state: "planned" | "observed";
@@ -1091,6 +1092,26 @@ export interface MerchantVerifierState {
   readonly blockDaaScore?: string;
   readonly virtualDaaScore?: string;
   readonly finality?: "accepted";
+}
+
+export interface MerchantVerifierBinding {
+  readonly profile: "standard-native" | "additive";
+  readonly requestHash: string;
+  readonly paymentRequirementsHash: string;
+  readonly requestAuthorizationDigest: string;
+  readonly requestAuthorizationPublicKey: string;
+  readonly payerAddress: string;
+  readonly staging: Readonly<{
+    outpoint: string;
+    amountAtomic: string;
+    scriptPublicKey: string;
+  }>;
+  readonly head?: Readonly<{
+    outpoint: string;
+    amountAtomic: string;
+    scriptPublicKey: string;
+    address: string;
+  }>;
 }
 
 export interface LiveMerchantExactExpectation {
@@ -1909,14 +1930,113 @@ function readMerchantVerifierState(filename: string): MerchantVerifierState | un
   if (!secureFileExists(filename)) return undefined;
   const value = readPrivateJson<MerchantVerifierState>(filename);
   if (
-    value.version !== 1 ||
+    value.version !== 2 ||
     !HASH32.test(value.transactionId) ||
     !HASH32.test(value.transactionDigest) ||
     !["planned", "observed"].includes(value.state)
   ) {
     throw new Error("Merchant verifier state is invalid");
   }
-  return value;
+  return Object.freeze({
+    ...value,
+    binding: normalizeMerchantVerifierBinding(value.binding),
+  });
+}
+
+function merchantVerifierBinding(
+  request: ExactTransactionVerificationRequest,
+  parsed: ParsedExactTransaction
+): MerchantVerifierBinding {
+  return normalizeMerchantVerifierBinding({
+    profile: request.profile,
+    requestHash: request.requestHash,
+    paymentRequirementsHash: request.paymentRequirementsHash,
+    requestAuthorizationDigest: parsed.requestAuthorization.digest,
+    requestAuthorizationPublicKey: parsed.requestAuthorization.publicKey,
+    payerAddress: parsed.payerAddress,
+    staging: {
+      outpoint: `${parsed.stagingOutpoint.transactionId}:${parsed.stagingOutpoint.index}`,
+      amountAtomic: parsed.stagingAmountAtomic,
+      scriptPublicKey: parsed.stagingScriptPublicKey,
+    },
+    ...(parsed.headInput === undefined ? {} : {
+      head: {
+        outpoint: `${parsed.headInput.transactionId}:${parsed.headInput.index}`,
+        amountAtomic: parsed.headInput.amountAtomic,
+        scriptPublicKey: parsed.headInput.scriptPublicKey,
+        address: parsed.headInput.address,
+      },
+    }),
+  });
+}
+
+function assertMerchantVerifierStateMatches(
+  state: MerchantVerifierState,
+  transactionId: string,
+  transactionDigest: string,
+  binding: MerchantVerifierBinding
+): void {
+  if (
+    state.transactionId !== transactionId ||
+    state.transactionDigest !== transactionDigest ||
+    JSON.stringify(normalizeMerchantVerifierBinding(state.binding)) !== JSON.stringify(binding)
+  ) {
+    throw new Error("Merchant verifier state is bound to different exact evidence");
+  }
+}
+
+function normalizeMerchantVerifierBinding(value: unknown): MerchantVerifierBinding {
+  const binding = value as Partial<MerchantVerifierBinding> | undefined;
+  if (
+    !binding ||
+    (binding.profile !== "standard-native" && binding.profile !== "additive") ||
+    !HASH32.test(String(binding.requestHash ?? "").toLowerCase()) ||
+    !HASH32.test(String(binding.paymentRequirementsHash ?? "").toLowerCase()) ||
+    !HASH32.test(String(binding.requestAuthorizationDigest ?? "").toLowerCase()) ||
+    !HASH32.test(String(binding.requestAuthorizationPublicKey ?? "").toLowerCase()) ||
+    !ADDRESS.test(String(binding.payerAddress ?? "")) ||
+    !binding.staging
+  ) {
+    throw new Error("Merchant verifier binding is invalid");
+  }
+  const staging = binding.staging;
+  const stagingOutpoint = requireOutpoint(staging.outpoint, "Merchant verifier staging outpoint");
+  const stagingAmount = requireAtomic(staging.amountAtomic, "Merchant verifier staging amount");
+  const stagingScript = String(staging.scriptPublicKey ?? "").toLowerCase();
+  if (!HEX.test(stagingScript) || stagingScript.length > 16_384) {
+    throw new Error("Merchant verifier staging script is invalid");
+  }
+  let head: MerchantVerifierBinding["head"];
+  if (binding.head !== undefined) {
+    const candidate = binding.head;
+    const headScript = String(candidate.scriptPublicKey ?? "").toLowerCase();
+    if (!ADDRESS.test(String(candidate.address ?? "")) || !HEX.test(headScript) || headScript.length > 16_384) {
+      throw new Error("Merchant verifier head binding is invalid");
+    }
+    head = Object.freeze({
+      outpoint: requireOutpoint(candidate.outpoint, "Merchant verifier head outpoint"),
+      amountAtomic: requireAtomic(candidate.amountAtomic, "Merchant verifier head amount"),
+      scriptPublicKey: headScript,
+      address: String(candidate.address),
+    });
+  }
+  if ((binding.profile === "additive") !== (head !== undefined)) {
+    throw new Error("Merchant verifier profile and input binding disagree");
+  }
+  return Object.freeze({
+    profile: binding.profile,
+    requestHash: String(binding.requestHash).toLowerCase(),
+    paymentRequirementsHash: String(binding.paymentRequirementsHash).toLowerCase(),
+    requestAuthorizationDigest: String(binding.requestAuthorizationDigest).toLowerCase(),
+    requestAuthorizationPublicKey: String(binding.requestAuthorizationPublicKey).toLowerCase(),
+    payerAddress: String(binding.payerAddress),
+    staging: Object.freeze({
+      outpoint: stagingOutpoint,
+      amountAtomic: stagingAmount,
+      scriptPublicKey: stagingScript,
+    }),
+    ...(head === undefined ? {} : { head }),
+  });
 }
 
 function requireOutpoint(value: unknown, label: string): string {

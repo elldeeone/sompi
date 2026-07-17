@@ -75,6 +75,8 @@ const REPORT_MODE = 0o600;
 const MAX_REPORT_BYTES = 2 * 1024 * 1024;
 const HASH32 = /^[a-f0-9]{64}$/;
 const DIGEST = /^sha256:[A-Za-z0-9_-]{43}$/;
+const PURCHASE_ID = /^pur_[A-Za-z0-9_-]{22}$/;
+const PAYMENT_IDENTIFIER = /^pay_[A-Za-z0-9_-]{43}$/;
 
 type CandidateLabel = "first" | "second" | "retry";
 
@@ -571,14 +573,51 @@ export function assertLiveAdditiveContentionReport(
   ) {
     throw new Error("live additive contention report invariants changed");
   }
-  for (const candidate of [...report.candidates, report.explicitRetry]) {
+  const candidates = [...report.candidates, report.explicitRetry];
+  for (const field of [
+    "purchaseId",
+    "paymentIdentifier",
+    "requestHash",
+    "stagingOutpoint",
+    "transactionId",
+  ] as const) {
+    if (new Set(candidates.map((candidate) => candidate[field])).size !== candidates.length) {
+      throw new Error("live additive contention report invariants changed");
+    }
+  }
+  for (const candidate of candidates) {
     if (
+      !PURCHASE_ID.test(candidate.purchaseId) ||
+      !PAYMENT_IDENTIFIER.test(candidate.paymentIdentifier) ||
       !HASH32.test(candidate.transactionId) ||
       !HASH32.test(candidate.requestHash) ||
       !/^[a-f0-9]{64}:[0-9]+$/.test(candidate.stagingOutpoint) ||
       BigInt(candidate.transactionFeeAtomic) <= 0n ||
       BigInt(candidate.transactionMass) <= 0n
     ) throw new Error("live additive contention candidate evidence is invalid");
+  }
+  try {
+    new KaspaTestnet10AddressCodec().scriptPublicKeyForAddress(
+      report.initialHead.address,
+      LIVE_NETWORK
+    );
+    if (
+      !HASH32.test(report.initialHead.transactionId) ||
+      !HASH32.test(report.initialHead.headId) ||
+      !HASH32.test(report.initialHead.observationStartHash) ||
+      !HASH32.test(report.initialHead.acceptingBlockHash) ||
+      report.initialHead.outpoint !== `${report.initialHead.transactionId}:0` ||
+      BigInt(report.initialHead.blockDaaScore) <= 0n ||
+      BigInt(report.initialHead.acceptingBlockDaaScore) <= 0n ||
+      BigInt(report.initialHead.virtualDaaScore) < BigInt(report.initialHead.blockDaaScore) ||
+      BigInt(report.chainProvenance.nodeVirtualDaaScore) < BigInt(report.initialHead.virtualDaaScore) ||
+      !Number.isFinite(Date.parse(report.generatedAt)) ||
+      report.chainProvenance.nodeVersion.trim().length === 0
+    ) {
+      throw new Error("invalid initial head provenance");
+    }
+  } catch (error) {
+    throw new Error("live additive contention initial head evidence is invalid", { cause: error });
   }
   if (!DIGEST.test(report.loser.operatorEvidenceDigest) || !DIGEST.test(report.loser.witnessEvidenceDigest)) {
     throw new Error("live additive contention absence evidence is invalid");
