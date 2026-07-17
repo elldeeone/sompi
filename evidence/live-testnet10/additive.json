@@ -1,0 +1,201 @@
+{
+  "profile": "urn:sompi:e2e:live-testnet10-ap2-kaspa-x402-exact:2",
+  "generatedAt": "2026-07-16T07:57:53.848Z",
+  "network": "kaspa:testnet-10",
+  "chainMode": "operator-pinned-live-testnet-10-wrpc",
+  "chainProvenance": {
+    "nodeVersion": "2.0.0",
+    "nodeNetwork": "testnet-10",
+    "nodeVirtualDaaScore": "518299061",
+    "nodeSynced": true,
+    "nodeUtxoIndex": true,
+    "rustyKaspaSourceCommit": "78257f273a26c4be085bab0f79437dee99ca8835",
+    "kaspaWasmVersion": "2.0.1"
+  },
+  "liveKaspaTestnet10ExecutionProved": true,
+  "exactProfile": "additive",
+  "purchaseIngress": "mcp-api-compatibility",
+  "ap2HumanPresentConformanceClaimed": false,
+  "authorityMode": "in-process-local-auto-approved-test-fixture",
+  "authorityIsolationAppliedToThisRun": false,
+  "separateAuthorityIsolationProofAvailable": false,
+  "merchantMode": "in-process-local-merchant-independent-wrpc-verifier",
+  "protocolPins": {
+    "ap2": {
+      "release": "v0.2.0",
+      "gitCommit": "b4587ac1d055888a73b4b21750973cffba961793",
+      "specification": "https://github.com/google-agentic-commerce/AP2/tree/v0.2.0/docs/ap2",
+      "profileId": "ap2-v0.2-hp-direct-sd-jwt-es256",
+      "merchantCheckoutProfile": "urn:sompi:checkout:single-resource:2",
+      "mode": "human-present",
+      "checkoutMandateVct": "mandate.checkout.1",
+      "paymentMandateVct": "mandate.payment.1",
+      "rootSdJwtTyp": "example+sd-jwt",
+      "digestAlgorithm": "sha-256",
+      "signatureAlgorithms": [
+        "ES256"
+      ],
+      "nativeKasProfile": "urn:sompi:ap2:payment-instrument:kaspa-x402:1",
+      "nativeKasStrictlyStandardized": false
+    },
+    "x402": {
+      "version": 2,
+      "scheme": "exact",
+      "network": "kaspa:testnet-10",
+      "allowMainnet": false,
+      "packages": {
+        "core": {
+          "version": "0.1.0-alpha.8",
+          "integrity": "sha512-UBY4g9jBZrJyd44zbsla01L2wbN+UQeButAiuEeFUd4EdGwVyR2qxMf1B4hApXBSvrOeH9UZQzhWkBD+Z3WT4A=="
+        },
+        "covenant": {
+          "version": "0.1.0-alpha.8",
+          "integrity": "sha512-HWySEyuNpzFDH4vVZRsUCnMLWWt2ou3sp1XEU+gaycl3O/7fWJPzWo1MYosZzPkS2newL6lXQSr/OR/YQ4wSag=="
+        },
+        "client": {
+          "version": "0.1.0-alpha.8",
+          "integrity": "sha512-n36rG2nYDrN7Dgu5jlh16390k/Z5sOnsj40a347ir8C9U/X/tlgPY24KB0YmUqVmxEOBYRAw2pAEKI/qDqIEwA=="
+        },
+        "server": {
+          "version": "0.1.0-alpha.8",
+          "integrity": "sha512-X5ax8oWGfJlxQqh2RaEQYHw0wQKbRR/iFoeJ9/2w93oNsOC++svNEA/MHlR4SSAiukdXI6PizcsYq0KwPi6jsA=="
+        }
+      },
+      "npmGitCommit": "d3ef63ebfb72ef5139993e75804fcc846a1f9487"
+    },
+    "sqlite": {
+      "implementation": "better-sqlite3",
+      "version": "12.11.1",
+      "integrity": "sha512-dq9AtApgg5PGFtBzPFSBl3HZQjHok5gaQCM6zh2Yk0aSmDCs1CbnVI8/HgASQkNKsWFpseIO9beg5xxpYhbIfA==",
+      "typesVersion": "7.6.13"
+    },
+    "sdJwt": {
+      "implementation": "@sd-jwt/core",
+      "version": "0.20.0",
+      "npmGitCommit": "af170ace9b42984f8c6447caf23256fde6204b31",
+      "integrity": "sha512-thTj5xtKqOvqnULELJGvCa64Hf+Hf7v0Dlao6mTh198rmZcyFCBop3vT1ShgWMhg5cL04ofXeiEhnQR10/8wjA=="
+    },
+    "jose": {
+      "implementation": "jose",
+      "version": "5.10.0",
+      "npmGitCommit": "839b6dad41af850ced40c7a9badf1d725259aefc",
+      "integrity": "sha512-s+3Al/p9g32Iq+oqXxkW//7jk2Vig6FF1CFqzVXoTUXt2qz89YWbL+OwS17NFYEvxC35n0FKeGO2LGYSxeM2Gg=="
+    },
+    "jsonSchema": {
+      "ajvVersion": "8.20.0",
+      "ajvIntegrity": "sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA==",
+      "formatsVersion": "3.0.1",
+      "formatsIntegrity": "sha512-8iUql50EUR+uUcdRQ3HDqa6EVyo3docL8g5WJ3FNcWmu62IbkGUue/pEyLBW8VGKKucTPgqeks4fIU1DA4yowQ=="
+    }
+  },
+  "bootstrapFunding": {
+    "transactionId": "14716309062aa6eab99934750ac432f5c6d10ad274b5dbffa3231877a0304de2",
+    "outpoint": "14716309062aa6eab99934750ac432f5c6d10ad274b5dbffa3231877a0304de2:0",
+    "address": "kaspatest:qrhkzm2xxyfs9m9p8rpwrgh02sl6z9j59trd22k8lczpkzd0w6lgj3edw4lsm",
+    "amountAtomic": "500000000",
+    "blockDaaScore": "518298671",
+    "virtualDaaScore": "518298739",
+    "finality": "confirmed",
+    "observationStartHash": "166fdb9655acb03fd563f047c2bf65e04402abe10c028ce2d5581d25868bce7e",
+    "acceptingBlockHash": "3ff77974e70951a17c2cf06019aac495c5c1400e633f9f980e290442a559ce25",
+    "acceptingBlockDaaScore": "518298671"
+  },
+  "additiveHead": {
+    "created": {
+      "transactionId": "51877bbcb874bec77fa1edda685ffa859747634fc906aed2b41edaf1da502c24",
+      "outpoint": "51877bbcb874bec77fa1edda685ffa859747634fc906aed2b41edaf1da502c24:0",
+      "address": "kaspatest:ppz943z60zasw3guhcsv48xmtedfgdtry4y9kkjm9cep4scghnx8grss8aktn",
+      "amountAtomic": "100000000",
+      "blockDaaScore": "518298753",
+      "virtualDaaScore": "518298818",
+      "finality": "confirmed",
+      "observationStartHash": "90b2520b3d89bd1f8985e375600b443047891363fe7cff311404b3d50b200eea",
+      "acceptingBlockHash": "cea0e4e8eb1d28c0f61c75cd5a1606f71cae671a2dd67c75a0193b584599db70",
+      "acceptingBlockDaaScore": "518298753"
+    },
+    "additiveContinuation": {
+      "transactionId": "732d16eb4dacfabdb85516f7fa28ff616904ac294a8b718c2d528ea469b8781d",
+      "outpoint": "732d16eb4dacfabdb85516f7fa28ff616904ac294a8b718c2d528ea469b8781d:0",
+      "address": "kaspatest:ppz943z60zasw3guhcsv48xmtedfgdtry4y9kkjm9cep4scghnx8grss8aktn",
+      "amountAtomic": "120000000",
+      "blockDaaScore": "518299003",
+      "virtualDaaScore": "518299061",
+      "finality": "confirmed"
+    }
+  },
+  "vaultDeposit": {
+    "transactionId": "3496f4b72bcb7768469f1e4980e61129558502af142af9ee7d2bf8314290d15a",
+    "outpoint": "3496f4b72bcb7768469f1e4980e61129558502af142af9ee7d2bf8314290d15a:0",
+    "address": "kaspatest:pqnymxc59zktsw8kljx3jc20949zwqajuudetwxkp895p85vft58cte07rl8m",
+    "amountAtomic": "300000000",
+    "blockDaaScore": "518298836",
+    "virtualDaaScore": "518298897",
+    "finality": "confirmed",
+    "observationStartHash": "c00e27ba92c8efc74a2f6165354ed19793decaf067d253cfe1381806f978fa77",
+    "acceptingBlockHash": "7d823b74616bb11dee5ed9ae1561038abd5ef0e79cba0bcea160d31e4722f652",
+    "acceptingBlockDaaScore": "518298836",
+    "covenantId": "20145378a2890cb42d8ff74aca8794dad25b3653766f447a383c151cc7e5bf05",
+    "requestedDepositAtomic": "300000000"
+  },
+  "purchase": {
+    "id": "pur_4_RDFguiwbkuIpR5rLb7kw",
+    "state": "receipted",
+    "paymentIdentifier": "pay_wD33QmbTJbz9Hig0l2QtxjY6ffO-Xh-R4JPp1c7G0MU",
+    "checkoutDigest": "sha256:TiHNfh3kAsWF4eA7S5M-57mv422Ng_-SNgvJGzl8DbU",
+    "authorizationEvidenceDigest": "sha256:QLam7kppXw2U-xwa3g3mhleUVA-RwpldpXKPV6UyOqI",
+    "settlementEvidenceDigest": "sha256:oZbwamDj8r3-mE7p4GYbaUspMOWsM-gAaQAALStPaR0",
+    "fulfilmentDigest": "sha256:ibU74yp3-7PhSOTi71rKn3Yi_MdctoWfzx4wTZfJDtM",
+    "receiptEvidenceDigests": [
+      "sha256:Q_SGVCfmE-ao4xQWH1wi832a8OVRajaCsllrqm9BDt0",
+      "sha256:wLcBkuD6QWOA2aIENUPJ1a6VoxA7hbQ39RTxm7eI1ps"
+    ]
+  },
+  "transactions": {
+    "stagingTransactionId": "5768a35cdb2920134c00743ba91af0229929f1fe0cad37b66e06b35f5c4d1c79",
+    "stagingOutpoint": "5768a35cdb2920134c00743ba91af0229929f1fe0cad37b66e06b35f5c4d1c79:0",
+    "stagingObservedAtDaa": "518298916",
+    "stagingFinality": "confirmed",
+    "exactTransactionId": "732d16eb4dacfabdb85516f7fa28ff616904ac294a8b718c2d528ea469b8781d",
+    "merchantOutpoint": "732d16eb4dacfabdb85516f7fa28ff616904ac294a8b718c2d528ea469b8781d:0"
+  },
+  "exactFinality": {
+    "merchantVerifier": "accepted",
+    "merchantObservedAtDaa": "518299003",
+    "clientObserver": "confirmed",
+    "clientObservedAtMs": 1784188673731
+  },
+  "economics": {
+    "advertisedAmountAtomic": "20000000",
+    "merchantGainAtomic": "20000000",
+    "payerTransactionCostAtomic": "22000000",
+    "exactFeeAtomic": "2000000",
+    "minimumSdkFeeAtomic": "87400",
+    "transactionMass": "874",
+    "transactionVersion": 1,
+    "inputCount": 2,
+    "outputCount": 1
+  },
+  "idempotency": {
+    "duplicatePurchaseReturnedSameId": true,
+    "duplicateMerchantPaidRequestReturnedSameTransaction": true,
+    "uniqueMerchantExactTransactions": 1
+  },
+  "protocolSeparation": {
+    "paidRequestExtensionKeys": [
+      "payment-identifier"
+    ],
+    "ap2DataInX402Request": false
+  },
+  "evidenceHandling": {
+    "reportMode": "0600",
+    "publicFactsOnly": true,
+    "recoveryRecordStoredSeparately": true,
+    "outputBlockDaaScoreMeaning": "utxo-creation-daa-observed-while-output-was-live",
+    "acceptingBlockDaaScoreMeaning": "current-virtual-chain-accepting-block-header-daa"
+  },
+  "lifecycleLimitations": {
+    "additiveChallenges": "offer-scoped-read-only-until-paid",
+    "expiredRunAction": "fail-closed-recover-staging-and-require-new-explicit-run",
+    "missingStateAction": "fail-closed-while-run-identity-survives-total-state-loss-requires-operator-accounting"
+  }
+}

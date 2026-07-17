@@ -28,10 +28,12 @@ import {
   Ap2HttpCommerceAuthorizationModule,
   Ap2MerchantCheckoutVerifier,
   Ap2PaidResponseVerifier,
+  LocalAp2TrustStore,
   SOMPI_CHECKOUT_HEADER,
   decodeAp2CommerceAuthorizationPresentation,
   encodeAp2CommerceAuthorizationAcceptance,
   encodeStageAcceptance,
+  loadAp2TrustStore,
 } from "../adapters/ap2/index.js";
 import {
   AUTHORITY_SIGNER,
@@ -188,10 +190,12 @@ export interface LiveTestnetProofReport {
   readonly liveKaspaTestnet10ExecutionProved: true;
   readonly exactProfile: LiveExactProfile;
   readonly purchaseIngress: LivePurchaseIngress;
-  readonly ap2HumanPresentConformanceClaimed: false;
-  readonly authorityMode: "in-process-local-auto-approved-test-fixture";
-  readonly authorityIsolationAppliedToThisRun: false;
-  readonly separateAuthorityIsolationProofAvailable: false;
+  readonly ap2HumanPresentConformanceClaimed: boolean;
+  readonly authorityMode:
+    | "in-process-local-auto-approved-test-fixture"
+    | "separate-process-human-present";
+  readonly authorityIsolationAppliedToThisRun: boolean;
+  readonly separateAuthorityIsolationProofAvailable: boolean;
   readonly merchantMode: "in-process-local-merchant-independent-wrpc-verifier";
   readonly protocolPins: typeof SUPPORTED_PROTOCOL_PROFILES;
   readonly bootstrapFunding: LiveChainMilestone;
@@ -267,7 +271,35 @@ export interface RunLiveTestnetProofOptions {
   readonly reportFilename: string;
   readonly exactProfile: LiveExactProfile;
   readonly purchaseIngress: LivePurchaseIngress;
+  readonly authority?: LiveAuthorityBinding;
   readonly onProgress?: (message: string) => void;
+}
+
+export interface LiveAuthorityBinding {
+  readonly module: Ap2AuthorityModule;
+  readonly trust: LocalAp2TrustStore;
+  readonly issuer: string;
+  readonly instrumentId: string;
+  readonly report: Readonly<{
+    readonly ap2HumanPresentConformanceClaimed: boolean;
+    readonly authorityMode:
+      | "in-process-local-auto-approved-test-fixture"
+      | "separate-process-human-present";
+    readonly authorityIsolationAppliedToThisRun: boolean;
+    readonly separateAuthorityIsolationProofAvailable: boolean;
+  }>;
+  close(): void | Promise<void>;
+}
+
+export interface ExternalLiveAuthorityOptions {
+  readonly clientDirectory: string;
+  readonly socketPath: string;
+  readonly expectedSocketOwnerUserId: number;
+  readonly socketGroupId: number;
+  readonly issuer: string;
+  readonly keyId: string;
+  readonly instrumentId: string;
+  readonly replayStorePath: string;
 }
 
 export async function runLiveTestnetProof(
@@ -330,7 +362,7 @@ export async function runLiveTestnetProof(
     const authorizationStore = new SqliteDemoCommerceAuthorizationStore(authorizationStorePath);
     resources.push(() => authorizationStore.close());
 
-    const authority = await createLiveAuthority(initialized);
+    const authority = options.authority ?? await createLiveAuthority(initialized);
     resources.push(() => authority.close());
     const additiveHeadMilestone = bootstrap.progress.additiveHead;
     if (!additiveHeadMilestone) throw new Error("live additive head milestone is unavailable");
@@ -371,7 +403,8 @@ export async function runLiveTestnetProof(
       merchantStore,
       authorizationStore,
       verifier,
-      options.exactProfile
+      options.exactProfile,
+      authority
     );
     const merchantPaidEndpoint = new LiveMerchantPaidEndpoint({
       merchant,
@@ -404,6 +437,7 @@ export async function runLiveTestnetProof(
       merchantStore,
       transport,
       authorityModule: authority.module,
+      authority,
       payTo,
     });
     const intent = purchaseIntent(initialized.config, options.exactProfile);
@@ -444,6 +478,7 @@ export async function runLiveTestnetProof(
       paymentIdentifier: attempt.identifier,
       exactProfile: options.exactProfile,
       purchaseIngress: options.purchaseIngress,
+      authority: authority.report,
     });
     purchaseJournal.integrityCheck();
     writeLiveTestnetProofReport(options.reportFilename, report, initialized);
@@ -538,10 +573,11 @@ function composeLiveCoordinator(input: {
   readonly merchantStore: SqliteMerchantServerStateStore;
   readonly transport: PinnedHttpTransport;
   readonly authorityModule: Ap2AuthorityModule;
+  readonly authority: LiveAuthorityBinding;
   readonly payTo: string;
 }): LiveComposition {
   const now = Date.now;
-  const trust = fixedTrustStore();
+  const trust = input.authority.trust;
   const config = input.initialized.config;
   const egress = new EgressPolicy({
     allowRules: [{ hostname: "merchant.example", ports: [443] }],
@@ -553,7 +589,7 @@ function composeLiveCoordinator(input: {
     transport: input.transport,
     merchantCheckout: new Ap2MerchantCheckoutVerifier({
       trust,
-      authorityAudience: AUTHORITY_SIGNER.issuer,
+      authorityAudience: input.authority.issuer,
     }),
     paymentRequirements: new KaspaX402PaymentRequirementsVerifier(),
     now,
@@ -561,8 +597,8 @@ function composeLiveCoordinator(input: {
   const commerceEvidence = new JournalAp2CommerceEvidenceSource({
     journal: input.journal,
     trust,
-    expectedAuthorityIssuer: FIXED_AUTHORITY_ISSUER,
-    expectedInstrumentId: FIXED_INSTRUMENT_ID,
+    expectedAuthorityIssuer: input.authority.issuer,
+    expectedInstrumentId: input.authority.instrumentId,
     now,
   });
   const commerceAuthorization = new Ap2HttpCommerceAuthorizationModule({
@@ -1022,7 +1058,12 @@ export async function createLiveMerchant(
   store: SqliteMerchantServerStateStore,
   authorizationStore: SqliteDemoCommerceAuthorizationStore,
   verifier: LiveMerchantExactVerifier,
-  exactProfile: LiveExactProfile
+  exactProfile: LiveExactProfile,
+  authority: Pick<LiveAuthorityBinding, "trust" | "issuer" | "instrumentId"> = {
+    trust: fixedTrustStore(),
+    issuer: FIXED_AUTHORITY_ISSUER,
+    instrumentId: FIXED_INSTRUMENT_ID,
+  }
 ): Promise<DemoMerchantFixture> {
   const additiveHead = progress.additiveHead;
   if (!additiveHead) throw new Error("live KIP-10 additive head is not durably observed");
@@ -1073,9 +1114,9 @@ export async function createLiveMerchant(
     amountAtomic: LIVE_PRICE_ATOMIC,
     additionalCostCeilingAtomic: LIVE_ADDITIONAL_COST_CEILING_ATOMIC,
     checkoutTtlMs: 5 * 60_000,
-    authorityAudience: AUTHORITY_SIGNER.issuer,
-    expectedAuthorityIssuer: AUTHORITY_SIGNER.issuer,
-    expectedInstrumentId: FIXED_INSTRUMENT_ID,
+    authorityAudience: authority.issuer,
+    expectedAuthorityIssuer: authority.issuer,
+    expectedInstrumentId: authority.instrumentId,
     resource: {
       identity: `resource:sompi:live-testnet10:${initialized.config.runId}`,
       url: RESOURCE_URL,
@@ -1093,7 +1134,7 @@ export async function createLiveMerchant(
     merchantCheckoutSigner: MERCHANT_SIGNER,
     merchantReceiptSigner: MERCHANT_RECEIPT_SIGNER,
     paymentReceiptSigner: PAYMENT_RECEIPT_SIGNER,
-    ap2Trust: fixedTrustStore(),
+    ap2Trust: authority.trust,
     paidRequestContinuation: Object.freeze({
       authorizationPresentedAtSec(input) {
         if (!privateStateFileExists(initialized.layout.merchantPaidIngressPath)) {
@@ -1136,10 +1177,9 @@ function merchantServerChainProvider(initialized: InitializedLiveProof): ServerC
   };
 }
 
-export async function createLiveAuthority(initialized: InitializedLiveProof): Promise<{
-  readonly module: Ap2AuthorityModule;
-  close(): Promise<void>;
-}> {
+export async function createLiveAuthority(
+  initialized: InitializedLiveProof
+): Promise<LiveAuthorityBinding> {
   const root = initialized.layout.authorityRoot;
   const serverPrivate = path.join(root, "server-private");
   const clientRuntime = path.join(root, "client-runtime");
@@ -1161,9 +1201,10 @@ export async function createLiveAuthority(initialized: InitializedLiveProof): Pr
     path.join(clientRuntime, "replay.sqlite"),
     { now: Date.now }
   );
+  const trust = fixedTrustStore();
   const humanDecision = new Ap2HumanAuthorityDecisionProvider({
     signer: AUTHORITY_SIGNER,
-    trust: fixedTrustStore(),
+    trust,
     instrumentId: FIXED_INSTRUMENT_ID,
     prompt: { approve: async () => true },
     now: Date.now,
@@ -1204,7 +1245,7 @@ export async function createLiveAuthority(initialized: InitializedLiveProof): Pr
       timeoutMs: AUTHORITY_TIMEOUT_MS,
     }),
     verifier: new Ap2AuthorityDecisionEvidenceVerifier({
-      trust: fixedTrustStore(),
+      trust,
       expectedAuthorityIssuer: FIXED_AUTHORITY_ISSUER,
       expectedInstrumentId: FIXED_INSTRUMENT_ID,
       now: Date.now,
@@ -1214,6 +1255,15 @@ export async function createLiveAuthority(initialized: InitializedLiveProof): Pr
   });
   return Object.freeze({
     module,
+    trust,
+    issuer: FIXED_AUTHORITY_ISSUER,
+    instrumentId: FIXED_INSTRUMENT_ID,
+    report: Object.freeze({
+      ap2HumanPresentConformanceClaimed: false,
+      authorityMode: "in-process-local-auto-approved-test-fixture" as const,
+      authorityIsolationAppliedToThisRun: false,
+      separateAuthorityIsolationProofAvailable: false,
+    }),
     async close() {
       await server.close();
       clientReplay.close();
@@ -1221,6 +1271,76 @@ export async function createLiveAuthority(initialized: InitializedLiveProof): Pr
       decisionStore.close();
     },
   });
+}
+
+export function createExternalLiveAuthority(
+  options: ExternalLiveAuthorityOptions
+): LiveAuthorityBinding {
+  assertExternalLiveAuthorityOptions(options);
+  const trust = loadAp2TrustStore(path.join(options.clientDirectory, "trust.json"));
+  const replay = new SqliteAuthorityReplayStore(options.replayStorePath, {
+    now: Date.now,
+  });
+  const module = new Ap2AuthorityModule({
+    authenticationProvider: new AuthorityMacKeyFile(
+      path.join(options.clientDirectory, "ipc-mac.key"),
+      options.keyId
+    ),
+    replayStore: replay,
+    transport: new AuthorityUnixDecisionClient({
+      socketPath: options.socketPath,
+      timeoutMs: AUTHORITY_TIMEOUT_MS,
+      expectedSocketOwnerUserId: options.expectedSocketOwnerUserId,
+      socketGroupId: options.socketGroupId,
+    }),
+    verifier: new Ap2AuthorityDecisionEvidenceVerifier({
+      trust,
+      expectedAuthorityIssuer: options.issuer,
+      expectedInstrumentId: options.instrumentId,
+      now: Date.now,
+      clockSkewSec: 0,
+    }),
+    now: Date.now,
+  });
+  return Object.freeze({
+    module,
+    trust,
+    issuer: options.issuer,
+    instrumentId: options.instrumentId,
+    report: Object.freeze({
+      ap2HumanPresentConformanceClaimed: true,
+      authorityMode: "separate-process-human-present" as const,
+      authorityIsolationAppliedToThisRun: true,
+      separateAuthorityIsolationProofAvailable: true,
+    }),
+    close() {
+      replay.close();
+    },
+  });
+}
+
+function assertExternalLiveAuthorityOptions(options: ExternalLiveAuthorityOptions): void {
+  const processUserId = typeof process.getuid === "function" ? process.getuid() : -1;
+  const processGroups = typeof process.getgroups === "function" ? process.getgroups() : [];
+  if (
+    !options ||
+    typeof options !== "object" ||
+    !path.isAbsolute(options.clientDirectory) ||
+    !path.isAbsolute(options.socketPath) ||
+    !path.isAbsolute(options.replayStorePath) ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(options.issuer) ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(options.instrumentId) ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/.test(options.keyId) ||
+    !Number.isSafeInteger(options.expectedSocketOwnerUserId) ||
+    options.expectedSocketOwnerUserId <= 0 ||
+    !Number.isSafeInteger(options.socketGroupId) ||
+    options.socketGroupId <= 0 ||
+    processUserId <= 0 ||
+    processUserId === options.expectedSocketOwnerUserId ||
+    !processGroups.includes(options.socketGroupId)
+  ) {
+    throw new Error("external live Authority configuration is invalid");
+  }
 }
 
 export async function drivePurchase(
@@ -1386,6 +1506,7 @@ async function createReport(input: {
   readonly paymentIdentifier: string;
   readonly exactProfile: LiveExactProfile;
   readonly purchaseIngress: LivePurchaseIngress;
+  readonly authority: LiveAuthorityBinding["report"];
 }): Promise<LiveTestnetProofReport> {
   const bootstrap = input.progress.bootstrap;
   const additiveHead = input.progress.additiveHead;
@@ -1500,10 +1621,13 @@ async function createReport(input: {
     liveKaspaTestnet10ExecutionProved: true,
     exactProfile: input.exactProfile,
     purchaseIngress: input.purchaseIngress,
-    ap2HumanPresentConformanceClaimed: false,
-    authorityMode: "in-process-local-auto-approved-test-fixture",
-    authorityIsolationAppliedToThisRun: false,
-    separateAuthorityIsolationProofAvailable: false,
+    ap2HumanPresentConformanceClaimed:
+      input.authority.ap2HumanPresentConformanceClaimed,
+    authorityMode: input.authority.authorityMode,
+    authorityIsolationAppliedToThisRun:
+      input.authority.authorityIsolationAppliedToThisRun,
+    separateAuthorityIsolationProofAvailable:
+      input.authority.separateAuthorityIsolationProofAvailable,
     merchantMode: "in-process-local-merchant-independent-wrpc-verifier",
     protocolPins: SUPPORTED_PROTOCOL_PROFILES,
     bootstrapFunding: bootstrap,

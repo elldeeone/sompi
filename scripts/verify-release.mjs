@@ -13,6 +13,7 @@ try {
   assertExactDependencyPins();
   run("npm", ["test"], root, { SOMPI_SMOKE_OFFLINE: "1" });
   run("npm", ["run", "test:conformance"], root);
+  run(process.execPath, [path.join(root, "scripts", "verify-live-evidence.mjs")], root);
   run(process.execPath, [
     path.join(root, "scripts", "run-local-e2e.mjs"),
     "--output",

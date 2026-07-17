@@ -1,0 +1,114 @@
+{
+  "profile": "urn:sompi:e2e:live-testnet10-additive-contention:1",
+  "generatedAt": "2026-07-17T09:13:44.527Z",
+  "network": "kaspa:testnet-10",
+  "chainProvenance": {
+    "nodeVersion": "2.0.1",
+    "nodeNetwork": "testnet-10",
+    "nodeVirtualDaaScore": "519207249",
+    "nodeSynced": true,
+    "nodeUtxoIndex": true
+  },
+  "protocol": {
+    "binding": "kaspa-exact-v2",
+    "exactProfile": "additive",
+    "packageVersion": "0.1.0-alpha.8",
+    "transactionEncoding": "kaspa-sdk-safe-json-v2.0.0"
+  },
+  "initialHead": {
+    "transactionId": "0711c56bb8c02444994e5faee034509027ab5331d6c1c0ba89f38d4a08f29bc7",
+    "outpoint": "0711c56bb8c02444994e5faee034509027ab5331d6c1c0ba89f38d4a08f29bc7:0",
+    "address": "kaspatest:pr557kxh68g75h8pkqz3u3xg8t4hj8lzgsx8k2rv36y67pqj2tlfxajvzfw7y",
+    "amountAtomic": "100000000",
+    "blockDaaScore": "519193572",
+    "virtualDaaScore": "519193654",
+    "finality": "confirmed",
+    "observationStartHash": "2216314f9cad8066b485f54a1373eb249f34fcdc50fe6decf0ee1d263b6f87d4",
+    "acceptingBlockHash": "f2b50627846221f607300262bde758118f7f426541bb55351410bd3d91d5aa1f",
+    "acceptingBlockDaaScore": "519193572",
+    "headId": "3b6897b1128b35403a7c892f580875773ebd0d43b32a9d16dac120c3e1e0020a",
+    "version": "0"
+  },
+  "candidates": [
+    {
+      "label": "first",
+      "purchaseId": "pur_46Psq-DzPxDAskwUo6i4zg",
+      "paymentIdentifier": "pay_oggJ4kB4CdT5wlNV2NIFlAxpcqS-IxuQcM9u-AiAWjc",
+      "requestHash": "7ace11319837b19d59008215842c31934fbcce06f0a31ec32deb94c01d9a558c",
+      "stagingOutpoint": "7278c4c0fda9077a437af7fa853bc333fdd72d4baca06b242e9d260ee3a3dffe:0",
+      "transactionId": "615267d395bc2419f9802a06ace97cbd550c033118dee811f9d4e91a7e6baaf0",
+      "transactionFeeAtomic": "87400",
+      "transactionMass": "874",
+      "headOutpoint": "0711c56bb8c02444994e5faee034509027ab5331d6c1c0ba89f38d4a08f29bc7:0",
+      "headVersion": "0",
+      "headAmountAtomic": "100000000"
+    },
+    {
+      "label": "second",
+      "purchaseId": "pur_zmSnGajGxS10u-ZGqAEqOg",
+      "paymentIdentifier": "pay_ILO7yaWztOubaF_GLVDBQ9sgu4dRtRxQJ3RAlKKYmjE",
+      "requestHash": "c3dbe9a55581f384b6017fe74b2a9e34348bbc361fab641d020e134fc7607572",
+      "stagingOutpoint": "1e590e6be8b3fcc5eed19abe20e95f10e164254e46a5c61f0d8d51d162e77c7b:0",
+      "transactionId": "d21b1db522045cdf5288f544479fb9e73219e5868dde4601a78f9f60ae1bab25",
+      "transactionFeeAtomic": "87400",
+      "transactionMass": "874",
+      "headOutpoint": "0711c56bb8c02444994e5faee034509027ab5331d6c1c0ba89f38d4a08f29bc7:0",
+      "headVersion": "0",
+      "headAmountAtomic": "100000000"
+    }
+  ],
+  "winner": {
+    "label": "first",
+    "transactionId": "615267d395bc2419f9802a06ace97cbd550c033118dee811f9d4e91a7e6baaf0",
+    "status": 200,
+    "successorOutpoint": "615267d395bc2419f9802a06ace97cbd550c033118dee811f9d4e91a7e6baaf0:0",
+    "successorAmountAtomic": "120000000",
+    "merchantGainAtomic": "20000000",
+    "successorBlockDaaScore": "519196331",
+    "successorVirtualDaaScore": "519196350",
+    "successorFinality": "confirmed"
+  },
+  "loser": {
+    "label": "second",
+    "transactionId": "d21b1db522045cdf5288f544479fb9e73219e5868dde4601a78f9f60ae1bab25",
+    "status": 402,
+    "correctiveHeadOutpoint": "615267d395bc2419f9802a06ace97cbd550c033118dee811f9d4e91a7e6baaf0:0",
+    "correctiveHeadVersion": "1",
+    "operatorObservation": "absent",
+    "witnessObservation": "absent",
+    "operatorEvidenceDigest": "sha256:adY-zB_cjAZGR_Zm6evquGSdZ55--zF-1-NkJ2BC3Rw",
+    "witnessEvidenceDigest": "sha256:sTn7eThdhjUtOk9uhkNogMueJXwF-EdYT54Uzbn4QBU",
+    "stagingOutpointStillUnspent": true
+  },
+  "explicitRetry": {
+    "label": "retry",
+    "purchaseId": "pur_OAn70KqfWk7O-vkS4UPDkA",
+    "paymentIdentifier": "pay_6kAt2QKMlkqweZpUUFq3h-kVVwQQbNtVNLuannsh5mo",
+    "requestHash": "d207c7a54c38e19c1a3ae1b97c9406a4c76d3d53f96519fd0c20dc165f39cad5",
+    "stagingOutpoint": "1d5a8e26efeff74ecb4dbe7e430d1f2fb4a09530ae9ce9ebd916bd47c2af6792:0",
+    "transactionId": "73b038dc22d2f5443949ac162ca3514f465c6c1e503b6d8c8702ff81de1a928c",
+    "transactionFeeAtomic": "87400",
+    "transactionMass": "874",
+    "headOutpoint": "615267d395bc2419f9802a06ace97cbd550c033118dee811f9d4e91a7e6baaf0:0",
+    "headVersion": "1",
+    "headAmountAtomic": "120000000",
+    "status": 200,
+    "priorHeadOutpoint": "615267d395bc2419f9802a06ace97cbd550c033118dee811f9d4e91a7e6baaf0:0",
+    "successorOutpoint": "73b038dc22d2f5443949ac162ca3514f465c6c1e503b6d8c8702ff81de1a928c:0",
+    "successorAmountAtomic": "140000000",
+    "successorBlockDaaScore": "519207223",
+    "successorVirtualDaaScore": "519207247",
+    "successorFinality": "confirmed",
+    "separatelyAuthorized": true
+  },
+  "assertions": {
+    "bothCandidatesSignedBeforeFirstSubmission": true,
+    "oneWinner": true,
+    "loserPaidNothing": true,
+    "unansweredOffersConsumedNoHead": true,
+    "correctiveOfferAdvancedHead": true,
+    "trustedAbsenceBeforeRetry": true,
+    "retryUsedFreshStagingAndAuthorization": true,
+    "noAutomaticCorrectiveResigning": true
+  }
+}
