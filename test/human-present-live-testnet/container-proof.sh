@@ -18,6 +18,7 @@ readonly AUTHORITY_ISSUER="urn:sompi:authority:human-present-funded-proof"
 readonly AUTHORITY_SIGNING_KID="authority-signing-key-human-present-funded-proof"
 readonly AUTHORITY_IPC_KID="authority-ipc-key-human-present-funded-proof"
 readonly INSTRUMENT_ID="kaspa:testnet-10:vault-treasury"
+readonly OPERATOR_MANIFEST="/etc/sompi/operator-manifest.json"
 
 authority_process=""
 fail() {
@@ -64,6 +65,60 @@ useradd --uid "$AUTHORITY_UID" --gid "$AUTHORITY_GID" --groups "$IPC_GROUP" \
   --home-dir "$AUTHORITY_HOME" --create-home --shell /usr/sbin/nologin "$AUTHORITY_USER"
 usermod --append --groups "$IPC_GROUP" "$mcp_user"
 chmod 0700 "$AUTHORITY_HOME"
+
+install -d -o root -g "$IPC_GROUP" -m 0750 /etc/sompi
+cat >/tmp/operator-spec.json <<'JSON'
+{
+  "schema": "sompi-operator-provisioning-v1",
+  "revision": 1,
+  "dataDirectory": "/var/lib/sompi-proof-runtime",
+  "ownerPublic": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
+  "maxOutflowSompi": "500000000",
+  "windowSizeDaa": "36000",
+  "treasury": {
+    "maxSompiPerTx": "100000000",
+    "maxSompiPerHour": "500000000",
+    "allowlist": [],
+    "requireApprovalAboveSompi": "0",
+    "additionalCostCeilingAtomic": "25000000",
+    "operationFeeCeilingAtomic": "25000000"
+  },
+  "merchant": {
+    "allowRules": [{ "hostname": "merchant.example", "ports": [443] }],
+    "merchantReceiptIssuer": "receipt:merchant",
+    "paymentReceiptIssuer": "receipt:payment"
+  },
+  "batch": { "claimFeeReserveAtomic": "100000" },
+  "chainEvidence": {
+    "operatorNodeUrl": "ws://10.0.3.26:17210/",
+    "witnessBaseUrl": "https://api-tn10.kaspa.org/",
+    "depthConfirmationDaa": "10",
+    "finalityFloors": {
+      "settlement": "depth-confirmed",
+      "directTreasury": "accepted",
+      "vault": "accepted",
+      "staging": "accepted",
+      "recoveryRelease": "depth-confirmed"
+    }
+  },
+  "admission": {
+    "authorityPreauthSockets": 32,
+    "authorityPrompts": 4,
+    "prevalidationPurchases": 128,
+    "evidenceBytes": 67108864,
+    "directTreasuryRetries": 3
+  }
+}
+JSON
+chmod 0600 /tmp/operator-spec.json
+node "$WORK_DIR/dist/operator-main.js" provision \
+  /tmp/operator-spec.json /tmp/operator-candidate >/tmp/operator-candidate.json
+operator_digest=$(node -e \
+  'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).digest)' \
+  /tmp/operator-candidate.json)
+node "$WORK_DIR/dist/operator-main.js" install \
+  /tmp/operator-candidate "$OPERATOR_MANIFEST" "$operator_digest" \
+  0 "$AUTHORITY_UID" "$IPC_GID" >/tmp/operator-install.json
 
 install -d -o "$AUTHORITY_USER" -g "$AUTHORITY_USER" -m 0700 "$PRIVATE_DIR"
 install -d -o "$AUTHORITY_USER" -g "$AUTHORITY_USER" -m 0700 "$CLIENT_DIR"
@@ -123,7 +178,11 @@ chmod 0700 "$CLIENT_DIR"
 chmod 0600 "$CLIENT_DIR/ipc-mac.key" "$CLIENT_DIR/trust.json"
 
 runuser -u "$AUTHORITY_USER" -- env \
-  "${authority_environment[@]}" "SOMPI_AUTHORITY_SOCKET_GID=$IPC_GID" \
+  "${authority_environment[@]}" \
+  "SOMPI_AUTHORITY_SOCKET_GID=$IPC_GID" \
+  "SOMPI_OPERATOR_MANIFEST=$OPERATOR_MANIFEST" \
+  "SOMPI_OPERATOR_UID=0" \
+  "SOMPI_RUNTIME_GID=$IPC_GID" \
   node "$WORK_DIR/dist/authority-main.js" </dev/tty >/tmp/authority.stdout 2>/dev/tty &
 authority_process=$!
 for _ in $(seq 1 200); do
