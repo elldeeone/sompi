@@ -299,14 +299,21 @@ export function loadOperatorManifest(
     expectedOperatorUserId: number;
     runtimeGroupId: number;
     allowSameUserForTests?: boolean;
+    readerRole?: "runtime" | "operator";
   }>
 ): LoadedOperatorManifest {
   const resolved = absolutePath(filename, "Operator Manifest path");
   const expectedUid = numericId(options.expectedOperatorUserId, "operator user ID");
   const runtimeGid = numericId(options.runtimeGroupId, "runtime group ID");
   const currentUid = typeof process.getuid === "function" ? process.getuid() : expectedUid + 1;
-  if (!options.allowSameUserForTests && currentUid === expectedUid) {
-    throw new OperatorManifestError("Operator Manifest owner must differ from the MCP runtime user");
+  const readerRole = options.readerRole ?? "runtime";
+  if (!options.allowSameUserForTests) {
+    if (readerRole === "runtime" && currentUid === expectedUid) {
+      throw new OperatorManifestError("Operator Manifest owner must differ from the MCP runtime user");
+    }
+    if (readerRole === "operator" && currentUid !== 0 && currentUid !== expectedUid) {
+      throw new OperatorManifestError("Operator Manifest inspection requires root or its declared owner");
+    }
   }
   let descriptor: number | undefined;
   let bytes: Buffer | undefined;

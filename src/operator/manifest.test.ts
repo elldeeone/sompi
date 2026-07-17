@@ -73,6 +73,16 @@ test("runtime manifest loading pins the exact regular file and fails closed on f
       /owner must differ/
     );
 
+    assert.equal(
+      loadOperatorManifest(manifestPath, {
+        expectedOperatorUserId: uid,
+        runtimeGroupId: gid,
+        allowSameUserForTests: true,
+        readerRole: "operator",
+      }).identity.digest,
+      loaded.identity.digest
+    );
+
     fs.chmodSync(manifestPath, 0o640);
     assert.throws(() => testLoad(manifestPath), /ownership, mode/);
     fs.chmodSync(manifestPath, 0o600);

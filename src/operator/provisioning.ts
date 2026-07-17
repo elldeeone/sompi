@@ -291,6 +291,7 @@ export function installOperatorCandidate(
     expectedOperatorUserId: options.operatorUserId,
     runtimeGroupId: options.runtimeGroupId,
     allowSameUserForTests: testMode,
+    readerRole: "operator",
   });
 }
 
@@ -302,6 +303,7 @@ export function operatorProvisioningStatus(
     expectedOperatorUserId: options.operatorUserId,
     runtimeGroupId: options.runtimeGroupId,
     allowSameUserForTests: options.allowSameUserForTests,
+    readerRole: "operator",
   });
   const vault = new VaultManager(loaded.manifest.dataDirectory, "testnet-10");
   const config = vault.config();
