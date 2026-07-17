@@ -272,6 +272,9 @@ export interface RunLiveTestnetProofOptions {
   readonly exactProfile: LiveExactProfile;
   readonly purchaseIngress: LivePurchaseIngress;
   readonly authority?: LiveAuthorityBinding;
+  readonly authorityFactory?: (
+    initialized: InitializedLiveProof
+  ) => LiveAuthorityBinding | Promise<LiveAuthorityBinding>;
   readonly onProgress?: (message: string) => void;
 }
 
@@ -310,6 +313,9 @@ export async function runLiveTestnetProof(
   }
   if (options.purchaseIngress !== "http-api" && options.purchaseIngress !== "mcp-api-compatibility") {
     throw new Error("live Purchase ingress is unsupported");
+  }
+  if (options.authority && options.authorityFactory) {
+    throw new Error("live Authority configuration is ambiguous");
   }
   assertLiveTestnetProofPaths(options);
   const initialized = initializeLiveProof(options.directory, options.sourceWalletDirectory);
@@ -362,7 +368,9 @@ export async function runLiveTestnetProof(
     const authorizationStore = new SqliteDemoCommerceAuthorizationStore(authorizationStorePath);
     resources.push(() => authorizationStore.close());
 
-    const authority = options.authority ?? await createLiveAuthority(initialized);
+    const authority = options.authority ??
+      await options.authorityFactory?.(initialized) ??
+      await createLiveAuthority(initialized);
     resources.push(() => authority.close());
     const additiveHeadMilestone = bootstrap.progress.additiveHead;
     if (!additiveHeadMilestone) throw new Error("live additive head milestone is unavailable");

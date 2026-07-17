@@ -15,7 +15,7 @@ const report = await runLiveTestnetProof({
   exactProfile: options.exactProfile,
   purchaseIngress: options.purchaseIngress,
   ...(options.humanPresentAuthority
-    ? { authority: externalAuthority(options.directory) }
+    ? { authorityFactory: () => externalAuthority(options.directory) }
     : {}),
   onProgress(message) {
     process.stderr.write(`sompi live proof: ${message}\n`);
