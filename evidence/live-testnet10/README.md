@@ -11,6 +11,7 @@ the active tree.
 | `additive.json` | MCP-over-API compatibility ingress, version-1 additive payment, successor delta as the sole 20,000,000-sompi Merchant gain, fee/mass/finality, receipt | `4dd59afa4b64c62d52bf6674783ccd6f2ba9e5a5e521fc78357f1a2efd2202f2` |
 | `batch.json` | Two separately authorized Purchases, monotonic vouchers, accepted claim, 28,000,000-sompi continuation, and strict-boundary refund | `8736ece032a8c2e517169319edf91c30a50f87de97f89ce47b22868be0fbb7f1` |
 | `additive-contention.json` | Two pre-signed candidates for one reusable head, one accepted winner, trusted loser absence, and one separately authorized retry against the successor | `5198dadb90fde6249831418d6ac475ce36cb959c0d468f289415f9d8a3a8e42e` |
+| `human-present-standard-native.json` | Canonical HTTP Purchase through a separate non-root human-present Authority, Treasury staging, standard-native settlement, Merchant fulfilment, and linked AP2 receipts | `d550766dbe1a161566b310500192a81adfe0213bc3e6f561c652600fcf3558bd` |
 
 The canonical digests are SHA-256 over `JSON.stringify(report)`, matching the
 corresponding repository proof helpers. File-byte hashes differ because the
@@ -30,14 +31,16 @@ Notable accepted transaction identifiers:
   `615267d395bc2419f9802a06ace97cbd550c033118dee811f9d4e91a7e6baaf0`;
 - additive contention retry:
   `73b038dc22d2f5443949ac162ca3514f465c6c1e503b6d8c8702ff81de1a928c`.
+- human-present standard-native exact:
+  `95705c2a4e06415454d691a38f4f41adbf9cebedf958178d206c5f442371efcb`.
 
 The standard, additive, and batch funded runners deliberately used the
 in-process auto-approval fixture to isolate blockchain execution. They do not
 claim that those particular funded runs exercised the separate-UID
-human-present terminal. The separate deterministic Authority, its exact human
-display/decision, credential isolation, transport, cancellation, and AP2
-evidence are independent release gates covered by process-boundary and
-end-to-end tests. No mainnet claim is made.
+human-present terminal. `human-present-standard-native.json` is the separate
+funded proof for that gate: the exact approval was entered through the
+deterministic Authority terminal, whose UID, private state, and signing
+credential were isolated from the API/MCP process. No mainnet claim is made.
 
 Private proof roots, wallet keys, authority material, signed protocol payloads,
 and SQLite stores are intentionally excluded.

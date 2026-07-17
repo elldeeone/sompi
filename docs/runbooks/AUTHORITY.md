@@ -213,6 +213,35 @@ snapshot and built-tree digests, entrypoint/verifier/runbook digests, numeric
 identities, checks, and limitations; it never contains credential bytes,
 generated wallet keys, or authority/MCP stderr.
 
+## Funded Testnet-10 approval proof
+
+The funded proof uses the same separate-process Authority boundary while
+executing a real standard-native Purchase on Testnet-10. It requires a clean
+committed source tree, Docker, an interactive terminal, an explicitly supplied
+TN10 node, and an existing funded source wallet outside the repository:
+
+```bash
+STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
+STATE="$HOME/.local/state/sompi/alpha8-human-present-$STAMP"
+REPORT="$HOME/.local/state/sompi/reports/human-present-$STAMP.json"
+SOMPI_NODE_URL='ws://127.0.0.1:17210/' \
+  ./test/human-present-live-testnet/run-container-proof.sh \
+  "$STATE" "$HOME/.sompi/testnet-10" "$REPORT"
+```
+
+Read the complete terminal display and type its exact Purchase ID before the
+bounded Authority request expires. Do not pipe input, auto-approve, reuse an
+expired Purchase ID, or delete a surviving run identity. A failed or
+interrupted run keeps its private proof root for reconciliation; use a fresh
+root for a new explicit proof.
+
+The retained JSON is mode `0600` and contains public facts only. Before adding
+it to release evidence, verify `receipted` state, Testnet-10 identity, the
+selected exact profile, exact Merchant gain, Authority mode and isolation
+booleans, transaction identity, and the Authority decision-store join. Never
+commit the proof root, source wallet, decision database, signed wire payloads,
+or key material.
+
 ## Normal approval and recovery
 
 1. Leave the authority terminal visible to the human operator.

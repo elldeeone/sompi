@@ -24,6 +24,10 @@ const expected = Object.freeze({
     digest: "5198dadb90fde6249831418d6ac475ce36cb959c0d468f289415f9d8a3a8e42e",
     profile: "urn:sompi:e2e:live-testnet10-additive-contention:1",
   }),
+  "human-present-standard-native.json": Object.freeze({
+    digest: "d550766dbe1a161566b310500192a81adfe0213bc3e6f561c652600fcf3558bd",
+    profile: "urn:sompi:e2e:live-testnet10-ap2-kaspa-x402-exact:2",
+  }),
 });
 
 for (const [filename, contract] of Object.entries(expected)) {
@@ -77,6 +81,19 @@ if (
   contention.explicitRetry?.separatelyAuthorized !== true ||
   contention.winner?.transactionId === contention.explicitRetry?.transactionId
 ) throw new Error("additive contention live evidence invariants changed");
+
+const humanPresent = read("human-present-standard-native.json");
+if (
+  humanPresent.exactProfile !== "standard-native" ||
+  humanPresent.purchaseIngress !== "http-api" ||
+  humanPresent.purchase?.state !== "receipted" ||
+  humanPresent.ap2HumanPresentConformanceClaimed !== true ||
+  humanPresent.authorityMode !== "separate-process-human-present" ||
+  humanPresent.authorityIsolationAppliedToThisRun !== true ||
+  humanPresent.separateAuthorityIsolationProofAvailable !== true ||
+  humanPresent.economics?.merchantGainAtomic !== humanPresent.economics?.advertisedAmountAtomic ||
+  humanPresent.economics?.transactionVersion !== 0
+) throw new Error("human-present standard-native live evidence invariants changed");
 
 process.stdout.write("Alpha.8 live Testnet-10 evidence passed.\n");
 
