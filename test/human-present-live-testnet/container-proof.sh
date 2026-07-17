@@ -90,7 +90,7 @@ cat >/tmp/operator-spec.json <<'JSON'
   },
   "batch": { "claimFeeReserveAtomic": "100000" },
   "chainEvidence": {
-    "operatorNodeUrl": "ws://10.0.3.26:17210/",
+    "operatorNodeUrl": "ws://127.0.0.1:17210/",
     "witnessBaseUrl": "https://api-tn10.kaspa.org/",
     "depthConfirmationDaa": "10",
     "finalityFloors": {
@@ -200,6 +200,7 @@ runuser -u "$mcp_user" -- env \
   "SOMPI_AUTHORITY_ISSUER=$AUTHORITY_ISSUER" \
   "SOMPI_AUTHORITY_IPC_KEY_ID=$AUTHORITY_IPC_KID" \
   "SOMPI_AUTHORITY_INSTRUMENT_ID=$INSTRUMENT_ID" \
+  "SOMPI_NODE_URL=$SOMPI_NODE_URL" \
   node "$WORK_DIR/dist/e2e/live-testnet-main.js" \
     --directory /proof-state \
     --source-wallet /source-wallet \

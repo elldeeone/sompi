@@ -14,6 +14,10 @@ if ! command -v docker >/dev/null 2>&1; then
   echo "human-present funded proof requires Docker" >&2
   exit 1
 fi
+if [[ -z ${SOMPI_NODE_URL:-} ]]; then
+  echo "SOMPI_NODE_URL is required for the human-present funded proof" >&2
+  exit 1
+fi
 
 repository_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 state_directory=$(realpath -m -- "$1")
@@ -56,6 +60,7 @@ docker run --rm --init --pull=missing --interactive --tty --network host \
   --env "SOMPI_PROOF_SOURCE_COMMIT=$source_commit" \
   --env "SOMPI_PROOF_MCP_UID=$(id -u)" \
   --env "SOMPI_PROOF_MCP_GID=$(id -g)" \
+  --env "SOMPI_NODE_URL=$SOMPI_NODE_URL" \
   "$image_reference" \
   bash /source/test/human-present-live-testnet/container-proof.sh
 
