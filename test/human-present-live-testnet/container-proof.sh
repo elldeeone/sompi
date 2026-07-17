@@ -63,6 +63,7 @@ groupadd --gid "$AUTHORITY_GID" "$AUTHORITY_USER"
 useradd --uid "$AUTHORITY_UID" --gid "$AUTHORITY_GID" --groups "$IPC_GROUP" \
   --home-dir "$AUTHORITY_HOME" --create-home --shell /usr/sbin/nologin "$AUTHORITY_USER"
 usermod --append --groups "$IPC_GROUP" "$mcp_user"
+chmod 0700 "$AUTHORITY_HOME"
 
 install -d -o "$AUTHORITY_USER" -g "$AUTHORITY_USER" -m 0700 "$PRIVATE_DIR"
 install -d -o "$AUTHORITY_USER" -g "$AUTHORITY_USER" -m 0700 "$CLIENT_DIR"
