@@ -2030,11 +2030,19 @@ function assertExactReportSchema(report: LiveTestnetProofReport): void {
   exactKeys(report.lifecycleLimitations, [
     "additiveChallenges", "expiredRunAction", "missingStateAction",
   ], "lifecycle limitations");
+  const autoApprovedAuthority =
+    report.authorityMode === "in-process-local-auto-approved-test-fixture" &&
+    report.ap2HumanPresentConformanceClaimed === false &&
+    report.authorityIsolationAppliedToThisRun === false &&
+    report.separateAuthorityIsolationProofAvailable === false;
+  const humanPresentAuthority =
+    report.authorityMode === "separate-process-human-present" &&
+    report.ap2HumanPresentConformanceClaimed === true &&
+    report.authorityIsolationAppliedToThisRun === true &&
+    report.separateAuthorityIsolationProofAvailable === true;
   if (
     JSON.stringify(report.protocolPins) !== JSON.stringify(SUPPORTED_PROTOCOL_PROFILES) ||
-    report.ap2HumanPresentConformanceClaimed !== false ||
-    report.authorityIsolationAppliedToThisRun !== false ||
-    report.separateAuthorityIsolationProofAvailable !== false ||
+    (!autoApprovedAuthority && !humanPresentAuthority) ||
     report.chainProvenance.nodeNetwork !== LIVE_SDK_NETWORK ||
     report.chainProvenance.nodeSynced !== true ||
     report.chainProvenance.nodeUtxoIndex !== true ||

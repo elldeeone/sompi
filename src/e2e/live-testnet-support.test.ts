@@ -785,6 +785,26 @@ test("live report has an exact honest schema and excludes actual key bytes", asy
     assert.equal(fs.statSync(filename).mode & 0o777, 0o600);
     assert.equal(report.ap2HumanPresentConformanceClaimed, false);
     assert.equal(report.authorityIsolationAppliedToThisRun, false);
+    const humanPresentReport: LiveTestnetProofReport = {
+      ...report,
+      ap2HumanPresentConformanceClaimed: true,
+      authorityMode: "separate-process-human-present",
+      authorityIsolationAppliedToThisRun: true,
+      separateAuthorityIsolationProofAvailable: true,
+    };
+    assert.doesNotThrow(() => writeLiveTestnetProofReport(
+      path.join(root, "public", "human-present.json"),
+      humanPresentReport,
+      initialized
+    ));
+    assert.throws(
+      () => writeLiveTestnetProofReport(
+        path.join(root, "public", "incoherent-authority.json"),
+        { ...humanPresentReport, authorityIsolationAppliedToThisRun: false },
+        initialized
+      ),
+      /claims or protocol pins changed/
+    );
     assert.throws(
       () => writeLiveTestnetProofReport(
         path.join(root, "public", "extra.json"),
