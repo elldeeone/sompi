@@ -26,9 +26,6 @@ The supported network is `kaspa:testnet-10`. Mainnet is disabled.
 | Autonomous AP2, passkeys, UCP | Not supported |
 | Mainnet | Not supported |
 
-There is no alpha.6 compatibility runtime, state reader, wire format, command,
-or migration path. The current Journal epoch is a clean cutover.
-
 ## Architecture
 
 ```mermaid

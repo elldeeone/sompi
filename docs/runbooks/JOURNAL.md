@@ -50,7 +50,7 @@ only existing state tree.
    restored path and whose static vault facts match the backup.
 6. Start the exact recorded Sompi version with the Authority available.
 
-Startup is the integrity check. It validates the current clean-cutover Journal
+Startup is the integrity check. It validates the current Journal
 epoch, SQLite integrity, immutable history, cross-table invariants, manifest
 identity, and content-addressed artifacts.
 

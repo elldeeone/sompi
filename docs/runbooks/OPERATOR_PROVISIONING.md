@@ -71,7 +71,7 @@ and its pool is independent of Agent admission.
 non-root UID in the shared runtime group. It never receives the recovery socket,
 group, or credential. Both credentials remain operator-owned and readable only
 by their intended group. `SOMPI_API_HOST` and `SOMPI_API_PORT` are rejected and
-there is no TCP compatibility path.
+TCP is disabled.
 
 The MCP environment contains only the Agent Purchase API socket and least-authority
 credential locators, `SOMPI_OPERATOR_UID`, and `SOMPI_RUNTIME_GID`. It does not

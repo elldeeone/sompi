@@ -60,7 +60,7 @@ staging keys, evidence store, prepared store, or Authority-client replay state.
 ## Funding
 
 Use fresh testnet funding or a reviewed operator transfer. There is no agent or
-MCP wallet-send surface in the clean-cutover API.
+MCP wallet-send surface in the API.
 
 Vault funds in the old runtime require one explicit choice:
 
