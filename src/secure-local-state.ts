@@ -30,7 +30,11 @@ export class SecureLocalStateDirectory {
   private readonly identity: FileIdentity;
   private readonly expectedUid: bigint;
 
-  constructor(directory: string, label = "local state") {
+  constructor(
+    directory: string,
+    label = "local state",
+    options: Readonly<{ expectedOwnerUserId?: number }> = {},
+  ) {
     if (typeof directory !== "string" || directory.length === 0) {
       throw new SecureLocalStateError(`${label} directory is invalid`);
     }
@@ -46,7 +50,7 @@ export class SecureLocalStateDirectory {
       }
       assertCanonicalRealpath(this.directory, this.label);
       const stat = fs.lstatSync(this.directory, { bigint: true });
-      this.expectedUid = currentUid(stat.uid);
+      this.expectedUid = expectedOwnerUid(options.expectedOwnerUserId, stat.uid);
       assertSecureDirectory(stat, this.expectedUid, this.label);
       this.identity = identityOf(stat);
       this.assertDirectoryUnchanged();
@@ -61,7 +65,9 @@ export class SecureLocalStateDirectory {
   child(name: string, label = `${this.label} child`): SecureLocalStateDirectory {
     const leaf = requireLeafName(name);
     this.assertDirectoryUnchanged();
-    const child = new SecureLocalStateDirectory(path.join(this.directory, leaf), label);
+    const child = new SecureLocalStateDirectory(path.join(this.directory, leaf), label, {
+      expectedOwnerUserId: Number(this.expectedUid),
+    });
     this.assertDirectoryUnchanged();
     return child;
   }
@@ -541,6 +547,21 @@ function safeLabel(label: string): string {
 
 function currentUid(fallback: bigint): bigint {
   return typeof process.getuid === "function" ? BigInt(process.getuid()) : fallback;
+}
+
+function expectedOwnerUid(configured: number | undefined, fallback: bigint): bigint {
+  if (configured === undefined) return currentUid(fallback);
+  if (!Number.isSafeInteger(configured) || configured < 0) {
+    throw new SecureLocalStateError("local state owner user ID is invalid");
+  }
+  const current = currentUid(fallback);
+  const expected = BigInt(configured);
+  if (current !== 0n && current !== expected) {
+    throw new SecureLocalStateError(
+      "local state inspection requires root or the declared owner",
+    );
+  }
+  return expected;
 }
 
 function assertNoSymlinkComponents(resolved: string, label: string): void {

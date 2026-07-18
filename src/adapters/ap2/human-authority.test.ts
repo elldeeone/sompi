@@ -138,6 +138,7 @@ test("bounded prompt admission cancels the head, ignores its late answer, and ad
 
 function display(purchaseId: string): AuthorityApprovalDisplay {
   return Object.freeze({
+    authorityRequestDigest: "sha256:EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",
     purchaseId,
     merchant: Object.freeze({
       id: "https://merchant.example",

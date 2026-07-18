@@ -52,8 +52,9 @@ and owns no payment or authorization capability. Removing MCP would not change
 Purchase behavior.
 
 `sompi-authority` is a separate deterministic process. It displays the exact
-Purchase facts and signs an approval only after the human types the displayed
-Purchase ID in its trusted terminal.
+Purchase facts through the operator-selected terminal or Telegram provider and
+signs only the resulting request-bound decision. The agent cannot call this
+decision interface.
 
 `sompi-operator` installs the immutable Operator Manifest and local API
 credentials. It is not an agent tool or long-running service.
@@ -80,6 +81,24 @@ MCP exposes the same lifecycle through exactly three tools:
 
 The OpenAPI 3.2 and Arazzo 1.1 descriptions are under
 [`docs/openapi/`](docs/openapi/).
+
+## Agent integration
+
+Agents use `sompi-agent`, which talks only to the local Purchase API:
+
+```bash
+sompi-agent purchase --request-key TASK_KEY --url HTTPS_URL --method GET
+sompi-agent status PURCHASE_ID
+sompi-agent recover PURCHASE_ID
+```
+
+Hermes uses the packaged skill for those commands. A small callback plugin
+returns Authority-created Telegram button decisions to `sompi-authority`; it
+has no wallet, signer, policy, Journal, or API credential. MCP is optional and
+is not used by this integration.
+
+See [`docs/runbooks/HERMES.md`](docs/runbooks/HERMES.md) for the one-time host
+setup.
 
 ## Payment behavior
 
@@ -134,8 +153,9 @@ Start here:
 
 1. [`docs/runbooks/OPERATOR_PROVISIONING.md`](docs/runbooks/OPERATOR_PROVISIONING.md)
 2. [`docs/runbooks/AUTHORITY.md`](docs/runbooks/AUTHORITY.md)
-3. [`docs/runbooks/JOURNAL.md`](docs/runbooks/JOURNAL.md)
-4. [`docs/runbooks/RECONCILIATION.md`](docs/runbooks/RECONCILIATION.md)
+3. [`docs/runbooks/HERMES.md`](docs/runbooks/HERMES.md)
+4. [`docs/runbooks/JOURNAL.md`](docs/runbooks/JOURNAL.md)
+5. [`docs/runbooks/RECONCILIATION.md`](docs/runbooks/RECONCILIATION.md)
 
 Do not operate persistent funds until those boundaries are installed and
 verified. Testnet keys are software keys. This release is not production or

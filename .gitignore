@@ -2,3 +2,5 @@ node_modules/
 dist/
 .sompi/
 *.log
+__pycache__/
+*.pyc

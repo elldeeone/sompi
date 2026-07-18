@@ -19,11 +19,15 @@ for (const required of [
   "package/package.json",
   "package/LICENSE",
   "package/README.md",
+  "package/dist/agent-main.js",
   "package/dist/index.js",
   "package/dist/api-main.js",
   "package/dist/authority-main.js",
   "package/dist/operator-main.js",
   "package/dist/e2e-main.js",
+  "package/integrations/hermes/plugin/__init__.py",
+  "package/integrations/hermes/plugin/plugin.yaml",
+  "package/integrations/hermes/sompi/SKILL.md",
   "package/scripts/run-local-e2e.mjs",
   "package/scripts/run-protocol-conformance.mjs",
   "package/scripts/vault-recover.js",
@@ -46,6 +50,9 @@ for (const entry of entries) {
   }
   if (
     /(^|\/)src\//.test(entry.name) ||
+    /(^|\/)__pycache__\//.test(entry.name) ||
+    /\.pyc$/.test(entry.name) ||
+    /^package\/integrations\/.*\/tests\//.test(entry.name) ||
     /\.test\.js$/.test(entry.name) ||
     /^package\/dist\/e2e\/live-testnet-[^/]+\.js$/.test(entry.name) ||
     /(^|\/)evidence\//.test(entry.name) ||
@@ -80,6 +87,7 @@ if (JSON.stringify(manifest.exports) !== JSON.stringify({ "./package.json": "./p
 if (
   JSON.stringify(manifest.bin) !==
   JSON.stringify({
+    "sompi-agent": "dist/agent-main.js",
     "sompi-api": "dist/api-main.js",
     "sompi-authority": "dist/authority-main.js",
     "sompi-mcp": "dist/index.js",
@@ -106,6 +114,7 @@ process.stdout.write(
 
 function executable(name) {
   return new Set([
+    "package/dist/agent-main.js",
     "package/dist/api-main.js",
     "package/dist/authority-main.js",
     "package/dist/index.js",

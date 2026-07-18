@@ -37,7 +37,13 @@ test("operator CLI exposes only preview, provision, install, status, and offline
   assert.deepEqual(parseOperatorArguments(["install", "candidate", "manifest.json", "sha256:x", "0", "1000", "1000"]), {
     kind: "install", bundle: "candidate", manifest: "manifest.json", digest: "sha256:x", operatorUid: 0, runtimeUid: 1000, runtimeGid: 1000,
   });
-  assert.deepEqual(parseOperatorArguments(["status", "manifest.json", "0", "1000"]), { kind: "status", manifest: "manifest.json", operatorUid: 0, runtimeGid: 1000 });
+  assert.deepEqual(parseOperatorArguments(["status", "manifest.json", "0", "1001", "1000"]), {
+    kind: "status",
+    manifest: "manifest.json",
+    operatorUid: 0,
+    runtimeUid: 1001,
+    runtimeGid: 1000,
+  });
   assert.deepEqual(parseOperatorArguments(["agent-credential", "agent.json", "0", "1000"]), {
     kind: "agent-credential", filename: "agent.json", operatorUid: 0, runtimeGid: 1000,
   });

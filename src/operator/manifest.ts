@@ -52,6 +52,16 @@ export interface OperatorManifest {
   readonly batch: Readonly<{
     claimFeeReserveAtomic: string;
   }>;
+  readonly authority: Readonly<{
+    provider: "terminal" | "telegram";
+    telegram: null | Readonly<{
+      profile: "telegram-inline-v1";
+      botId: string;
+      userId: string;
+      chatId: string;
+      promptTimeoutMs: number;
+    }>;
+  }>;
   readonly chainEvidence: Readonly<{
     operatorNodeUrl: string;
     witnessBaseUrl: string;
@@ -98,6 +108,7 @@ export function parseOperatorManifest(value: unknown): OperatorManifest {
     "treasury",
     "merchant",
     "batch",
+    "authority",
     "chainEvidence",
     "admission",
   ], "Operator Manifest");
@@ -187,6 +198,44 @@ export function parseOperatorManifest(value: unknown): OperatorManifest {
     "batch claim-fee reserve"
   );
 
+  const authority = record(root.authority, "Operator Manifest Authority");
+  exactKeys(authority, ["provider", "telegram"], "Operator Manifest Authority");
+  if (authority.provider !== "terminal" && authority.provider !== "telegram") {
+    throw new OperatorManifestError("Operator Manifest Authority provider is unsupported");
+  }
+  let telegram: OperatorManifest["authority"]["telegram"] = null;
+  if (authority.provider === "terminal") {
+    if (authority.telegram !== null) {
+      throw new OperatorManifestError("terminal Authority cannot configure Telegram");
+    }
+  } else {
+    const configured = record(authority.telegram, "Operator Manifest Telegram Authority");
+    exactKeys(configured, [
+      "profile", "botId", "userId", "chatId", "promptTimeoutMs",
+    ], "Operator Manifest Telegram Authority");
+    if (configured.profile !== "telegram-inline-v1") {
+      throw new OperatorManifestError("Operator Manifest Telegram Authority profile is unsupported");
+    }
+    const botId = telegramId(configured.botId, "Telegram bot ID", false);
+    const userId = telegramId(configured.userId, "Telegram user ID", false);
+    const chatId = telegramId(configured.chatId, "Telegram chat ID", true);
+    const promptTimeoutMs = boundedCount(
+      configured.promptTimeoutMs,
+      "Telegram prompt timeout",
+      300_000,
+    );
+    if (promptTimeoutMs < 10_000) {
+      throw new OperatorManifestError("Telegram prompt timeout is below its minimum");
+    }
+    telegram = Object.freeze({
+      profile: "telegram-inline-v1" as const,
+      botId,
+      userId,
+      chatId,
+      promptTimeoutMs,
+    });
+  }
+
   const chainEvidence = record(root.chainEvidence, "Operator Manifest Chain Evidence");
   exactKeys(chainEvidence, [
     "operatorNodeUrl",
@@ -257,6 +306,7 @@ export function parseOperatorManifest(value: unknown): OperatorManifest {
     },
     merchant: { allowRules, merchantReceiptIssuer, paymentReceiptIssuer },
     batch: { claimFeeReserveAtomic },
+    authority: { provider: authority.provider, telegram },
     chainEvidence: {
       operatorNodeUrl,
       witnessBaseUrl,
@@ -578,6 +628,13 @@ function boundedCount(value: unknown, label: string, maximum: number): number {
   const count = positiveSafeInteger(value, label);
   if (count > maximum) throw new OperatorManifestError(`${label} exceeds its maximum`);
   return count;
+}
+
+function telegramId(value: unknown, label: string, allowNegative: boolean): string {
+  const text = boundedString(value, label, 21);
+  const pattern = allowNegative ? /^-?[1-9][0-9]{0,19}$/ : /^[1-9][0-9]{0,19}$/;
+  if (!pattern.test(text)) throw new OperatorManifestError(`${label} is invalid`);
+  return text;
 }
 
 function numericId(value: unknown, label: string): number {

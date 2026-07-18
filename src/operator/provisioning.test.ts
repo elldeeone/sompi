@@ -40,6 +40,7 @@ test("preview is side-effect free and provision/install binds one approved candi
     assert.equal(fs.statSync(path.join(dataDirectory, "vault", "agent-key")).mode & 0o777, 0o600);
     assert.deepEqual(operatorProvisioningStatus(manifestPath, {
       operatorUserId: uid,
+      runtimeUserId: uid,
       runtimeGroupId: gid,
       allowSameUserForTests: true,
     }), {
@@ -97,6 +98,7 @@ function fixtureSpec(dataDirectory: string) {
       merchantReceiptIssuer: "receipt:merchant", paymentReceiptIssuer: "receipt:payment",
     },
     batch: { claimFeeReserveAtomic: "100000" },
+    authority: { provider: "terminal", telegram: null },
     chainEvidence: {
       operatorNodeUrl: "ws://10.0.3.26:17210/", witnessBaseUrl: "https://api-tn10.kaspa.org/",
       depthConfirmationDaa: "10",

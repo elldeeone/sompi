@@ -230,6 +230,7 @@ export async function runLocalTestnetProof(
       initialVaultTransactionId: INITIAL_VAULT_TRANSACTION_ID,
       covenantId: COVENANT_ID,
       stagingVisibleOnSubmit: options.stagingVisibleOnSubmit,
+      now: clock,
     });
     // The fixture owns the one ScriptPublicKey passed to the chain from here.
     resources.pop();

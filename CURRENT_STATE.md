@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: **2026-07-17**
+Last updated: **2026-07-18**
 
 ## Plain-English status
 
@@ -63,6 +63,27 @@ requires the pinned operator wRPC source and independent HTTPS witness;
 temporary absence, pruning, contradiction, or unavailable history fails
 closed.
 
+## Terah agent deployment
+
+Terah now runs the API-first integration described by ADR-0016:
+
+- distinct `sompi-api` and `sompi-authority` system services;
+- separate API, Authority-decision, Telegram-callback, and recovery Unix
+  sockets and OS groups;
+- a Hermes skill that calls only `sompi-agent`;
+- a least-authority Hermes plugin that relays only authenticated Telegram
+  callback data;
+- no Sompi MCP server in the Hermes runtime;
+- an immutable Testnet-10 Operator Manifest with per-Purchase, hourly, fee,
+  Merchant-egress, and vault limits;
+- an isolated vault funded with 3 TN10 KAS from the existing Forge bootstrap
+  wallet without moving its private key.
+
+The actual inline Telegram approval completed the production Purchase path as
+`receipted`. The Hermes process can reach the agent API and callback socket but
+cannot read Authority, wallet, operator-recovery, or bot credentials. All three
+services restart cleanly with the same durable state.
+
 ## Funded Testnet-10 evidence
 
 The active evidence set is under
@@ -96,13 +117,22 @@ private protocol payloads, and Journal databases remain outside Git.
 Other canonical accepted transaction identifiers are recorded in the evidence
 README. No mainnet transaction was broadcast and no mainnet claim is made.
 
+Fresh Phase 11 evidence is under
+[`evidence/phase11-terah/`](evidence/phase11-terah/README.md). On Terah it adds:
+
+- a funded standard-native HTTP-API Purchase ending `receipted` at transaction
+  `331137376e0115aabda2a323402aa7ac3889c39fa2ede391a055cbdba37c4223`;
+- two funded batch Purchases, one accepted claim, its continuation, and a
+  strict-boundary refund;
+- restart recovery from a claim broadcast followed by temporary independent
+  witness lag, without rebuilding or rebroadcasting the transaction.
+
 ## Verification and security
 
-The clean release verifier passes 480 tests: 479 pass and one documented
+The Phase 11 candidate passes 491 tests: 490 pass and one documented
 privileged ownership test is skipped when the host cannot change file
-ownership. It also passes offline smoke, OpenAPI 3.2, Arazzo 1.1,
-Kaspa-x402 conformance, all five funded evidence reports, zero production
-advisories, a 201-file packed artifact, and clean-install/import verification.
+ownership. Its 209-file packed artifact passes the explicit archive verifier;
+the final clean-tree release verifier remains the last local closeout gate.
 
 The sealed full-branch security review covered every changed source-like file
 and reported three Low/P3 availability issues. The branch bounds Chain Evidence
@@ -122,10 +152,11 @@ describe the active runtime.
 
 ## Release/readiness boundary
 
-This release is a testnet alpha implementation. It does not:
+This release is a testnet alpha implementation. It has one private,
+operator-controlled Terah deployment. It does not:
 
 - publish an npm package;
-- deploy a public service;
+- deploy a public Sompi service;
 - modify Kaspa-x402;
 - enable mainnet;
 - claim third-party AP2 interoperability;
@@ -138,7 +169,7 @@ satisfied.
 
 ## Current closeout
 
-Every Phase 0–10 acceptance item has direct test or recorded evidence. The
-implementation is merged into and pushed to `main`. No implementation,
-funding, sibling-repository, or security-review blocker remains within the
-approved alpha.8 scope.
+Every Phase 0–10 acceptance item has direct test or recorded evidence. Phase 11
+is implemented and live-proven; its final clean-tree release verification and
+local commits are the remaining closeout work. npm publishing remains blocked
+by design until registry authentication is explicitly restored.

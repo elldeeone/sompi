@@ -484,6 +484,9 @@ export async function runLiveBatchProof(
     const merchantChannelBeforeClaim = await merchantStore.loadChannel(
       claimChannel.channel.id as Hash32Hex
     );
+    const openClaimAttempt = await merchantStore.loadOpenClaimAttempt(
+      claimChannel.channel.id as Hash32Hex,
+    );
     const claim =
       merchantChannelBeforeClaim &&
       merchantChannelBeforeClaim.claimedCumulativeAmount === "12000000" &&
@@ -495,6 +498,16 @@ export async function runLiveBatchProof(
             finality: "accepted" as const,
             accepted: true as const,
           })
+        : openClaimAttempt
+          ? await recoverLiveBatchClaim({
+              merchant,
+              chainEvidence,
+              channel: claimChannel.channel,
+              transaction: openClaimAttempt.transaction,
+              transactionId: openClaimAttempt.transactionId,
+              merchantAddress: initialized.config.wallets.merchantAddress,
+              chainProvider,
+            })
         : await merchant.executeBatchClaim(claimChannel.channel.id as Hash32Hex);
     if (!claim.accepted || !claim.transactionId) {
       throw new Error("live batch claim was not accepted");
@@ -593,6 +606,38 @@ export async function runLiveBatchProof(
       try { await close(); } catch (error) { errors.push(error); }
     }
     if (errors.length > 0) throw new AggregateError(errors, "live batch proof cleanup failed");
+  }
+}
+
+export async function recoverLiveBatchClaim(input: Readonly<{
+  merchant: DemoMerchantFixture;
+  chainEvidence: ChainEvidenceModule;
+  channel: LiveBatchClaimEvidenceChannel;
+  transaction: string;
+  transactionId?: string;
+  merchantAddress: string;
+  chainProvider: LiveBatchServerChainProvider;
+}>) {
+  const transactionId = input.transactionId ?? exactTransactionId(input.transaction);
+  const evidence = await observeAcceptedBatchClaim({
+    chainEvidence: input.chainEvidence,
+    channel: input.channel,
+    transactionId,
+    merchantAddress: input.merchantAddress,
+  });
+  input.chainProvider.acceptIndependentEvidence(transactionId);
+  return input.merchant.recoverBatchClaim(input.channel.id as Hash32Hex, {
+    transactionId: transactionId as Hash32Hex,
+    finality: evidence.level === "accepted" ? "accepted" : "confirmed",
+  });
+}
+
+function exactTransactionId(safeJson: string): string {
+  const transaction = Transaction.deserializeFromSafeJSON(safeJson);
+  try {
+    return String(transaction.finalize()).toLowerCase();
+  } finally {
+    transaction.free();
   }
 }
 
@@ -740,18 +785,28 @@ function acceptedOperationOutpoint(input: {
   });
 }
 
+interface LiveBatchServerChainProvider extends ServerChainProvider {
+  acceptIndependentEvidence(transactionId: string): void;
+}
+
 function liveBatchServerChainProvider(
   initialized: InitializedLiveProof,
   chain: WalletBatchChainSource,
   escrowAddresses: Set<string>,
   chainEvidence: ChainEvidenceModule,
   channel: NonNullable<Awaited<ReturnType<typeof openChannel>>["channel"]>,
-): ServerChainProvider {
+): LiveBatchServerChainProvider {
   // Channel capitalization was already accepted through Treasury/Chain
   // Evidence before this provider is composed. Every successor claim must be
   // added only after the independent evidence check below.
   const independentlyAccepted = new Set<string>([channel.activeOutpoint.txid]);
   return {
+    acceptIndependentEvidence(transactionId) {
+      if (!/^[a-f0-9]{64}$/.test(transactionId)) {
+        throw new Error("live batch accepted transaction ID is invalid");
+      }
+      independentlyAccepted.add(transactionId);
+    },
     async getUtxo(outpoint) {
       const entries = await chain.getUtxos([...escrowAddresses]);
       const found = entries.find((entry) =>

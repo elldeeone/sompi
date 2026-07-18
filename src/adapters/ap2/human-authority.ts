@@ -22,6 +22,7 @@ import {
 } from "./types.js";
 
 export interface AuthorityApprovalDisplay {
+  readonly authorityRequestDigest: string;
   readonly purchaseId: string;
   readonly merchant: Readonly<{ id: string; name: string; origin: string }>;
   readonly request: Readonly<{
@@ -99,7 +100,11 @@ export class Ap2HumanAuthorityDecisionProvider implements AuthorityHumanDecision
     if (termsExpiryMs <= nowMs || message.expiresAtMs <= nowMs) {
       throw new Error("authority request expired before a decision could be signed");
     }
-    const display = displayFacts(message.facts, context.recoveryRetry);
+    const display = displayFacts(
+      message.facts,
+      context.request.requestDigest,
+      context.recoveryRetry,
+    );
     const approved = await this.options.prompt.approve(display, context.signal);
     context.signal.throwIfAborted();
     context.renewLease();
@@ -260,8 +265,13 @@ function isTerminalStream(stream: Readable | Writable): boolean {
   return (stream as Readable & Writable & { isTTY?: unknown }).isTTY === true;
 }
 
-function displayFacts(facts: AuthorityApprovalFacts, recoveryRetry: boolean): AuthorityApprovalDisplay {
+function displayFacts(
+  facts: AuthorityApprovalFacts,
+  authorityRequestDigest: string,
+  recoveryRetry: boolean,
+): AuthorityApprovalDisplay {
   return Object.freeze({
+    authorityRequestDigest,
     purchaseId: facts.purchaseId,
     merchant: Object.freeze({
       id: facts.merchantId,

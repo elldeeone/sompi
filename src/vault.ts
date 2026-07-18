@@ -229,8 +229,12 @@ export class VaultManager {
   private readonly state: SecureLocalStateDirectory;
   private readonly networkId: string;
 
-  constructor(dataDir: string, networkId: string) {
-    const root = new SecureLocalStateDirectory(dataDir, "Sompi data");
+  constructor(
+    dataDir: string,
+    networkId: string,
+    options: Readonly<{ expectedOwnerUserId?: number }> = {},
+  ) {
+    const root = new SecureLocalStateDirectory(dataDir, "Sompi data", options);
     this.state = root.child("vault", "vault state");
     this.networkId = networkId;
   }

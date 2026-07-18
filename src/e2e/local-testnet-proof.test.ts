@@ -43,6 +43,13 @@ test("deterministic local Testnet-10 proof joins AP2, x402, Settlement, Fulfilme
   }
 });
 
+test("local proof chain observations use the proof clock", async () => {
+  const report = await runLocalTestnetProof({
+    now: () => 1_700_000_000_000,
+  });
+  assert.equal(report.purchase.state, "receipted");
+});
+
 test("local vertical can be initiated through the real MCP SDK transport", async () => {
   const report = await runLocalTestnetProof({
     initiationMode: "mcp-sdk-in-memory-transport",

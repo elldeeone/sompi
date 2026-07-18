@@ -18,6 +18,7 @@ test("package manifest exposes only supported executables and no import side eff
   assert.equal(Object.prototype.hasOwnProperty.call(manifest, "main"), false);
   assert.deepEqual(manifest.exports, { "./package.json": "./package.json" });
   assert.deepEqual(manifest.bin, {
+    "sompi-agent": "dist/agent-main.js",
     "sompi-api": "dist/api-main.js",
     "sompi-authority": "dist/authority-main.js",
     "sompi-mcp": "dist/index.js",
@@ -26,6 +27,10 @@ test("package manifest exposes only supported executables and no import side eff
     "sompi-verify-authority-isolation": "scripts/verify-authority-isolation.js",
   });
   assert.ok(Array.isArray(manifest.files));
+  assert.ok(manifest.files.includes("integrations"));
+  assert.ok(manifest.files.includes("!integrations/**/__pycache__/**"));
+  assert.ok(manifest.files.includes("!integrations/**/*.pyc"));
+  assert.ok(manifest.files.includes("!integrations/**/tests/**"));
   assert.ok(manifest.files.includes("!dist/**/*.test.js"));
   assert.ok(manifest.files.includes("!dist/e2e/live-testnet-*.js"));
   assert.equal(manifest.files.includes("scripts/run-live-testnet-e2e.mjs"), false);
@@ -45,6 +50,9 @@ test("npm ignore and package preparation retain defence-in-depth exclusions", ()
   assert.ok(npmIgnore.includes("dist/**/*.test.js"));
   assert.ok(npmIgnore.includes("dist/e2e/live-testnet-*.js"));
   assert.ok(npmIgnore.includes("src/"));
+  assert.ok(npmIgnore.includes("integrations/**/__pycache__/"));
+  assert.ok(npmIgnore.includes("integrations/**/*.pyc"));
+  assert.ok(npmIgnore.includes("integrations/**/tests/"));
   for (const filename of [
     "scripts/prepare-package.mjs",
     "scripts/require-source-tree.mjs",

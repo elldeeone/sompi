@@ -5,6 +5,7 @@ import type { ChainEvidenceModule } from "../chain-evidence/module.js";
 import { evidenceDigest } from "../purchase/identity.js";
 import {
   observeAcceptedBatchClaim,
+  recoverLiveBatchClaim,
   type LiveBatchClaimEvidenceChannel,
 } from "./live-testnet-batch-proof.js";
 
@@ -15,6 +16,49 @@ const CHANNEL: LiveBatchClaimEvidenceChannel = Object.freeze({
   activeOutpoint: Object.freeze({ txid: "44".repeat(32), index: 0 }),
   activeScriptPublicKey: `0000${"aa".repeat(34)}`,
   escrowAddress: "kaspatest:pppppppppppppppppppppppppppppppppppppppppppppppppppppppp6r49vl",
+});
+
+test("live batch restart promotes a pending claim only after independent evidence", async () => {
+  const order: string[] = [];
+  const result = await recoverLiveBatchClaim({
+    merchant: {
+      async recoverBatchClaim(_channelId: string, input: unknown) {
+        order.push("recover");
+        assert.deepEqual(input, {
+          transactionId: TRANSACTION_ID,
+          finality: "accepted",
+        });
+        return {
+          channel: {},
+          transactionId: TRANSACTION_ID,
+          finality: "accepted",
+          accepted: true,
+        };
+      },
+    } as never,
+    chainEvidence: {
+      async observe() {
+        order.push("evidence");
+        return {
+          status: "present",
+          level: "accepted",
+          detailDigest: evidenceDigest("restart-accepted"),
+        };
+      },
+    } as unknown as ChainEvidenceModule,
+    channel: CHANNEL,
+    transaction: "unused because the durable attempt has a transaction ID",
+    transactionId: TRANSACTION_ID,
+    merchantAddress: MERCHANT,
+    chainProvider: {
+      acceptIndependentEvidence(transactionId: string) {
+        order.push("provider");
+        assert.equal(transactionId, TRANSACTION_ID);
+      },
+    } as never,
+  });
+  assert.equal(result.accepted, true);
+  assert.deepEqual(order, ["evidence", "provider", "recover"]);
 });
 
 interface CapturedEvidenceRequest {

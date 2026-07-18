@@ -36,7 +36,11 @@ try {
       print({ status: "installed", ...installed.identity, manifest: installed.filename, vaultAddress: installed.manifest.vault.address });
       break;
     }
-    case "status": print(operatorProvisioningStatus(command.manifest, { operatorUserId: command.operatorUid, runtimeGroupId: command.runtimeGid })); break;
+    case "status": print(operatorProvisioningStatus(command.manifest, {
+      operatorUserId: command.operatorUid,
+      runtimeUserId: command.runtimeUid,
+      runtimeGroupId: command.runtimeGid,
+    })); break;
     case "agent-credential": print({ status: "installed", ...installAgentApiCredential(command.filename, {
       operatorUserId: command.operatorUid,
       runtimeGroupId: command.runtimeGid,

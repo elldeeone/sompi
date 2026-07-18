@@ -33,6 +33,7 @@ implements ChainObservationSource, ExactTransactionVerifier {
   private readonly initialVaultAmount: bigint;
   private readonly initialVaultTransactionId: string;
   private readonly covenantId: string;
+  private readonly now: () => number;
   stagingSubmissionCount = 0;
   exactAcceptanceCount = 0;
 
@@ -43,6 +44,7 @@ implements ChainObservationSource, ExactTransactionVerifier {
     initialVaultTransactionId: string;
     covenantId: string;
     stagingVisibleOnSubmit?: boolean;
+    now?: () => number;
   }) {
     this.initialVaultAddress = options.initialVaultAddress;
     this.initialVaultScript = options.initialVaultScript;
@@ -50,6 +52,7 @@ implements ChainObservationSource, ExactTransactionVerifier {
     this.initialVaultTransactionId = options.initialVaultTransactionId;
     this.covenantId = options.covenantId;
     this.stagingVisible = options.stagingVisibleOnSubmit ?? true;
+    this.now = options.now ?? (() => 1_893_456_000_000);
   }
 
   walletClient(): object {
@@ -209,7 +212,7 @@ implements ChainObservationSource, ExactTransactionVerifier {
       amountAtomic: this.exact.amountAtomic,
       scriptPublicKey: this.exact.scriptPublicKey,
       finality: request.minimumFinality === "confirmed" ? "confirmed" : "accepted",
-      observedAtMs: 1_893_456_000_000,
+      observedAtMs: readObservationClock(this.now),
     });
   }
 
@@ -228,6 +231,14 @@ implements ChainObservationSource, ExactTransactionVerifier {
     this.submittedStaging = undefined;
     this.initialVaultScript.free();
   }
+}
+
+function readObservationClock(now: () => number): number {
+  const observedAtMs = now();
+  if (!Number.isSafeInteger(observedAtMs) || observedAtMs <= 0) {
+    throw new Error("in-memory chain observation clock must return a positive safe integer");
+  }
+  return observedAtMs;
 }
 
 function payerPublicKey(transaction: Transaction, inputIndex: number): string {

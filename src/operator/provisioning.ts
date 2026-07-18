@@ -29,6 +29,7 @@ export interface OperatorProvisioningSpec {
   readonly treasury: OperatorManifest["treasury"];
   readonly merchant: OperatorManifest["merchant"];
   readonly batch: OperatorManifest["batch"];
+  readonly authority: OperatorManifest["authority"];
   readonly chainEvidence: OperatorManifest["chainEvidence"];
   readonly admission: OperatorManifest["admission"];
 }
@@ -97,7 +98,7 @@ export function parseOperatorProvisioningSpec(value: unknown): OperatorProvision
   const candidate = requireRecord(value, "operator provisioning spec");
   requireExactKeys(candidate, [
     "schema", "revision", "dataDirectory", "ownerPublic", "maxOutflowSompi",
-    "windowSizeDaa", "treasury", "merchant", "batch", "chainEvidence", "admission",
+    "windowSizeDaa", "treasury", "merchant", "batch", "authority", "chainEvidence", "admission",
   ]);
   if (candidate.schema !== OPERATOR_PROVISIONING_SCHEMA) {
     throw new OperatorProvisioningError("operator provisioning schema is unsupported");
@@ -124,6 +125,7 @@ export function parseOperatorProvisioningSpec(value: unknown): OperatorProvision
     treasury: candidate.treasury,
     merchant: candidate.merchant,
     batch: candidate.batch,
+    authority: candidate.authority,
     chainEvidence: candidate.chainEvidence,
     admission: candidate.admission,
   });
@@ -137,6 +139,7 @@ export function parseOperatorProvisioningSpec(value: unknown): OperatorProvision
     treasury: manifest.treasury,
     merchant: manifest.merchant,
     batch: manifest.batch,
+    authority: manifest.authority,
     chainEvidence: manifest.chainEvidence,
     admission: manifest.admission,
   });
@@ -195,6 +198,7 @@ export function provisionOperatorCandidate(
       treasury: spec.treasury,
       merchant: spec.merchant,
       batch: spec.batch,
+      authority: spec.authority,
       chainEvidence: spec.chainEvidence,
       admission: spec.admission,
     });
@@ -297,7 +301,7 @@ export function installOperatorCandidate(
 
 export function operatorProvisioningStatus(
   manifestFilename: string,
-  options: Pick<OperatorInstallOptions, "operatorUserId" | "runtimeGroupId" | "allowSameUserForTests">
+  options: Pick<OperatorInstallOptions, "operatorUserId" | "runtimeUserId" | "runtimeGroupId" | "allowSameUserForTests">
 ): Readonly<Record<string, unknown>> {
   const loaded = loadOperatorManifest(manifestFilename, {
     expectedOperatorUserId: options.operatorUserId,
@@ -305,7 +309,9 @@ export function operatorProvisioningStatus(
     allowSameUserForTests: options.allowSameUserForTests,
     readerRole: "operator",
   });
-  const vault = new VaultManager(loaded.manifest.dataDirectory, "testnet-10");
+  const vault = new VaultManager(loaded.manifest.dataDirectory, "testnet-10", {
+    expectedOwnerUserId: options.runtimeUserId,
+  });
   const config = vault.config();
   const matches = vaultStaticConfigurationDigest(config) === loaded.manifest.vault.configDigest &&
     vault.initialAddress() === loaded.manifest.vault.address &&

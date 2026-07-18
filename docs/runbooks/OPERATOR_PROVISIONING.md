@@ -39,7 +39,7 @@ group-readable by the API runtime, and not writable by API or MCP.
 Check the installed boundary before starting the API:
 
 ```bash
-sompi-operator status /etc/sompi/operator-manifest.json OPERATOR_UID RUNTIME_GID
+sompi-operator status /etc/sompi/operator-manifest.json OPERATOR_UID RUNTIME_UID RUNTIME_GID
 ```
 
 Provision both local Purchase API transports separately. Each directory is

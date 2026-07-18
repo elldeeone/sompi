@@ -504,6 +504,47 @@ Gate:
   and the project owner has explicitly closed further scan iteration.
 - `CURRENT_STATE.md` has no unowned blocker for the supported testnet scope.
 
+## Phase 11: Hermes and Telegram deployment
+
+Purpose: make the completed Purchase runtime usable from Terah without moving
+authorization, policy, or keys into the agent process.
+
+- [x] Freeze and back up the live Hermes baseline; build against a clean pinned
+  current-upstream checkout without interrupting the running gateway.
+- [x] Add the request-bound Telegram Authority provider and durable one-time
+  callback state described by ADR-0016.
+- [x] Add the least-authority Hermes callback plugin and concise Sompi agent
+  skill; direct API remains canonical and MCP remains compatibility only.
+- [x] Provision distinct operator, API, Authority, and agent principals, groups,
+  sockets, credentials, data directories, and system services on the Hermes
+  host.
+- [x] Install an immutable Testnet-10 Operator Manifest with the demo Merchant,
+  trusted node/witness, Telegram user/chat, conservative fee limits, per-
+  Purchase limit, hourly limit, and vault cap.
+- [x] Fund a fresh isolated agent vault from the existing Testnet-10 bootstrap
+  wallet without reusing historical proof state.
+- [x] Prove the Terah flow in explicit joined layers: live request -> exact
+  facts -> Telegram decision -> fulfilment -> receipt, plus separately funded
+  standard-native and batch settlement on the same host.
+- [x] Prove limit denial, unauthorized callback, replay, expiry, duplicate tap,
+  service restart, ambiguous settlement, status, and recovery.
+- [ ] Preserve public evidence without secrets, update current documentation,
+  and pass the complete release verifier from packed artifacts.
+- [ ] Prepare publish and deployment handoff. Publishing remains blocked until
+  npm authentication is explicitly restored.
+
+Gate:
+
+- Terah can request and observe Purchases but cannot approve, loosen policy, or
+  access any payment/Authority credential.
+- Only the exact operator-installed Telegram user/chat callback can consume the
+  exact one-time Authority capability.
+- The canonical API, MCP compatibility adapter, skill, and Telegram projection
+  all converge on one Purchase lifecycle.
+- Exact and batch paid canaries reconcile after restart without duplicate
+  payment or fulfilment.
+- The live Hermes gateway has a tested rollback and no unpreserved local state.
+
 ## Deferred tracks (not part of the alpha.8 clean cutover)
 
 ### Autonomous AP2

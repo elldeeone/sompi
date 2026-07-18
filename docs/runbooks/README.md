@@ -9,8 +9,10 @@ Start with:
    manifest, API credentials, runtime identity, and vault configuration.
 2. [`AUTHORITY.md`](AUTHORITY.md) — isolate and operate the human-present
    signer.
-3. [`JOURNAL.md`](JOURNAL.md) — back up and restore API-owned state.
-4. [`RECONCILIATION.md`](RECONCILIATION.md) — recover one interrupted Purchase.
+3. [`HERMES.md`](HERMES.md) — connect the API-first agent skill and Telegram
+   callback plugin.
+4. [`JOURNAL.md`](JOURNAL.md) — back up and restore API-owned state.
+5. [`RECONCILIATION.md`](RECONCILIATION.md) — recover one interrupted Purchase.
 
 Mechanism-specific procedures:
 

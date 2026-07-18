@@ -8,6 +8,7 @@ import { exportJWK, generateKeyPair } from "jose";
 import {
   Ap2HumanAuthorityDecisionProvider,
   TerminalAuthorityApprovalPrompt,
+  type AuthorityApprovalPrompt,
 } from "../adapters/ap2/human-authority.js";
 import {
   loadAp2TrustStore,
@@ -22,6 +23,14 @@ import { SqliteAuthorityReplayStore } from "./replay-store.js";
 import { AuthorityService } from "./service.js";
 import { AUTHORITY_DECISION_TRANSPORT_TIMEOUT_MS } from "./transport.js";
 import type { AdmissionBudgetProjection } from "../admission.js";
+import type { OperatorManifest } from "../operator/manifest.js";
+import {
+  TelegramAuthorityApprovalPrompt,
+  TelegramAuthorityPromptStore,
+  TelegramBotApi,
+  startTelegramCallbackServer,
+  type RunningTelegramCallbackServer,
+} from "./telegram-authority.js";
 
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
@@ -30,6 +39,7 @@ export interface AuthorityRuntimePaths {
   readonly privateDirectory: string;
   readonly clientDirectory: string;
   readonly runtimeDirectory: string;
+  readonly callbackRuntimeDirectory: string;
   readonly serverMacKey: string;
   readonly clientMacKey: string;
   readonly privateJwk: string;
@@ -38,7 +48,10 @@ export interface AuthorityRuntimePaths {
   readonly clientTrust: string;
   readonly replayDatabase: string;
   readonly decisionDatabase: string;
+  readonly telegramBotToken: string;
+  readonly telegramPromptDatabase: string;
   readonly socket: string;
+  readonly telegramCallbackSocket: string;
 }
 
 export interface AuthorityRuntimePathOptions {
@@ -46,6 +59,7 @@ export interface AuthorityRuntimePathOptions {
   readonly privateDirectory?: string;
   readonly clientDirectory?: string;
   readonly runtimeDirectory?: string;
+  readonly callbackRuntimeDirectory?: string;
   readonly socketPath?: string;
 }
 
@@ -113,7 +127,15 @@ export function authorityRuntimePaths(
   const runtimeDirectory = path.resolve(
     options.runtimeDirectory ?? path.join(root, "run")
   );
-  assertDisjointDirectories(privateDirectory, clientDirectory, runtimeDirectory);
+  const callbackRuntimeDirectory = path.resolve(
+    options.callbackRuntimeDirectory ?? path.join(root, "callback-run")
+  );
+  assertDisjointDirectories(
+    privateDirectory,
+    clientDirectory,
+    runtimeDirectory,
+    callbackRuntimeDirectory,
+  );
   const client = authorityClientRuntimePaths({
     rootDirectory: root,
     clientDirectory,
@@ -124,6 +146,7 @@ export function authorityRuntimePaths(
     privateDirectory,
     clientDirectory,
     runtimeDirectory,
+    callbackRuntimeDirectory,
     serverMacKey: path.join(privateDirectory, "ipc-mac.key"),
     clientMacKey: client.macKey,
     privateJwk: path.join(privateDirectory, "authority-private.jwk.json"),
@@ -132,7 +155,10 @@ export function authorityRuntimePaths(
     clientTrust: client.trust,
     replayDatabase: path.join(privateDirectory, "replay.sqlite"),
     decisionDatabase: path.join(privateDirectory, "decisions.sqlite"),
+    telegramBotToken: path.join(privateDirectory, "telegram-bot-token"),
+    telegramPromptDatabase: path.join(privateDirectory, "telegram-prompts.sqlite"),
     socket: client.socket,
+    telegramCallbackSocket: path.join(callbackRuntimeDirectory, "telegram-callback.sock"),
   });
 }
 
@@ -150,7 +176,9 @@ export interface RunningAuthority {
 
 export interface AuthorityRuntimeAccessOptions {
   readonly socketGroupId?: number;
+  readonly telegramCallbackSocketGroupId?: number;
   readonly admission?: AdmissionBudgetProjection;
+  readonly authority?: OperatorManifest["authority"];
 }
 
 export async function initializeAuthorityRuntime(
@@ -164,6 +192,7 @@ export async function initializeAuthorityRuntime(
     paths.privateDirectory,
     paths.clientDirectory,
     paths.runtimeDirectory,
+    paths.callbackRuntimeDirectory,
   ]) {
     prepareEmptyDirectory(directory);
   }
@@ -243,6 +272,9 @@ export async function startAuthorityRuntime(
   if (!access.admission) {
     throw new Error("sompi-authority requires the Operator Manifest admission projection");
   }
+  if (!access.authority) {
+    throw new Error("sompi-authority requires the Operator Manifest Authority projection");
+  }
   validateAuthorityRuntimePaths(paths);
   assertIdentity(identity.issuer, "authority issuer");
   assertIdentity(identity.kid, "authority signing key ID");
@@ -253,13 +285,49 @@ export async function startAuthorityRuntime(
   const authentication = new AuthorityMacKeyFile(paths.serverMacKey, identity.keyId);
   const replay = new SqliteAuthorityReplayStore(paths.replayDatabase);
   const decisions = new SqliteAuthorityDecisionStore(paths.decisionDatabase);
+  let prompt: AuthorityApprovalPrompt;
+  let telegramStore: TelegramAuthorityPromptStore | undefined;
+  let telegramBot: TelegramBotApi | undefined;
+  let telegramPrompt: TelegramAuthorityApprovalPrompt | undefined;
+  let telegramServer: RunningTelegramCallbackServer | undefined;
+  if (access.authority.provider === "terminal") {
+    prompt = new TerminalAuthorityApprovalPrompt({
+      maxPrompts: access.admission.authorityPrompts,
+    });
+  } else {
+    const telegram = access.authority.telegram;
+    if (!telegram) throw new Error("Telegram Authority configuration is missing");
+    telegramStore = new TelegramAuthorityPromptStore(paths.telegramPromptDatabase);
+    telegramBot = new TelegramBotApi(paths.telegramBotToken, telegram);
+    try {
+      await telegramBot.verify();
+      telegramPrompt = new TelegramAuthorityApprovalPrompt({
+        config: telegram,
+        store: telegramStore,
+        bot: telegramBot,
+      });
+      telegramServer = await startTelegramCallbackServer({
+        socketPath: paths.telegramCallbackSocket,
+        ...(access.telegramCallbackSocketGroupId === undefined
+          ? {}
+          : { socketGroupId: access.telegramCallbackSocketGroupId }),
+        maxConnections: access.admission.authorityPreauthSockets,
+        handle: (input) => telegramPrompt!.resolveCallback(input),
+      });
+      prompt = telegramPrompt;
+    } catch (error) {
+      await telegramServer?.close();
+      telegramPrompt?.close();
+      telegramBot.close();
+      telegramStore.close();
+      throw error;
+    }
+  }
   const humanDecision = new Ap2HumanAuthorityDecisionProvider({
     signer,
     trust,
     instrumentId: identity.instrumentId,
-    prompt: new TerminalAuthorityApprovalPrompt(
-      access.admission ? { maxPrompts: access.admission.authorityPrompts } : {},
-    ),
+    prompt,
   });
   const service = new AuthorityService({
     replayStore: replay,
@@ -280,6 +348,10 @@ export async function startAuthorityRuntime(
   try {
     await server.start();
   } catch (error) {
+    await telegramServer?.close();
+    telegramPrompt?.close();
+    telegramBot?.close();
+    telegramStore?.close();
     replay.close();
     decisions.close();
     throw error;
@@ -292,6 +364,10 @@ export async function startAuthorityRuntime(
       closed = true;
       await server.close();
       service.close();
+      await telegramServer?.close();
+      telegramPrompt?.close();
+      telegramBot?.close();
+      telegramStore?.close();
       replay.close();
       decisions.close();
     },
@@ -325,6 +401,7 @@ function validateAuthorityRuntimePaths(paths: AuthorityRuntimePaths): void {
     "privateDirectory",
     "clientDirectory",
     "runtimeDirectory",
+    "callbackRuntimeDirectory",
     "serverMacKey",
     "clientMacKey",
     "privateJwk",
@@ -333,7 +410,10 @@ function validateAuthorityRuntimePaths(paths: AuthorityRuntimePaths): void {
     "clientTrust",
     "replayDatabase",
     "decisionDatabase",
+    "telegramBotToken",
+    "telegramPromptDatabase",
     "socket",
+    "telegramCallbackSocket",
   ] as const;
   if (
     !paths ||
@@ -352,6 +432,7 @@ function validateAuthorityRuntimePaths(paths: AuthorityRuntimePaths): void {
     privateDirectory: paths.privateDirectory,
     clientDirectory: paths.clientDirectory,
     runtimeDirectory: paths.runtimeDirectory,
+    callbackRuntimeDirectory: paths.callbackRuntimeDirectory,
     socketPath: paths.socket,
   });
   if (keys.some((key) => paths[key] !== expected[key])) {

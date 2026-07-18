@@ -225,6 +225,7 @@ async function runtimeFixture(): Promise<RuntimeFixture> {
       paymentReceiptIssuer: "receipt:payment",
     },
     batch: { claimFeeReserveAtomic: "100000" },
+    authority: { provider: "terminal", telegram: null },
     chainEvidence: {
       operatorNodeUrl: "ws://10.0.3.26:17210/",
       witnessBaseUrl: "https://api-tn10.kaspa.org/",

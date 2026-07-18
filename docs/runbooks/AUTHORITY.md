@@ -34,6 +34,8 @@ Use distinct non-root UIDs for the three services. Use three different groups:
 | API data directory from the Operator Manifest | `sompi-api` | directory `0700`, files `0600` |
 | `/run/sompi-authority` | `sompi-authority:AUTHORITY_IPC_GROUP` | `0710` |
 | `/run/sompi-authority/authority.sock` | `sompi-authority:AUTHORITY_IPC_GROUP` | `0660` |
+| `/run/sompi-telegram-callback` | `sompi-authority:TELEGRAM_CALLBACK_GROUP` | `0710` |
+| `/run/sompi-telegram-callback/telegram-callback.sock` | `sompi-authority:TELEGRAM_CALLBACK_GROUP` | `0660` |
 | `/run/sompi-api` | `sompi-api:AGENT_API_GROUP` | `0710` |
 | `/run/sompi-recovery` | `sompi-api:RECOVERY_GROUP` | `0710` |
 
@@ -50,6 +52,7 @@ sudo -u sompi-authority env \
   SOMPI_AUTHORITY_PRIVATE_DIR=/var/lib/sompi-authority/private \
   SOMPI_AUTHORITY_CLIENT_DIR=/var/lib/sompi-api/authority-client \
   SOMPI_AUTHORITY_RUNTIME_DIR=/run/sompi-authority \
+  SOMPI_AUTHORITY_CALLBACK_RUNTIME_DIR=/run/sompi-telegram-callback \
   SOMPI_AUTHORITY_SOCKET=/run/sompi-authority/authority.sock \
   SOMPI_AUTHORITY_ISSUER=urn:sompi:authority:local \
   SOMPI_AUTHORITY_SIGNING_KID=authority-signing-key-1 \
@@ -84,6 +87,7 @@ sudo -u sompi-authority env \
   SOMPI_AUTHORITY_PRIVATE_DIR=/var/lib/sompi-authority/private \
   SOMPI_AUTHORITY_CLIENT_DIR=/var/lib/sompi-api/authority-client \
   SOMPI_AUTHORITY_RUNTIME_DIR=/run/sompi-authority \
+  SOMPI_AUTHORITY_CALLBACK_RUNTIME_DIR=/run/sompi-telegram-callback \
   SOMPI_AUTHORITY_SOCKET=/run/sompi-authority/authority.sock \
   SOMPI_AUTHORITY_SOCKET_GID=AUTHORITY_IPC_GID \
   SOMPI_AUTHORITY_ISSUER=urn:sompi:authority:local \

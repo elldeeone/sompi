@@ -13,7 +13,7 @@ export const OPERATOR_USAGE = [
   "usage: sompi-operator preview SPEC.json",
   "       sompi-operator provision SPEC.json CANDIDATE_DIR",
   "       sompi-operator install CANDIDATE_DIR MANIFEST.json EXPECTED_DIGEST OPERATOR_UID RUNTIME_UID RUNTIME_GID",
-  "       sompi-operator status MANIFEST.json OPERATOR_UID RUNTIME_GID",
+  "       sompi-operator status MANIFEST.json OPERATOR_UID RUNTIME_UID RUNTIME_GID",
   "       sompi-operator agent-credential FILE OPERATOR_UID RUNTIME_GID",
   "       sompi-operator recovery-credential FILE OPERATOR_UID RECOVERY_GID",
   "       sompi-operator owner-key",
@@ -33,7 +33,7 @@ export type OperatorCliCommand =
   | Readonly<{ kind: "preview"; spec: string }>
   | Readonly<{ kind: "provision"; spec: string; bundle: string }>
   | Readonly<{ kind: "install"; bundle: string; manifest: string; digest: string; operatorUid: number; runtimeUid: number; runtimeGid: number }>
-  | Readonly<{ kind: "status"; manifest: string; operatorUid: number; runtimeGid: number }>
+  | Readonly<{ kind: "status"; manifest: string; operatorUid: number; runtimeUid: number; runtimeGid: number }>
   | Readonly<{ kind: "agent-credential"; filename: string; operatorUid: number; runtimeGid: number }>
   | Readonly<{ kind: "recovery-credential"; filename: string; operatorUid: number; recoveryGid: number }>
   | Readonly<{ kind: "owner-key" }>
@@ -88,8 +88,14 @@ export function parseOperatorArguments(args: readonly string[]): OperatorCliComm
   if (args.length === 1 && args[0] === "owner-key") return Object.freeze({ kind: "owner-key" });
   if (args.length === 2 && args[0] === "preview") return Object.freeze({ kind: "preview", spec: args[1] });
   if (args.length === 3 && args[0] === "provision") return Object.freeze({ kind: "provision", spec: args[1], bundle: args[2] });
-  if (args.length === 4 && args[0] === "status") {
-    return Object.freeze({ kind: "status", manifest: args[1], operatorUid: numericArgument(args[2], "operator UID"), runtimeGid: numericArgument(args[3], "runtime GID") });
+  if (args.length === 5 && args[0] === "status") {
+    return Object.freeze({
+      kind: "status",
+      manifest: args[1],
+      operatorUid: numericArgument(args[2], "operator UID"),
+      runtimeUid: numericArgument(args[3], "runtime UID"),
+      runtimeGid: numericArgument(args[4], "runtime GID"),
+    });
   }
   if (args.length === 4 && args[0] === "agent-credential") {
     return Object.freeze({

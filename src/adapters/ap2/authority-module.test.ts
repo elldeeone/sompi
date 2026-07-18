@@ -68,6 +68,7 @@ test("the human display is exactly the independently signed Purchase decision", 
     if (result.status !== "decision") return;
     const facts = result.decision.facts;
     assert.deepEqual(fixture.displayed, {
+      authorityRequestDigest: result.decision.evidence.requestDigest,
       purchaseId: facts.purchaseId,
       merchant: {
         id: facts.merchantId,

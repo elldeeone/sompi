@@ -36,11 +36,17 @@ test("authority init creates only owner-readable credentials and public trust ma
       paths.privateDirectory,
       paths.clientDirectory,
       paths.runtimeDirectory,
+      paths.callbackRuntimeDirectory,
     ]) {
       assert.equal(fs.statSync(directory).mode & 0o777, 0o700);
     }
     assert.notEqual(paths.privateDirectory, paths.clientDirectory);
     assert.notEqual(paths.privateDirectory, paths.runtimeDirectory);
+    assert.notEqual(paths.runtimeDirectory, paths.callbackRuntimeDirectory);
+    assert.equal(
+      path.dirname(paths.telegramCallbackSocket),
+      paths.callbackRuntimeDirectory,
+    );
     const clientPaths = authorityClientRuntimePaths({
       clientDirectory: paths.clientDirectory,
       runtimeDirectory: paths.runtimeDirectory,

@@ -49,6 +49,9 @@ async function main(command: Exclude<AuthorityCliCommand, { kind: "help" }>): Pr
     ...(process.env.SOMPI_AUTHORITY_RUNTIME_DIR
       ? { runtimeDirectory: process.env.SOMPI_AUTHORITY_RUNTIME_DIR }
       : {}),
+    ...(process.env.SOMPI_AUTHORITY_CALLBACK_RUNTIME_DIR
+      ? { callbackRuntimeDirectory: process.env.SOMPI_AUTHORITY_CALLBACK_RUNTIME_DIR }
+      : {}),
     ...(process.env.SOMPI_AUTHORITY_SOCKET
       ? { socketPath: process.env.SOMPI_AUTHORITY_SOCKET }
       : {}),
@@ -66,6 +69,7 @@ async function main(command: Exclude<AuthorityCliCommand, { kind: "help" }>): Pr
       privateDirectory: paths.privateDirectory,
       clientDirectory: paths.clientDirectory,
       runtimeDirectory: paths.runtimeDirectory,
+      callbackRuntimeDirectory: paths.callbackRuntimeDirectory,
       publicTrustEntry: trust,
       next: "Add trusted Merchant checkout/receipt public keys to trust.json before starting.",
     }, null, 2)}\n`);
@@ -74,6 +78,10 @@ async function main(command: Exclude<AuthorityCliCommand, { kind: "help" }>): Pr
   const socketGroupId = optionalNumericId(
     process.env.SOMPI_AUTHORITY_SOCKET_GID,
     "authority socket group ID"
+  );
+  const telegramCallbackSocketGroupId = optionalNumericId(
+    process.env.SOMPI_AUTHORITY_CALLBACK_SOCKET_GID,
+    "Telegram callback socket group ID"
   );
   const manifestPath = process.env.SOMPI_OPERATOR_MANIFEST;
   const operatorUid = requiredNumericId(process.env.SOMPI_OPERATOR_UID, "operator user ID");
@@ -85,7 +93,11 @@ async function main(command: Exclude<AuthorityCliCommand, { kind: "help" }>): Pr
   });
   const authority = await startAuthorityRuntime(paths, identity, {
     ...(socketGroupId === undefined ? {} : { socketGroupId }),
+    ...(telegramCallbackSocketGroupId === undefined
+      ? {}
+      : { telegramCallbackSocketGroupId }),
     admission: manifest.manifest.admission,
+    authority: manifest.manifest.authority,
   });
   process.stderr.write("sompi-authority listening on its configured Unix socket\n");
   let stopping = false;

@@ -9,6 +9,7 @@ const packageJsonPath = path.join(root, "package.json");
 const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
 
 const expectedBins = Object.freeze({
+  "sompi-agent": "dist/agent-main.js",
   "sompi-api": "dist/api-main.js",
   "sompi-authority": "dist/authority-main.js",
   "sompi-mcp": "dist/index.js",
@@ -23,6 +24,10 @@ const requiredFileRules = [
   "dist",
   "!dist/**/*.test.js",
   "!dist/e2e/live-testnet-*.js",
+  "integrations",
+  "!integrations/**/__pycache__/**",
+  "!integrations/**/*.pyc",
+  "!integrations/**/tests/**",
   "scripts/prepare-package.mjs",
   "scripts/require-source-tree.mjs",
   "scripts/verify-packed-artifact.mjs",
@@ -35,6 +40,7 @@ const roots = [
   "contracts",
   "dist",
   "docs",
+  "integrations",
   "package.json",
   "operator.example.json",
   "scripts/package.json",
@@ -52,6 +58,7 @@ const roots = [
   "vendor/kaspa-wasm",
 ];
 const executableFiles = new Set([
+  "dist/agent-main.js",
   "dist/api-main.js",
   "dist/authority-main.js",
   "dist/index.js",
@@ -76,6 +83,7 @@ for (const rule of requiredFileRules) {
 }
 
 const requiredFiles = [
+  "dist/agent-main.js",
   "dist/api-main.js",
   "dist/authority-main.js",
   "dist/index.js",
@@ -84,6 +92,9 @@ const requiredFiles = [
   "dist/conformance/ap2-v0.2.js",
   "dist/conformance/kaspa-x402-alpha8.js",
   "dist/smoke.js",
+  "integrations/hermes/plugin/__init__.py",
+  "integrations/hermes/plugin/plugin.yaml",
+  "integrations/hermes/sompi/SKILL.md",
   "scripts/run-local-e2e.mjs",
   "scripts/run-protocol-conformance.mjs",
   "scripts/vault-recover.js",
