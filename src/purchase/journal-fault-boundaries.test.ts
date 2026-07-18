@@ -19,8 +19,7 @@ import {
 } from "./identity.js";
 import {
   JOURNAL_FAULT_POINTS,
-  MERCHANT_AUTHORIZATION_EVIDENCE_KIND,
-  PURCHASE_RECEIPT_REQUIREMENTS,
+  PURCHASE_RECEIPT_PROFILE,
   TREASURY_STAGING_EVIDENCE_KIND,
   JournalNotFoundError,
   PurchaseJournal,
@@ -364,7 +363,7 @@ function treasuryStagingPlanScenario(
       assert.equal(target.requireReservation(setup.reservationId).state, "active");
       assert.deepEqual(
         target.effectsForPurchase(setup.purchaseId).map((effect) => effect.kind),
-        ["merchant-authorization"]
+        []
       );
     },
     assertCommitted(target) {
@@ -664,27 +663,17 @@ function receiptScenario(
   clock: TestClock
 ): FaultBoundaryScenario {
   const setup = fulfilmentSetup(journal, 20, clock.value, true);
-  const firstReceipt = receiptInput(journal, setup.purchaseId, 20, "merchant");
-  journal.recordReceipt(setup.purchaseId, firstReceipt);
-  const receipt = receiptInput(journal, setup.purchaseId, 20, "payment");
+  const receipt = receiptInput(journal, setup.purchaseId, 20);
   return {
     act: (target) => target.recordReceipt(setup.purchaseId, receipt),
     assertRolledBack(target) {
-      assert.deepEqual(
-        target.receipts(setup.purchaseId).map((entry) => entry.role),
-        ["merchant"]
-      );
-      assert.equal(target.findReceiptSet(setup.purchaseId), undefined);
+      assert.deepEqual(target.receipts(setup.purchaseId), []);
       assert.equal(target.requirePurchase(setup.purchaseId).state, "fulfilled");
     },
     assertCommitted(target) {
       const receipts = target.receipts(setup.purchaseId);
-      assert.equal(receipts.length, 2);
-      assert.equal(
-        receipts.find((entry) => entry.role === "payment")?.evidenceDigest,
-        receipt.evidenceDigest
-      );
-      assert.ok(target.findReceiptSet(setup.purchaseId));
+      assert.equal(receipts.length, 1);
+      assert.equal(receipts[0]?.evidenceDigest, receipt.evidenceDigest);
       assert.equal(target.requirePurchase(setup.purchaseId).state, "receipted");
     },
   };
@@ -1094,7 +1083,6 @@ function treasuryStagingPlanSetup(
     attempt: 1,
     identifier: createPaymentIdentifier(purchaseId, 1),
   });
-  observeMerchantAuthorization(journal, purchaseId, 1);
   const preparedBytes = Buffer.from(`treasury-staging-${seed}`, "utf8");
   const transactionId = byte(seed + 32).repeat(32);
   return {
@@ -1368,24 +1356,21 @@ function fulfilmentSetup(
 function receiptInput(
   journal: PurchaseJournal,
   purchaseId: PurchaseId,
-  seed: number,
-  role: "merchant" | "payment"
+  seed: number
 ): RecordReceiptInput {
-  const requirement = PURCHASE_RECEIPT_REQUIREMENTS.find((candidate) => candidate.role === role)!;
   const evidence = verifiedLinkedEvidence(
     journal,
     purchaseId,
-    `${role}-receipt-${seed}`,
+    `purchase-receipt-${seed}`,
     "purchase-receipt",
     undefined,
-    requirement.profile,
-    `${role}:issuer`
+    PURCHASE_RECEIPT_PROFILE,
+    "authority:issuer"
   );
   return {
-    role,
     evidenceDigest: evidence,
-    profile: requirement.profile,
-    issuer: `${role}:issuer`,
+    profile: PURCHASE_RECEIPT_PROFILE,
+    issuer: "authority:issuer",
     verifierId: "test-verifier",
     checkoutDigest: journal.requireCheckoutTerms(purchaseId).checkoutDigest,
     authorizationEvidenceDigest: journal.requireAuthorization(purchaseId).evidenceDigest,
@@ -1457,40 +1442,6 @@ function treasuryOperationSetup(
     );
   }
   return { intent, prepared, observationDetail, driver };
-}
-
-function observeMerchantAuthorization(
-  journal: PurchaseJournal,
-  purchaseId: PurchaseId,
-  attempt: number
-): void {
-  const paymentIdentifier = createPaymentIdentifier(purchaseId, attempt);
-  const bytes = Buffer.from(`merchant-authorization:${paymentIdentifier}`, "utf8");
-  const effect = journal.planEffect({
-    purchaseId,
-    kind: "merchant-authorization",
-    idempotencyKey: `merchant-authorization:${paymentIdentifier}`,
-    payloadDigest: evidenceDigest(bytes),
-    preparedBytes: bytes,
-  });
-  const claim = journal.claimEffect(effect.id, `merchant-authorization-${attempt}`, 60_000);
-  assert.ok(claim);
-  const digest = verifiedLinkedEvidence(
-    journal,
-    purchaseId,
-    `merchant-authorization-acceptance:${paymentIdentifier}`,
-    MERCHANT_AUTHORIZATION_EVIDENCE_KIND,
-    attempt,
-    "test-merchant-authorization-v1",
-    "merchant:test"
-  );
-  journal.markEffectSubmitted(claim, digest);
-  journal.recordEffectObservation(effect.id, claim.lease, {
-    status: "observed",
-    resultDigest: digest,
-    detailDigest: digest,
-  });
-  journal.releaseLease(claim.lease);
 }
 
 function verifiedLinkedEvidence(

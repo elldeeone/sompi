@@ -14,25 +14,15 @@ import type {
 } from "@kaspa-x402/server";
 
 import {
-  AP2_AUTHORIZATION_STATUS_PATH,
-  AP2_CHECKOUT_AUTHORIZATION_PATH,
-  AP2_PAYMENT_AUTHORIZATION_PATH,
   Ap2AuthorityDecisionEvidenceVerifier,
   Ap2AuthorityModule,
-  Ap2HttpCommerceAuthorizationModule,
-  Ap2PaidResponseVerifier,
-  decodeAp2CommerceAuthorizationPresentation,
-  encodeAp2CommerceAuthorizationAcceptance,
-  encodeStageAcceptance,
   type Ap2PublicKeyResolver,
 } from "../adapters/ap2/index.js";
 import {
   AUTHORITY_SIGNER,
   FIXED_AUTHORITY_ISSUER,
   FIXED_INSTRUMENT_ID,
-  MERCHANT_RECEIPT_SIGNER,
   MERCHANT_SIGNER,
-  PAYMENT_RECEIPT_SIGNER,
   fixedTrustStore,
 } from "../adapters/ap2/test-fixtures.js";
 import {
@@ -57,7 +47,6 @@ import { AUTHORITY_MAC_KEY_BYTES } from "../authority/protocol.js";
 import { SqliteAuthorityDecisionStore } from "../authority/decision-store.js";
 import { SqliteAuthorityReplayStore } from "../authority/replay-store.js";
 import { AuthorityService } from "../authority/service.js";
-import { SqliteDemoCommerceAuthorizationStore } from "../demo/commerce-authorization-store.js";
 import { SqliteMerchantServerStateStore } from "../demo/merchant-server-store.js";
 import {
   DemoMerchantFixture,
@@ -87,12 +76,12 @@ import {
 } from "../purchase/identity.js";
 import {
   PurchaseCoordinator,
-  type CommerceAuthorizationModule,
 } from "../purchase/coordinator.js";
 import {
   PurchaseJournal,
   type JournalFaultPoint,
 } from "../purchase/journal.js";
+import { SompiPaidResponseVerifier } from "../purchase/paid-response-verifier.js";
 import type {
   PurchaseId,
   PurchaseIntent,
@@ -100,7 +89,6 @@ import type {
   Sha256Digest,
 } from "../purchase/types.js";
 import {
-  JournalAp2CommerceEvidenceSource,
   JournalChainTreasuryMetadataSource,
   JournalTreasuryStagingObservationSource,
   createJournalTreasuryStagingMetadataSource,
@@ -194,9 +182,6 @@ export interface RunLocalTestnetProofOptions {
   readonly initiationMode?: LocalTestnetProofReport["initiationMode"];
   readonly stagingVisibleOnSubmit?: boolean;
   readonly faultPoint?: JournalFaultPoint;
-  readonly commerceAuthorizationDecorator?: (
-    module: CommerceAuthorizationModule
-  ) => CommerceAuthorizationModule;
 }
 
 /**
@@ -244,8 +229,7 @@ export async function runLocalTestnetProof(
     if (
       initiationMode === "mcp-sdk-in-memory-transport" &&
       (options.faultPoint !== undefined ||
-        options.stagingVisibleOnSubmit === false ||
-        options.commerceAuthorizationDecorator !== undefined)
+        options.stagingVisibleOnSubmit === false)
     ) {
       throw new Error("MCP-ingress proof does not combine with deterministic restart injection");
     }
@@ -266,26 +250,15 @@ export async function runLocalTestnetProof(
       path.join(directory, "merchant", "exact.sqlite")
     );
     resources.push(() => merchantStore.close());
-    const merchantAuthorizationStore = new SqliteDemoCommerceAuthorizationStore(
-      path.join(directory, "merchant", "authorization.sqlite"),
-      { now: clock }
-    );
-    resources.push(() => merchantAuthorizationStore.close());
     const addressCodec = new KaspaTestnet10AddressCodec();
     const merchant = await DemoMerchantFixture.create({
       merchantId: MERCHANT_SIGNER.issuer,
       merchantName: "Sompi E2E Merchant",
       merchantOrigin: MERCHANT_ORIGIN,
-      merchantWebsite: `${MERCHANT_ORIGIN}/store`,
       payTo: PAY_TO,
       paymentScheme: "exact",
       exactProfile: "standard-native",
       amountAtomic: PRICE_ATOMIC,
-      additionalCostCeilingAtomic: ADDITIONAL_COST_CEILING_ATOMIC,
-      checkoutTtlMs: 120_000,
-      authorityAudience: authority.issuer,
-      expectedAuthorityIssuer: authority.issuer,
-      expectedInstrumentId: authority.instrumentId,
       resource: {
         identity: "resource:sompi:e2e:1",
         url: RESOURCE_URL,
@@ -294,17 +267,11 @@ export async function runLocalTestnetProof(
         body: RESOURCE_BODY,
       },
       store: merchantStore,
-      authorizationStore: merchantAuthorizationStore,
       addressCodec,
       chainProvider: inertServerChainProvider(),
       voucherVerifier: { verifyVoucher: () => false } satisfies VoucherVerifier,
       exactTransactionVerifier: chain,
       serverPublicKey: `02${"11".repeat(32)}`,
-      merchantCheckoutSigner: MERCHANT_SIGNER,
-      merchantReceiptSigner: MERCHANT_RECEIPT_SIGNER,
-      paymentReceiptSigner: PAYMENT_RECEIPT_SIGNER,
-      ap2Trust: authority.trust,
-      now: clock,
     });
     const transport = new DemoPinnedTransport(merchant, EXPECTED_PURCHASE_ID);
 
@@ -343,7 +310,6 @@ export async function runLocalTestnetProof(
       authorityIssuer: authority.issuer,
       instrumentId: authority.instrumentId,
       clock,
-      commerceAuthorizationDecorator: options.commerceAuthorizationDecorator,
     });
     const intent = purchaseIntent("e2e:success");
     let first: PurchaseView | undefined;
@@ -363,8 +329,7 @@ export async function runLocalTestnetProof(
     }
     let restartCount = 0;
     const restartRequired = options.faultPoint !== undefined ||
-      (options.stagingVisibleOnSubmit === false && first?.state !== "receipted") ||
-      (options.commerceAuthorizationDecorator !== undefined && first?.state !== "receipted");
+      (options.stagingVisibleOnSubmit === false && first?.state !== "receipted");
     if (restartRequired) {
       if (options.faultPoint && !faultInjected) {
         throw thrown ?? new Error(`configured E2E fault ${options.faultPoint} was not exercised`);
@@ -387,7 +352,6 @@ export async function runLocalTestnetProof(
         authorityIssuer: authority.issuer,
         instrumentId: authority.instrumentId,
         clock,
-        commerceAuthorizationDecorator: options.commerceAuthorizationDecorator,
       });
       first = await invokePurchase({
         mode: initiationMode,
@@ -497,30 +461,6 @@ class DemoPinnedTransport implements PinnedHttpTransport {
     if (target.origin !== MERCHANT_ORIGIN) throw new Error("demo transport origin changed");
     const signature = oneRequestHeader(request.headers, "payment-signature");
 
-    if (target.pathname === AP2_CHECKOUT_AUTHORIZATION_PATH) {
-      return response(200, [], encodeStageAcceptance(
-        await this.merchant.presentCheckoutMandate(
-          decodeAp2CommerceAuthorizationPresentation(request.body)
-        )
-      ));
-    }
-    if (target.pathname === AP2_PAYMENT_AUTHORIZATION_PATH) {
-      return response(200, [], encodeStageAcceptance(
-        await this.merchant.presentPaymentMandate(
-          decodeAp2CommerceAuthorizationPresentation(request.body)
-        )
-      ));
-    }
-    if (target.pathname === AP2_AUTHORIZATION_STATUS_PATH) {
-      const status = await this.merchant.commerceAuthorizationStatus({
-        purchaseId: this.purchaseId,
-        paymentIdentifier: requiredQuery(target, "paymentIdentifier"),
-        checkoutDigest: requiredQuery(target, "checkoutDigest") as Sha256Digest,
-      });
-      return status
-        ? response(200, [], encodeAp2CommerceAuthorizationAcceptance(status))
-        : response(404, [], new Uint8Array());
-    }
     if (target.href !== RESOURCE_URL) throw new Error("demo transport path is unsupported");
     const offer = await this.offer();
     if (!signature) {
@@ -540,7 +480,6 @@ class DemoPinnedTransport implements PinnedHttpTransport {
     const paymentIdentifier = paymentIdentifierFromPayload(decoded);
     const paid = await this.merchant.handlePaid({
       purchaseId: this.purchaseId,
-      merchantCheckout: offer.checkout.artifact,
       paymentRequiredHeader: offer.paymentRequired.headers["PAYMENT-REQUIRED"],
       paymentIdentifier,
       headers: { "PAYMENT-SIGNATURE": signature },
@@ -571,9 +510,6 @@ function composeCoordinator(input: {
   authorityIssuer: string;
   instrumentId: string;
   clock: () => number;
-  commerceAuthorizationDecorator?: (
-    module: CommerceAuthorizationModule
-  ) => CommerceAuthorizationModule;
 }): PurchaseCoordinator {
   const trust = input.trust;
   const egress = new EgressPolicy({
@@ -587,21 +523,6 @@ function composeCoordinator(input: {
     paymentRequirements: new KaspaX402PaymentRequirementsVerifier(),
     now: input.clock,
   });
-  const commerceEvidence = new JournalAp2CommerceEvidenceSource({
-    journal: input.journal,
-    trust,
-    expectedAuthorityIssuer: input.authorityIssuer,
-    expectedInstrumentId: input.instrumentId,
-    now: input.clock,
-  });
-  const commerceBase = new Ap2HttpCommerceAuthorizationModule({
-    evidenceSource: commerceEvidence,
-    transport: input.transport,
-    now: input.clock,
-  });
-  const commerceAuthorization = input.commerceAuthorizationDecorator
-    ? input.commerceAuthorizationDecorator(commerceBase)
-    : commerceBase;
   const keyStore = new StagingKeyStore({
     directory: path.join(input.directory, "staging-keys"),
     now: input.clock,
@@ -641,13 +562,7 @@ function composeCoordinator(input: {
     addressCodec: new KaspaTestnet10AddressCodec(),
     now: input.clock,
   });
-  const paidResponseVerifier = new Ap2PaidResponseVerifier({
-    evidenceSource: commerceEvidence,
-    trust,
-    expectedMerchantReceiptIssuer: MERCHANT_RECEIPT_SIGNER.issuer,
-    expectedPaymentReceiptIssuer: PAYMENT_RECEIPT_SIGNER.issuer,
-    now: input.clock,
-  });
+  const paidResponseVerifier = new SompiPaidResponseVerifier();
   const treasuryStaging = new KaspaX402TreasuryStagingAdapter({
     driver: staging,
     now: input.clock,
@@ -695,7 +610,6 @@ function composeCoordinator(input: {
     egress,
     checkout,
     input.authorityModule,
-    commerceAuthorization,
     treasury,
     payment,
     { async obtain() { return { status: "pending" as const }; } },
@@ -1040,7 +954,7 @@ function proofReport(
   const spend = journal.findSettlementForPurchase(first.id);
   const fulfilment = journal.findFulfilment(first.id);
   const receipts = journal.receipts(first.id);
-  if (!staging || !spend || !fulfilment || receipts.length !== 2) {
+  if (!staging || !spend || !fulfilment || receipts.length !== 1) {
     throw new Error("receipted local proof is missing its canonical evidence joins");
   }
   const stagingTransactionId = chain.stagingTransactionId();

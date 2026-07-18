@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 
 export const JOURNAL_APPLICATION_ID = 0x534f4d50; // SOMP
-export const JOURNAL_SCHEMA_VERSION = 14;
+export const JOURNAL_SCHEMA_VERSION = 15;
 
 export const JOURNAL_SCHEMA_V1_SQL = `
   CREATE TABLE schema_migrations (
@@ -430,9 +430,7 @@ export const JOURNAL_SCHEMA_V2_MIGRATION_SQL = `
   ) STRICT;
 
   CREATE TABLE purchase_receipts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    purchase_id TEXT NOT NULL REFERENCES purchases(id) ON DELETE RESTRICT,
-    role TEXT NOT NULL,
+    purchase_id TEXT PRIMARY KEY REFERENCES purchases(id) ON DELETE RESTRICT,
     canonical_digest TEXT NOT NULL,
     evidence_digest TEXT NOT NULL REFERENCES evidence_artifacts(digest) ON DELETE RESTRICT,
     profile TEXT NOT NULL,
@@ -442,15 +440,7 @@ export const JOURNAL_SCHEMA_V2_MIGRATION_SQL = `
     authorization_evidence_digest TEXT NOT NULL REFERENCES evidence_artifacts(digest) ON DELETE RESTRICT,
     settlement_evidence_digest TEXT NOT NULL REFERENCES evidence_artifacts(digest) ON DELETE RESTRICT,
     fulfilment_digest TEXT NOT NULL REFERENCES evidence_artifacts(digest) ON DELETE RESTRICT,
-    created_at_ms INTEGER NOT NULL,
-    UNIQUE (purchase_id, role)
-  ) STRICT;
-
-  CREATE TABLE purchase_receipt_sets (
-    purchase_id TEXT PRIMARY KEY REFERENCES purchases(id) ON DELETE RESTRICT,
-    profile TEXT NOT NULL,
-    canonical_digest TEXT NOT NULL UNIQUE,
-    completed_at_ms INTEGER NOT NULL
+    created_at_ms INTEGER NOT NULL
   ) STRICT;
 
   CREATE TABLE treasury_staging_plans (
@@ -513,10 +503,6 @@ export const JOURNAL_SCHEMA_V2_MIGRATION_SQL = `
     BEGIN SELECT RAISE(ABORT, 'purchase_receipts is immutable'); END;
   CREATE TRIGGER immutable_purchase_receipts_delete BEFORE DELETE ON purchase_receipts
     BEGIN SELECT RAISE(ABORT, 'purchase_receipts is immutable'); END;
-  CREATE TRIGGER immutable_purchase_receipt_sets_update BEFORE UPDATE ON purchase_receipt_sets
-    BEGIN SELECT RAISE(ABORT, 'purchase_receipt_sets is immutable'); END;
-  CREATE TRIGGER immutable_purchase_receipt_sets_delete BEFORE DELETE ON purchase_receipt_sets
-    BEGIN SELECT RAISE(ABORT, 'purchase_receipt_sets is immutable'); END;
   CREATE TRIGGER immutable_treasury_staging_plans_update BEFORE UPDATE ON treasury_staging_plans
     BEGIN SELECT RAISE(ABORT, 'treasury_staging_plans is immutable'); END;
   CREATE TRIGGER immutable_treasury_staging_plans_delete BEFORE DELETE ON treasury_staging_plans

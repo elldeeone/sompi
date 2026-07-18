@@ -498,7 +498,6 @@ async function withStagingJournal(
       attempt: 1,
       identifier: paymentIdentifier,
     });
-    observeMerchantAuthorization(journal, purchaseId, paymentIdentifier);
 
     const keyStore = new StagingKeyStore({
       directory: path.join(directory, "staging-keys"),
@@ -687,45 +686,6 @@ function storeVerifiedEvidence(
     detailDigest: evidenceDigest(`verified:${input.kind}`),
   });
   return attachment.digest;
-}
-
-function observeMerchantAuthorization(
-  journal: PurchaseJournal,
-  purchaseId: PurchaseId,
-  paymentIdentifier: string
-): void {
-  const preparedBytes = Buffer.from(
-    `merchant-authorization:${purchaseId}:${paymentIdentifier}`,
-    "utf8"
-  );
-  const effect = journal.planEffect({
-    purchaseId,
-    kind: "merchant-authorization",
-    idempotencyKey: `merchant-authorization:${paymentIdentifier}`,
-    payloadDigest: evidenceDigest(preparedBytes),
-    preparedBytes,
-  });
-  const claim = journal.claimEffect(
-    effect.id,
-    "runtime-source-merchant-authorization",
-    60_000
-  );
-  assert.ok(claim);
-  const acceptance = storeVerifiedEvidence(journal, purchaseId, {
-    bytes: Buffer.from(`accepted:${paymentIdentifier}`, "utf8"),
-    kind: "merchant-authorization",
-    profile: "test-merchant-authorization-v1",
-    issuer: "merchant:test",
-    verifierId: "test-merchant-authorization-verifier",
-    attempt: 1,
-  });
-  journal.markEffectSubmitted(claim, acceptance);
-  journal.recordEffectObservation(effect.id, claim.lease, {
-    status: "observed",
-    resultDigest: acceptance,
-    detailDigest: acceptance,
-  });
-  journal.releaseLease(claim.lease);
 }
 
 function paymentRequiredBytes(resourceUrl: string): Buffer {

@@ -15,6 +15,7 @@ import {
   loadAuthoritySigningIdentity,
 } from "../adapters/ap2/signing-key-file.js";
 import type { Ap2PublicTrustEntry, P256PublicJwk } from "../adapters/ap2/types.js";
+import { KaspaX402AuthorityEvidenceVerifier } from "../adapters/kaspa-x402/authority-evidence-verifier.js";
 import { SqliteAuthorityDecisionStore } from "./decision-store.js";
 import { AuthorityDecisionEndpoint, AuthorityUnixDecisionServer } from "./endpoint.js";
 import { AuthorityMacKeyFile } from "./key-provider.js";
@@ -325,7 +326,7 @@ export async function startAuthorityRuntime(
   }
   const humanDecision = new Ap2HumanAuthorityDecisionProvider({
     signer,
-    trust,
+    checkoutEvidenceVerifier: new KaspaX402AuthorityEvidenceVerifier(),
     instrumentId: identity.instrumentId,
     prompt,
   });

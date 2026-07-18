@@ -45,7 +45,6 @@ import {
   TREASURY_STAGING_EVIDENCE_KIND,
   TREASURY_STAGING_RECOVERY_EFFECT_KIND,
   type EffectClaim,
-  type EffectObservation,
   type EffectRecord,
   type PolicyDefinition,
   type PurchaseRecord,
@@ -74,9 +73,6 @@ import type {
 } from "./types.js";
 
 const PAYMENT_EFFECT_KIND = "kaspa-x402-payment";
-export const COMMERCE_AUTHORIZATION_EFFECT_KIND = "merchant-authorization";
-const COMMERCE_AUTHORIZATION_EFFECT_PROFILE =
-  "urn:sompi:commerce-authorization-effect:1";
 const PURCHASE_COORDINATION_TTL_MS = 60_000;
 const RECOVERY_TTL_MS = 30_000;
 const AUTHORIZATION_REQUEST_PROFILE = "urn:sompi:authorization-request:1";
@@ -191,53 +187,6 @@ export interface AuthorityModule {
       issuer?: string;
     }>;
   }): Promise<AuthorityResult>;
-}
-
-/** Protocol-neutral facts presented to the Merchant before Treasury execution. */
-export interface CommerceAuthorizationContext {
-  purchaseId: PurchaseId;
-  paymentIdentifier: PaymentIdentifier;
-  resourceUrl: string;
-  method: string;
-  checkoutDigest: Sha256Digest;
-  authorizationEvidenceDigest: Sha256Digest;
-  resourceFingerprint: Sha256Digest;
-  merchantId: string;
-  merchantOrigin: string;
-  amountAtomic: string;
-  asset: string;
-  network: string;
-  payTo: string;
-}
-
-export type CommerceAuthorizationSubmissionResult =
-  | { status: "submitted"; submissionDigest: Sha256Digest }
-  | {
-      status: "accepted";
-      submissionDigest: Sha256Digest;
-      acceptance: VerifiedArtifact;
-    };
-
-export type CommerceAuthorizationRecoveryObservation =
-  | EffectObservation
-  | { status: "accepted"; acceptance: VerifiedArtifact };
-
-/**
- * Merchant-authorization seam. AP2 adapters may present mandates here, but
- * neither raw AP2 bytes nor this interface ever enter the x402 execution seam.
- */
-export interface CommerceAuthorizationModule {
-  present(input: {
-    context: Readonly<CommerceAuthorizationContext>;
-    effect: Readonly<EffectRecord>;
-    egress: PurchaseEgressSession;
-    signal: AbortSignal;
-  }): Promise<CommerceAuthorizationSubmissionResult>;
-  observe(input: {
-    context: Readonly<CommerceAuthorizationContext>;
-    effect: Readonly<EffectRecord>;
-    egress: PurchaseEgressSession;
-  }): Promise<CommerceAuthorizationRecoveryObservation>;
 }
 
 export interface TreasuryQuote {
@@ -523,7 +472,6 @@ export interface TreasuryStagingRecoveryModule {
 }
 
 export interface PurchaseReceiptResult {
-  role: string;
   checkoutDigest: Sha256Digest;
   authorizationEvidenceDigest: Sha256Digest;
   settlementEvidenceDigest: Sha256Digest;
@@ -540,7 +488,7 @@ export type FulfilmentResult =
       mediaType: string;
       resourceFingerprint: Sha256Digest;
       merchantEvidence: VerifiedArtifact;
-      receipts: readonly PurchaseReceiptResult[];
+      receipt: PurchaseReceiptResult;
     };
 
 /** Merchant fulfilment seam; payment success is deliberately not Fulfilment. */
@@ -586,7 +534,6 @@ export class PurchaseCoordinator implements PurchaseModule {
     private readonly egress: EgressPolicy,
     private readonly checkout: CheckoutTermsModule,
     private readonly authority: AuthorityModule,
-    private readonly commerceAuthorization: CommerceAuthorizationModule,
     private readonly treasury: TreasuryModule,
     private readonly payment: KaspaPaymentModule,
     private readonly fulfilment: FulfilmentModule,
@@ -704,10 +651,6 @@ export class PurchaseCoordinator implements PurchaseModule {
       this.journal,
       new Map([
         [PAYMENT_EFFECT_KIND, { observe: (effect) => this.observePaymentEffect(effect) }],
-        [
-          COMMERCE_AUTHORIZATION_EFFECT_KIND,
-          { observe: (effect) => this.observeCommerceAuthorizationEffect(effect) },
-        ],
         [
           TREASURY_STAGING_EFFECT_KIND,
           { observe: (effect) => this.observeTreasuryStagingEffect(effect) },
@@ -1060,9 +1003,6 @@ export class PurchaseCoordinator implements PurchaseModule {
       });
     }
     const attempt = this.journal.createPaymentAttempt({ purchaseId: purchase.id, attempt: attemptNumber, identifier });
-    if (!(await this.ensureCommerceAuthorization(purchase, attemptNumber))) {
-      return false;
-    }
     const executionPlan = this.journal.requireExecutionPlan(purchase.id);
     if (executionPlan.mechanism === "channel-voucher") {
       const preparation = await this.preparePaymentExecution(
@@ -1131,88 +1071,6 @@ export class PurchaseCoordinator implements PurchaseModule {
       staging.payloadDigest
     );
     return true;
-  }
-
-  private async ensureCommerceAuthorization(
-    purchase: PurchaseRecord,
-    attemptNumber: number
-  ): Promise<boolean> {
-    const context = this.commerceAuthorizationContext(purchase.id, attemptNumber);
-    const preparedBytes = Buffer.from(
-      JSON.stringify({
-        profile: COMMERCE_AUTHORIZATION_EFFECT_PROFILE,
-        ...context,
-      }),
-      "utf8"
-    );
-    const payloadDigest = evidenceDigest(preparedBytes);
-    const effect = this.journal.planEffect({
-      purchaseId: purchase.id,
-      kind: COMMERCE_AUTHORIZATION_EFFECT_KIND,
-      idempotencyKey: `merchant-authorization:${context.paymentIdentifier}`,
-      payloadDigest,
-      preparedBytes,
-    });
-    if (effect.state === "observed") return true;
-    if (["executing", "submitted", "ambiguous", "failed_terminal"].includes(effect.state)) {
-      return false;
-    }
-    const claim = this.journal.claimEffect(
-      effect.id,
-      `${this.workerId}-merchant-authorization`,
-      this.effectLeaseTtlMs
-    );
-    if (!claim) return false;
-    let lease = claim.lease;
-    let leaseLost: unknown;
-    const abortController = new AbortController();
-    const heartbeat = setInterval(() => {
-      if (leaseLost) return;
-      try {
-        lease = this.journal.renewLease(lease, this.effectLeaseTtlMs);
-      } catch (error) {
-        leaseLost = error;
-        abortController.abort();
-      }
-    }, Math.max(10, Math.floor(this.effectLeaseTtlMs / 3)));
-    heartbeat.unref();
-    try {
-      const result = await this.commerceAuthorization.present({
-        context,
-        effect: claim.effect,
-        egress: await this.createEgressSession(this.persistedIntent(purchase.id)!),
-        signal: abortController.signal,
-      });
-      if (leaseLost) throw leaseLost;
-      const activeClaim: EffectClaim = { effect: claim.effect, lease };
-      this.journal.markEffectSubmitted(activeClaim, result.submissionDigest);
-      if (result.status === "submitted") return false;
-      const acceptanceDigest = this.storeVerifiedArtifact(
-        purchase.id,
-        "merchant-authorization",
-        result.acceptance,
-        attemptNumber
-      );
-      this.journal.recordEffectObservation(effect.id, lease, {
-        status: "observed",
-        resultDigest: acceptanceDigest,
-        detailDigest: acceptanceDigest,
-      });
-      return true;
-    } catch (error) {
-      const detail = safeErrorDigest("merchant-authorization", error);
-      if (!leaseLost) {
-        try {
-          this.journal.markEffectAmbiguous({ effect: claim.effect, lease }, detail);
-        } catch {
-          // A durable submitted/observed fact may already have won the race.
-        }
-      }
-      return false;
-    } finally {
-      clearInterval(heartbeat);
-      if (!leaseLost) this.journal.releaseLease(lease);
-    }
   }
 
   private async submitExecution(purchase: PurchaseRecord): Promise<boolean> {
@@ -1803,51 +1661,6 @@ export class PurchaseCoordinator implements PurchaseModule {
     return { status: "spend_observed", spend: omitEffectId(spend) };
   }
 
-  private async observeCommerceAuthorizationEffect(
-    effect: EffectRecord
-  ): Promise<ReconciliationObservation> {
-    if (effect.attempt !== undefined || effect.kind !== COMMERCE_AUTHORIZATION_EFFECT_KIND) {
-      throw new PurchaseCoordinatorError(
-        "Merchant authorization Effect has an invalid durable identity",
-        "commerce_authorization_invariant"
-      );
-    }
-    const attempts = this.journal.paymentAttempts(effect.purchaseId);
-    if (attempts.length !== 1) {
-      throw new PurchaseCoordinatorError(
-        "Merchant authorization requires exactly one durable Payment Attempt",
-        "commerce_authorization_invariant"
-      );
-    }
-    const intent = this.persistedIntent(effect.purchaseId);
-    if (!intent) {
-      throw new PurchaseCoordinatorError(
-        "Merchant authorization recovery lost its persisted request",
-        "request_invariant"
-      );
-    }
-    const observation = await this.commerceAuthorization.observe({
-      context: this.commerceAuthorizationContext(
-        effect.purchaseId,
-        attempts[0].attempt
-      ),
-      effect,
-      egress: await this.createEgressSession(intent),
-    });
-    if (observation.status !== "accepted") return observation;
-    const digest = this.storeVerifiedArtifact(
-      effect.purchaseId,
-      "merchant-authorization",
-      observation.acceptance,
-      attempts[0].attempt
-    );
-    return {
-      status: "observed",
-      resultDigest: digest,
-      detailDigest: digest,
-    };
-  }
-
   private async observeTreasuryStagingEffect(
     effect: EffectRecord
   ): Promise<ReconciliationObservation> {
@@ -1925,32 +1738,20 @@ export class PurchaseCoordinator implements PurchaseModule {
       result.merchantEvidence,
       attempt.attempt
     );
-    const receiptInputs = result.receipts.map((receipt) => {
-      if (
-        receipt.checkoutDigest !== terms.checkoutDigest ||
-        receipt.authorizationEvidenceDigest !== this.journal.requireAuthorization(purchase.id).evidenceDigest ||
-        receipt.settlementEvidenceDigest !== spend.evidenceDigest ||
-        receipt.fulfilmentDigest !== body.digest
-      ) {
-        throw new PurchaseCoordinatorError("Receipt does not join exact Purchase evidence", "receipt_mismatch");
-      }
-      const receiptEvidence = this.storeVerifiedArtifact(
-        purchase.id,
-        "purchase-receipt",
-        receipt.evidence
-      );
-      return {
-        role: receipt.role,
-        evidenceDigest: receiptEvidence,
-        profile: receipt.evidence.verification.profile,
-        issuer: receipt.evidence.issuer,
-        verifierId: receipt.evidence.verification.verifierId,
-        checkoutDigest: receipt.checkoutDigest,
-        authorizationEvidenceDigest: receipt.authorizationEvidenceDigest,
-        settlementEvidenceDigest: receipt.settlementEvidenceDigest,
-        fulfilmentDigest: receipt.fulfilmentDigest,
-      };
-    });
+    const receipt = result.receipt;
+    if (
+      receipt.checkoutDigest !== terms.checkoutDigest ||
+      receipt.authorizationEvidenceDigest !== this.journal.requireAuthorization(purchase.id).evidenceDigest ||
+      receipt.settlementEvidenceDigest !== spend.evidenceDigest ||
+      receipt.fulfilmentDigest !== body.digest
+    ) {
+      throw new PurchaseCoordinatorError("Receipt does not join exact Purchase evidence", "receipt_mismatch");
+    }
+    const receiptEvidence = this.storeVerifiedArtifact(
+      purchase.id,
+      "purchase-receipt",
+      receipt.evidence
+    );
     this.journal.recordFulfilment(
       purchase.id,
       {
@@ -1964,7 +1765,16 @@ export class PurchaseCoordinator implements PurchaseModule {
         merchantVerificationProfile: result.merchantEvidence.verification.profile,
         merchantVerifierId: result.merchantEvidence.verification.verifierId,
       },
-      receiptInputs
+      [{
+        evidenceDigest: receiptEvidence,
+        profile: receipt.evidence.verification.profile,
+        issuer: receipt.evidence.issuer,
+        verifierId: receipt.evidence.verification.verifierId,
+        checkoutDigest: receipt.checkoutDigest,
+        authorizationEvidenceDigest: receipt.authorizationEvidenceDigest,
+        settlementEvidenceDigest: receipt.settlementEvidenceDigest,
+        fulfilmentDigest: receipt.fulfilmentDigest,
+      }]
     );
     return this.journal.requirePurchase(purchase.id).state === "receipted";
   }
@@ -2436,37 +2246,6 @@ export class PurchaseCoordinator implements PurchaseModule {
       request: kaspaRequestContext(intent),
       paymentRequirements: this.journal.readEvidence(terms.paymentRequirementsDigest),
     };
-  }
-
-  private commerceAuthorizationContext(
-    purchaseId: PurchaseId,
-    attemptNumber: number
-  ): CommerceAuthorizationContext {
-    const purchase = this.journal.requirePurchase(purchaseId);
-    const terms = this.journal.requireCheckoutTerms(purchaseId);
-    const authorization = this.journal.requireAuthorization(purchaseId);
-    const attempt = this.journal.requirePaymentAttempt(purchaseId, attemptNumber);
-    if (authorization.decision !== "approved") {
-      throw new PurchaseCoordinatorError(
-        "Merchant authorization requires an approved Purchase Authorization",
-        "authorization_invariant"
-      );
-    }
-    return Object.freeze({
-      purchaseId,
-      paymentIdentifier: attempt.identifier,
-      resourceUrl: purchase.resourceUrl,
-      method: purchase.method,
-      checkoutDigest: terms.checkoutDigest,
-      authorizationEvidenceDigest: authorization.evidenceDigest,
-      resourceFingerprint: terms.resourceFingerprint,
-      merchantId: terms.merchant.id,
-      merchantOrigin: terms.merchant.origin,
-      amountAtomic: terms.amountAtomic,
-      asset: terms.asset,
-      network: terms.network,
-      payTo: terms.payTo,
-    });
   }
 
   private executionAuthorizationExpired(purchaseId: PurchaseId): boolean {

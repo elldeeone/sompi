@@ -931,7 +931,7 @@ export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
       );
     }
     validateVerifiedArtifact(fulfilled.merchantEvidence);
-    for (const receipt of fulfilled.receipts) validateVerifiedArtifact(receipt.evidence);
+    validateVerifiedArtifact(fulfilled.receipt.evidence);
     return copyFulfilment(fulfilled);
   }
 }

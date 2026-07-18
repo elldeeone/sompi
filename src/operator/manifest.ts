@@ -7,7 +7,7 @@ import type { Policy } from "../policy.js";
 import { XOnlyPublicKey } from "../kaspa-wasm.js";
 import { VAULT_TEMPLATE_VERSION } from "../vault/template.js";
 
-export const OPERATOR_MANIFEST_SCHEMA = "sompi-operator-manifest-v1" as const;
+export const OPERATOR_MANIFEST_SCHEMA = "sompi-operator-manifest-v2" as const;
 export const MAX_OPERATOR_MANIFEST_BYTES = 64 * 1024;
 
 const UINT64_MAX = (1n << 64n) - 1n;
@@ -46,8 +46,6 @@ export interface OperatorManifest {
   }>;
   readonly merchant: Readonly<{
     allowRules: readonly EgressAllowRule[];
-    merchantReceiptIssuer: string;
-    paymentReceiptIssuer: string;
   }>;
   readonly batch: Readonly<{
     claimFeeReserveAtomic: string;
@@ -173,23 +171,8 @@ export function parseOperatorManifest(value: unknown): OperatorManifest {
   );
 
   const merchant = record(root.merchant, "Operator Manifest Merchant");
-  exactKeys(merchant, [
-    "allowRules",
-    "merchantReceiptIssuer",
-    "paymentReceiptIssuer",
-  ], "Operator Manifest Merchant");
+  exactKeys(merchant, ["allowRules"], "Operator Manifest Merchant");
   const allowRules = egressRules(merchant.allowRules);
-  const merchantReceiptIssuer = identity(
-    merchant.merchantReceiptIssuer,
-    "Merchant Receipt issuer"
-  );
-  const paymentReceiptIssuer = identity(
-    merchant.paymentReceiptIssuer,
-    "Payment Receipt issuer"
-  );
-  if (merchantReceiptIssuer === paymentReceiptIssuer) {
-    throw new OperatorManifestError("Merchant and Payment Receipt issuers must be distinct");
-  }
 
   const batch = record(root.batch, "Operator Manifest batch settlement");
   exactKeys(batch, ["claimFeeReserveAtomic"], "Operator Manifest batch settlement");
@@ -304,7 +287,7 @@ export function parseOperatorManifest(value: unknown): OperatorManifest {
       additionalCostCeilingAtomic,
       operationFeeCeilingAtomic,
     },
-    merchant: { allowRules, merchantReceiptIssuer, paymentReceiptIssuer },
+    merchant: { allowRules },
     batch: { claimFeeReserveAtomic },
     authority: { provider: authority.provider, telegram },
     chainEvidence: {

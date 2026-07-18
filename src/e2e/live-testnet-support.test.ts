@@ -42,7 +42,6 @@ import {
 import { SUPPORTED_PROTOCOL_PROFILES } from "../protocols/profiles.js";
 import { assertPurchaseId, createPaymentIdentifier } from "../purchase/identity.js";
 import { SqliteMerchantServerStateStore } from "../demo/merchant-server-store.js";
-import { SqliteDemoCommerceAuthorizationStore } from "../demo/commerce-authorization-store.js";
 import type { KaspaWallet } from "../wallet.js";
 import type {
   TreasuryOperationModule,
@@ -639,7 +638,6 @@ test("Merchant verifier refuses a first-seen accepted output without a durable p
 test("live Merchant composition validates before any funded Purchase begins", async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-live-merchant-compose-"));
   const exactStore = new SqliteMerchantServerStateStore(":memory:");
-  const authorizationStore = new SqliteDemoCommerceAuthorizationStore(":memory:");
   try {
     const initialized = initializeLiveProof(
       path.join(root, "proof"),
@@ -660,7 +658,6 @@ test("live Merchant composition validates before any funded Purchase begins", as
         additiveHead: additiveHead,
       },
       exactStore,
-      authorizationStore,
       {
         verifyExactPayment: async () => {
           throw new Error("composition test must not verify a payment");
@@ -703,7 +700,6 @@ test("live Merchant composition validates before any funded Purchase begins", as
         additiveHead,
       },
       exactStore,
-      authorizationStore,
       {
         verifyExactPayment: async () => {
           throw new Error("composition restart test must not verify a payment");
@@ -715,7 +711,6 @@ test("live Merchant composition validates before any funded Purchase begins", as
     await closeInitialized(initialized);
   } finally {
     exactStore.close();
-    authorizationStore.close();
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
@@ -727,7 +722,6 @@ test("Merchant ingress durably retries the same paid request without protocol-si
     const paymentIdentifier = createPaymentIdentifier(purchaseId, 1);
     const request = {
       purchaseId,
-      merchantCheckout: "merchant-checkout-artifact",
       paymentRequiredHeader: "payment-required-artifact",
       paymentIdentifier,
       headers: { "PAYMENT-SIGNATURE": "payment-signature-artifact" },
@@ -767,14 +761,11 @@ test("live report has an exact honest schema and excludes actual key bytes", asy
     writeAtomicJson(initialized.layout.merchantOfferPath, {
       version: 1,
       purchaseId: report.purchase.id,
-      merchantCheckout: "merchant-checkout-signed-artifact-value",
       paymentRequiredHeader: "payment-required-signed-artifact-value",
-      issuedAtSec: Math.floor(Date.now() / 1000),
     });
     writeAtomicJson(initialized.layout.paidReplayCapsulePath, {
       version: 1,
       purchaseId: report.purchase.id,
-      merchantCheckout: "merchant-checkout-signed-artifact-value",
       paymentRequiredHeader: "payment-required-signed-artifact-value",
       paymentIdentifier: report.purchase.paymentIdentifier,
       paymentSignature: "payment-signature-signed-artifact-value",

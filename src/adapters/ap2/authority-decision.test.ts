@@ -136,12 +136,13 @@ async function verifiedRequest(
 ): Promise<{
   request: ReturnType<typeof parseAuthorityApprovalRequest>;
   facts: AuthorityApprovalFacts;
-  checkout: Awaited<ReturnType<typeof fixedVerifiedCheckout>>;
 }> {
   const checkout = await fixedVerifiedCheckout();
+  const checkoutArtifact = "generic-x402-payment-required";
+  const checkoutDigest = evidenceDigest(checkoutArtifact);
   const facts: AuthorityApprovalFacts = {
     purchaseId: checkout.purchaseId,
-    merchantId: checkout.terms.merchant.id,
+    merchantId: checkout.terms.merchant.origin,
     merchantName: checkout.terms.merchant.name,
     merchantOrigin: checkout.terms.merchant.origin,
     resourceUrl: checkout.resourceUrl,
@@ -154,7 +155,7 @@ async function verifiedRequest(
     network: checkout.terms.network,
     payTo: checkout.terms.payTo,
     termsExpiresAt: checkout.terms.expiresAt,
-    checkoutDigest: checkout.checkoutDigest,
+    checkoutDigest,
     purchaseAuthorizationRequestDigest: evidenceDigest("authorization-request"),
     purchaseAuthorizationNonceDigest: evidenceDigest("authorization-nonce"),
     purchaseAuthorizationFactsDigest: evidenceDigest("authorization-facts"),
@@ -177,11 +178,11 @@ async function verifiedRequest(
     expiresAtMs: checkout.expiresAtSec * 1_000,
     facts,
     checkoutEvidence: {
-      artifact: checkout.artifact,
-      digest: checkout.checkoutDigest,
-      mediaType: "application/jwt",
-      profile: checkout.profile,
-      issuer: checkout.issuer,
+      artifact: checkoutArtifact,
+      digest: checkoutDigest,
+      mediaType: "application/x402-payment-required",
+      profile: "kaspa-x402-0.1.0-alpha.8-payment-required",
+      issuer: checkout.terms.merchant.origin,
     },
   }, { keyId: "authority-ipc:test", keyBytes: KEY });
   const replay = new SqliteAuthorityReplayStore(":memory:");
@@ -191,7 +192,7 @@ async function verifiedRequest(
     replayStore: replay,
     now: () => (FIXED_NOW + 2) * 1_000,
   });
-  return { request, facts, checkout };
+  return { request, facts };
 }
 
 function expectedInput(

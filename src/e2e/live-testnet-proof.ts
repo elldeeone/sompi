@@ -20,26 +20,16 @@ import type {
 } from "@kaspa-x402/server";
 
 import {
-  AP2_AUTHORIZATION_STATUS_PATH,
-  AP2_CHECKOUT_AUTHORIZATION_PATH,
-  AP2_PAYMENT_AUTHORIZATION_PATH,
   Ap2AuthorityDecisionEvidenceVerifier,
   Ap2AuthorityModule,
-  Ap2HttpCommerceAuthorizationModule,
-  Ap2PaidResponseVerifier,
   LocalAp2TrustStore,
-  decodeAp2CommerceAuthorizationPresentation,
-  encodeAp2CommerceAuthorizationAcceptance,
-  encodeStageAcceptance,
   loadAp2TrustStore,
 } from "../adapters/ap2/index.js";
 import {
   AUTHORITY_SIGNER,
   FIXED_AUTHORITY_ISSUER,
   FIXED_INSTRUMENT_ID,
-  MERCHANT_RECEIPT_SIGNER,
   MERCHANT_SIGNER,
-  PAYMENT_RECEIPT_SIGNER,
   fixedTrustStore,
 } from "../adapters/ap2/test-fixtures.js";
 import { Ap2HumanAuthorityDecisionProvider } from "../adapters/ap2/human-authority.js";
@@ -78,7 +68,6 @@ import { SqliteAuthorityDecisionStore } from "../authority/decision-store.js";
 import { SqliteAuthorityReplayStore } from "../authority/replay-store.js";
 import { AuthorityService } from "../authority/service.js";
 import { AUTHORITY_DECISION_TRANSPORT_TIMEOUT_MS } from "../authority/transport.js";
-import { SqliteDemoCommerceAuthorizationStore } from "../demo/commerce-authorization-store.js";
 import { SqliteMerchantServerStateStore } from "../demo/merchant-server-store.js";
 import {
   DemoMerchantFixture,
@@ -112,6 +101,7 @@ import {
   type FulfilmentModule,
 } from "../purchase/coordinator.js";
 import { PurchaseJournal } from "../purchase/journal.js";
+import { SompiPaidResponseVerifier } from "../purchase/paid-response-verifier.js";
 import type {
   PurchaseId,
   PurchaseIntent,
@@ -119,7 +109,6 @@ import type {
   Sha256Digest,
 } from "../purchase/types.js";
 import {
-  JournalAp2CommerceEvidenceSource,
   JournalChainTreasuryMetadataSource,
   JournalTreasuryStagingObservationSource,
   createJournalTreasuryStagingMetadataSource,
@@ -339,18 +328,12 @@ export async function runLiveTestnetProof(
     options.onProgress?.("durable funding, additive head, and vault deposit are live");
 
     const exactStorePath = path.join(initialized.layout.root, "merchant", "exact.sqlite");
-    const authorizationStorePath = path.join(
-      initialized.layout.root,
-      "merchant",
-      "authorization.sqlite"
-    );
     const existingPurchase = purchaseJournal.findPurchaseByRequestKey(
       liveRequestKey(initialized.config, options.exactProfile)
     );
     if (existingPurchase) {
       if (
         !privateStateFileExists(exactStorePath) ||
-        !privateStateFileExists(authorizationStorePath) ||
         (existingPurchase.state !== "created" &&
           !privateStateFileExists(initialized.layout.merchantOfferPath)) ||
         (privateStateFileExists(initialized.layout.merchantVerifierStatePath) &&
@@ -358,15 +341,13 @@ export async function runLiveTestnetProof(
             !privateStateFileExists(initialized.layout.merchantPaidIngressPath)))
       ) {
         throw new Error(
-          "live Merchant continuity is missing; refusing to create replacement authorization or payment state"
+          "live Merchant continuity is missing; refusing to create replacement payment state"
         );
       }
     }
 
     const merchantStore = new SqliteMerchantServerStateStore(exactStorePath);
     resources.push(() => merchantStore.close());
-    const authorizationStore = new SqliteDemoCommerceAuthorizationStore(authorizationStorePath);
-    resources.push(() => authorizationStore.close());
 
     const authority = options.authority ??
       await options.authorityFactory?.(initialized) ??
@@ -409,10 +390,8 @@ export async function runLiveTestnetProof(
       initialized,
       bootstrap.progress,
       merchantStore,
-      authorizationStore,
       verifier,
-      options.exactProfile,
-      authority
+      options.exactProfile
     );
     const merchantPaidEndpoint = new LiveMerchantPaidEndpoint({
       merchant,
@@ -598,18 +577,6 @@ function composeLiveCoordinator(input: {
     paymentRequirements: new KaspaX402PaymentRequirementsVerifier(),
     now,
   });
-  const commerceEvidence = new JournalAp2CommerceEvidenceSource({
-    journal: input.journal,
-    trust,
-    expectedAuthorityIssuer: input.authority.issuer,
-    expectedInstrumentId: input.authority.instrumentId,
-    now,
-  });
-  const commerceAuthorization = new Ap2HttpCommerceAuthorizationModule({
-    evidenceSource: commerceEvidence,
-    transport: input.transport,
-    now,
-  });
   const keyStore = new StagingKeyStore({
     directory: input.initialized.layout.stagingKeyDirectory,
     now,
@@ -658,13 +625,7 @@ function composeLiveCoordinator(input: {
     observationTimeoutMs: 5 * 60_000,
     now,
   });
-  const paidResponseVerifier = new Ap2PaidResponseVerifier({
-    evidenceSource: commerceEvidence,
-    trust,
-    expectedMerchantReceiptIssuer: MERCHANT_RECEIPT_SIGNER.issuer,
-    expectedPaymentReceiptIssuer: PAYMENT_RECEIPT_SIGNER.issuer,
-    now,
-  });
+  const paidResponseVerifier = new SompiPaidResponseVerifier();
   const treasuryStaging = new KaspaX402TreasuryStagingAdapter({
     driver: staging,
     now,
@@ -716,7 +677,6 @@ function composeLiveCoordinator(input: {
     egress,
     checkout,
     input.authorityModule,
-    commerceAuthorization,
     treasury,
     payment,
     new PendingFulfilmentModule(),
@@ -757,7 +717,6 @@ export class LiveMerchantPaidEndpoint {
     const ingress = readMerchantPaidIngress(this.options.ingressPath, expectedPurchaseId);
     return this.handlePaid({
       purchaseId: ingress.purchaseId,
-      merchantCheckout: ingress.merchantCheckout,
       paymentRequiredHeader: ingress.paymentRequiredHeader,
       paymentIdentifier: ingress.paymentIdentifier,
       headers: { "PAYMENT-SIGNATURE": ingress.paymentSignature },
@@ -772,7 +731,6 @@ export class LiveMerchantPaidEndpoint {
     const candidate = Object.freeze({
       version: 1 as const,
       purchaseId: request.purchaseId,
-      merchantCheckout: request.merchantCheckout,
       paymentRequiredHeader: request.paymentRequiredHeader,
       paymentIdentifier: request.paymentIdentifier,
       paymentSignature,
@@ -813,38 +771,6 @@ export class LiveDemoPinnedTransport implements PinnedHttpTransport {
     if (target.origin !== MERCHANT_ORIGIN) throw new Error("live demo transport origin changed");
     const signature = oneRequestHeader(request.headers, "payment-signature");
 
-    if (target.pathname === AP2_CHECKOUT_AUTHORIZATION_PATH) {
-      return response(
-        200,
-        [],
-        encodeStageAcceptance(
-          await this.merchant.presentCheckoutMandate(
-            decodeAp2CommerceAuthorizationPresentation(request.body)
-          )
-        )
-      );
-    }
-    if (target.pathname === AP2_PAYMENT_AUTHORIZATION_PATH) {
-      return response(
-        200,
-        [],
-        encodeStageAcceptance(
-          await this.merchant.presentPaymentMandate(
-            decodeAp2CommerceAuthorizationPresentation(request.body)
-          )
-        )
-      );
-    }
-    if (target.pathname === AP2_AUTHORIZATION_STATUS_PATH) {
-      const status = await this.merchant.commerceAuthorizationStatus({
-        purchaseId: this.purchaseId,
-        paymentIdentifier: requiredQuery(target, "paymentIdentifier"),
-        checkoutDigest: requiredQuery(target, "checkoutDigest") as Sha256Digest,
-      });
-      return status
-        ? response(200, [], encodeAp2CommerceAuthorizationAcceptance(status))
-        : response(404, [], new Uint8Array());
-    }
     if (target.href !== RESOURCE_URL) throw new Error("live demo transport path is unsupported");
     const offer = await this.offer();
     if (!signature) {
@@ -857,17 +783,15 @@ export class LiveDemoPinnedTransport implements PinnedHttpTransport {
     const decoded = decodePaymentSignatureHeader(signature);
     assertOnlyPaymentIdentifier(decoded);
     const paymentIdentifier = paymentIdentifierFromPayload(decoded, this.purchaseId);
-    this.persistReplayCapsule(offer, {
+    this.persistReplayCapsule({
       version: 1,
       purchaseId: this.purchaseId,
-      merchantCheckout: offer.checkout.artifact,
       paymentRequiredHeader: offer.paymentRequired.headers["PAYMENT-REQUIRED"],
       paymentIdentifier,
       paymentSignature: signature,
     });
     const paid = await this.merchantPaidEndpoint.handlePaid({
       purchaseId: this.purchaseId,
-      merchantCheckout: offer.checkout.artifact,
       paymentRequiredHeader: offer.paymentRequired.headers["PAYMENT-REQUIRED"],
       paymentIdentifier,
       headers: { "PAYMENT-SIGNATURE": signature },
@@ -888,7 +812,6 @@ export class LiveDemoPinnedTransport implements PinnedHttpTransport {
     }
     const paid = await this.merchantPaidEndpoint.handlePaid({
       purchaseId: capsule.purchaseId,
-      merchantCheckout: capsule.merchantCheckout,
       paymentRequiredHeader: capsule.paymentRequiredHeader,
       paymentIdentifier: capsule.paymentIdentifier,
       headers: { "PAYMENT-SIGNATURE": capsule.paymentSignature },
@@ -927,19 +850,14 @@ export class LiveDemoPinnedTransport implements PinnedHttpTransport {
     const record: PersistedLiveMerchantOffer = Object.freeze({
       version: 1,
       purchaseId: this.purchaseId,
-      merchantCheckout: created.checkout.artifact,
       paymentRequiredHeader,
-      issuedAtSec: created.checkout.issuedAtSec,
     });
     writeAtomicJson(this.offerPath, record);
     this.offerValue = await this.merchant.restoreOffer(record);
     return this.offerValue;
   }
 
-  private persistReplayCapsule(
-    offer: DemoMerchantOffer,
-    capsule: Omit<PaidReplayCapsule, "firstPresentedAtMs">
-  ): void {
+  private persistReplayCapsule(capsule: Omit<PaidReplayCapsule, "firstPresentedAtMs">): void {
     if (privateStateFileExists(this.replayCapsulePath)) {
       const current = this.readReplayCapsule();
       const { firstPresentedAtMs: _ignored, ...currentRequest } = current;
@@ -949,9 +867,6 @@ export class LiveDemoPinnedTransport implements PinnedHttpTransport {
       return;
     }
     const firstPresentedAtMs = Date.now();
-    if (firstPresentedAtMs >= offer.checkout.expiresAtSec * 1000) {
-      throw new Error("live paid request cannot begin after Checkout expiry");
-    }
     writeAtomicJson(this.replayCapsulePath, {
       ...capsule,
       firstPresentedAtMs,
@@ -966,15 +881,12 @@ export class LiveDemoPinnedTransport implements PinnedHttpTransport {
 interface PersistedLiveMerchantOffer {
   readonly version: 1;
   readonly purchaseId: PurchaseId;
-  readonly merchantCheckout: string;
   readonly paymentRequiredHeader: string;
-  readonly issuedAtSec: number;
 }
 
 interface PaidReplayCapsule {
   readonly version: 1;
   readonly purchaseId: PurchaseId;
-  readonly merchantCheckout: string;
   readonly paymentRequiredHeader: string;
   readonly paymentIdentifier: string;
   readonly paymentSignature: string;
@@ -984,7 +896,6 @@ interface PaidReplayCapsule {
 interface MerchantPaidIngressRecord {
   readonly version: 1;
   readonly purchaseId: PurchaseId;
-  readonly merchantCheckout: string;
   readonly paymentRequiredHeader: string;
   readonly paymentIdentifier: string;
   readonly paymentSignature: string;
@@ -999,12 +910,8 @@ function readPersistedOffer(
   if (
     value.version !== 1 ||
     value.purchaseId !== expectedPurchaseId ||
-    typeof value.merchantCheckout !== "string" ||
-    value.merchantCheckout.length === 0 ||
     typeof value.paymentRequiredHeader !== "string" ||
-    value.paymentRequiredHeader.length === 0 ||
-    !Number.isSafeInteger(value.issuedAtSec) ||
-    value.issuedAtSec <= 0
+    value.paymentRequiredHeader.length === 0
   ) {
     throw new Error("persisted live Merchant offer is invalid");
   }
@@ -1019,7 +926,6 @@ function readPaidReplayCapsule(
   if (
     capsule.version !== 1 ||
     capsule.purchaseId !== expectedPurchaseId ||
-    typeof capsule.merchantCheckout !== "string" ||
     typeof capsule.paymentRequiredHeader !== "string" ||
     typeof capsule.paymentSignature !== "string" ||
     typeof capsule.paymentIdentifier !== "string" ||
@@ -1040,7 +946,6 @@ function readMerchantPaidIngress(
   if (
     record.version !== 1 ||
     record.purchaseId !== expectedPurchaseId ||
-    typeof record.merchantCheckout !== "string" ||
     typeof record.paymentRequiredHeader !== "string" ||
     typeof record.paymentSignature !== "string" ||
     typeof record.paymentIdentifier !== "string" ||
@@ -1057,14 +962,8 @@ export async function createLiveMerchant(
   initialized: InitializedLiveProof,
   progress: LiveProofProgress,
   store: SqliteMerchantServerStateStore,
-  authorizationStore: SqliteDemoCommerceAuthorizationStore,
   verifier: LiveMerchantExactVerifier,
   exactProfile: LiveExactProfile,
-  authority: Pick<LiveAuthorityBinding, "trust" | "issuer" | "instrumentId"> = {
-    trust: fixedTrustStore(),
-    issuer: FIXED_AUTHORITY_ISSUER,
-    instrumentId: FIXED_INSTRUMENT_ID,
-  }
 ): Promise<DemoMerchantFixture> {
   const additiveHead = progress.additiveHead;
   if (!additiveHead) throw new Error("live KIP-10 additive head is not durably observed");
@@ -1108,16 +1007,10 @@ export async function createLiveMerchant(
     merchantId: MERCHANT_SIGNER.issuer,
     merchantName: "Sompi Live Testnet-10 Merchant",
     merchantOrigin: MERCHANT_ORIGIN,
-    merchantWebsite: `${MERCHANT_ORIGIN}/store`,
     payTo,
     paymentScheme: "exact",
     exactProfile,
     amountAtomic: LIVE_PRICE_ATOMIC,
-    additionalCostCeilingAtomic: LIVE_ADDITIONAL_COST_CEILING_ATOMIC,
-    checkoutTtlMs: 5 * 60_000,
-    authorityAudience: authority.issuer,
-    expectedAuthorityIssuer: authority.issuer,
-    expectedInstrumentId: authority.instrumentId,
     resource: {
       identity: `resource:sompi:live-testnet10:${initialized.config.runId}`,
       url: RESOURCE_URL,
@@ -1126,41 +1019,11 @@ export async function createLiveMerchant(
       body: RESOURCE_BODY,
     },
     store,
-    authorizationStore,
     addressCodec: new KaspaTestnet10AddressCodec(),
     chainProvider: merchantServerChainProvider(initialized),
     voucherVerifier: { verifyVoucher: () => false } satisfies VoucherVerifier,
     exactTransactionVerifier: verifier,
     serverPublicKey: `02${"11".repeat(32)}`,
-    merchantCheckoutSigner: MERCHANT_SIGNER,
-    merchantReceiptSigner: MERCHANT_RECEIPT_SIGNER,
-    paymentReceiptSigner: PAYMENT_RECEIPT_SIGNER,
-    ap2Trust: authority.trust,
-    paidRequestContinuation: Object.freeze({
-      authorizationPresentedAtSec(input) {
-        if (!privateStateFileExists(initialized.layout.merchantPaidIngressPath)) {
-          return undefined;
-        }
-        const expectedPurchaseId = createPurchaseId(
-          Buffer.from(initialized.config.purchaseEntropyHex, "hex")
-        );
-        const ingress = readMerchantPaidIngress(
-          initialized.layout.merchantPaidIngressPath,
-          expectedPurchaseId
-        );
-        if (
-          input.purchaseId !== ingress.purchaseId ||
-          input.paymentIdentifier !== ingress.paymentIdentifier ||
-          input.merchantCheckout !== ingress.merchantCheckout ||
-          input.paymentRequiredHeader !== ingress.paymentRequiredHeader ||
-          input.paymentSignature !== ingress.paymentSignature
-        ) {
-          throw new Error("live Merchant continuation differs from its durable paid request");
-        }
-        return Math.floor(ingress.firstReceivedAtMs / 1000);
-      },
-    }),
-    now: Date.now,
   });
 }
 
@@ -1532,7 +1395,7 @@ async function createReport(input: {
   const spend = input.journal.findSettlementForPurchase(input.first.id);
   const fulfilment = input.journal.findFulfilment(input.first.id);
   const receipts = input.journal.receipts(input.first.id);
-  if (!stagingRecord || !spend?.transactionId || !spend.outpoint || !fulfilment || receipts.length !== 2) {
+  if (!stagingRecord || !spend?.transactionId || !spend.outpoint || !fulfilment || receipts.length !== 1) {
     throw new Error("receipted live Purchase is missing canonical evidence joins");
   }
   const staging = await input.observedStaging.read({

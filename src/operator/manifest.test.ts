@@ -48,7 +48,6 @@ test("Operator Manifest rejects authority, transport, finality, key, and shape s
       ["mempool floor", { ...fixture.value, chainEvidence: { ...fixture.value.chainEvidence, finalityFloors: { ...fixture.value.chainEvidence.finalityFloors, settlement: "mempool" } } }, /unsupported/],
       ["HTTP Merchant port shape", { ...fixture.value, merchant: { ...fixture.value.merchant, allowRules: [{ hostname: "merchant.example", ports: [8443, 443] }] } }, /not canonical/],
       ["policy inversion", { ...fixture.value, treasury: { ...fixture.value.treasury, maxSompiPerTx: "600000000" } }, /exceeds hourly/],
-      ["same receipt issuer", { ...fixture.value, merchant: { ...fixture.value.merchant, paymentReceiptIssuer: fixture.value.merchant.merchantReceiptIssuer } }, /must be distinct/],
     ];
     for (const [name, value, pattern] of cases) {
       assert.throws(() => parseOperatorManifest(value), pattern, name);
@@ -140,7 +139,7 @@ function buildManifestValue(
   configDigest: string
 ) {
   return {
-    schema: "sompi-operator-manifest-v1",
+    schema: "sompi-operator-manifest-v2",
     revision: 1,
     networkId: "testnet-10",
     x402Network: "kaspa:testnet-10",
@@ -164,8 +163,6 @@ function buildManifestValue(
     },
     merchant: {
       allowRules: [{ hostname: "merchant.example", ports: [443, 8443] }],
-      merchantReceiptIssuer: "receipt:merchant",
-      paymentReceiptIssuer: "receipt:payment",
     },
     batch: { claimFeeReserveAtomic: "100000" },
     authority: { provider: "terminal", telegram: null },

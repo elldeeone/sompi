@@ -58,8 +58,6 @@ export interface SompiPurchaseRuntimeConfig {
   readonly admission: LoadedOperatorManifest["manifest"]["admission"];
   readonly policy: Readonly<Policy>;
   readonly authority: SompiAuthorityClientConfig;
-  readonly merchantReceiptIssuer: string;
-  readonly paymentReceiptIssuer: string;
   readonly additionalCostCeilingAtomic: string;
   readonly batchClaimFeeReserveAtomic: string;
   readonly treasuryOperationFeeCeilingAtomic: string;
@@ -162,8 +160,6 @@ export function purchaseRuntimeConfigFromEnv(
     env.SOMPI_AUTHORITY_INSTRUMENT_ID ?? "kaspa:testnet-10:vault-treasury",
     "authority instrument ID"
   );
-  const merchantReceiptIssuer = operatorManifest.manifest.merchant.merchantReceiptIssuer;
-  const paymentReceiptIssuer = operatorManifest.manifest.merchant.paymentReceiptIssuer;
   const additionalCostCeilingAtomic =
     operatorManifest.manifest.treasury.additionalCostCeilingAtomic;
   const batchClaimFeeReserveAtomic =
@@ -201,8 +197,6 @@ export function purchaseRuntimeConfigFromEnv(
         "authority-client-replay.sqlite"
       ),
     }),
-    merchantReceiptIssuer,
-    paymentReceiptIssuer,
     additionalCostCeilingAtomic,
     batchClaimFeeReserveAtomic,
     treasuryOperationFeeCeilingAtomic,
@@ -233,8 +227,6 @@ export function assertSompiPurchaseRuntimeConfig(
       "admission",
       "policy",
       "authority",
-      "merchantReceiptIssuer",
-      "paymentReceiptIssuer",
       "additionalCostCeilingAtomic",
       "batchClaimFeeReserveAtomic",
       "treasuryOperationFeeCeilingAtomic",
@@ -326,15 +318,6 @@ export function assertSompiPurchaseRuntimeConfig(
     );
     numericId(value.authority.socketAccess.groupId, "authority socket group ID");
   }
-  const merchantReceiptIssuer = identity(
-    requireString(value.merchantReceiptIssuer, "Merchant Receipt issuer"),
-    "Merchant Receipt issuer"
-  );
-  const paymentReceiptIssuer = identity(
-    requireString(value.paymentReceiptIssuer, "Payment Receipt issuer"),
-    "Payment Receipt issuer"
-  );
-  requireDistinctReceiptIssuers(merchantReceiptIssuer, paymentReceiptIssuer);
   atomic(
     requireString(value.additionalCostCeilingAtomic, "Purchase additional-cost ceiling"),
     "Purchase additional-cost ceiling"
@@ -363,8 +346,6 @@ export function assertSompiPurchaseRuntimeConfig(
     JSON.stringify(value.finalityFloors) !== JSON.stringify(manifest.chainEvidence.finalityFloors) ||
     JSON.stringify(value.admission) !== JSON.stringify(manifest.admission) ||
     JSON.stringify(value.egressAllowRules) !== JSON.stringify(manifest.merchant.allowRules) ||
-    value.merchantReceiptIssuer !== manifest.merchant.merchantReceiptIssuer ||
-    value.paymentReceiptIssuer !== manifest.merchant.paymentReceiptIssuer ||
     value.additionalCostCeilingAtomic !== manifest.treasury.additionalCostCeilingAtomic ||
     value.batchClaimFeeReserveAtomic !== manifest.batch.claimFeeReserveAtomic ||
     value.treasuryOperationFeeCeilingAtomic !== manifest.treasury.operationFeeCeilingAtomic
@@ -380,17 +361,6 @@ export function assertSompiPurchaseRuntimeConfig(
     JSON.stringify(value.policy.allowlist) !== JSON.stringify(policy.allowlist)
   ) {
     throw new SompiRuntimeConfigError("runtime policy is not an exact Operator Manifest projection");
-  }
-}
-
-function requireDistinctReceiptIssuers(
-  merchantReceiptIssuer: string,
-  paymentReceiptIssuer: string
-): void {
-  if (merchantReceiptIssuer === paymentReceiptIssuer) {
-    throw new SompiRuntimeConfigError(
-      "Merchant Receipt issuer and Payment Receipt issuer must be distinct"
-    );
   }
 }
 

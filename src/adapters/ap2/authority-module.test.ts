@@ -3,7 +3,6 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
-import { encodePaymentRequiredHeader } from "@kaspa-x402/core";
 
 import { SqliteAuthorityDecisionStore } from "../../authority/decision-store.js";
 import { AuthorityDecisionEndpoint, AuthorityUnixDecisionClient, AuthorityUnixDecisionServer } from "../../authority/endpoint.js";
@@ -32,7 +31,6 @@ import {
 } from "./test-fixtures.js";
 import { Ap2AuthorityDecisionEvidenceVerifier } from "./authority-decision.js";
 import { Ap2AuthorityModule } from "./authority-module.js";
-import { KASPA_X402_PAYMENT_REQUIRED_PROFILE } from "../kaspa-x402/payment-requirements-verifier.js";
 import {
   Ap2HumanAuthorityDecisionProvider,
   type AuthorityApprovalDisplay,
@@ -292,27 +290,7 @@ async function authoritySystem(
   const authentication = new StaticAuthenticationProvider();
   const nowMs = (FIXED_NOW + 5) * 1_000;
   const checkout = await fixedVerifiedCheckout();
-  const paymentRequired = Buffer.from(encodePaymentRequiredHeader({
-    x402Version: 2,
-    resource: { url: checkout.resourceUrl },
-    accepts: [{
-      scheme: "exact",
-      network: "kaspa:testnet-10",
-      amount: checkout.terms.amountAtomic,
-      asset: "KAS",
-      payTo: checkout.terms.payTo,
-      maxTimeoutSeconds: 60,
-      extra: {
-        binding: "kaspa-exact-v2",
-        profile: "standard-native",
-        finality: "accepted",
-        transactionEncoding: "kaspa-sdk-safe-json-v2.0.0",
-        payToScriptPublicKey: "000051",
-        assetKind: "native",
-        assetDecimals: 8,
-      },
-    }],
-  } as never), "ascii");
+  const paymentRequired = Buffer.from("generic-x402-payment-required", "ascii");
   const checkoutDigest = evidenceDigest(paymentRequired);
   const merchantOrigin = new URL(checkout.resourceUrl).origin;
   const request: PurchaseAuthorizationRequest = {
@@ -396,7 +374,7 @@ async function authoritySystem(
         bytes: paymentRequired,
         digest: checkoutDigest,
         mediaType: "application/x402-payment-required",
-        profile: KASPA_X402_PAYMENT_REQUIRED_PROFILE,
+        profile: "kaspa-x402-0.1.0-alpha.8-payment-required",
         issuer: merchantOrigin,
       },
     },

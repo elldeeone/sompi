@@ -3,10 +3,8 @@ import { lookup } from "node:dns/promises";
 import {
   Ap2AuthorityDecisionEvidenceVerifier,
   Ap2AuthorityModule,
-  Ap2HttpCommerceAuthorizationModule,
   loadAp2TrustStore,
 } from "../adapters/ap2/index.js";
-import { Ap2PaidResponseVerifier } from "../adapters/ap2/paid-response-verifier.js";
 import {
   AuthorityUnixDecisionClient,
 } from "../authority/endpoint.js";
@@ -59,6 +57,7 @@ import {
   type EgressResolver,
 } from "../purchase/egress-policy.js";
 import { PurchaseJournal } from "../purchase/journal.js";
+import { SompiPaidResponseVerifier } from "../purchase/paid-response-verifier.js";
 import type { PurchaseModule } from "../purchase/types.js";
 import { VaultTreasuryModule } from "../treasury/vault-treasury.js";
 import { TreasuryOperationModule } from "../treasury/operations.js";
@@ -75,7 +74,6 @@ import {
   type SompiPurchaseRuntimeConfig,
 } from "./config.js";
 import {
-  JournalAp2CommerceEvidenceSource,
   JournalChainTreasuryMetadataSource,
   JournalTreasuryStagingObservationSource,
   createJournalTreasuryStagingMetadataSource,
@@ -293,25 +291,7 @@ export function createSompiPurchaseRuntime(
       addressCodec: new KaspaTestnet10AddressCodec(),
       now,
     });
-    const commerceEvidence = new JournalAp2CommerceEvidenceSource({
-      journal,
-      trust,
-      expectedAuthorityIssuer: config.authority.issuer,
-      expectedInstrumentId: config.authority.instrumentId,
-      now,
-    });
-    const commerceAuthorization = new Ap2HttpCommerceAuthorizationModule({
-      evidenceSource: commerceEvidence,
-      transport,
-      now,
-    });
-    const paidResponseVerifier = new Ap2PaidResponseVerifier({
-      evidenceSource: commerceEvidence,
-      trust,
-      expectedMerchantReceiptIssuer: config.merchantReceiptIssuer,
-      expectedPaymentReceiptIssuer: config.paymentReceiptIssuer,
-      now,
-    });
+    const paidResponseVerifier = new SompiPaidResponseVerifier();
     const treasuryStaging = new KaspaX402TreasuryStagingAdapter({
       driver: staging,
       now,
@@ -370,7 +350,6 @@ export function createSompiPurchaseRuntime(
       egress,
       checkout,
       authority,
-      commerceAuthorization,
       treasury,
       payment,
       new PendingFulfilmentModule(),

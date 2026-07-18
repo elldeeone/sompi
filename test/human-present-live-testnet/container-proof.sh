@@ -69,7 +69,7 @@ chmod 0700 "$AUTHORITY_HOME"
 install -d -o root -g "$IPC_GROUP" -m 0750 /etc/sompi
 cat >/tmp/operator-spec.json <<'JSON'
 {
-  "schema": "sompi-operator-provisioning-v1",
+  "schema": "sompi-operator-provisioning-v2",
   "revision": 1,
   "dataDirectory": "/var/lib/sompi-proof-runtime",
   "ownerPublic": "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",
@@ -84,9 +84,7 @@ cat >/tmp/operator-spec.json <<'JSON'
     "operationFeeCeilingAtomic": "25000000"
   },
   "merchant": {
-    "allowRules": [{ "hostname": "merchant.example", "ports": [443] }],
-    "merchantReceiptIssuer": "receipt:merchant",
-    "paymentReceiptIssuer": "receipt:payment"
+    "allowRules": [{ "hostname": "merchant.example", "ports": [443] }]
   },
   "batch": { "claimFeeReserveAtomic": "100000" },
   "chainEvidence": {

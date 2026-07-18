@@ -263,8 +263,8 @@ function makeRequest(seed = 1): AuthorityApprovalRequest {
     checkoutEvidence: {
       artifact: "checkout",
       digest: facts.checkoutDigest,
-      mediaType: "application/jwt",
-      profile: "urn:sompi:checkout:test:1",
+      mediaType: "application/x402-payment-required",
+      profile: "kaspa-x402-0.1.0-alpha.8-payment-required",
       issuer: facts.merchantId,
     },
   };
@@ -274,7 +274,7 @@ function makeFacts(): AuthorityApprovalFacts {
   const resource = { url: "https://merchant.example/resource", method: "GET" };
   return {
     purchaseId: createPurchaseId(new Uint8Array(16).fill(4)),
-    merchantId: "merchant:test",
+    merchantId: "https://merchant.example",
     merchantName: "Test Merchant",
     merchantOrigin: "https://merchant.example",
     resourceUrl: resource.url,

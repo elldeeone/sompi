@@ -82,7 +82,7 @@ test("install refuses an unapproved digest, static vault drift, and replacement"
 
 function fixtureSpec(dataDirectory: string) {
   return parseOperatorProvisioningSpec({
-    schema: "sompi-operator-provisioning-v1",
+    schema: "sompi-operator-provisioning-v2",
     revision: 1,
     dataDirectory,
     ownerPublic: generateOwnerKey().publicKey,
@@ -95,7 +95,6 @@ function fixtureSpec(dataDirectory: string) {
     },
     merchant: {
       allowRules: [{ hostname: "merchant.example", ports: [443] }],
-      merchantReceiptIssuer: "receipt:merchant", paymentReceiptIssuer: "receipt:payment",
     },
     batch: { claimFeeReserveAtomic: "100000" },
     authority: { provider: "terminal", telegram: null },

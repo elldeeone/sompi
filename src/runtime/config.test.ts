@@ -131,7 +131,7 @@ function runtimeFixture() {
   const configDigest = vaultStaticConfigurationDigest(config);
   const manifestPath = path.join(root, "operator", "manifest.json");
   publishOperatorManifestForTests(manifestPath, {
-    schema: "sompi-operator-manifest-v1",
+    schema: "sompi-operator-manifest-v2",
     revision: 1,
     networkId: "testnet-10",
     x402Network: "kaspa:testnet-10",
@@ -155,8 +155,6 @@ function runtimeFixture() {
     },
     merchant: {
       allowRules: [{ hostname: "merchant.example", ports: [443, 8443] }],
-      merchantReceiptIssuer: "receipt:merchant",
-      paymentReceiptIssuer: "receipt:payment",
     },
     batch: { claimFeeReserveAtomic: "100000" },
     authority: { provider: "terminal", telegram: null },

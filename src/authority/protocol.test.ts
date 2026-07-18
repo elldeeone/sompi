@@ -49,10 +49,10 @@ test("request envelopes are canonical, deterministic, authenticated, and replay 
   assert.equal(first.wire, second.wire);
   assert.equal(first.requestDigest, second.requestDigest);
   assert.equal(first.factsDigest, authorityFactsDigest(request.facts));
-  assert.equal(first.requestDigest, "sha256:FofTYFxHJRKQtyfbQKhdGa26c1e0iqHQl0ZmEUaqR7I");
-  assert.equal(first.factsDigest, "sha256:ImcKshAC1obvE-CwVaYJIw3NHrCSyuUqTqp8H6WhfGA");
+  assert.equal(first.requestDigest, "sha256:ANK9helphGTbE2ZGT98cvBlc77SgO07zfoV_OKVpBqA");
+  assert.equal(first.factsDigest, "sha256:G80XhoCA-C3sth-rFuLa-DI6YfwSxsjJ1aoLLXpK4a0");
   assert.equal(first.nonceDigest, "sha256:rPcvkLHhzeSiKxzypYz1ZjonDwweFIQ-VUjqZcc6cZo");
-  assert.equal(JSON.parse(first.wire).mac, "DSpZ2cIfXeB5iSsMWeRAF_jaSz-gA-QVF2IBWEMIVyk");
+  assert.equal(JSON.parse(first.wire).mac, "9_EybcMdV7wp0CB6bI3DO7HoxyE4SfVni7wswfoG8yY");
   assert.deepEqual(Buffer.from(KEY), keyBefore, "caller-owned MAC key must not be zeroed or mutated");
   assert(Object.isFrozen(first));
   assert(Object.isFrozen(first.message));
@@ -663,8 +663,8 @@ function makeRequest(overrides: Partial<AuthorityApprovalRequest> = {}): Authori
   const checkoutEvidence = {
     artifact: "checkout",
     digest: facts.checkoutDigest,
-    mediaType: "application/jwt",
-    profile: "urn:sompi:checkout:test:1",
+    mediaType: "application/x402-payment-required",
+    profile: "kaspa-x402-0.1.0-alpha.8-payment-required",
     issuer: facts.merchantId,
   } as const;
   return {
@@ -683,7 +683,7 @@ function makeFacts(): AuthorityApprovalFacts {
   const resource = { url: "https://merchant.example/resource", method: "GET" };
   return {
     purchaseId: createPurchaseId(new Uint8Array(16).fill(4)),
-    merchantId: "merchant:test",
+    merchantId: "https://merchant.example",
     merchantName: "Test Merchant",
     merchantOrigin: "https://merchant.example",
     resourceUrl: resource.url,

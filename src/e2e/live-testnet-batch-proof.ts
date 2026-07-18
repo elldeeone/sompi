@@ -13,16 +13,10 @@ import type {
 } from "@kaspa-x402/server";
 
 import {
-  Ap2HttpCommerceAuthorizationModule,
-  Ap2PaidResponseVerifier,
-} from "../adapters/ap2/index.js";
-import {
   AUTHORITY_SIGNER,
   FIXED_AUTHORITY_ISSUER,
   FIXED_INSTRUMENT_ID,
-  MERCHANT_RECEIPT_SIGNER,
   MERCHANT_SIGNER,
-  PAYMENT_RECEIPT_SIGNER,
   fixedTrustStore,
 } from "../adapters/ap2/test-fixtures.js";
 import {
@@ -45,7 +39,6 @@ import {
   HttpsAcceptedChainWitness,
   WrpcOperatorChainObserver,
 } from "../chain-evidence/sources.js";
-import { SqliteDemoCommerceAuthorizationStore } from "../demo/commerce-authorization-store.js";
 import { DemoMerchantFixture } from "../demo/merchant-fixture.js";
 import { SqliteMerchantServerStateStore } from "../demo/merchant-server-store.js";
 import { EgressPolicy } from "../purchase/egress-policy.js";
@@ -56,11 +49,11 @@ import {
 } from "../purchase/identity.js";
 import { PurchaseCoordinator } from "../purchase/coordinator.js";
 import type { PurchaseJournal } from "../purchase/journal.js";
+import { SompiPaidResponseVerifier } from "../purchase/paid-response-verifier.js";
 import type { PurchaseIntent, PurchaseView } from "../purchase/types.js";
 import { SompiCheckoutTermsModule } from "../purchase/checkout-terms-module.js";
 import { SUPPORTED_PROTOCOL_PROFILES } from "../protocols/profiles.js";
 import { PolicyEngine } from "../policy.js";
-import { JournalAp2CommerceEvidenceSource } from "../runtime/journal-sources.js";
 import {
   VaultDepositTreasuryOperationAdapter,
   VaultSendTreasuryOperationAdapter,
@@ -337,10 +330,6 @@ export async function runLiveBatchProof(
     ) {
       throw new Error("live Merchant channel state belongs to a different channel epoch");
     }
-    const authorizationStore = new SqliteDemoCommerceAuthorizationStore(
-      path.join(initialized.layout.root, "batch-merchant", "authorization.sqlite")
-    );
-    resources.push(() => authorizationStore.close());
     const trackedEscrows = new Set<string>([claimChannel.channel.escrowAddress]);
     const chainProvider = liveBatchServerChainProvider(
       initialized,
@@ -366,18 +355,12 @@ export async function runLiveBatchProof(
       merchantId: MERCHANT_SIGNER.issuer,
       merchantName: "Sompi Live Batch Merchant",
       merchantOrigin: MERCHANT_ORIGIN,
-      merchantWebsite: `${MERCHANT_ORIGIN}/store`,
       payTo: initialized.config.wallets.merchantAddress,
       paymentScheme: "batch-settlement",
       amountAtomic: BATCH_MAXIMUM_ATOMIC,
-      additionalCostCeilingAtomic: "0",
       batchMinDepositSompi: BATCH_DEPOSIT_ATOMIC,
       batchRefundTimeoutDaa: terms.claimRefundTimeoutDaa,
       batchChargeAtomic: BATCH_CHARGE_ATOMIC,
-      checkoutTtlMs: 5 * 60_000,
-      authorityAudience: AUTHORITY_SIGNER.issuer,
-      expectedAuthorityIssuer: AUTHORITY_SIGNER.issuer,
-      expectedInstrumentId: FIXED_INSTRUMENT_ID,
       resource: {
         identity: `resource:sompi:live-batch:${initialized.config.runId}`,
         url: RESOURCE_URL,
@@ -386,17 +369,11 @@ export async function runLiveBatchProof(
         body: RESOURCE_BODY,
       },
       store: merchantStore,
-      authorizationStore,
       addressCodec: new KaspaTestnet10AddressCodec(),
       chainProvider,
       voucherVerifier,
       claimBuilder,
       serverPublicKey: merchantKey.publicKey,
-      merchantCheckoutSigner: MERCHANT_SIGNER,
-      merchantReceiptSigner: MERCHANT_RECEIPT_SIGNER,
-      paymentReceiptSigner: PAYMENT_RECEIPT_SIGNER,
-      ap2Trust: fixedTrustStore(),
-      now: Date.now,
     });
 
     const authority = await createLiveAuthority(initialized);
@@ -667,25 +644,7 @@ function composeBatchCoordinator(input: {
     }),
     now: Date.now,
   });
-  const commerceEvidence = new JournalAp2CommerceEvidenceSource({
-    journal: input.journal,
-    trust,
-    expectedAuthorityIssuer: FIXED_AUTHORITY_ISSUER,
-    expectedInstrumentId: FIXED_INSTRUMENT_ID,
-    now: Date.now,
-  });
-  const commerce = new Ap2HttpCommerceAuthorizationModule({
-    evidenceSource: commerceEvidence,
-    transport: input.transport,
-    now: Date.now,
-  });
-  const paid = new Ap2PaidResponseVerifier({
-    evidenceSource: commerceEvidence,
-    trust,
-    expectedMerchantReceiptIssuer: MERCHANT_RECEIPT_SIGNER.issuer,
-    expectedPaymentReceiptIssuer: PAYMENT_RECEIPT_SIGNER.issuer,
-    now: Date.now,
-  });
+  const paid = new SompiPaidResponseVerifier();
   const payment = new KaspaX402BatchPaymentModule({
     store: input.channelStore,
     signer: input.channelSigner,
@@ -725,7 +684,6 @@ function composeBatchCoordinator(input: {
     egress,
     checkout,
     input.authorityModule,
-    commerce,
     treasury,
     payment,
     { async obtain() { return { status: "pending" as const }; } },

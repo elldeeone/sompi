@@ -16,7 +16,7 @@ import {
 } from "../vault.js";
 import { VAULT_TEMPLATE_VERSION } from "../vault/template.js";
 
-export const OPERATOR_PROVISIONING_SCHEMA = "sompi-operator-provisioning-v1" as const;
+export const OPERATOR_PROVISIONING_SCHEMA = "sompi-operator-provisioning-v2" as const;
 const MAX_SPEC_BYTES = 64 * 1024;
 
 export interface OperatorProvisioningSpec {

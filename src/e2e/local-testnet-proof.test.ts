@@ -4,7 +4,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 
-import type { CommerceAuthorizationModule } from "../purchase/coordinator.js";
 import {
   LOCAL_TESTNET_PROOF_PROFILE,
   runLocalTestnetProof,
@@ -74,27 +73,7 @@ test("real vertical crash points restart without a second staging or Merchant pa
   }
 });
 
-test("accepted Merchant authorization and submitted staging recover by observation", async () => {
-  let interrupted = false;
-  const decorate = (base: CommerceAuthorizationModule): CommerceAuthorizationModule => ({
-    async present(input) {
-      const result = await base.present(input);
-      if (!interrupted) {
-        interrupted = true;
-        throw new Error("simulated process loss after Merchant authorization acceptance");
-      }
-      return result;
-    },
-    observe: (input) => base.observe(input),
-  });
-  const authorization = await runLocalTestnetProof({
-    commerceAuthorizationDecorator: decorate,
-  });
-  assert.equal(interrupted, true);
-  assert.equal(authorization.recovery.restartCount, 1);
-  assert.equal(authorization.idempotency.stagingSubmissions, 1);
-  assert.equal(authorization.idempotency.exactMerchantAcceptances, 1);
-
+test("submitted staging recovers by observation", async () => {
   const staging = await runLocalTestnetProof({ stagingVisibleOnSubmit: false });
   assert.equal(staging.recovery.restartCount, 1);
   assert.equal(staging.idempotency.stagingSubmissions, 1);

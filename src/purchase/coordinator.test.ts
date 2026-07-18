@@ -9,7 +9,6 @@ import {
   type AuthorityModule,
   type AuthorityResult,
   type CheckoutTermsModule,
-  type CommerceAuthorizationModule,
   type FulfilmentModule,
   type KaspaPaymentModule,
   type PaymentRecoveryObservation,
@@ -51,6 +50,7 @@ import {
   type AuthorityReplayLookupInput,
   type AuthorityReplayRenewInput,
   type AuthorityReplayStore,
+  type AuthorityApprovalRequest,
 } from "../authority/protocol.js";
 import { EgressPolicy } from "./egress-policy.js";
 import { JournalBatchVoucherAuthorizer } from "../adapters/kaspa-x402/batch-payment-module.js";
@@ -70,7 +70,7 @@ test("coordinator completes one exact Purchase and idempotently projects linked 
     assert.equal(completed.paymentAttempts.length, 1);
     assert.equal(completed.paymentAttempts[0].status, "observed");
     assert.equal(completed.fulfilmentBody, "deterministic resource body");
-    assert.equal(completed.receiptEvidence.length, 2);
+    assert.equal(completed.receiptEvidence.length, 1);
     assert.ok(completed.settlementEvidence);
 
     const replay = await coordinator.purchase(intent);
@@ -79,8 +79,6 @@ test("coordinator completes one exact Purchase and idempotently projects linked 
     assert.deepEqual(dependencies.calls, {
       checkout: 1,
       authority: 1,
-      commercePresent: 1,
-      commerceObserve: 0,
       policy: 1,
       quote: 2,
       prepareStaging: 1,
@@ -338,7 +336,6 @@ test("ambiguous Treasury staging is observed before exact preparation and is nev
         .sort((left, right) => left.kind.localeCompare(right.kind)),
       [
         { kind: "kaspa-x402-payment", state: "observed" },
-        { kind: "merchant-authorization", state: "observed" },
         { kind: "treasury-staging", state: "observed" },
       ]
     );
@@ -468,9 +465,9 @@ test("restart after durable preparation reuses exact bytes instead of preparing 
   let journal = new PurchaseJournal(filename, {
     now: () => NOW,
     faultInjector(point: JournalFaultPoint) {
-      // Merchant authorization and Treasury staging are the first two Effects;
-      // crash on the exact payment Effect created after durable preparation.
-      if (point === "effect.after_insert" && ++effectInsertions === 3) {
+      // Treasury staging is the first Effect; crash on the exact payment
+      // Effect created after durable preparation.
+      if (point === "effect.after_insert" && ++effectInsertions === 2) {
         throw new Error("crash-after-preparation");
       }
     },
@@ -537,12 +534,12 @@ test("Fulfilment and all required Receipts commit atomically across a crash", as
   }
 });
 
-test("verified Fulfilment persists while missing Receipts resume without another payment", async () => {
+test("a pending paid response resumes without another payment", async () => {
   await withFixture(async ({ coordinator, dependencies, intent }) => {
     dependencies.receiptsAvailable = false;
-    const fulfilled = await coordinator.purchase(intent);
-    assert.equal(fulfilled.state, "fulfilled");
-    assert.equal(fulfilled.fulfilmentBody, "deterministic resource body");
+    const pending = await coordinator.purchase(intent);
+    assert.equal(pending.state, "settled");
+    assert.equal(pending.fulfilmentBody, undefined);
     assert.equal(dependencies.calls.submit, 1);
 
     dependencies.receiptsAvailable = true;
@@ -854,7 +851,6 @@ function makeCoordinator(
     }),
     dependencies.checkout,
     dependencies.authority,
-    dependencies.commerceAuthorization,
     dependencies.treasury,
     dependencies.payment,
     dependencies.fulfilment,
@@ -914,8 +910,6 @@ class FakeDependencies {
   calls = {
     checkout: 0,
     authority: 0,
-    commercePresent: 0,
-    commerceObserve: 0,
     policy: 0,
     quote: 0,
     prepareStaging: 0,
@@ -936,26 +930,28 @@ class FakeDependencies {
       assert.deepEqual(egress.request.connection.addresses, [{ address: "93.184.216.34", family: 4 }]);
       if (this.redirectLocation) await egress.redirect(egress.request, this.redirectLocation);
       if (this.checkoutDelayMs) await new Promise((resolve) => setTimeout(resolve, this.checkoutDelayMs));
+      const requirementsBytes = `requirements:${purchaseId}`;
       const terms: CheckoutTerms = {
-        merchant: { id: "merchant:test", name: "Test Merchant", origin: "https://merchant.example" },
+        merchant: { id: "https://merchant.example", name: "Test Merchant", origin: "https://merchant.example" },
         resourceFingerprint,
         amountAtomic: "60",
         asset: "KAS",
         network: "kaspa:testnet-10",
         payTo: TESTNET_PAYEE,
         expiresAt: this.termsExpiresAt,
-        checkoutDigest: evidenceDigest(`checkout:${purchaseId}`),
+        checkoutDigest: evidenceDigest(requirementsBytes),
       };
       const checkoutEvidence = artifact(
-        `checkout:${purchaseId}`,
-        "test-checkout",
-        "merchant:test",
+        requirementsBytes,
+        "kaspa-x402-0.1.0-alpha.8-payment-required",
+        "https://merchant.example",
         checkoutTermsFactsDigest(terms)
       );
+      checkoutEvidence.mediaType = "application/x402-payment-required";
       const paymentRequirements = artifact(
-        `requirements:${purchaseId}`,
+        requirementsBytes,
         "test-requirements",
-        "merchant:test"
+        "https://merchant.example"
       );
       return certifyVerifiedCheckoutDiscovery({
         terms: this.termsMutation?.(terms) ?? terms,
@@ -993,7 +989,18 @@ class FakeDependencies {
       this.calls.authority++;
       assert.equal(checkoutEvidence.digest, evidenceDigest(checkoutEvidence.bytes));
       if (this.authorityMode === "pending") return { status: "pending" };
-      return verifiedAuthorityResult(request, this.authorityMode, this.authorityFactsMutation);
+      return verifiedAuthorityResult(
+        request,
+        this.authorityMode,
+        this.authorityFactsMutation,
+        {
+          artifact: Buffer.from(checkoutEvidence.bytes).toString("ascii"),
+          digest: checkoutEvidence.digest,
+          mediaType: checkoutEvidence.mediaType,
+          profile: checkoutEvidence.profile,
+          issuer: checkoutEvidence.issuer!,
+        }
+      );
     },
   };
 
@@ -1021,33 +1028,6 @@ class FakeDependencies {
     prepareStagingRecovery: async (input) => this.stagingRecovery.prepare(input),
     observeStagingRecovery: async (input) => this.stagingRecovery.observe(input),
     submitStagingRecovery: async (input) => this.stagingRecovery.submit(input),
-  };
-
-  readonly commerceAuthorization: CommerceAuthorizationModule = {
-    present: async ({ context }) => {
-      this.calls.commercePresent++;
-      const acceptance = artifact(
-        `merchant-authorization:${context.purchaseId}:${context.paymentIdentifier}`,
-        "test-merchant-authorization",
-        "merchant:test"
-      );
-      return {
-        status: "accepted",
-        submissionDigest: acceptance.declaredDigest!,
-        acceptance,
-      };
-    },
-    observe: async ({ context }) => {
-      this.calls.commerceObserve++;
-      return {
-        status: "accepted",
-        acceptance: artifact(
-          `merchant-authorization:${context.purchaseId}:${context.paymentIdentifier}`,
-          "test-merchant-authorization",
-          "merchant:test"
-        ),
-      };
-    },
   };
 
   readonly payment: KaspaPaymentModule & Pick<
@@ -1293,6 +1273,7 @@ class FakeDependencies {
   readonly fulfilment: FulfilmentModule = {
     obtain: async (input) => {
       this.calls.fulfilment++;
+      if (!this.receiptsAvailable) return { status: "pending" as const };
       return this.fulfilmentResult(input);
     },
   };
@@ -1312,32 +1293,17 @@ class FakeDependencies {
       mediaType: "text/plain; charset=utf-8",
       resourceFingerprint: input.terms.resourceFingerprint,
       merchantEvidence: artifact(`fulfilment:${input.purchaseId}`, "test-fulfilment", "merchant:test"),
-      receipts: this.receiptsAvailable ? [
-          {
-            role: "merchant",
-            checkoutDigest: input.terms.checkoutDigest,
-            authorizationEvidenceDigest: input.authorizationEvidenceDigest,
-            settlementEvidenceDigest: input.settlementEvidenceDigest,
-            fulfilmentDigest,
-            evidence: artifact(
-              `merchant-receipt:${input.purchaseId}`,
-              "urn:sompi:receipt:merchant:1",
-              "merchant:test"
-            ),
-          },
-          {
-            role: "payment",
-            checkoutDigest: input.terms.checkoutDigest,
-            authorizationEvidenceDigest: input.authorizationEvidenceDigest,
-            settlementEvidenceDigest: input.settlementEvidenceDigest,
-            fulfilmentDigest,
-            evidence: artifact(
-              `payment-receipt:${input.purchaseId}`,
-              "urn:sompi:receipt:payment:1",
-              "payment:test"
-            ),
-          },
-      ] : [],
+      receipt: {
+        checkoutDigest: input.terms.checkoutDigest,
+        authorizationEvidenceDigest: input.authorizationEvidenceDigest,
+        settlementEvidenceDigest: input.settlementEvidenceDigest,
+        fulfilmentDigest,
+        evidence: artifact(
+          `purchase-receipt:${input.purchaseId}`,
+          "urn:sompi:receipt:purchase:1",
+          "authority:test"
+        ),
+      },
     };
   }
 
@@ -1387,7 +1353,8 @@ class FakeDependencies {
 async function verifiedAuthorityResult(
   request: PurchaseAuthorizationRequest,
   decision: "approved" | "denied",
-  mutate?: (facts: ReturnType<typeof authorizationFacts>) => ReturnType<typeof authorizationFacts>
+  mutate?: (facts: ReturnType<typeof authorizationFacts>) => ReturnType<typeof authorizationFacts>,
+  checkoutEvidence?: AuthorityApprovalRequest["checkoutEvidence"]
 ): Promise<Exclude<AuthorityResult, { status: "pending" }>> {
   const purchaseFacts = mutate?.(authorizationFacts(request)) ?? authorizationFacts(request);
   const approvalRequest = {
@@ -1425,11 +1392,11 @@ async function verifiedAuthorityResult(
       channelId: purchaseFacts.channelId ?? null,
       channelEpochDigest: purchaseFacts.channelEpochDigest ?? null,
     },
-    checkoutEvidence: {
-      artifact: `checkout:${request.purchaseId}`,
+    checkoutEvidence: checkoutEvidence ?? {
+      artifact: `requirements:${request.purchaseId}`,
       digest: purchaseFacts.checkoutDigest,
-      mediaType: "application/jwt",
-      profile: "test-checkout",
+      mediaType: "application/x402-payment-required",
+      profile: "kaspa-x402-0.1.0-alpha.8-payment-required",
       issuer: purchaseFacts.merchantId,
     },
   };
@@ -1658,7 +1625,7 @@ function planNextVoucherOnSameEpoch(journal: PurchaseJournal, seed: number) {
     resourceUrl: "https://merchant.example/resource",
     method: "GET",
     resourceFingerprint: evidenceDigest(`test:next-batch-resource:${seed}`),
-    expectedMerchantId: "merchant:test",
+    expectedMerchantId: "https://merchant.example",
     expectedMerchantOrigin: "https://merchant.example",
   });
   return journal.planBatchTreasuryMovement({
@@ -1677,7 +1644,7 @@ function makeIntent(): PurchaseIntent {
   return {
     requestKey: assertPurchaseRequestKey("test:coordinator:purchase-1"),
     resource: { url: "https://merchant.example/resource", method: "GET" },
-    expectedMerchant: { id: "merchant:test", origin: "https://merchant.example" },
+    expectedMerchant: { id: "https://merchant.example", origin: "https://merchant.example" },
   };
 }
 

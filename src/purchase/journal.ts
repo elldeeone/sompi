@@ -73,20 +73,7 @@ const RESERVATION_STATES = ["active", "in_flight", "spent", "released", "expired
 export const TREASURY_STAGING_EFFECT_KIND = "treasury-staging";
 export const TREASURY_STAGING_EVIDENCE_KIND = "treasury-staging-output";
 export const TREASURY_STAGING_RECOVERY_EFFECT_KIND = "treasury-staging-recovery";
-export const MERCHANT_AUTHORIZATION_EFFECT_KIND = "merchant-authorization";
-export const MERCHANT_AUTHORIZATION_EVIDENCE_KIND = "merchant-authorization";
-
-export const PURCHASE_RECEIPT_SET_PROFILE = "urn:sompi:receipt-set:purchase:1";
-export const PURCHASE_RECEIPT_REQUIREMENTS = Object.freeze([
-  Object.freeze({
-    role: "merchant",
-    profile: "urn:sompi:receipt:merchant:1",
-  }),
-  Object.freeze({
-    role: "payment",
-    profile: "urn:sompi:receipt:payment:1",
-  }),
-] as const);
+export const PURCHASE_RECEIPT_PROFILE = "urn:sompi:receipt:purchase:1" as const;
 
 type PaymentAttemptState = (typeof PAYMENT_ATTEMPT_STATES)[number];
 export type EffectState = (typeof EFFECT_STATES)[number];
@@ -725,7 +712,6 @@ export interface FulfilmentRecord extends RecordFulfilmentInput {
 }
 
 export interface RecordReceiptInput {
-  role: string;
   evidenceDigest: Sha256Digest;
   profile: string;
   issuer?: string;
@@ -737,17 +723,9 @@ export interface RecordReceiptInput {
 }
 
 export interface ReceiptRecord extends RecordReceiptInput {
-  id: number;
   purchaseId: PurchaseId;
   canonicalDigest: Sha256Digest;
   createdAtMs: number;
-}
-
-export interface ReceiptSetRecord {
-  purchaseId: PurchaseId;
-  profile: typeof PURCHASE_RECEIPT_SET_PROFILE;
-  canonicalDigest: Sha256Digest;
-  completedAtMs: number;
 }
 
 export interface EvidenceLinkRecord {
@@ -3214,7 +3192,7 @@ export class PurchaseJournal {
 
   /**
    * Cancels only while the Journal proves that no irreversible Treasury or
-   * Merchant payment effect can have occurred. Prepared bytes may exist, but
+   * payment effect can have occurred. Prepared bytes may exist, but
    * every effect must still be unclaimed. Capacity release and lifecycle
    * cancellation are one SQLite transaction.
    */
@@ -3230,10 +3208,7 @@ export class PurchaseJournal {
 
       const effects = this.effectsForPurchase(purchaseId);
       for (const effect of effects) {
-        const observedMerchantAuthorization =
-          effect.kind === MERCHANT_AUTHORIZATION_EFFECT_KIND && effect.state === "observed";
         if (
-          !observedMerchantAuthorization &&
           effect.state !== "planned" &&
           effect.state !== "retryable" &&
           effect.state !== "abandoned"
@@ -3313,9 +3288,7 @@ export class PurchaseJournal {
   }
 
   /**
-   * Terminates a never-staged Purchase after Checkout expiry. Ambiguous
-   * Merchant presentation must be reconciled first; accepted presentation is
-   * harmless but can no longer authorize Treasury execution.
+   * Terminates a never-staged Purchase after Checkout expiry.
    */
   expirePurchaseBeforeTreasury(purchaseId: PurchaseId): PurchaseRecord {
     const expire = this.db.transaction(() => {
@@ -3329,21 +3302,6 @@ export class PurchaseJournal {
       ) {
         throw new JournalInvariantError(
           "only an authorised Purchase with expired Checkout Terms can terminate before Treasury"
-        );
-      }
-      const commerce = this.effectsForPurchase(purchaseId).filter(
-        (effect) => effect.kind === MERCHANT_AUTHORIZATION_EFFECT_KIND
-      );
-      if (commerce.length > 1) {
-        throw new JournalInvariantError("Purchase has conflicting Merchant authorization Effects");
-      }
-      const effect = commerce[0];
-      if (
-        effect &&
-        !["planned", "retryable", "observed", "abandoned"].includes(effect.state)
-      ) {
-        throw new JournalEffectBusyError(
-          "ambiguous Merchant authorization must be reconciled before expiry"
         );
       }
       const attempts = this.paymentAttempts(purchaseId);
@@ -3362,16 +3320,6 @@ export class PurchaseJournal {
         );
       } else if (attempt && attempt.state !== "failed") {
         throw new JournalInvariantError("expired pre-Treasury Purchase already advanced execution");
-      }
-      if (effect && (effect.state === "planned" || effect.state === "retryable")) {
-        this.updateEffectState(
-          effect,
-          "abandoned",
-          "checkout_expired_before_treasury",
-          terms.checkoutDigest,
-          now,
-          { errorCode: "checkout_expired_before_treasury" }
-        );
       }
       const reservation = this.findReservationForPurchase(purchaseId);
       if (reservation?.state === "active") {
@@ -3603,11 +3551,6 @@ export class PurchaseJournal {
       if (attempt.state !== "planned") {
         throw new JournalInvariantError(`treasury staging cannot be planned from Attempt state ${attempt.state}`);
       }
-      this.requireObservedMerchantAuthorization(
-        input.purchaseId,
-        input.attempt,
-        attempt.identifier
-      );
       const now = this.timestamp();
       this.expireReservationsInternal(now);
       const reservation = this.requireReservation(input.reservationId);
@@ -3715,11 +3658,6 @@ export class PurchaseJournal {
       }
       const plan = this.requireTreasuryStagingPlan(effect.purchaseId, effect.attempt);
       const attempt = this.requirePaymentAttempt(effect.purchaseId, effect.attempt);
-      this.requireObservedMerchantAuthorization(
-        effect.purchaseId,
-        effect.attempt,
-        attempt.identifier
-      );
       this.readPreparedMaterial(plan.payloadDigest, plan.preparedRef, plan.preparedByteLength);
       this.readPreparedMaterial(effect.payloadDigest, effect.preparedRef, effect.preparedByteLength);
       if (
@@ -3776,37 +3714,6 @@ export class PurchaseJournal {
       return { effect: this.requireEffect(effectId), lease: claimed.lease };
     });
     return begin.immediate();
-  }
-
-  private requireObservedMerchantAuthorization(
-    purchaseId: PurchaseId,
-    attempt: number,
-    paymentIdentifier: string
-  ): EffectRecord {
-    const matches = this.effectsForPurchase(purchaseId).filter(
-      (effect) => effect.kind === MERCHANT_AUTHORIZATION_EFFECT_KIND
-    );
-    if (matches.length !== 1) {
-      throw new JournalInvariantError(
-        "treasury staging requires exactly one durable Merchant authorization Effect"
-      );
-    }
-    const effect = matches[0];
-    if (
-      effect.attempt !== undefined ||
-      effect.idempotencyKey !== `merchant-authorization:${paymentIdentifier}` ||
-      effect.state !== "observed" ||
-      !effect.resultDigest ||
-      !this.isVerifiedEvidenceLinked(purchaseId, effect.resultDigest, {
-        attempt,
-        kind: MERCHANT_AUTHORIZATION_EVIDENCE_KIND,
-      })
-    ) {
-      throw new JournalInvariantError(
-        "treasury staging requires verified Merchant authorization for this Payment Attempt"
-      );
-    }
-    return effect;
   }
 
   recordObservedTreasuryStaging(
@@ -5054,25 +4961,24 @@ export class PurchaseJournal {
         input
       );
       const existing = this.db
-        .prepare("SELECT * FROM purchase_receipts WHERE purchase_id = ? AND role = ?")
-        .get(purchaseId, input.role) as ReceiptRow | undefined;
+        .prepare("SELECT * FROM purchase_receipts WHERE purchase_id = ?")
+        .get(purchaseId) as ReceiptRow | undefined;
       let receipt: ReceiptRecord;
       if (existing) {
         receipt = receiptFromRow(existing);
         assertSameReceipt(receipt, input, canonicalDigest);
       } else {
         const now = this.timestamp();
-        const inserted = this.db
+        this.db
           .prepare(
             `INSERT INTO purchase_receipts (
-               purchase_id, role, canonical_digest, evidence_digest, profile, issuer, verifier_id,
+               purchase_id, canonical_digest, evidence_digest, profile, issuer, verifier_id,
                checkout_digest, authorization_evidence_digest, settlement_evidence_digest,
                fulfilment_digest, created_at_ms
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
           )
           .run(
             purchaseId,
-            input.role,
             canonicalDigest,
             input.evidenceDigest,
             input.profile,
@@ -5086,14 +4992,22 @@ export class PurchaseJournal {
           );
         this.inject("receipt.after_insert");
         receipt = {
-          id: Number(inserted.lastInsertRowid),
           purchaseId,
           ...input,
           canonicalDigest,
           createdAtMs: now,
         };
       }
-      this.completeReceiptSetIfSatisfied(purchaseId);
+      const current = this.requirePurchase(purchaseId);
+      if (current.state === "fulfilled") {
+        this.transitionPurchase(
+          purchaseId,
+          "fulfilled",
+          "receipted",
+          "canonical_receipt_recorded",
+          canonicalDigest
+        );
+      }
       return receipt;
     });
     return record.immediate();
@@ -5102,65 +5016,9 @@ export class PurchaseJournal {
   receipts(purchaseId: PurchaseId): ReceiptRecord[] {
     this.requirePurchase(purchaseId);
     const rows = this.db
-      .prepare("SELECT * FROM purchase_receipts WHERE purchase_id = ? ORDER BY role, id")
+      .prepare("SELECT * FROM purchase_receipts WHERE purchase_id = ?")
       .all(purchaseId) as ReceiptRow[];
     return rows.map(receiptFromRow);
-  }
-
-  findReceiptSet(purchaseId: PurchaseId): ReceiptSetRecord | undefined {
-    const row = this.db
-      .prepare("SELECT * FROM purchase_receipt_sets WHERE purchase_id = ?")
-      .get(purchaseId) as ReceiptSetRow | undefined;
-    return row ? receiptSetFromRow(row) : undefined;
-  }
-
-  private completeReceiptSetIfSatisfied(purchaseId: PurchaseId): ReceiptSetRecord | undefined {
-    const receipts = this.receipts(purchaseId);
-    if (receipts.length < PURCHASE_RECEIPT_REQUIREMENTS.length) return undefined;
-    if (receipts.length !== PURCHASE_RECEIPT_REQUIREMENTS.length) {
-      throw new JournalInvariantError("Receipt set contains an unsupported canonical role");
-    }
-    for (const requirement of PURCHASE_RECEIPT_REQUIREMENTS) {
-      const receipt = receipts.find((candidate) => candidate.role === requirement.role);
-      if (!receipt || receipt.profile !== requirement.profile) {
-        throw new JournalInvariantError(`Receipt set is missing required ${requirement.role} evidence`);
-      }
-    }
-    const fulfilment = this.requireFulfilment(purchaseId);
-    const attempt = this.requirePaymentAttempt(purchaseId, fulfilment.attempt);
-    const canonicalDigest = canonicalReceiptSetDigest(
-      purchaseId,
-      fulfilment.attempt,
-      attempt.identifier,
-      receipts
-    );
-    const existing = this.findReceiptSet(purchaseId);
-    if (existing) {
-      if (
-        existing.profile !== PURCHASE_RECEIPT_SET_PROFILE ||
-        existing.canonicalDigest !== canonicalDigest
-      ) {
-        throw new JournalInvariantError("immutable Receipt set conflict");
-      }
-      return existing;
-    }
-    const now = this.timestamp();
-    this.db.prepare(
-      `INSERT INTO purchase_receipt_sets
-         (purchase_id, profile, canonical_digest, completed_at_ms)
-       VALUES (?, ?, ?, ?)`
-    ).run(purchaseId, PURCHASE_RECEIPT_SET_PROFILE, canonicalDigest, now);
-    const purchase = this.requirePurchase(purchaseId);
-    if (purchase.state === "fulfilled") {
-      this.transitionPurchase(
-        purchaseId,
-        "fulfilled",
-        "receipted",
-        "canonical_receipt_set_complete",
-        canonicalDigest
-      );
-    }
-    return this.findReceiptSet(purchaseId)!;
   }
 
   paymentAttempts(purchaseId: PurchaseId): PaymentAttemptRecord[] {
@@ -6400,7 +6258,6 @@ export class PurchaseJournal {
       const authorization = this.findAuthorization(purchaseId);
       const fulfilment = this.findFulfilment(purchaseId);
       const receipts = this.receipts(purchaseId);
-      const receiptSet = this.findReceiptSet(purchaseId);
       this.assertPurchaseStateFacts(purchaseId, purchase.state);
       const requiresTerms = !["created", "cancelled"].includes(purchase.state);
       if (requiresTerms && !terms) {
@@ -6518,11 +6375,11 @@ export class PurchaseJournal {
       if ((purchase.state === "fulfilled" || purchase.state === "receipted") && !fulfilment) {
         throw new JournalInvariantError(`Purchase ${purchase.id} state requires verified Fulfilment`);
       }
-      if (purchase.state === "receipted" && !receiptSet) {
-        throw new JournalInvariantError(`Purchase ${purchase.id} state requires a complete canonical Receipt set`);
+      if (purchase.state === "receipted" && receipts.length !== 1) {
+        throw new JournalInvariantError(`Purchase ${purchase.id} state requires one canonical Receipt`);
       }
-      if (purchase.state !== "receipted" && receiptSet) {
-        throw new JournalInvariantError(`Purchase ${purchase.id} has a completed Receipt set in state ${purchase.state}`);
+      if (purchase.state !== "receipted" && receipts.length !== 0) {
+        throw new JournalInvariantError(`Purchase ${purchase.id} has a canonical Receipt in state ${purchase.state}`);
       }
     }
 
@@ -6662,12 +6519,7 @@ export class PurchaseJournal {
         ) {
           throw new JournalInvariantError(`Treasury staging Effect ${effect.id} is not bound to its plan`);
         }
-        const attempt = this.requirePaymentAttempt(effect.purchaseId, effect.attempt);
-        this.requireObservedMerchantAuthorization(
-          effect.purchaseId,
-          effect.attempt,
-          attempt.identifier
-        );
+        this.requirePaymentAttempt(effect.purchaseId, effect.attempt);
         const observation = this.findTreasuryStagingObservationByEffect(effect.id);
         if ((effect.state === "observed") !== Boolean(observation)) {
           throw new JournalInvariantError(`Treasury staging Effect ${effect.id} observation state is inconsistent`);
@@ -7089,31 +6941,6 @@ export class PurchaseJournal {
       }
     }
 
-    const receiptSetRows = this.db.prepare("SELECT * FROM purchase_receipt_sets").all() as ReceiptSetRow[];
-    for (const row of receiptSetRows) {
-      const set = receiptSetFromRow(row);
-      const purchase = this.requirePurchase(set.purchaseId);
-      const receipts = this.receipts(set.purchaseId);
-      if (
-        purchase.state !== "receipted" ||
-        receipts.length !== PURCHASE_RECEIPT_REQUIREMENTS.length ||
-        PURCHASE_RECEIPT_REQUIREMENTS.some((requirement) =>
-          !receipts.some((receipt) => receipt.role === requirement.role && receipt.profile === requirement.profile)
-        ) ||
-        set.canonicalDigest !== canonicalReceiptSetDigest(
-          set.purchaseId,
-          this.requireFulfilment(set.purchaseId).attempt,
-          this.requirePaymentAttempt(
-            set.purchaseId,
-            this.requireFulfilment(set.purchaseId).attempt
-          ).identifier,
-          receipts
-        )
-      ) {
-        throw new JournalInvariantError(`Purchase ${set.purchaseId} canonical Receipt set is inconsistent`);
-      }
-    }
-
     const treasuryOperations = this.db
       .prepare("SELECT * FROM treasury_operations ORDER BY operation_key")
       .all() as TreasuryOperationRow[];
@@ -7226,7 +7053,6 @@ export class PurchaseJournal {
     const spend = this.findSettlementForPurchase(purchaseId);
     const fulfilment = this.findFulfilment(purchaseId);
     const receipts = this.receipts(purchaseId);
-    const receiptSet = this.findReceiptSet(purchaseId);
     if (["cancelled", "expired", "denied", "failed_terminal"].includes(state)) {
       const openVoucher = this.db.prepare(
         `SELECT movement_id FROM batch_treasury_movements
@@ -7328,8 +7154,8 @@ export class PurchaseJournal {
     if ((state === "fulfilled" || state === "receipted") && !fulfilment) {
       throw new JournalInvariantError(`Purchase ${purchaseId} cannot enter ${state} without Fulfilment`);
     }
-    if (state === "receipted" && (!receiptSet || receipts.length !== PURCHASE_RECEIPT_REQUIREMENTS.length)) {
-      throw new JournalInvariantError(`Purchase ${purchaseId} cannot enter receipted without a complete Receipt set`);
+    if (state === "receipted" && receipts.length !== 1) {
+      throw new JournalInvariantError(`Purchase ${purchaseId} cannot enter receipted without one canonical Receipt`);
     }
   }
 
@@ -8831,9 +8657,7 @@ interface FulfilmentRow {
 }
 
 interface ReceiptRow {
-  id: number;
   purchase_id: string;
-  role: string;
   canonical_digest: string;
   evidence_digest: string;
   profile: string;
@@ -8844,13 +8668,6 @@ interface ReceiptRow {
   settlement_evidence_digest: string;
   fulfilment_digest: string;
   created_at_ms: number;
-}
-
-interface ReceiptSetRow {
-  purchase_id: string;
-  profile: string;
-  canonical_digest: string;
-  completed_at_ms: number;
 }
 
 interface EvidenceLinkRow {
@@ -9407,9 +9224,7 @@ function fulfilmentFromRow(row: FulfilmentRow): FulfilmentRecord {
 
 function receiptFromRow(row: ReceiptRow): ReceiptRecord {
   return {
-    id: row.id,
     purchaseId: row.purchase_id as PurchaseId,
-    role: row.role,
     canonicalDigest: row.canonical_digest as Sha256Digest,
     evidenceDigest: row.evidence_digest as Sha256Digest,
     profile: row.profile,
@@ -9420,18 +9235,6 @@ function receiptFromRow(row: ReceiptRow): ReceiptRecord {
     settlementEvidenceDigest: row.settlement_evidence_digest as Sha256Digest,
     fulfilmentDigest: row.fulfilment_digest as Sha256Digest,
     createdAtMs: row.created_at_ms,
-  };
-}
-
-function receiptSetFromRow(row: ReceiptSetRow): ReceiptSetRecord {
-  if (row.profile !== PURCHASE_RECEIPT_SET_PROFILE) {
-    throw new JournalInvariantError("unsupported canonical Receipt set profile");
-  }
-  return {
-    purchaseId: row.purchase_id as PurchaseId,
-    profile: PURCHASE_RECEIPT_SET_PROFILE,
-    canonicalDigest: row.canonical_digest as Sha256Digest,
-    completedAtMs: row.completed_at_ms,
   };
 }
 
@@ -9869,11 +9672,10 @@ export function canonicalReceiptDigest(
   input: RecordReceiptInput
 ): Sha256Digest {
   return evidenceDigest(JSON.stringify({
-    profile: "urn:sompi:canonical-receipt:1",
+    profile: PURCHASE_RECEIPT_PROFILE,
     purchaseId,
     attempt,
     paymentIdentifier,
-    role: input.role,
     evidenceDigest: input.evidenceDigest,
     evidenceProfile: input.profile,
     issuer: input.issuer ?? null,
@@ -9885,26 +9687,7 @@ export function canonicalReceiptDigest(
   }));
 }
 
-export function canonicalReceiptSetDigest(
-  purchaseId: PurchaseId,
-  attempt: number,
-  paymentIdentifier: PaymentIdentifier,
-  receipts: readonly Pick<ReceiptRecord, "role" | "canonicalDigest">[]
-): Sha256Digest {
-  const entries = [...receipts]
-    .map((receipt) => ({ role: receipt.role, canonicalDigest: receipt.canonicalDigest }))
-    .sort((left, right) => left.role < right.role ? -1 : left.role > right.role ? 1 : 0);
-  return evidenceDigest(JSON.stringify({
-    profile: PURCHASE_RECEIPT_SET_PROFILE,
-    purchaseId,
-    attempt,
-    paymentIdentifier,
-    receipts: entries,
-  }));
-}
-
 function validateReceiptInput(input: RecordReceiptInput): void {
-  assertCode(input.role, "Receipt role");
   assertDigest(input.evidenceDigest, "Receipt evidence digest");
   assertSafeIdentity(input.profile, "Receipt profile", 200);
   if (input.issuer !== undefined) assertBoundedText(input.issuer, "Receipt issuer", 200);
@@ -9913,9 +9696,8 @@ function validateReceiptInput(input: RecordReceiptInput): void {
   assertDigest(input.authorizationEvidenceDigest, "Receipt authorization evidence digest");
   assertDigest(input.settlementEvidenceDigest, "Receipt Settlement evidence digest");
   assertDigest(input.fulfilmentDigest, "Receipt Fulfilment digest");
-  const requirement = PURCHASE_RECEIPT_REQUIREMENTS.find((candidate) => candidate.role === input.role);
-  if (!requirement || requirement.profile !== input.profile) {
-    throw new JournalInvariantError("Receipt role or canonical verification profile is unsupported");
+  if (input.profile !== PURCHASE_RECEIPT_PROFILE) {
+    throw new JournalInvariantError("canonical Receipt verification profile is unsupported");
   }
 }
 
@@ -10343,7 +10125,6 @@ function assertSameReceipt(
   canonicalDigest: Sha256Digest
 ): void {
   if (
-    existing.role !== input.role ||
     existing.canonicalDigest !== canonicalDigest ||
     existing.evidenceDigest !== input.evidenceDigest ||
     existing.profile !== input.profile ||
