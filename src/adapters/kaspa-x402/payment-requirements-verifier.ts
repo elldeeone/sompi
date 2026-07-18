@@ -8,6 +8,7 @@ import type { BatchPaymentRequirements } from "@kaspa-x402/core";
 
 import type { PaymentRequirementsArtifactVerifier } from "../../purchase/checkout-terms-module.js";
 import type { VerifiedArtifact } from "../../purchase/coordinator.js";
+import { checkoutTermsFactsDigest } from "../../purchase/contracts.js";
 import { evidenceDigest } from "../../purchase/identity.js";
 import type { CheckoutTerms, Sha256Digest } from "../../purchase/types.js";
 
@@ -62,18 +63,26 @@ implements PaymentRequirementsArtifactVerifier {
     if (parsed.paymentRequired.accepts.length !== 1) {
       throw new Error("PAYMENT-REQUIRED must contain exactly one authorized offer");
     }
+    if (
+      input.finalHop.requestFingerprint !== input.resourceFingerprint ||
+      parsed.paymentRequired.resource.url !== input.finalHop.url
+    ) {
+      throw new Error("PAYMENT-REQUIRED resource does not match the requested resource");
+    }
+    const terms = checkoutTerms(parsed, input.finalHop.url, input.resourceFingerprint, nowMs, digest);
     const executionPlan = parsed.accepted.scheme === "exact"
-      ? assertExactPaymentRequired(parsed, input.terms, input.finalHop.url, nowMs, digest)
+      ? assertExactPaymentRequired(parsed, terms, input.finalHop.url, nowMs, digest)
       : await this.assertBatchPaymentRequired(
           parsed.accepted as BatchPaymentRequirements,
           parsed.paymentRequired.resource.url,
-          input.terms,
+          terms,
           input.finalHop.url,
           nowMs,
           digest
         );
     return Object.freeze({
-      artifact: verifiedArtifact(bytes, input.terms.merchant.id, digest),
+      terms,
+      artifact: verifiedArtifact(bytes, terms, digest),
       executionPlan,
     });
   }
@@ -280,20 +289,64 @@ function atomic(value: unknown, label: string, positive: boolean): string {
 
 function verifiedArtifact(
   bytes: Uint8Array,
-  issuer: string,
+  terms: CheckoutTerms,
   digest: Sha256Digest
 ): VerifiedArtifact {
   return Object.freeze({
     bytes: Uint8Array.from(bytes),
     mediaType: "application/x402-payment-required",
     profile: KASPA_X402_PAYMENT_REQUIRED_PROFILE,
-    issuer,
+    issuer: terms.merchant.id,
     declaredDigest: digest,
     verification: Object.freeze({
       verifierId: "kaspa-x402:0.1.0-alpha.8:payment-required",
       profile: KASPA_X402_PAYMENT_REQUIRED_PROFILE,
-      detailDigest: digest,
+      detailDigest: checkoutTermsFactsDigest(terms),
     }),
+  });
+}
+
+function checkoutTerms(
+  parsed: ReturnType<typeof parsePaymentRequiredHeaderValue>,
+  finalUrl: string,
+  resourceFingerprint: Sha256Digest,
+  nowMs: number,
+  checkoutDigest: Sha256Digest,
+): CheckoutTerms {
+  const accepted = parsed.accepted;
+  const timeoutSeconds = accepted.maxTimeoutSeconds;
+  if (!Number.isSafeInteger(timeoutSeconds) || timeoutSeconds <= 0 || timeoutSeconds > 86_400) {
+    throw new Error("PAYMENT-REQUIRED timeout is invalid");
+  }
+  let expiresAtMs = nowMs + timeoutSeconds * 1_000;
+  if (!Number.isSafeInteger(expiresAtMs)) {
+    throw new Error("PAYMENT-REQUIRED expiry is invalid");
+  }
+  if (accepted.scheme === "exact" && accepted.extra.profile === "additive") {
+    const challengeExpiry = Date.parse(String(accepted.extra.challengeExpiresAt ?? ""));
+    if (!Number.isFinite(challengeExpiry)) {
+      throw new Error("additive PAYMENT-REQUIRED expiry is invalid");
+    }
+    expiresAtMs = Math.min(expiresAtMs, challengeExpiry);
+  }
+  if (expiresAtMs <= nowMs) {
+    throw new Error("PAYMENT-REQUIRED is expired");
+  }
+  const target = new URL(finalUrl);
+  const origin = target.origin;
+  return Object.freeze({
+    merchant: Object.freeze({
+      id: origin,
+      name: target.hostname,
+      origin,
+    }),
+    resourceFingerprint,
+    amountAtomic: accepted.amount,
+    asset: accepted.asset,
+    network: accepted.network,
+    payTo: accepted.payTo,
+    expiresAt: new Date(expiresAtMs).toISOString(),
+    checkoutDigest,
   });
 }
 

@@ -3,6 +3,7 @@ import type { Readable, Writable } from "node:stream";
 
 import type {
   AuthorityApprovalFacts,
+  AuthorityCheckoutEvidenceVerifier,
   AuthorityDenialCode,
 } from "../../authority/protocol.js";
 import type {
@@ -14,10 +15,7 @@ import {
   issueAp2AuthorityDecisionEvidence,
   type Ap2AuthorityDecisionChoice,
 } from "./authority-decision.js";
-import { verifyMerchantCheckout } from "./merchant-checkout.js";
 import {
-  SOMPI_MERCHANT_CHECKOUT_PROFILE,
-  type Ap2PublicKeyResolver,
   type Ap2SigningIdentity,
 } from "./types.js";
 
@@ -56,7 +54,7 @@ export interface AuthorityApprovalPrompt {
 
 export interface Ap2HumanAuthorityOptions {
   readonly signer: Ap2SigningIdentity;
-  readonly trust: Ap2PublicKeyResolver;
+  readonly checkoutEvidenceVerifier: AuthorityCheckoutEvidenceVerifier;
   readonly instrumentId: string;
   readonly prompt: AuthorityApprovalPrompt;
   readonly now?: () => number;
@@ -69,7 +67,7 @@ export class Ap2HumanAuthorityDecisionProvider implements AuthorityHumanDecision
   constructor(private readonly options: Ap2HumanAuthorityOptions) {
     if (
       options.signer?.role !== "authority" ||
-      !options.trust ||
+      !options.checkoutEvidenceVerifier ||
       !options.prompt ||
       typeof options.prompt.approve !== "function" ||
       typeof options.instrumentId !== "string" ||
@@ -84,17 +82,11 @@ export class Ap2HumanAuthorityDecisionProvider implements AuthorityHumanDecision
     context.signal.throwIfAborted();
     const nowMs = this.timestamp();
     const message = context.request.message;
-    const checkoutEvidence = message.checkoutEvidence;
-    const checkout = await verifyMerchantCheckout(checkoutEvidence.artifact, {
-      trust: this.options.trust,
-      expectedIssuer: checkoutEvidence.issuer,
-      expectedAudience: this.options.signer.issuer,
-      expectedPurchaseId: message.facts.purchaseId,
-      expectedResourceFingerprint: message.facts.resourceFingerprint,
-      nowSec: Math.floor(nowMs / 1_000),
-      clockSkewSec: 0,
+    await this.options.checkoutEvidenceVerifier.verify({
+      evidence: message.checkoutEvidence,
+      facts: message.facts,
+      nowMs,
     });
-    assertIndependentCheckout(checkoutEvidence, checkout, message.facts);
 
     const termsExpiryMs = Date.parse(message.facts.termsExpiresAt);
     if (termsExpiryMs <= nowMs || message.expiresAtMs <= nowMs) {
@@ -118,7 +110,6 @@ export class Ap2HumanAuthorityDecisionProvider implements AuthorityHumanDecision
       : { decision: "denied", denialCode: "user_denied" };
     const evidence = await issueAp2AuthorityDecisionEvidence({
       request: context.request,
-      checkout,
       choice,
       issuedAtSec: Math.floor(signingTimeMs / 1_000),
       expiresAtSec: Math.floor(Math.min(termsExpiryMs, message.expiresAtMs) / 1_000),
@@ -306,36 +297,6 @@ function displayFacts(
     }),
     recoveryRetry,
   });
-}
-
-function assertIndependentCheckout(
-  evidence: AuthorityHumanDecisionContext["request"]["message"]["checkoutEvidence"],
-  checkout: Awaited<ReturnType<typeof verifyMerchantCheckout>>,
-  facts: AuthorityApprovalFacts,
-): void {
-  const comparisons: ReadonlyArray<readonly [unknown, unknown]> = [
-    [checkout.artifact, evidence.artifact],
-    [checkout.checkoutDigest, evidence.digest],
-    [checkout.profile, evidence.profile],
-    [checkout.profile, SOMPI_MERCHANT_CHECKOUT_PROFILE],
-    [checkout.issuer, evidence.issuer],
-    [checkout.purchaseId, facts.purchaseId],
-    [checkout.terms.merchant.id, facts.merchantId],
-    [checkout.terms.merchant.name, facts.merchantName],
-    [checkout.terms.merchant.origin, facts.merchantOrigin],
-    [checkout.resourceUrl, facts.resourceUrl],
-    [checkout.method, facts.method],
-    [checkout.terms.resourceFingerprint, facts.resourceFingerprint],
-    [checkout.terms.amountAtomic, facts.amountAtomic],
-    [checkout.terms.asset, facts.asset],
-    [checkout.terms.network, facts.network],
-    [checkout.terms.payTo, facts.payTo],
-    [checkout.terms.expiresAt, facts.termsExpiresAt],
-    [checkout.additionalCostCeilingAtomic, facts.additionalCostCeilingAtomic],
-  ];
-  if (comparisons.some(([actual, wanted]) => actual !== wanted)) {
-    throw new Error("Merchant Checkout does not match the exact authenticated authority request");
-  }
 }
 
 function asciiJson(value: unknown): string {

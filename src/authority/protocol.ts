@@ -28,7 +28,7 @@ export const AUTHORITY_MAX_REPLAY_MESSAGE_ROWS = 4_096;
 export const AUTHORITY_MAX_REPLAY_TOKEN_ROWS = 8_192;
 export const AUTHORITY_MAX_REPLAY_RESULT_STORAGE_BYTES = 256 * 1024 * 1024;
 export const AUTHORITY_MAX_DECISION_EVIDENCE_BYTES = 256 * 1024;
-export const AUTHORITY_MAX_CHECKOUT_EVIDENCE_BYTES = 20 * 1024;
+export const AUTHORITY_MAX_CHECKOUT_EVIDENCE_BYTES = 32 * 1024;
 export const AUTHORITY_REPLAY_LEASE_MS = 15_000;
 export const AUTHORITY_EVIDENCE_VERIFICATION_REQUIREMENT =
   "independent-signature-and-exact-facts-required" as const;
@@ -82,13 +82,24 @@ export interface AuthorityApprovalFacts {
   readonly channelEpochDigest: Sha256Digest | null;
 }
 
-/** Exact Merchant-signed Checkout bytes needed for independent AP2 verification. */
+/** Exact merchant protocol bytes independently verified before human approval. */
 export interface AuthorityCheckoutEvidence {
   readonly artifact: string;
   readonly digest: Sha256Digest;
   readonly mediaType: string;
   readonly profile: string;
   readonly issuer: string;
+}
+
+export interface AuthorityCheckoutEvidenceVerificationInput {
+  readonly evidence: AuthorityCheckoutEvidence;
+  readonly facts: AuthorityApprovalFacts;
+  readonly nowMs: number;
+}
+
+/** Protocol seam used by Trusted Authority to verify merchant evidence itself. */
+export interface AuthorityCheckoutEvidenceVerifier {
+  verify(input: AuthorityCheckoutEvidenceVerificationInput): Promise<void>;
 }
 
 export interface AuthorityApprovalRequest {
@@ -949,10 +960,11 @@ function canonicalCheckoutEvidence(
   const profile = requireIdentity(requireString(record.profile), 160);
   const issuer = requireIdentity(requireString(record.issuer), 160);
   if (
-    mediaType !== "application/jwt" ||
+    mediaType !== "application/x402-payment-required" ||
     digest !== exactDigest(artifact) ||
     digest !== facts.checkoutDigest ||
-    issuer !== facts.merchantId
+    issuer !== facts.merchantId ||
+    issuer !== facts.merchantOrigin
   ) {
     throw new AuthorityProtocolError("malformed_message");
   }

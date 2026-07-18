@@ -4,7 +4,6 @@ import {
   Ap2AuthorityDecisionEvidenceVerifier,
   Ap2AuthorityModule,
   Ap2HttpCommerceAuthorizationModule,
-  Ap2MerchantCheckoutVerifier,
   loadAp2TrustStore,
 } from "../adapters/ap2/index.js";
 import { Ap2PaidResponseVerifier } from "../adapters/ap2/paid-response-verifier.js";
@@ -231,10 +230,6 @@ export function createSompiPurchaseRuntime(
     const batchRefund = new KaspaX402BatchRefundModule(journal, treasuryOperations);
     const checkout = new SompiCheckoutTermsModule({
       transport,
-      merchantCheckout: new Ap2MerchantCheckoutVerifier({
-        trust,
-        authorityAudience: config.authority.issuer,
-      }),
       paymentRequirements: new KaspaX402PaymentRequirementsVerifier({
         channelStore,
         claimFeeReserveAtomic: config.batchClaimFeeReserveAtomic,

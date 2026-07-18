@@ -35,18 +35,11 @@ test("exact PAYMENT-REQUIRED rejects multiple offers before authorization or sig
   await assert.rejects(new KaspaX402PaymentRequirementsVerifier().verify({
     artifact,
     expectedDigest: evidenceDigest(artifact),
-    terms: {
-      merchant: { id: "merchant:test", name: "Merchant", origin: "https://merchant.example" },
-      resourceFingerprint: evidenceDigest("resource"),
-      amountAtomic: "100",
-      asset: "KAS",
-      network: "kaspa:testnet-10",
-      payTo,
-      expiresAt: "2099-01-01T00:00:00.000Z",
-      checkoutDigest: evidenceDigest("checkout"),
-    },
-    additionalCostCeilingAtomic: "10",
-    finalHop: { url } as never,
+    resourceFingerprint: evidenceDigest("resource"),
+    finalHop: {
+      url,
+      requestFingerprint: evidenceDigest("resource"),
+    } as never,
     nowMs: 1_800_000_000_000,
   }), /exactly one/);
 });

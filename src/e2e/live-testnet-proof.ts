@@ -26,10 +26,8 @@ import {
   Ap2AuthorityDecisionEvidenceVerifier,
   Ap2AuthorityModule,
   Ap2HttpCommerceAuthorizationModule,
-  Ap2MerchantCheckoutVerifier,
   Ap2PaidResponseVerifier,
   LocalAp2TrustStore,
-  SOMPI_CHECKOUT_HEADER,
   decodeAp2CommerceAuthorizationPresentation,
   encodeAp2CommerceAuthorizationAcceptance,
   encodeStageAcceptance,
@@ -53,6 +51,7 @@ import {
   KaspaStagingRecoveryModule,
   KaspaTestnet10AddressCodec,
   KaspaX402ExactPaymentModule,
+  KaspaX402AuthorityEvidenceVerifier,
   KaspaX402TreasuryStagingAdapter,
   KaspaX402PaymentRequirementsVerifier,
   KaspaX402ServerStorePaymentResponseLookup,
@@ -596,10 +595,6 @@ function composeLiveCoordinator(input: {
   });
   const checkout = new SompiCheckoutTermsModule({
     transport: input.transport,
-    merchantCheckout: new Ap2MerchantCheckoutVerifier({
-      trust,
-      authorityAudience: input.authority.issuer,
-    }),
     paymentRequirements: new KaspaX402PaymentRequirementsVerifier(),
     now,
   });
@@ -855,10 +850,7 @@ export class LiveDemoPinnedTransport implements PinnedHttpTransport {
     if (!signature) {
       return response(
         offer.paymentRequired.status,
-        [
-          ...Object.entries(offer.paymentRequired.headers),
-          [SOMPI_CHECKOUT_HEADER, offer.checkout.artifact],
-        ],
+        Object.entries(offer.paymentRequired.headers),
         new Uint8Array()
       );
     }
@@ -1213,7 +1205,7 @@ export async function createLiveAuthority(
   const trust = fixedTrustStore();
   const humanDecision = new Ap2HumanAuthorityDecisionProvider({
     signer: AUTHORITY_SIGNER,
-    trust,
+    checkoutEvidenceVerifier: new KaspaX402AuthorityEvidenceVerifier(),
     instrumentId: FIXED_INSTRUMENT_ID,
     prompt: { approve: async () => true },
     now: Date.now,

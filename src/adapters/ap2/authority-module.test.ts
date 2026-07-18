@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
+import { encodePaymentRequiredHeader } from "@kaspa-x402/core";
 
 import { SqliteAuthorityDecisionStore } from "../../authority/decision-store.js";
 import { AuthorityDecisionEndpoint, AuthorityUnixDecisionClient, AuthorityUnixDecisionServer } from "../../authority/endpoint.js";
@@ -31,6 +32,7 @@ import {
 } from "./test-fixtures.js";
 import { Ap2AuthorityDecisionEvidenceVerifier } from "./authority-decision.js";
 import { Ap2AuthorityModule } from "./authority-module.js";
+import { KASPA_X402_PAYMENT_REQUIRED_PROFILE } from "../kaspa-x402/payment-requirements-verifier.js";
 import {
   Ap2HumanAuthorityDecisionProvider,
   type AuthorityApprovalDisplay,
@@ -39,7 +41,7 @@ import {
 
 const KEY = new Uint8Array(AUTHORITY_MAC_KEY_BYTES).fill(0x9d);
 
-test("separate Unix authority completes and independently verifies an AP2 approval", async () => {
+test("separate Unix authority completes and independently verifies a human-present approval", async () => {
   const fixture = await authoritySystem(true);
   try {
     const result = await fixture.module.request(fixture.input);
@@ -47,7 +49,7 @@ test("separate Unix authority completes and independently verifies an AP2 approv
     if (result.status !== "decision") return;
     assert.equal(result.decision.evidence.decision, "approved");
     assert.equal(result.decision.evidence.authorityId, FIXED_AUTHORITY_ISSUER);
-    assert.equal(result.supportingEvidence?.length, 2);
+    assert.equal(result.supportingEvidence, undefined);
     assert.deepEqual(fixture.displayed?.price, {
       amountAtomic: fixture.input.request.terms.amountAtomic,
       asset: "KAS",
@@ -150,7 +152,7 @@ test("batch approval displays and signs the channel epoch, charge ceiling, and a
   }
 });
 
-test("human denial is signed, verified, and carries no fabricated AP2 mandate", async () => {
+test("human denial is signed and independently verified", async () => {
   const fixture = await authoritySystem(false);
   try {
     const result = await fixture.module.request(fixture.input);
@@ -290,13 +292,41 @@ async function authoritySystem(
   const authentication = new StaticAuthenticationProvider();
   const nowMs = (FIXED_NOW + 5) * 1_000;
   const checkout = await fixedVerifiedCheckout();
+  const paymentRequired = Buffer.from(encodePaymentRequiredHeader({
+    x402Version: 2,
+    resource: { url: checkout.resourceUrl },
+    accepts: [{
+      scheme: "exact",
+      network: "kaspa:testnet-10",
+      amount: checkout.terms.amountAtomic,
+      asset: "KAS",
+      payTo: checkout.terms.payTo,
+      maxTimeoutSeconds: 60,
+      extra: {
+        binding: "kaspa-exact-v2",
+        profile: "standard-native",
+        finality: "accepted",
+        transactionEncoding: "kaspa-sdk-safe-json-v2.0.0",
+        payToScriptPublicKey: "000051",
+        assetKind: "native",
+        assetDecimals: 8,
+      },
+    }],
+  } as never), "ascii");
+  const checkoutDigest = evidenceDigest(paymentRequired);
+  const merchantOrigin = new URL(checkout.resourceUrl).origin;
   const request: PurchaseAuthorizationRequest = {
     purchaseId: checkout.purchaseId,
     resourceUrl: checkout.resourceUrl,
     method: checkout.method,
     requestMediaType: "",
     requestBodyDigest: evidenceDigest(new Uint8Array()),
-    terms: checkout.terms,
+    terms: {
+      ...checkout.terms,
+      merchant: { id: merchantOrigin, name: new URL(checkout.resourceUrl).hostname, origin: merchantOrigin },
+      checkoutDigest,
+      expiresAt: new Date(nowMs + 60_000).toISOString(),
+    },
     requestDigest: evidenceDigest("purchase-authorization-request"),
     nonceDigest: evidenceDigest("purchase-authorization-nonce"),
     additionalCostCeilingAtomic: checkout.additionalCostCeilingAtomic,
@@ -307,7 +337,7 @@ async function authoritySystem(
     settlementAssurance: "accepted",
     maximumAuthorizedChargeAtomic: checkout.terms.amountAtomic,
     createdAtMs: nowMs,
-    expiresAtMs: checkout.expiresAtSec * 1_000,
+    expiresAtMs: nowMs + 60_000,
     ...requestOverrides,
   };
   let displayed: AuthorityApprovalDisplay | undefined;
@@ -323,7 +353,7 @@ async function authoritySystem(
   const decisions = new SqliteAuthorityDecisionStore(path.join(directory, "authority-decisions.sqlite"));
   const human = new Ap2HumanAuthorityDecisionProvider({
     signer: AUTHORITY_SIGNER,
-    trust: fixedTrustStore(),
+    checkoutEvidenceVerifier: { verify: async () => undefined },
     instrumentId: FIXED_INSTRUMENT_ID,
     prompt,
     now: () => nowMs,
@@ -363,11 +393,11 @@ async function authoritySystem(
     input: {
       request,
       checkoutEvidence: {
-        bytes: Buffer.from(checkout.artifact, "ascii"),
-        digest: checkout.checkoutDigest,
-        mediaType: "application/jwt",
-        profile: checkout.profile,
-        issuer: checkout.issuer,
+        bytes: paymentRequired,
+        digest: checkoutDigest,
+        mediaType: "application/x402-payment-required",
+        profile: KASPA_X402_PAYMENT_REQUIRED_PROFILE,
+        issuer: merchantOrigin,
       },
     },
     get displayed() { return displayed; },

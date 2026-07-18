@@ -7,17 +7,7 @@ import {
 } from "@kaspa-x402/core";
 
 import {
-  Ap2MerchantCheckoutVerifier,
-  SOMPI_CHECKOUT_HEADER,
-} from "../adapters/ap2/merchant-checkout-verifier.js";
-import { issueMerchantCheckout } from "../adapters/ap2/merchant-checkout.js";
-import {
-  FIXED_AUDIENCE,
-  FIXED_MERCHANT_ISSUER,
   FIXED_NOW,
-  MERCHANT_SIGNER,
-  fixedMerchantClaims,
-  fixedTrustStore,
 } from "../adapters/ap2/test-fixtures.js";
 import { KaspaX402PaymentRequirementsVerifier } from "../adapters/kaspa-x402/payment-requirements-verifier.js";
 import type { PurchaseEgressSession } from "./coordinator.js";
@@ -29,39 +19,41 @@ const URL = "https://merchant.example/resource";
 const PURCHASE_ID = "pur_AAAAAAAAAAAAAAAAAAAAAA";
 const PAY_TO = "kaspatest:qpumuen7l8wthtz45p3ftn58pvrs9xlumvkuu2xet8egzkcklqtes5z8rkmpd";
 
-test("Sompi composes independent AP2 Checkout and Kaspa-x402 requirements verification", async () => {
+test("Sompi derives canonical Checkout Terms from generic Kaspa-x402 requirements", async () => {
   const fixture = await checkoutFixture();
   const discovered = await fixture.module.discover({
     purchaseId: PURCHASE_ID as never,
     resourceFingerprint: fixture.fingerprint,
     egress: fixture.egress,
   });
-  assert.equal(discovered.terms.merchant.id, FIXED_MERCHANT_ISSUER);
+  assert.equal(discovered.terms.merchant.id, "https://merchant.example");
+  assert.equal(discovered.terms.merchant.origin, "https://merchant.example");
   assert.equal(discovered.terms.amountAtomic, "20000000");
   assert.equal(discovered.terms.payTo, PAY_TO);
   assert.equal(discovered.checkoutEvidence.declaredDigest, discovered.terms.checkoutDigest);
   assert.equal(discovered.paymentRequirements.declaredDigest, evidenceDigest(fixture.paymentHeader));
+  assert.equal(discovered.checkoutEvidence.declaredDigest, discovered.paymentRequirements.declaredDigest);
 });
 
-test("Sompi checkout composition rejects duplicated headers and requirements substitution", async () => {
-  const duplicate = await checkoutFixture({ duplicateCheckout: true });
+test("Sompi checkout composition rejects duplicated requirements and resource substitution", async () => {
+  const duplicate = await checkoutFixture({ duplicatePaymentRequired: true });
   await assert.rejects(
     duplicate.module.discover({
       purchaseId: PURCHASE_ID as never,
       resourceFingerprint: duplicate.fingerprint,
       egress: duplicate.egress,
     }),
-    /exactly one SOMPI-CHECKOUT/
+    /exactly one PAYMENT-REQUIRED/
   );
 
-  const substituted = await checkoutFixture({ substituteAmount: true });
+  const substituted = await checkoutFixture({ substituteResource: true });
   await assert.rejects(
     substituted.module.discover({
       purchaseId: PURCHASE_ID as never,
       resourceFingerprint: substituted.fingerprint,
       egress: substituted.egress,
     }),
-    /does not match the signed Checkout Terms/
+    /resource does not match/
   );
 });
 
@@ -83,36 +75,14 @@ test("Checkout discovery aborts a handle-free pending transport at its deadline"
 });
 
 async function checkoutFixture(options: {
-  duplicateCheckout?: boolean;
-  substituteAmount?: boolean;
+  duplicatePaymentRequired?: boolean;
+  substituteResource?: boolean;
   stallTransport?: boolean;
   requestTimeoutMs?: number;
 } = {}) {
   const fingerprint = requestFingerprint({ url: URL, method: "GET" });
-  const paymentRequired = paymentRequiredWire(options.substituteAmount ? "20000001" : "20000000");
+  const paymentRequired = paymentRequiredWire("20000000", options.substituteResource);
   const paymentHeader = encodePaymentRequiredHeader(paymentRequired as never);
-  const claims = fixedMerchantClaims();
-  const checkoutArtifact = await issueMerchantCheckout({
-    ...claims,
-    iat: FIXED_NOW,
-    exp: FIXED_NOW + 300,
-    purchase_id: PURCHASE_ID,
-    merchant: {
-      ...claims.merchant,
-      id: FIXED_MERCHANT_ISSUER,
-      origin: FIXED_MERCHANT_ISSUER,
-      website: `${FIXED_MERCHANT_ISSUER}/store`,
-    },
-    resource: {
-      url: URL,
-      method: "GET",
-      request_fingerprint: fingerprint,
-    },
-    price: { ...claims.price, pay_to: PAY_TO },
-    payment_requirements: {
-      digest: evidenceDigest(paymentHeader),
-    },
-  }, MERCHANT_SIGNER, { nowSec: FIXED_NOW });
   const policy = new EgressPolicy({
     allowRules: [{ hostname: "merchant.example", ports: [443] }],
     resolver: async () => [{ address: "93.184.216.34", family: 4 }],
@@ -138,16 +108,11 @@ async function checkoutFixture(options: {
     ) => policy.createResponseGuard(hop, abort),
   });
   const headers: Array<readonly [string, string]> = [
-    [SOMPI_CHECKOUT_HEADER, checkoutArtifact],
     ["PAYMENT-REQUIRED", paymentHeader],
   ];
-  if (options.duplicateCheckout) headers.push([SOMPI_CHECKOUT_HEADER, checkoutArtifact]);
+  if (options.duplicatePaymentRequired) headers.push(["PAYMENT-REQUIRED", paymentHeader]);
   let transportAborted = false;
   const module = new SompiCheckoutTermsModule({
-    merchantCheckout: new Ap2MerchantCheckoutVerifier({
-      trust: fixedTrustStore(),
-      authorityAudience: FIXED_AUDIENCE,
-    }),
     paymentRequirements: new KaspaX402PaymentRequirementsVerifier(),
     now: () => (FIXED_NOW + 1) * 1_000,
     transport: {
@@ -177,10 +142,13 @@ async function checkoutFixture(options: {
   };
 }
 
-function paymentRequiredWire(amount: string) {
+function paymentRequiredWire(amount: string, substituteResource = false) {
   return {
     x402Version: 2,
-    resource: { url: URL, mimeType: "application/octet-stream" },
+    resource: {
+      url: substituteResource ? "https://merchant.example/other" : URL,
+      mimeType: "application/octet-stream",
+    },
     accepts: [{
       scheme: "exact",
       network: "kaspa:testnet-10",

@@ -40,6 +40,7 @@ export {
 } from "./wallet-batch-chain-source.js";
 export * from "./abandoned-staging-recovery.js";
 export * from "./chain-verifier.js";
+export * from "./authority-evidence-verifier.js";
 export * from "./payment-requirements-verifier.js";
 export * from "./exact-attempt-funding-bridge.js";
 export {

@@ -29,11 +29,10 @@ import {
 
 const KEY = new Uint8Array(AUTHORITY_MAC_KEY_BYTES).fill(0x7b);
 
-test("authority decision evidence signs exact local facts and encloses a verified AP2 mandate pair", async () => {
-  const { request, facts, checkout } = await verifiedRequest();
+test("authority decision evidence signs the exact canonical purchase facts", async () => {
+  const { request, facts } = await verifiedRequest();
   const evidence = await issueAp2AuthorityDecisionEvidence({
     request,
-    checkout,
     choice: { decision: "approved", instrumentId: FIXED_INSTRUMENT_ID },
     issuedAtSec: FIXED_NOW + 10,
   }, AUTHORITY_SIGNER);
@@ -43,17 +42,13 @@ test("authority decision evidence signs exact local facts and encloses a verifie
 
   assert.equal(detailed.evidence.decision, "approved");
   assert.equal(detailed.evidence.verificationProfile, SOMPI_AP2_AUTHORITY_DECISION_PROFILE);
-  assert.equal(detailed.checkout.artifact, checkout.artifact);
-  assert.equal(detailed.mandates?.checkout.content.checkout_jwt, checkout.artifact);
-  assert.equal(detailed.mandates?.payment.amountAtomic, facts.amountAtomic);
-  assert.equal(detailed.mandates?.payment.content.payment_instrument.id, FIXED_INSTRUMENT_ID);
+  assert.equal(detailed.instrumentId, FIXED_INSTRUMENT_ID);
 });
 
 test("authority denial remains independently signed without pretending to be an AP2 mandate", async () => {
-  const { request, facts, checkout } = await verifiedRequest();
+  const { request, facts } = await verifiedRequest();
   const evidence = await issueAp2AuthorityDecisionEvidence({
     request,
-    checkout,
     choice: { decision: "denied", denialCode: "user_denied" },
     issuedAtSec: FIXED_NOW + 10,
   }, AUTHORITY_SIGNER);
@@ -62,14 +57,13 @@ test("authority denial remains independently signed without pretending to be an 
   );
   assert.equal(detailed.evidence.decision, "denied");
   assert.equal(detailed.denialCode, "user_denied");
-  assert.equal(detailed.mandates, undefined);
+  assert.equal(detailed.instrumentId, undefined);
 });
 
 test("authority decision verification rejects byte tampering and fact substitution", async () => {
-  const { request, facts, checkout } = await verifiedRequest();
+  const { request, facts } = await verifiedRequest();
   const evidence = await issueAp2AuthorityDecisionEvidence({
     request,
-    checkout,
     choice: { decision: "approved", instrumentId: FIXED_INSTRUMENT_ID },
     issuedAtSec: FIXED_NOW + 10,
   }, AUTHORITY_SIGNER);
@@ -97,7 +91,7 @@ test("authority decision verification rejects byte tampering and fact substituti
 test("batch authority evidence rejects execution profile, channel epoch, ceiling, or finality substitution", async () => {
   const channelId = "ab".repeat(32);
   const channelEpochDigest = evidenceDigest("batch-channel-epoch");
-  const { request, facts, checkout } = await verifiedRequest({
+  const { request, facts } = await verifiedRequest({
     effectiveFinalityFloor: "depth-confirmed",
     executionPlanDigest: evidenceDigest("batch-execution-plan"),
     executionMechanism: "channel-voucher",
@@ -109,7 +103,6 @@ test("batch authority evidence rejects execution profile, channel epoch, ceiling
   });
   const evidence = await issueAp2AuthorityDecisionEvidence({
     request,
-    checkout,
     choice: { decision: "approved", instrumentId: FIXED_INSTRUMENT_ID },
     issuedAtSec: FIXED_NOW + 10,
   }, AUTHORITY_SIGNER);

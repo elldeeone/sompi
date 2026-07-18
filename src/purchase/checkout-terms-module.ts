@@ -15,55 +15,35 @@ export interface CheckoutArtifactHeader {
   readonly maximumBytes: number;
 }
 
-export interface VerifiedMerchantCheckoutProjection {
+export interface VerifiedPaymentRequirementsProjection {
   readonly terms: CheckoutTerms;
-  readonly checkoutEvidence: VerifiedArtifact;
-  /** Digest signed as an opaque binding; the AP2 adapter does not parse these bytes. */
-  readonly paymentRequirementsDigest: Sha256Digest;
-  readonly additionalCostCeilingAtomic: string;
+  readonly artifact: VerifiedArtifact;
+  readonly executionPlan: PurchaseExecutionPlan;
 }
 
-/** AP2-facing seam for one signed Merchant Checkout artifact. */
-export interface MerchantCheckoutArtifactVerifier {
-  readonly artifactHeader: CheckoutArtifactHeader;
-  verify(input: Readonly<{
-    artifact: Uint8Array;
-    expectedPurchaseId: PurchaseId;
-    expectedResourceFingerprint: Sha256Digest;
-    expectedPaymentRequirementsDigest: Sha256Digest;
-    nowMs: number;
-  }>): Promise<VerifiedMerchantCheckoutProjection>;
-}
-
-/** Payment-protocol-facing seam for opaque payment-requirements bytes. */
+/** Payment-protocol seam that verifies one offer into canonical Checkout Terms. */
 export interface PaymentRequirementsArtifactVerifier {
   readonly artifactHeader: CheckoutArtifactHeader;
   verify(input: Readonly<{
     artifact: Uint8Array;
     expectedDigest: Sha256Digest;
-    terms: CheckoutTerms;
-    additionalCostCeilingAtomic: string;
+    resourceFingerprint: Sha256Digest;
     finalHop: SafeTransportHop;
     nowMs: number;
-  }>): Promise<Readonly<{
-    artifact: VerifiedArtifact;
-    executionPlan: PurchaseExecutionPlan;
-  }>>;
+  }>): Promise<VerifiedPaymentRequirementsProjection>;
 }
 
 export interface SompiCheckoutTermsModuleOptions {
   readonly transport: PinnedHttpTransport;
-  readonly merchantCheckout: MerchantCheckoutArtifactVerifier;
   readonly paymentRequirements: PaymentRequirementsArtifactVerifier;
   readonly now?: () => number;
 }
 
 /**
- * Sompi-owned composition of two independent verification adapters.
+ * Sompi-owned generic x402 Checkout discovery.
  *
- * This module alone acquires and bounds HTTP headers. The AP2 verifier sees
- * opaque payment-requirements bytes only through their digest; the payment
- * verifier sees canonical Checkout Terms, never AP2 objects.
+ * This module alone acquires and bounds HTTP headers. The payment verifier
+ * projects canonical Checkout Terms and never requires Merchant AP2 support.
  */
 export class SompiCheckoutTermsModule implements CheckoutTermsModule {
   private readonly now: () => number;
@@ -71,19 +51,11 @@ export class SompiCheckoutTermsModule implements CheckoutTermsModule {
   constructor(private readonly options: SompiCheckoutTermsModuleOptions) {
     if (
       typeof options?.transport?.send !== "function" ||
-      typeof options?.merchantCheckout?.verify !== "function" ||
       typeof options?.paymentRequirements?.verify !== "function"
     ) {
       throw new Error("Checkout Terms composition is incomplete");
     }
-    assertHeaderDescriptor(options.merchantCheckout.artifactHeader);
     assertHeaderDescriptor(options.paymentRequirements.artifactHeader);
-    if (
-      options.merchantCheckout.artifactHeader.name.toLowerCase() ===
-      options.paymentRequirements.artifactHeader.name.toLowerCase()
-    ) {
-      throw new Error("Checkout artifact headers must be distinct");
-    }
     this.now = options.now ?? Date.now;
     readClock(this.now);
   }
@@ -93,33 +65,17 @@ export class SompiCheckoutTermsModule implements CheckoutTermsModule {
     if (response.status !== 402) {
       throw new Error("Merchant did not return payment-required Checkout Terms");
     }
-    const checkoutDescriptor = this.options.merchantCheckout.artifactHeader;
     const requirementsDescriptor = this.options.paymentRequirements.artifactHeader;
-    const checkoutBytes = strictCompactAscii(
-      requireOneHeader(response.headers, checkoutDescriptor.name),
-      checkoutDescriptor
-    );
     const paymentRequirements = strictCompactAscii(
       requireOneHeader(response.headers, requirementsDescriptor.name),
       requirementsDescriptor
     );
     const paymentRequirementsDigest = evidenceDigest(paymentRequirements);
     const nowMs = readClock(this.now);
-    const checkout = await this.options.merchantCheckout.verify({
-      artifact: checkoutBytes,
-      expectedPurchaseId: input.purchaseId,
-      expectedResourceFingerprint: input.resourceFingerprint,
-      expectedPaymentRequirementsDigest: paymentRequirementsDigest,
-      nowMs,
-    });
-    if (checkout.paymentRequirementsDigest !== paymentRequirementsDigest) {
-      throw new Error("Merchant Checkout did not bind the exact payment requirements");
-    }
     const verifiedRequirements = await this.options.paymentRequirements.verify({
       artifact: paymentRequirements,
       expectedDigest: paymentRequirementsDigest,
-      terms: checkout.terms,
-      additionalCostCeilingAtomic: checkout.additionalCostCeilingAtomic,
+      resourceFingerprint: input.resourceFingerprint,
       finalHop: response.finalHop,
       nowMs,
     });
@@ -130,8 +86,8 @@ export class SompiCheckoutTermsModule implements CheckoutTermsModule {
       throw new Error("payment-requirements verifier returned substituted evidence");
     }
     return certifyVerifiedCheckoutDiscovery({
-      terms: checkout.terms,
-      checkoutEvidence: checkout.checkoutEvidence,
+      terms: verifiedRequirements.terms,
+      checkoutEvidence: verifiedRequirements.artifact,
       paymentRequirements: verifiedRequirements.artifact,
       executionPlan: verifiedRequirements.executionPlan,
     });

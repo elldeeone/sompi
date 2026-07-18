@@ -25,17 +25,14 @@ import {
   canonicalMediaType,
   evidenceDigest,
 } from "../../purchase/identity.js";
-import type { Sha256Digest } from "../../purchase/types.js";
 import {
   Ap2AuthorityDecisionEvidenceVerifier,
   SOMPI_AP2_AUTHORITY_DECISION_PROFILE,
 } from "./authority-decision.js";
-import { AP2_HUMAN_PRESENT_PROFILE } from "./types.js";
 
 export const AP2_AUTHORITY_REQUEST_TTL_MS = 120_000;
-const CHECKOUT_MEDIA_TYPE = "application/jwt";
+const CHECKOUT_MEDIA_TYPE = "application/x402-payment-required";
 const DECISION_MEDIA_TYPE = "application/jwt";
-const MANDATE_MEDIA_TYPE = "application/sd-jwt";
 
 export interface AuthorityDecisionTransportResult {
   readonly responseWire: string;
@@ -251,65 +248,11 @@ function verification(
 }
 
 async function supportingAp2Evidence(
-  verifier: Ap2AuthorityDecisionEvidenceVerifier,
-  decision: VerifiedAuthorityDecision,
-  bytes: Uint8Array,
+  _verifier: Ap2AuthorityDecisionEvidenceVerifier,
+  _decision: VerifiedAuthorityDecision,
+  _bytes: Uint8Array,
 ): Promise<readonly VerifiedArtifact[]> {
-  const expected = {
-    decision: decision.evidence.decision,
-    authorityId: decision.evidence.authorityId,
-    purchaseId: decision.evidence.purchaseId,
-    checkoutDigest: decision.evidence.checkoutDigest,
-    requestDigest: decision.evidence.requestDigest,
-    factsDigest: decision.evidence.factsDigest,
-    nonceDigest: decision.evidence.nonceDigest,
-    evidenceDigest: decision.evidence.evidenceDigest,
-    facts: decision.facts,
-    checkoutEvidence: decision.checkoutEvidence,
-  } as const;
-  const detailed = await verifier.verifyDetailed({
-    evidence: Uint8Array.from(bytes),
-    expected,
-  });
-  if (!detailed.mandates) return Object.freeze([]);
-  const verifierId = decision.evidence.verifierId;
-  const artifacts = [
-    verifiedMandateArtifact(
-      detailed.mandates.checkout.artifact,
-      detailed.mandates.checkout.content,
-      detailed.issuer,
-      verifierId,
-    ),
-    verifiedMandateArtifact(
-      detailed.mandates.payment.artifact,
-      detailed.mandates.payment.content,
-      detailed.issuer,
-      verifierId,
-    ),
-  ];
-  return Object.freeze(artifacts);
-}
-
-function verifiedMandateArtifact(
-  artifact: string,
-  content: object,
-  issuer: string,
-  verifierId: string,
-): VerifiedArtifact {
-  const bytes = Buffer.from(artifact, "ascii");
-  const digest = evidenceDigest(bytes);
-  return Object.freeze({
-    bytes: Uint8Array.from(bytes),
-    mediaType: MANDATE_MEDIA_TYPE,
-    profile: AP2_HUMAN_PRESENT_PROFILE,
-    issuer,
-    declaredDigest: digest,
-    verification: Object.freeze({
-      verifierId,
-      profile: AP2_HUMAN_PRESENT_PROFILE,
-      detailDigest: evidenceDigest(JSON.stringify(content)) as Sha256Digest,
-    }),
-  });
+  return Object.freeze([]);
 }
 
 export { SOMPI_AP2_AUTHORITY_DECISION_PROFILE };

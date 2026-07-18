@@ -24,23 +24,16 @@ import {
   strictProtectedHeader,
   verificationClock,
 } from "./crypto.js";
-import {
-  issueHumanPresentMandates,
-  verifyHumanPresentMandates,
-} from "./mandates.js";
-import { verifyMerchantCheckout } from "./merchant-checkout.js";
-import {
-  AP2_HUMAN_PRESENT_PROFILE,
-  SOMPI_MERCHANT_CHECKOUT_PROFILE,
-  type Ap2PublicKeyResolver,
-  type Ap2SigningIdentity,
-  type Ap2VerificationClock,
-  type VerifiedHumanPresentMandates,
-  type VerifiedMerchantCheckout,
+import type {
+  Ap2PublicKeyResolver,
+  Ap2SigningIdentity,
+  Ap2VerificationClock,
 } from "./types.js";
 
 export const SOMPI_AP2_AUTHORITY_DECISION_PROFILE =
-  "urn:sompi:authority-decision:ap2-v0.2-human-present:1" as const;
+  "urn:sompi:authority-decision:ap2-derived-human-present:2" as const;
+export const SOMPI_AP2_AUTHORIZATION_PROFILE =
+  "urn:sompi:ap2-derived-human-present:1" as const;
 export const SOMPI_AP2_AUTHORITY_AUDIENCE =
   "urn:sompi:purchase-authority-verifier" as const;
 
@@ -54,7 +47,6 @@ export type Ap2AuthorityDecisionChoice =
 
 export interface IssueAp2AuthorityDecisionEvidenceOptions {
   readonly request: VerifiedAuthorityApprovalRequest;
-  readonly checkout: VerifiedMerchantCheckout;
   readonly choice: Ap2AuthorityDecisionChoice;
   readonly issuedAtSec: number;
   readonly expiresAtSec?: number;
@@ -66,7 +58,6 @@ export interface Ap2AuthorityDecisionEvidenceVerifierOptions extends Ap2Verifica
   readonly expectedAuthorityIssuer: string;
   readonly expectedAudience?: string;
   readonly expectedInstrumentId: string;
-  /** Production clock read at verification time; fixed nowSec remains for vectors. */
   readonly now?: () => number;
 }
 
@@ -74,36 +65,30 @@ export interface VerifiedAp2AuthorityDecisionEvidence {
   readonly evidence: IndependentlyVerifiedDecisionEvidence;
   readonly issuer: string;
   readonly kid: string;
-  readonly checkout: VerifiedMerchantCheckout;
-  readonly mandates?: VerifiedHumanPresentMandates;
+  readonly instrumentId?: string;
   readonly denialCode?: AuthorityDenialCode;
 }
 
-/**
- * Creates the local, authority-signed proof that joins the exact authenticated
- * Sompi request to the AP2 mandate pair. This artifact is evidence only; it is
- * never placed on the x402 wire and does not extend AP2 or x402.
- */
+/** Signs the exact Sompi authorization facts after human-present approval. */
 export async function issueAp2AuthorityDecisionEvidence(
   options: IssueAp2AuthorityDecisionEvidenceOptions,
   signer: Ap2SigningIdentity,
 ): Promise<Uint8Array> {
   assertSigningIdentity(signer, "authority");
   assertVerifiedRequest(options.request);
-  assertCheckoutMatchesFacts(options.checkout, options.request.message.facts);
-  assertCheckoutEvidence(options.checkout, options.request);
+  assertCheckoutEvidenceMetadata(options.request);
 
   const issuedAtSec = requireSafeEpoch(options.issuedAtSec, "authority decision iat");
   const requestExpirySec = Math.floor(options.request.message.expiresAtMs / 1_000);
-  const checkoutExpirySec = options.checkout.expiresAtSec;
-  const maximumExpiry = Math.min(requestExpirySec, checkoutExpirySec);
+  const termsExpirySec = Math.floor(Date.parse(options.request.message.facts.termsExpiresAt) / 1_000);
+  const maximumExpiry = Math.min(requestExpirySec, termsExpirySec);
   const expiresAtSec = requireSafeEpoch(
     options.expiresAtSec ?? maximumExpiry,
     "authority decision exp",
   );
   if (expiresAtSec <= issuedAtSec || expiresAtSec > maximumExpiry) {
     throw new Ap2AdapterError(
-      "authority decision lifetime exceeds the authenticated Checkout request",
+      "authority decision lifetime exceeds the authenticated purchase request",
       "time_invalid",
     );
   }
@@ -131,34 +116,21 @@ export async function issueAp2AuthorityDecisionEvidence(
 
   let payload: Record<string, unknown>;
   if (options.choice.decision === "approved") {
-    const instrumentId = requireBoundedText(
-      options.choice.instrumentId,
-      "authority payment instrument ID",
-      MAX_INSTRUMENT_ID_BYTES,
-    );
-    const mandates = await issueHumanPresentMandates({
-      checkout: options.checkout,
-      instrumentId,
-      issuedAtSec,
-      expiresAtSec,
-    }, signer);
     payload = {
       ...common,
       decision: "approved",
-      ap2_profile: AP2_HUMAN_PRESENT_PROFILE,
-      instrument_id: instrumentId,
-      checkout_mandate: mandates.checkoutMandate,
-      payment_mandate: mandates.paymentMandate,
+      ap2_profile: SOMPI_AP2_AUTHORIZATION_PROFILE,
+      instrument_id: requireBoundedText(
+        options.choice.instrumentId,
+        "authority payment instrument ID",
+        MAX_INSTRUMENT_ID_BYTES,
+      ),
     };
   } else {
     if (!DENIAL_CODES.has(options.choice.denialCode)) {
       throw new Ap2AdapterError("authority denial code is unsupported", "profile_mismatch");
     }
-    payload = {
-      ...common,
-      decision: "denied",
-      denial_code: options.choice.denialCode,
-    };
+    payload = { ...common, decision: "denied", denial_code: options.choice.denialCode };
   }
 
   const key = await importSigningKey(signer);
@@ -177,7 +149,7 @@ export async function issueAp2AuthorityDecisionEvidence(
   return Uint8Array.from(bytes);
 }
 
-/** Verifies both the local authority signature and the enclosed AP2 evidence. */
+/** Verifies the local authority signature and every canonical Purchase fact. */
 export class Ap2AuthorityDecisionEvidenceVerifier
 implements AuthorityDecisionEvidenceVerifier {
   constructor(private readonly options: Ap2AuthorityDecisionEvidenceVerifierOptions) {
@@ -191,15 +163,11 @@ implements AuthorityDecisionEvidenceVerifier {
     }
   }
 
-  async verify(
-    input: AuthorityDecisionEvidenceVerificationInput,
-  ): Promise<IndependentlyVerifiedDecisionEvidence> {
+  async verify(input: AuthorityDecisionEvidenceVerificationInput): Promise<IndependentlyVerifiedDecisionEvidence> {
     return (await this.verifyDetailed(input)).evidence;
   }
 
-  async verifyDetailed(
-    input: AuthorityDecisionEvidenceVerificationInput,
-  ): Promise<VerifiedAp2AuthorityDecisionEvidence> {
+  async verifyDetailed(input: AuthorityDecisionEvidenceVerificationInput): Promise<VerifiedAp2AuthorityDecisionEvidence> {
     const artifact = strictAsciiEvidence(input.evidence);
     const header = await strictProtectedHeader(artifact, ["alg", "kid", "typ"], "JWT");
     const { key } = await resolveTrustedPublicKey({
@@ -211,7 +179,7 @@ implements AuthorityDecisionEvidenceVerifier {
     const { nowSec, clockSkewSec } = verificationClock(
       this.options.now
         ? { ...this.options, nowSec: Math.floor(this.options.now() / 1_000) }
-        : this.options
+        : this.options,
     );
     let raw: Record<string, unknown>;
     try {
@@ -228,47 +196,10 @@ implements AuthorityDecisionEvidenceVerifier {
     }
 
     const payload = validateDecisionPayload(raw, input.expected);
-    const checkout = await verifyMerchantCheckout(input.expected.checkoutEvidence.artifact, {
-      trust: this.options.trust,
-      expectedIssuer: input.expected.checkoutEvidence.issuer,
-      expectedAudience: this.options.expectedAuthorityIssuer,
-      expectedPurchaseId: input.expected.purchaseId,
-      expectedResourceFingerprint: input.expected.facts.resourceFingerprint,
-      nowSec,
-      clockSkewSec,
-    });
-    assertCheckoutMatchesFacts(checkout, input.expected.facts);
-    if (
-      checkout.checkoutDigest !== input.expected.checkoutDigest ||
-      checkout.checkoutDigest !== input.expected.checkoutEvidence.digest ||
-      checkout.profile !== input.expected.checkoutEvidence.profile ||
-      checkout.profile !== SOMPI_MERCHANT_CHECKOUT_PROFILE
-    ) {
-      throw new Ap2AdapterError("authority decision uses different Checkout evidence", "binding_mismatch");
+    assertExpectedCheckoutEvidence(input.expected);
+    if (payload.decision === "approved" && payload.instrument_id !== this.options.expectedInstrumentId) {
+      throw new Ap2AdapterError("authority decision payment instrument was substituted", "binding_mismatch");
     }
-
-    let mandates: VerifiedHumanPresentMandates | undefined;
-    let denialCode: AuthorityDenialCode | undefined;
-    if (payload.decision === "approved") {
-      mandates = await verifyHumanPresentMandates({
-        checkoutMandate: payload.checkout_mandate,
-        paymentMandate: payload.payment_mandate,
-      }, {
-        trust: this.options.trust,
-        expectedAuthorityIssuer: this.options.expectedAuthorityIssuer,
-        checkout,
-        expectedInstrumentId: this.options.expectedInstrumentId,
-        nowSec,
-        clockSkewSec,
-      });
-      if (payload.instrument_id !== this.options.expectedInstrumentId) {
-        throw new Ap2AdapterError("authority decision payment instrument was substituted", "binding_mismatch");
-      }
-    } else {
-      denialCode = payload.denial_code;
-    }
-
-    const evidenceDigest = digestBytes(input.evidence);
     const evidence = Object.freeze({
       decision: payload.decision,
       authorityId: payload.authority_id,
@@ -277,17 +208,16 @@ implements AuthorityDecisionEvidenceVerifier {
       requestDigest: input.expected.requestDigest,
       factsDigest: input.expected.factsDigest,
       nonceDigest: input.expected.nonceDigest,
-      evidenceDigest,
+      evidenceDigest: digestBytes(input.evidence),
       verificationProfile: SOMPI_AP2_AUTHORITY_DECISION_PROFILE,
-      verifierId: `ap2-authority:${this.options.expectedAuthorityIssuer}:${header.kid}`,
+      verifierId: `ap2-derived-authority:${this.options.expectedAuthorityIssuer}:${header.kid}`,
     }) satisfies IndependentlyVerifiedDecisionEvidence;
     return Object.freeze({
       evidence,
       issuer: this.options.expectedAuthorityIssuer,
       kid: header.kid,
-      checkout,
-      ...(mandates ? { mandates } : {}),
-      ...(denialCode ? { denialCode } : {}),
+      ...(payload.decision === "approved" ? { instrumentId: payload.instrument_id } : {}),
+      ...(payload.decision === "denied" ? { denialCode: payload.denial_code } : {}),
     });
   }
 }
@@ -296,8 +226,6 @@ type ApprovedPayload = Readonly<{
   decision: "approved";
   authority_id: string;
   instrument_id: string;
-  checkout_mandate: string;
-  payment_mandate: string;
 }>;
 type DeniedPayload = Readonly<{
   decision: "denied";
@@ -316,7 +244,7 @@ function validateDecisionPayload(
     "nonce_digest", "facts", "decision",
   ];
   const required = decision === "approved"
-    ? [...common, "ap2_profile", "instrument_id", "checkout_mandate", "payment_mandate"]
+    ? [...common, "ap2_profile", "instrument_id"]
     : [...common, "denial_code"];
   assertExactKeys(candidate, required, required, "authority decision evidence");
   if (candidate.profile !== SOMPI_AP2_AUTHORITY_DECISION_PROFILE) {
@@ -339,15 +267,13 @@ function validateDecisionPayload(
   assertExactFacts(candidate.facts, expected.facts);
 
   if (decision === "approved") {
-    if (expected.decision !== "approved" || candidate.ap2_profile !== AP2_HUMAN_PRESENT_PROFILE) {
+    if (expected.decision !== "approved" || candidate.ap2_profile !== SOMPI_AP2_AUTHORIZATION_PROFILE) {
       throw new Ap2AdapterError("authority approval profile does not match", "binding_mismatch");
     }
     return Object.freeze({
       decision,
       authority_id: expected.authorityId,
       instrument_id: requireBoundedText(candidate.instrument_id, "authority payment instrument ID", MAX_INSTRUMENT_ID_BYTES),
-      checkout_mandate: requireBoundedText(candidate.checkout_mandate, "Checkout Mandate", MAX_EVIDENCE_TEXT_BYTES),
-      payment_mandate: requireBoundedText(candidate.payment_mandate, "Payment Mandate", MAX_EVIDENCE_TEXT_BYTES),
     });
   }
   if (decision !== "denied" || expected.decision !== "denied" || !DENIAL_CODES.has(candidate.denial_code as AuthorityDenialCode)) {
@@ -366,76 +292,28 @@ function assertVerifiedRequest(request: VerifiedAuthorityApprovalRequest): void 
   }
 }
 
-function assertCheckoutEvidence(
-  checkout: VerifiedMerchantCheckout,
-  request: VerifiedAuthorityApprovalRequest,
-): void {
-  const evidence = request.message.checkoutEvidence;
+function assertCheckoutEvidenceMetadata(request: VerifiedAuthorityApprovalRequest): void {
   if (
-    checkout.artifact !== evidence.artifact ||
-    checkout.checkoutDigest !== evidence.digest ||
-    checkout.profile !== evidence.profile ||
-    checkout.issuer !== evidence.issuer
+    request.message.checkoutEvidence.digest !== request.message.facts.checkoutDigest ||
+    request.message.checkoutEvidence.issuer !== request.message.facts.merchantId ||
+    request.message.checkoutEvidence.issuer !== request.message.facts.merchantOrigin
   ) {
-    throw new Ap2AdapterError("authority request Checkout evidence was substituted", "binding_mismatch");
+    throw new Ap2AdapterError("authority request merchant evidence was substituted", "binding_mismatch");
   }
 }
 
-function assertCheckoutMatchesFacts(
-  checkout: VerifiedMerchantCheckout,
-  facts: AuthorityApprovalFacts,
-): void {
-  const comparisons: ReadonlyArray<readonly [unknown, unknown]> = [
-    [checkout.purchaseId, facts.purchaseId],
-    [checkout.terms.merchant.id, facts.merchantId],
-    [checkout.terms.merchant.name, facts.merchantName],
-    [checkout.terms.merchant.origin, facts.merchantOrigin],
-    [checkout.resourceUrl, facts.resourceUrl],
-    [checkout.method, facts.method],
-    [checkout.terms.resourceFingerprint, facts.resourceFingerprint],
-    [checkout.terms.amountAtomic, facts.amountAtomic],
-    [checkout.terms.asset, facts.asset],
-    [checkout.terms.network, facts.network],
-    [checkout.terms.payTo, facts.payTo],
-    [checkout.terms.expiresAt, facts.termsExpiresAt],
-    [checkout.checkoutDigest, facts.checkoutDigest],
-    [checkout.additionalCostCeilingAtomic, facts.additionalCostCeilingAtomic],
-  ];
-  if (comparisons.some(([actual, wanted]) => actual !== wanted)) {
-    throw new Ap2AdapterError("Merchant Checkout does not match the exact authority facts", "binding_mismatch");
+function assertExpectedCheckoutEvidence(expected: AuthorityDecisionEvidenceVerificationInput["expected"]): void {
+  if (
+    expected.checkoutEvidence.digest !== expected.checkoutDigest ||
+    expected.checkoutEvidence.issuer !== expected.facts.merchantId ||
+    expected.checkoutEvidence.issuer !== expected.facts.merchantOrigin
+  ) {
+    throw new Ap2AdapterError("authority decision uses different merchant evidence", "binding_mismatch");
   }
 }
 
 function canonicalFacts(facts: AuthorityApprovalFacts): AuthorityApprovalFacts {
-  return Object.freeze({
-    purchaseId: facts.purchaseId,
-    merchantId: facts.merchantId,
-    merchantName: facts.merchantName,
-    merchantOrigin: facts.merchantOrigin,
-    resourceUrl: facts.resourceUrl,
-    method: facts.method,
-    requestMediaType: facts.requestMediaType,
-    requestBodyDigest: facts.requestBodyDigest,
-    resourceFingerprint: facts.resourceFingerprint,
-    amountAtomic: facts.amountAtomic,
-    asset: facts.asset,
-    network: facts.network,
-    payTo: facts.payTo,
-    termsExpiresAt: facts.termsExpiresAt,
-    checkoutDigest: facts.checkoutDigest,
-    purchaseAuthorizationRequestDigest: facts.purchaseAuthorizationRequestDigest,
-    purchaseAuthorizationNonceDigest: facts.purchaseAuthorizationNonceDigest,
-    purchaseAuthorizationFactsDigest: facts.purchaseAuthorizationFactsDigest,
-    additionalCostCeilingAtomic: facts.additionalCostCeilingAtomic,
-    effectiveFinalityFloor: facts.effectiveFinalityFloor,
-    executionPlanDigest: facts.executionPlanDigest,
-    executionMechanism: facts.executionMechanism,
-    executionProfile: facts.executionProfile,
-    settlementAssurance: facts.settlementAssurance,
-    maximumAuthorizedChargeAtomic: facts.maximumAuthorizedChargeAtomic,
-    channelId: facts.channelId,
-    channelEpochDigest: facts.channelEpochDigest,
-  });
+  return Object.freeze({ ...facts });
 }
 
 function assertExactFacts(candidate: unknown, expected: AuthorityApprovalFacts): void {

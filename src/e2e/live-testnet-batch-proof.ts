@@ -14,7 +14,6 @@ import type {
 
 import {
   Ap2HttpCommerceAuthorizationModule,
-  Ap2MerchantCheckoutVerifier,
   Ap2PaidResponseVerifier,
 } from "../adapters/ap2/index.js";
 import {
@@ -662,10 +661,6 @@ function composeBatchCoordinator(input: {
   });
   const checkout = new SompiCheckoutTermsModule({
     transport: input.transport,
-    merchantCheckout: new Ap2MerchantCheckoutVerifier({
-      trust,
-      authorityAudience: AUTHORITY_SIGNER.issuer,
-    }),
     paymentRequirements: new KaspaX402PaymentRequirementsVerifier({
       channelStore: input.channelStore,
       claimFeeReserveAtomic: BATCH_CLAIM_FEE_ATOMIC,
