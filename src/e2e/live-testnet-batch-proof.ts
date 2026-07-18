@@ -16,9 +16,9 @@ import {
   AUTHORITY_SIGNER,
   FIXED_AUTHORITY_ISSUER,
   FIXED_INSTRUMENT_ID,
-  MERCHANT_SIGNER,
+  FIXED_MERCHANT_ORIGIN,
   fixedTrustStore,
-} from "../adapters/ap2/test-fixtures.js";
+} from "../adapters/ap2/authority-test-fixtures.js";
 import {
   BatchRefundTreasuryOperationAdapter,
   JournalBatchChannelStore,
@@ -352,7 +352,7 @@ export async function runLiveBatchProof(
       },
     };
     const merchant = await DemoMerchantFixture.create({
-      merchantId: MERCHANT_SIGNER.issuer,
+      merchantId: FIXED_MERCHANT_ORIGIN,
       merchantName: "Sompi Live Batch Merchant",
       merchantOrigin: MERCHANT_ORIGIN,
       payTo: initialized.config.wallets.merchantAddress,
@@ -925,7 +925,7 @@ function batchIntent(runId: string, index: number): PurchaseIntent {
     requestKey: assertPurchaseRequestKey(`e2e:live-batch:${runId}:${index}`),
     resource: Object.freeze({ url: RESOURCE_URL, method: "GET" }),
     expectedMerchant: Object.freeze({
-      id: MERCHANT_SIGNER.issuer,
+      id: FIXED_MERCHANT_ORIGIN,
       origin: MERCHANT_ORIGIN,
     }),
   });

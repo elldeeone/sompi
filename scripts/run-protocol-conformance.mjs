@@ -5,16 +5,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const sourceMarker = path.join(root, "src/conformance/ap2-v0.2.ts");
+const sourceMarker = path.join(root, "src/conformance/kaspa-x402-alpha8.ts");
 if (fs.existsSync(sourceMarker)) {
   run("npm", ["run", "build"], { cwd: root });
 }
-const { SUPPORTED_PROTOCOL_PROFILES } = await import(
-  pathToFileURL(path.join(root, "dist/protocols/profiles.js")).href
-);
+const { SUPPORTED_PROTOCOL_PROFILES } = await import("../dist/protocols/profiles.js");
 const provenancePath = path.join(root, "test/conformance/provenance.json");
 const provenance = readJson(provenancePath);
 const ap2 = provenance.ap2;
@@ -28,18 +26,9 @@ const cacheRoot = path.resolve(
 );
 const checkout = path.join(cacheRoot, `ap2-${SUPPORTED_PROTOCOL_PROFILES.ap2.gitCommit}`);
 const kaspaX402Checkout = path.join(cacheRoot, `kaspa-x402-${kaspaX402.sourceCommit}`);
-const lockPath = path.join(root, ap2.conformanceLock.path);
-const environment = path.join(
-  cacheRoot,
-  `ap2-python-${ap2.conformanceLock.sha256.slice("sha256:".length, 18)}`
-);
 
 assertEqual(ap2.repository, expectedRepository, "AP2 repository provenance");
 assertEqual(ap2.commit, SUPPORTED_PROTOCOL_PROFILES.ap2.gitCommit, "AP2 commit provenance");
-assertFileDigest(lockPath, ap2.conformanceLock.sha256, "AP2 conformance lock");
-for (const [relativePath, digest] of Object.entries(ap2.localFixtureFiles)) {
-  assertFileDigest(path.join(root, relativePath), digest, `AP2 local fixture ${relativePath}`);
-}
 
 fs.mkdirSync(cacheRoot, { recursive: true, mode: 0o700 });
 assertPrivateOwnedDirectory(cacheRoot, "protocol conformance cache");
@@ -48,52 +37,15 @@ validateAp2Checkout(checkout);
 ensureExactKaspaX402Checkout(kaspaX402Checkout);
 validateKaspaX402Checkout(kaspaX402Checkout);
 verifyKaspaX402PublishedPackages(kaspaX402Checkout);
-syncPythonEnvironment(environment);
-
-const work = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-protocol-conformance-"));
-fs.chmodSync(work, 0o700);
-try {
-  const typescriptArtifacts = path.join(work, "typescript.json");
-  const pythonArtifacts = path.join(work, "python.json");
-  run(process.execPath, [
-    path.join(root, "dist/conformance/ap2-v0.2.js"),
-    "emit-typescript",
-    typescriptArtifacts,
-  ]);
-  run(path.join(environment, process.platform === "win32" ? "Scripts/python.exe" : "bin/python"), [
-    path.join(root, "test/conformance/ap2-v0.2/python_bridge.py"),
-    "--fixture",
-    path.join(root, "test/conformance/ap2-v0.2/fixture.json"),
-    "--input",
-    typescriptArtifacts,
-    "--output",
-    pythonArtifacts,
-  ], {
-    env: {
-      ...process.env,
-      PYTHONPATH: path.join(checkout, "code/sdk/python"),
-      PYTHONDONTWRITEBYTECODE: "1",
-      SOMPI_AP2_SOURCE_ROOT: checkout,
-    },
-  });
-  run(process.execPath, [
-    path.join(root, "dist/conformance/ap2-v0.2.js"),
-    "verify-python",
-    typescriptArtifacts,
-    pythonArtifacts,
-  ]);
-  run(process.execPath, [
-    "--test",
-    path.join(root, "dist/conformance/kaspa-x402-alpha8.js"),
-  ], { cwd: root });
-} finally {
-  fs.rmSync(work, { recursive: true, force: true });
-}
+run(process.execPath, [
+  "--test",
+  path.join(root, "dist/conformance/kaspa-x402-alpha8.js"),
+], { cwd: root });
 
 process.stdout.write(
   [
     "Protocol conformance passed.",
-    `AP2: v0.2.0 @ ${ap2.commit} (Python 3.12, closed Human Present round trip and receipts).`,
+    `AP2: v0.2.0 @ ${ap2.commit} (source and schema provenance watch only).`,
     `Kaspa-x402: 0.1.0-alpha.8 @ ${provenance.kaspaX402.sourceCommit} (published packages reproduced byte-for-byte; offline exact HTTP and full-consensus profile vectors).`,
     "Claim boundary: no live testnet, general AP2, standardized native-KAS AP2, or mainnet claim.",
     "",
@@ -101,7 +53,10 @@ process.stdout.write(
 );
 
 function ensureExactAp2Checkout(directory) {
-  if (fs.existsSync(directory)) return;
+  if (fs.existsSync(directory)) {
+    run("git", ["-C", directory, "sparse-checkout", "set", "code/sdk/schemas/ap2"]);
+    return;
+  }
   if (offline) {
     throw new Error("offline conformance requested but the exact AP2 checkout is not cached");
   }
@@ -111,7 +66,7 @@ function ensureExactAp2Checkout(directory) {
     run("git", ["init", "--quiet", temporary]);
     run("git", ["-C", temporary, "remote", "add", "origin", expectedRepository]);
     run("git", ["-C", temporary, "sparse-checkout", "init", "--cone"]);
-    run("git", ["-C", temporary, "sparse-checkout", "set", "code/sdk/python"]);
+    run("git", ["-C", temporary, "sparse-checkout", "set", "code/sdk/schemas/ap2"]);
     run("git", [
       "-C",
       temporary,
@@ -152,6 +107,12 @@ function validateAp2Checkout(directory) {
   );
   for (const [relativePath, digest] of Object.entries(ap2.upstreamFiles)) {
     assertFileDigest(path.join(directory, relativePath), digest, `AP2 ${relativePath}`);
+  }
+  for (const [relativePath, digest] of Object.entries(ap2.schemaFiles)) {
+    const upstream = path.join(directory, "code/sdk/schemas/ap2", relativePath);
+    const vendored = path.join(root, "vendor/ap2-v0.2-schemas", relativePath);
+    assertFileDigest(upstream, digest, `AP2 upstream schema ${relativePath}`);
+    assertFileDigest(vendored, digest, `AP2 vendored schema ${relativePath}`);
   }
 }
 
@@ -254,24 +215,6 @@ function packageFiles(directory) {
   };
   visit(directory, "");
   return files.sort();
-}
-
-function syncPythonEnvironment(directory) {
-  const args = [
-    "sync",
-    "--frozen",
-    "--project",
-    path.dirname(lockPath),
-    "--python",
-    "3.12",
-    "--link-mode",
-    "copy",
-  ];
-  if (offline) args.push("--offline");
-  run("uv", args, {
-    cwd: root,
-    env: { ...process.env, UV_PROJECT_ENVIRONMENT: directory },
-  });
 }
 
 function readJson(filePath) {

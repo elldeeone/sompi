@@ -3,30 +3,17 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { authorityClientRuntimePaths } from "../authority/runtime.js";
-import {
-  humanPresentProofMerchantTrustEntries,
-  runHumanPresentAuthorityProof,
-} from "./human-present-authority-proof.js";
+import { runHumanPresentAuthorityProof } from "./human-present-authority-proof.js";
 import { writeLocalTestnetProofReport } from "./local-testnet-proof.js";
 
-const command = process.argv[2];
-if (process.argv.length !== 3 || (command !== "public-trust" && command !== "run")) {
-  process.stderr.write(
-    "usage: human-present-authority-proof-main.js public-trust|run\n"
-  );
+if (process.argv.length !== 3 || process.argv[2] !== "run") {
+  process.stderr.write("usage: human-present-authority-proof-main.js run\n");
   process.exit(2);
 }
-
-if (command === "public-trust") {
-  process.stdout.write(
-    `${JSON.stringify(humanPresentProofMerchantTrustEntries(), null, 2)}\n`
-  );
-} else {
-  void run().catch(() => {
-    process.stderr.write("human-present authority proof failed safely\n");
-    process.exitCode = 1;
-  });
-}
+void run().catch(() => {
+  process.stderr.write("human-present authority proof failed safely\n");
+  process.exitCode = 1;
+});
 
 async function run(): Promise<void> {
   const directory = requiredAbsolutePath(

@@ -5,49 +5,27 @@
     "repository": "https://github.com/google-agentic-commerce/AP2.git",
     "release": "v0.2.0",
     "commit": "b4587ac1d055888a73b4b21750973cffba961793",
-    "python": "3.12",
     "upstreamFiles": {
       "pyproject.toml": "sha256:78656cfd88b01d10c693a7fdffdf9d789dc4ddfbb57c208b583e13986fd44b63",
       "uv.lock": "sha256:0061f2deb92977a371cc9bf40595f17eb612f9c461089375f05e63997db543b0"
     },
-    "conformanceLock": {
-      "path": "test/conformance/ap2-v0.2/python/uv.lock",
-      "sha256": "sha256:20cffba14dc1e4bdfda9de92b2d15268ccd04ba5346f758fa87ed36ee00a616d",
-      "registry": "https://pypi.org/simple"
+    "schemaFiles": {
+      "checkout_mandate.json": "sha256:10c0341edfeaa9084d3704ef8e94869de20499c8e357068d65f8d622bf79483a",
+      "payment_mandate.json": "sha256:94c4af64ed29825cb956705ae763d42f3c04d22feb60b8d838dae2bb1eea1fb1",
+      "checkout_receipt.json": "sha256:941198a1fc1916d04813a8b8ccba4b407471305a6eb1b5338b1f67b6299764ea",
+      "payment_receipt.json": "sha256:e7d52266c407d32bcc49959f91e8ddb73024a1803bef75b7bd368fb93849ba88",
+      "types/amount.json": "sha256:15271efa8064539b8ded7c69f213ed7a1e64f8d9634b405ce926c2dcbbc41c0f",
+      "types/merchant.json": "sha256:13457334d8577230a1cce5265971cfc02f68f5d4e97f74bd2e78128105d3ab31",
+      "types/payment_instrument.json": "sha256:b3bcea7a7b5bbf2b0aa781135ac3b6907280822aa84797161c2d3d104d0cbe8c",
+      "types/pisp.json": "sha256:60a5c8c09236f5d1e84a25bff4fd4cff05fb3fa8e3648cbab483322f27388630",
+      "types/receipt_status.json": "sha256:ad51c1c20be72e286f4ff6fe2819145dcec7e5e3e0f6dc7870fcf748c06c1da0"
     },
-    "localFixtureFiles": {
-      "test/conformance/ap2-v0.2/fixture.json": "sha256:ff1ff34fc5e5008bda217744273f44138b3d47d53c737563ae9a3f80dc48bc31",
-      "test/conformance/ap2-v0.2/python_bridge.py": "sha256:84a9e8e19e349e1c9291999915478522c9098c6756a25714a725b3ececc62bbb",
-      "test/conformance/ap2-v0.2/python/pyproject.toml": "sha256:72d539bce57fc129e8ea789ca441ca37ee7116cf0cd02e6012c124723374a8ec"
-    },
-    "pythonLockedPackages": [
-      "annotated-types==0.7.0",
-      "cffi==2.0.0",
-      "colorama==0.4.6",
-      "cryptography==46.0.5",
-      "iniconfig==2.3.0",
-      "jwcrypto==1.5.6",
-      "packaging==26.2",
-      "pluggy==1.6.0",
-      "py==1.11.0",
-      "pycparser==3.0",
-      "pydantic==2.12.5",
-      "pydantic-core==2.41.5",
-      "pygments==2.20.0",
-      "pytest==9.0.2",
-      "pyyaml==6.0.3",
-      "sd-jwt==0.10.4",
-      "typing-extensions==4.15.0",
-      "typing-inspection==0.4.2"
-    ],
-    "fixture": "test/conformance/ap2-v0.2/fixture.json",
     "checks": [
-      "Python-issued closed Checkout and Payment Mandates verify in Sompi TypeScript",
-      "Sompi TypeScript-issued closed Checkout and Payment Mandates verify in pinned Python",
-      "Sompi Checkout and Payment Receipts verify in pinned Python",
-      "both Receipt references equal the pinned Python issuer-JWT hash"
+      "the exact AP2 release and source commit remain pinned",
+      "vendored AP2 schema bytes equal the exact upstream source bytes",
+      "Sompi runtime exports no bilateral Merchant mandate or receipt implementation"
     ],
-    "claimBoundary": "AP2 v0.2 Human Present direct profile with Sompi's experimental native-KAS instrument; not general AP2 or standardized KAS interoperability"
+    "claimBoundary": "source and schema provenance watch only; Sompi's generic x402 path uses local AP2-derived human-present authorization evidence and does not claim AP2 interoperability"
   },
   "kaspaX402": {
     "repository": "https://github.com/elldeeone/kaspa-x402.git",

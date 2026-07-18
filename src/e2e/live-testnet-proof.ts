@@ -29,9 +29,9 @@ import {
   AUTHORITY_SIGNER,
   FIXED_AUTHORITY_ISSUER,
   FIXED_INSTRUMENT_ID,
-  MERCHANT_SIGNER,
+  FIXED_MERCHANT_ORIGIN,
   fixedTrustStore,
-} from "../adapters/ap2/test-fixtures.js";
+} from "../adapters/ap2/authority-test-fixtures.js";
 import { Ap2HumanAuthorityDecisionProvider } from "../adapters/ap2/human-authority.js";
 import {
   AbandonedStagingRecovery,
@@ -1004,7 +1004,7 @@ export async function createLiveMerchant(
     ? initialized.config.additiveHead.address
     : initialized.config.wallets.merchantAddress;
   return DemoMerchantFixture.create({
-    merchantId: MERCHANT_SIGNER.issuer,
+    merchantId: FIXED_MERCHANT_ORIGIN,
     merchantName: "Sompi Live Testnet-10 Merchant",
     merchantOrigin: MERCHANT_ORIGIN,
     payTo,
@@ -1632,7 +1632,7 @@ function purchaseIntent(config: LiveProofConfig, exactProfile: LiveExactProfile)
     requestKey: liveRequestKey(config, exactProfile),
     resource: Object.freeze({ url: RESOURCE_URL, method: "GET" }),
     expectedMerchant: Object.freeze({
-      id: MERCHANT_SIGNER.issuer,
+      id: FIXED_MERCHANT_ORIGIN,
       origin: MERCHANT_ORIGIN,
     }),
   });

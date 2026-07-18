@@ -177,8 +177,6 @@ common_mcp_environment=(
   "SOMPI_AUTHORITY_ISSUER=urn:sompi:authority:container-proof"
   "SOMPI_AUTHORITY_IPC_KEY_ID=authority-ipc-key-container-proof"
   "SOMPI_AUTHORITY_INSTRUMENT_ID=kaspa:testnet-10:vault-treasury"
-  "SOMPI_AP2_MERCHANT_RECEIPT_ISSUER=urn:sompi:merchant-receipt:container-proof"
-  "SOMPI_AP2_PAYMENT_RECEIPT_ISSUER=urn:sompi:payment-receipt:container-proof"
   'SOMPI_EGRESS_ALLOW=[{"hostname":"merchant.example","ports":[443]}]'
 )
 

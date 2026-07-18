@@ -7,8 +7,7 @@ import test from "node:test";
 import {
   AUTHORITY_SIGNER,
   FIXED_AUTHORITY_ISSUER,
-  MERCHANT_SIGNER,
-} from "./test-fixtures.js";
+} from "./authority-test-fixtures.js";
 import { loadAp2TrustStore, loadAuthoritySigningIdentity } from "./signing-key-file.js";
 
 test("secure AP2 signing and trust files load without widening private-key access", () => {
@@ -18,10 +17,8 @@ test("secure AP2 signing and trust files load without widening private-key acces
   const trustPath = path.join(directory, "trust.json");
   const { kty, crv, x, y, d } = AUTHORITY_SIGNER.privateJwk;
   write(privatePath, { kty, crv, x, y, d });
-  const { d: _merchantPrivate, ...merchantPublic } = MERCHANT_SIGNER.privateJwk;
   const { d: _authorityPrivate, ...authorityPublic } = AUTHORITY_SIGNER.privateJwk;
   write(trustPath, [
-    { role: "merchant-checkout", issuer: MERCHANT_SIGNER.issuer, kid: MERCHANT_SIGNER.kid, publicJwk: minimal(merchantPublic) },
     { role: "authority", issuer: AUTHORITY_SIGNER.issuer, kid: AUTHORITY_SIGNER.kid, publicJwk: minimal(authorityPublic) },
   ]);
   try {
@@ -29,7 +26,7 @@ test("secure AP2 signing and trust files load without widening private-key acces
     assert.equal(identity.privateJwk.d, d);
     const trust = loadAp2TrustStore(trustPath);
     assert(trust.resolve("authority", AUTHORITY_SIGNER.issuer, AUTHORITY_SIGNER.kid));
-    assert.equal(trust.resolve("merchant-checkout", "https://attacker.example", MERCHANT_SIGNER.kid), undefined);
+    assert.equal(trust.resolve("authority", "https://attacker.example", AUTHORITY_SIGNER.kid), undefined);
 
     fs.chmodSync(privatePath, 0o640);
     assert.throws(() => loadAuthoritySigningIdentity(privatePath, FIXED_AUTHORITY_ISSUER, AUTHORITY_SIGNER.kid), /ownership or mode/);

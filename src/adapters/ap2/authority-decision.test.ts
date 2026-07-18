@@ -18,9 +18,9 @@ import {
   FIXED_AUTHORITY_ISSUER,
   FIXED_INSTRUMENT_ID,
   FIXED_NOW,
+  fixedGenericCheckout,
   fixedTrustStore,
-  fixedVerifiedCheckout,
-} from "./test-fixtures.js";
+} from "./authority-test-fixtures.js";
 import {
   Ap2AuthorityDecisionEvidenceVerifier,
   SOMPI_AP2_AUTHORITY_DECISION_PROFILE,
@@ -137,7 +137,7 @@ async function verifiedRequest(
   request: ReturnType<typeof parseAuthorityApprovalRequest>;
   facts: AuthorityApprovalFacts;
 }> {
-  const checkout = await fixedVerifiedCheckout();
+  const checkout = fixedGenericCheckout();
   const checkoutArtifact = "generic-x402-payment-required";
   const checkoutDigest = evidenceDigest(checkoutArtifact);
   const facts: AuthorityApprovalFacts = {
@@ -175,7 +175,7 @@ async function verifiedRequest(
     requestId: createAuthorityRequestId(new Uint8Array(16).fill(1)),
     nonce: createAuthorityNonce(new Uint8Array(32).fill(2)),
     issuedAtMs: (FIXED_NOW + 1) * 1_000,
-    expiresAtMs: checkout.expiresAtSec * 1_000,
+    expiresAtMs: Date.parse(checkout.terms.expiresAt),
     facts,
     checkoutEvidence: {
       artifact: checkoutArtifact,

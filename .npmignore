@@ -1,5 +1,7 @@
 dist/**/*.test.js
-dist/e2e/live-testnet-*.js
+dist/e2e/**
+dist/e2e-main.js
+dist/adapters/ap2/authority-test-fixtures.js
 src/
 integrations/**/__pycache__/
 integrations/**/*.pyc

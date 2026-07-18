@@ -87,10 +87,7 @@ function privateJwk(value: unknown): P256PrivateJwk {
 
 function trustEntry(value: unknown, index: number): Ap2PublicTrustEntry {
   const record = exactRecord(value, ["role", "issuer", "kid", "publicJwk"], `trust entry ${index}`);
-  const roles: readonly Ap2SigningRole[] = [
-    "merchant-checkout", "authority", "merchant-receipt", "payment-receipt",
-  ];
-  if (!roles.includes(record.role as Ap2SigningRole) || !ID.test(String(record.issuer)) || !ID.test(String(record.kid))) {
+  if (record.role !== "authority" || !ID.test(String(record.issuer)) || !ID.test(String(record.kid))) {
     throw new Error(`AP2 trust entry ${index} identity is invalid`);
   }
   const jwkRecord = exactRecord(record.publicJwk, ["kty", "crv", "x", "y"], `trust entry ${index} JWK`);

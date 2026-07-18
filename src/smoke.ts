@@ -98,10 +98,11 @@ async function main(): Promise<void> {
   );
 
   check(
-    "protocol profile is AP2 v0.2 human-present plus Kaspa-x402 alpha.8 exact",
+    "protocol profile is AP2-derived human authorization plus Kaspa-x402 alpha.8 exact",
     SUPPORTED_PROTOCOL_PROFILES.ap2.release === "v0.2.0" &&
       SUPPORTED_PROTOCOL_PROFILES.ap2.mode === "human-present" &&
-      SUPPORTED_PROTOCOL_PROFILES.ap2.nativeKasStrictlyStandardized === false &&
+      SUPPORTED_PROTOCOL_PROFILES.ap2.interoperability === "none" &&
+      SUPPORTED_PROTOCOL_PROFILES.ap2.sourceWatchOnly === true &&
       SUPPORTED_PROTOCOL_PROFILES.x402.version === 2 &&
       SUPPORTED_PROTOCOL_PROFILES.x402.scheme === "exact" &&
       SUPPORTED_PROTOCOL_PROFILES.x402.network === "kaspa:testnet-10" &&

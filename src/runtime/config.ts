@@ -641,8 +641,6 @@ function rejectRemovedOperatorEnvironment(env: NodeJS.ProcessEnv): void {
     "SOMPI_EGRESS_PROTOCOLS",
     "SOMPI_PURCHASE_ADDITIONAL_COST_CEILING",
     "SOMPI_TREASURY_OPERATION_FEE_CEILING",
-    "SOMPI_AP2_MERCHANT_RECEIPT_ISSUER",
-    "SOMPI_AP2_PAYMENT_RECEIPT_ISSUER",
   ];
   const configured = removed.filter((name) => env[name] !== undefined);
   if (configured.length > 0) {

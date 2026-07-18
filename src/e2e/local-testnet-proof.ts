@@ -22,9 +22,9 @@ import {
   AUTHORITY_SIGNER,
   FIXED_AUTHORITY_ISSUER,
   FIXED_INSTRUMENT_ID,
-  MERCHANT_SIGNER,
+  FIXED_MERCHANT_ORIGIN,
   fixedTrustStore,
-} from "../adapters/ap2/test-fixtures.js";
+} from "../adapters/ap2/authority-test-fixtures.js";
 import {
   JournalBatchChannelStore,
   SecureBatchChannelSigner,
@@ -252,7 +252,7 @@ export async function runLocalTestnetProof(
     resources.push(() => merchantStore.close());
     const addressCodec = new KaspaTestnet10AddressCodec();
     const merchant = await DemoMerchantFixture.create({
-      merchantId: MERCHANT_SIGNER.issuer,
+      merchantId: FIXED_MERCHANT_ORIGIN,
       merchantName: "Sompi E2E Merchant",
       merchantOrigin: MERCHANT_ORIGIN,
       payTo: PAY_TO,
@@ -926,7 +926,7 @@ function purchaseIntent(key: string): PurchaseIntent {
     requestKey: assertPurchaseRequestKey(key),
     resource: { url: RESOURCE_URL, method: "GET" },
     expectedMerchant: {
-      id: MERCHANT_SIGNER.issuer,
+      id: FIXED_MERCHANT_ORIGIN,
       origin: MERCHANT_ORIGIN,
     },
   };

@@ -364,7 +364,7 @@ async function withStagingJournal(
     });
     const paymentRequirements = paymentRequiredBytes(resource.url);
     const checkoutEvidence = storeVerifiedEvidence(journal, purchaseId, {
-      bytes: Buffer.from("merchant-checkout", "utf8"),
+      bytes: Buffer.from("generic-x402-offer", "utf8"),
       kind: "checkout-terms",
       profile: "test-checkout-profile",
       issuer: "merchant:test",

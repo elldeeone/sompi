@@ -53,8 +53,6 @@ test("removed operator environment fails before creating wallet or journal state
     "SOMPI_EGRESS_PROTOCOLS",
     "SOMPI_PURCHASE_ADDITIONAL_COST_CEILING",
     "SOMPI_TREASURY_OPERATION_FEE_CEILING",
-    "SOMPI_AP2_MERCHANT_RECEIPT_ISSUER",
-    "SOMPI_AP2_PAYMENT_RECEIPT_ISSUER",
   ];
   for (const name of removed) {
     const fixture = runtimeFixture();

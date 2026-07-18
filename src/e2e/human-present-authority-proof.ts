@@ -6,16 +6,6 @@ import {
   Ap2AuthorityModule,
   loadAp2TrustStore,
 } from "../adapters/ap2/index.js";
-import {
-  MERCHANT_RECEIPT_SIGNER,
-  MERCHANT_SIGNER,
-  PAYMENT_RECEIPT_SIGNER,
-} from "../adapters/ap2/test-fixtures.js";
-import type {
-  Ap2PublicTrustEntry,
-  Ap2SigningIdentity,
-  P256PublicJwk,
-} from "../adapters/ap2/types.js";
 import { AuthorityUnixDecisionClient } from "../authority/endpoint.js";
 import { AuthorityMacKeyFile } from "../authority/key-provider.js";
 import { SqliteAuthorityReplayStore } from "../authority/replay-store.js";
@@ -42,19 +32,6 @@ export interface HumanPresentAuthorityProofOptions {
     readonly instrumentId: string;
   }>;
   readonly now?: () => number;
-}
-
-/**
- * Public development-Merchant keys needed by the isolated authority proof.
- * The separate authority identity is generated for every run and is never
- * sourced from the fixed authority fixture.
- */
-export function humanPresentProofMerchantTrustEntries(): readonly Ap2PublicTrustEntry[] {
-  return Object.freeze([
-    publicTrustEntry(MERCHANT_SIGNER),
-    publicTrustEntry(MERCHANT_RECEIPT_SIGNER),
-    publicTrustEntry(PAYMENT_RECEIPT_SIGNER),
-  ]);
 }
 
 /**
@@ -129,16 +106,6 @@ export async function runHumanPresentAuthorityProof(
   } finally {
     replay.close();
   }
-}
-
-function publicTrustEntry(identity: Ap2SigningIdentity): Ap2PublicTrustEntry {
-  const { d: _privateValue, ...publicJwk } = identity.privateJwk;
-  return Object.freeze({
-    role: identity.role,
-    issuer: identity.issuer,
-    kid: identity.kid,
-    publicJwk: Object.freeze(publicJwk) as P256PublicJwk,
-  });
 }
 
 function validateOptions(options: HumanPresentAuthorityProofOptions): void {

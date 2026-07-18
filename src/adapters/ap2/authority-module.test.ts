@@ -26,9 +26,9 @@ import {
   FIXED_AUTHORITY_ISSUER,
   FIXED_INSTRUMENT_ID,
   FIXED_NOW,
+  fixedGenericCheckout,
   fixedTrustStore,
-  fixedVerifiedCheckout,
-} from "./test-fixtures.js";
+} from "./authority-test-fixtures.js";
 import { Ap2AuthorityDecisionEvidenceVerifier } from "./authority-decision.js";
 import { Ap2AuthorityModule } from "./authority-module.js";
 import {
@@ -289,7 +289,7 @@ async function authoritySystem(
   const socketPath = path.join(directory, "authority.sock");
   const authentication = new StaticAuthenticationProvider();
   const nowMs = (FIXED_NOW + 5) * 1_000;
-  const checkout = await fixedVerifiedCheckout();
+  const checkout = fixedGenericCheckout();
   const paymentRequired = Buffer.from("generic-x402-payment-required", "ascii");
   const checkoutDigest = evidenceDigest(paymentRequired);
   const merchantOrigin = new URL(checkout.resourceUrl).origin;

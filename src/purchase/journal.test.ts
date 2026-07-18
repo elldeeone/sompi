@@ -246,14 +246,14 @@ test("raw evidence is content-addressed outside SQLite and verification is appen
     const raw = Buffer.from("private-signed-artifact-value", "utf8");
     const artifact = journal.storeEvidence(purchase, {
       bytes: raw,
-      mediaType: "application/sd-jwt",
-      profile: "ap2-v0.2-hp-direct-sd-jwt-es256",
+      mediaType: "application/octet-stream",
+      profile: "urn:sompi:test-evidence:1",
       issuer: "authority:test",
       kind: "purchase-authorization",
     });
     journal.recordEvidenceVerification(artifact.digest, {
       verifierId: "sompi-authority-verifier",
-      profile: "ap2-v0.2-hp-direct-sd-jwt-es256",
+      profile: "urn:sompi:test-evidence:1",
       detailDigest: evidenceDigest("verification-fact"),
     });
     assert.deepEqual(journal.readEvidence(artifact.digest), raw);

@@ -111,64 +111,7 @@ runuser -u "$AUTHORITY_USER" -- env "${authority_environment[@]}" \
   node "$WORK_DIR/dist/authority-main.js" init \
   >/tmp/authority-init-public.json 2>/tmp/authority-init.stderr
 
-runuser -u "$AUTHORITY_USER" -- \
-  node "$WORK_DIR/dist/e2e/human-present-authority-proof-main.js" public-trust \
-  >/tmp/merchant-public-trust.json
-chmod 0644 /tmp/merchant-public-trust.json
-
-# Replace the init-only authority trust arrays with exact public role sets.
-# The authority gets the Merchant checkout key; the MCP verifier additionally
-# gets both receipt keys. Neither file contains a private JWK member.
-SOMPI_PROOF_PRIVATE_DIR="$PRIVATE_DIR" \
-SOMPI_PROOF_CLIENT_DIR="$CLIENT_DIR" \
-node --input-type=module <<'NODE'
-import fs from "node:fs";
-import path from "node:path";
-
-const privateDirectory = process.env.SOMPI_PROOF_PRIVATE_DIR;
-const clientDirectory = process.env.SOMPI_PROOF_CLIENT_DIR;
-const authority = JSON.parse(
-  fs.readFileSync(path.join(clientDirectory, "authority-public-trust-entry.json"), "utf8")
-);
-const merchant = JSON.parse(fs.readFileSync("/tmp/merchant-public-trust.json", "utf8"));
-if (
-  authority.role !== "authority" ||
-  !Array.isArray(merchant) ||
-  merchant.length !== 3 ||
-  merchant.some((entry) => entry.role === "authority") ||
-  containsPrivateMember(authority) ||
-  containsPrivateMember(merchant)
-) {
-  throw new Error("public proof trust material is invalid");
-}
-const checkout = merchant.filter((entry) => entry.role === "merchant-checkout");
-if (checkout.length !== 1) throw new Error("Merchant checkout trust is invalid");
-writeExisting(path.join(privateDirectory, "trust.json"), [authority, ...checkout]);
-writeExisting(path.join(clientDirectory, "trust.json"), [authority, ...merchant]);
-
-function containsPrivateMember(value) {
-  if (Array.isArray(value)) return value.some(containsPrivateMember);
-  if (!value || typeof value !== "object") return false;
-  return Object.entries(value).some(([key, nested]) => key === "d" || containsPrivateMember(nested));
-}
-
-function writeExisting(filename, value) {
-  const noFollow = fs.constants.O_NOFOLLOW ?? 0;
-  const descriptor = fs.openSync(
-    filename,
-    fs.constants.O_WRONLY | fs.constants.O_TRUNC | noFollow
-  );
-  try {
-    fs.fchmodSync(descriptor, 0o600);
-    fs.writeFileSync(descriptor, `${JSON.stringify(value, null, 2)}\n`);
-    fs.fsyncSync(descriptor);
-  } finally {
-    fs.closeSync(descriptor);
-  }
-}
-NODE
-
-rm "$CLIENT_DIR/authority-public-trust-entry.json" /tmp/merchant-public-trust.json
+rm "$CLIENT_DIR/authority-public-trust-entry.json"
 chown -R "$MCP_USER:$MCP_GROUP" "$CLIENT_DIR"
 chmod 0700 "$CLIENT_DIR"
 chmod 0600 "$CLIENT_DIR/ipc-mac.key" "$CLIENT_DIR/trust.json"

@@ -1,14 +1,8 @@
 # Packaged conformance fixtures
 
-These files are deterministic, public test fixtures used by
-`npm run test:conformance`.
+`provenance.json` pins the exact AP2 source and schema bytes watched for a future
+official AP2/x402 integration. Sompi does not ship the superseded bilateral AP2
+Merchant profile or claim AP2 interoperability.
 
-`ap2-v0.2/fixture.json` intentionally contains a fixed private JWK marked
-`testOnly: true` so TypeScript and the pinned AP2 Python implementation can
-issue cross-language artifacts reproducibly. It has never protected funds,
-identity, deployment, or production trust. Do not copy any fixture key into an
-authority or Merchant trust store.
-
-`provenance.json` pins upstream commits, file hashes, npm integrity values, and
-the exact public-PyPI Python lock. The conformance result is an offline
-protocol/adapter claim, not live-network or mainnet evidence.
+The same record pins Kaspa-x402 package integrity and alpha.8 vectors. The
+conformance result is offline evidence, not a live-network or mainnet claim.

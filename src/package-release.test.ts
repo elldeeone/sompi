@@ -32,7 +32,9 @@ test("package manifest exposes only supported executables and no import side eff
   assert.ok(manifest.files.includes("!integrations/**/*.pyc"));
   assert.ok(manifest.files.includes("!integrations/**/tests/**"));
   assert.ok(manifest.files.includes("!dist/**/*.test.js"));
-  assert.ok(manifest.files.includes("!dist/e2e/live-testnet-*.js"));
+  assert.ok(manifest.files.includes("!dist/e2e/**"));
+  assert.ok(manifest.files.includes("!dist/e2e-main.js"));
+  assert.ok(manifest.files.includes("!dist/adapters/ap2/authority-test-fixtures.js"));
   assert.equal(manifest.files.includes("scripts/run-live-testnet-e2e.mjs"), false);
   assert.equal(manifest.files.includes("scripts/compile-vault-fixtures.js"), false);
 
@@ -48,7 +50,9 @@ test("package manifest exposes only supported executables and no import side eff
 test("npm ignore and package preparation retain defence-in-depth exclusions", () => {
   const npmIgnore = fs.readFileSync(path.join(ROOT, ".npmignore"), "utf8").split(/\r?\n/);
   assert.ok(npmIgnore.includes("dist/**/*.test.js"));
-  assert.ok(npmIgnore.includes("dist/e2e/live-testnet-*.js"));
+  assert.ok(npmIgnore.includes("dist/e2e/**"));
+  assert.ok(npmIgnore.includes("dist/e2e-main.js"));
+  assert.ok(npmIgnore.includes("dist/adapters/ap2/authority-test-fixtures.js"));
   assert.ok(npmIgnore.includes("src/"));
   assert.ok(npmIgnore.includes("integrations/**/__pycache__/"));
   assert.ok(npmIgnore.includes("integrations/**/*.pyc"));
@@ -63,19 +67,19 @@ test("npm ignore and package preparation retain defence-in-depth exclusions", ()
   }
 });
 
-test("fixed AP2 proof identities have no production import path", () => {
+test("fixed authority proof identity has no production import path", () => {
   const offenders: string[] = [];
   for (const filename of sourceFiles(path.join(ROOT, "src"))) {
     const relative = path.relative(ROOT, filename).split(path.sep).join("/");
     if (
       relative.endsWith(".test.ts") ||
-      relative === "src/adapters/ap2/test-fixtures.ts" ||
+      relative === "src/adapters/ap2/authority-test-fixtures.ts" ||
       relative.startsWith("src/e2e/") ||
       relative.startsWith("src/conformance/")
     ) {
       continue;
     }
-    if (fs.readFileSync(filename, "utf8").includes("test-fixtures")) offenders.push(relative);
+    if (fs.readFileSync(filename, "utf8").includes("authority-test-fixtures")) offenders.push(relative);
   }
   assert.deepEqual(offenders, []);
 });

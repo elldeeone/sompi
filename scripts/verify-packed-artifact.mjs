@@ -24,11 +24,9 @@ for (const required of [
   "package/dist/api-main.js",
   "package/dist/authority-main.js",
   "package/dist/operator-main.js",
-  "package/dist/e2e-main.js",
   "package/integrations/hermes/plugin/__init__.py",
   "package/integrations/hermes/plugin/plugin.yaml",
   "package/integrations/hermes/sompi/SKILL.md",
-  "package/scripts/run-local-e2e.mjs",
   "package/scripts/run-protocol-conformance.mjs",
   "package/scripts/vault-recover.js",
   "package/scripts/verify-authority-isolation.js",
@@ -50,11 +48,12 @@ for (const entry of entries) {
   }
   if (
     /(^|\/)src\//.test(entry.name) ||
+    /^package\/dist\/e2e(?:\/|-main\.js$)/.test(entry.name) ||
+    /^package\/dist\/adapters\/ap2\/authority-test-fixtures\.js$/.test(entry.name) ||
     /(^|\/)__pycache__\//.test(entry.name) ||
     /\.pyc$/.test(entry.name) ||
     /^package\/integrations\/.*\/tests\//.test(entry.name) ||
     /\.test\.js$/.test(entry.name) ||
-    /^package\/dist\/e2e\/live-testnet-[^/]+\.js$/.test(entry.name) ||
     /(^|\/)evidence\//.test(entry.name) ||
     /(^|\/)goal\.md$/.test(entry.name) ||
     /(^|\/)scripts\/compile-vault-fixtures\.js$/.test(entry.name) ||
@@ -121,7 +120,6 @@ function executable(name) {
     "package/dist/operator-main.js",
     "package/scripts/prepare-package.mjs",
     "package/scripts/require-source-tree.mjs",
-    "package/scripts/run-local-e2e.mjs",
     "package/scripts/run-protocol-conformance.mjs",
     "package/scripts/vault-recover.js",
     "package/scripts/verify-authority-isolation.js",

@@ -72,7 +72,7 @@ test("authority help and invalid commands terminate before authority path creati
 test("package self-import and fixed-fixture deep import are not exported", async () => {
   for (const specifier of [
     "@elldeeone/sompi",
-    "@elldeeone/sompi/dist/adapters/ap2/test-fixtures.js",
+    "@elldeeone/sompi/dist/adapters/ap2/authority-test-fixtures.js",
   ]) {
     await assert.rejects(
       import(specifier),

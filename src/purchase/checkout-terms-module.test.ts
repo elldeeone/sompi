@@ -8,7 +8,7 @@ import {
 
 import {
   FIXED_NOW,
-} from "../adapters/ap2/test-fixtures.js";
+} from "../adapters/ap2/authority-test-fixtures.js";
 import { KaspaX402PaymentRequirementsVerifier } from "../adapters/kaspa-x402/payment-requirements-verifier.js";
 import type { PurchaseEgressSession } from "./coordinator.js";
 import { EgressPolicy } from "./egress-policy.js";

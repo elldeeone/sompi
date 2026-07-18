@@ -136,41 +136,7 @@ authority_environment=(
 runuser -u "$AUTHORITY_USER" -- env "${authority_environment[@]}" \
   node "$WORK_DIR/dist/authority-main.js" init \
   >/tmp/authority-init-public.json 2>/tmp/authority-init.stderr
-node "$WORK_DIR/dist/e2e/human-present-authority-proof-main.js" public-trust \
-  >/tmp/merchant-public-trust.json
-
-SOMPI_PROOF_PRIVATE_DIR="$PRIVATE_DIR" \
-SOMPI_PROOF_CLIENT_DIR="$CLIENT_DIR" \
-node --input-type=module <<'NODE'
-import fs from "node:fs";
-import path from "node:path";
-const privateDirectory = process.env.SOMPI_PROOF_PRIVATE_DIR;
-const clientDirectory = process.env.SOMPI_PROOF_CLIENT_DIR;
-const authority = JSON.parse(fs.readFileSync(
-  path.join(clientDirectory, "authority-public-trust-entry.json"), "utf8"
-));
-const merchant = JSON.parse(fs.readFileSync("/tmp/merchant-public-trust.json", "utf8"));
-if (authority.role !== "authority" || merchant.length !== 3) {
-  throw new Error("public trust material is invalid");
-}
-const checkout = merchant.filter((entry) => entry.role === "merchant-checkout");
-if (checkout.length !== 1) throw new Error("Merchant checkout trust is invalid");
-for (const [filename, entries] of [
-  [path.join(privateDirectory, "trust.json"), [authority, ...checkout]],
-  [path.join(clientDirectory, "trust.json"), [authority, ...merchant]],
-]) {
-  const descriptor = fs.openSync(filename, fs.constants.O_WRONLY | fs.constants.O_TRUNC);
-  try {
-    fs.fchmodSync(descriptor, 0o600);
-    fs.writeFileSync(descriptor, `${JSON.stringify(entries, null, 2)}\n`);
-    fs.fsyncSync(descriptor);
-  } finally {
-    fs.closeSync(descriptor);
-  }
-}
-NODE
-
-rm "$CLIENT_DIR/authority-public-trust-entry.json" /tmp/merchant-public-trust.json
+rm "$CLIENT_DIR/authority-public-trust-entry.json"
 chown -R "$SOMPI_PROOF_MCP_UID:$SOMPI_PROOF_MCP_GID" "$CLIENT_DIR"
 chmod 0700 "$CLIENT_DIR"
 chmod 0600 "$CLIENT_DIR/ipc-mac.key" "$CLIENT_DIR/trust.json"
