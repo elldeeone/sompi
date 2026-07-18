@@ -528,9 +528,9 @@ authorization, policy, or keys into the agent process.
   standard-native and batch settlement on the same host.
 - [x] Prove limit denial, unauthorized callback, replay, expiry, duplicate tap,
   service restart, ambiguous settlement, status, and recovery.
-- [ ] Preserve public evidence without secrets, update current documentation,
+- [x] Preserve public evidence without secrets, update current documentation,
   and pass the complete release verifier from packed artifacts.
-- [ ] Prepare publish and deployment handoff. Publishing remains blocked until
+- [x] Prepare publish and deployment handoff. Publishing remains blocked until
   npm authentication is explicitly restored.
 
 Gate:

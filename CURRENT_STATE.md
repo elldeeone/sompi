@@ -129,10 +129,13 @@ Fresh Phase 11 evidence is under
 
 ## Verification and security
 
-The Phase 11 candidate passes 491 tests: 490 pass and one documented
+The Phase 11 release candidate passes 491 tests: 490 pass and one documented
 privileged ownership test is skipped when the host cannot change file
-ownership. Its 209-file packed artifact passes the explicit archive verifier;
-the final clean-tree release verifier remains the last local closeout gate.
+ownership. The independent Hermes plugin suite passes all three tests. The
+clean-tree release verifier also passes protocol conformance, all funded
+evidence checks, the local end-to-end proof, OpenAPI/Arazzo validation,
+production dependency audit, the 209-file packed-artifact verifier, and a clean
+consumer install and smoke test.
 
 The sealed full-branch security review covered every changed source-like file
 and reported three Low/P3 availability issues. The branch bounds Chain Evidence
@@ -169,7 +172,8 @@ satisfied.
 
 ## Current closeout
 
-Every Phase 0–10 acceptance item has direct test or recorded evidence. Phase 11
-is implemented and live-proven; its final clean-tree release verification and
-local commits are the remaining closeout work. npm publishing remains blocked
-by design until registry authentication is explicitly restored.
+Every Phase 0–11 acceptance item has direct test or recorded evidence. The
+implementation, documentation, public evidence, packed artifact, clean install,
+Terah deployment, restart, and rollback boundary are verified. The release is
+ready to publish, but npm publishing remains blocked by design until registry
+authentication is explicitly restored.

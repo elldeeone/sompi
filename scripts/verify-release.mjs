@@ -12,6 +12,16 @@ const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-release-"));
 try {
   assertExactDependencyPins();
   run("npm", ["test"], root, { SOMPI_SMOKE_OFFLINE: "1" });
+  run("python3", [
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "integrations/hermes/plugin/tests",
+    "-p",
+    "test_*.py",
+    "-v",
+  ], root, { PYTHONDONTWRITEBYTECODE: "1" });
   run("npm", ["run", "test:conformance"], root);
   run(process.execPath, [path.join(root, "scripts", "verify-live-evidence.mjs")], root);
   run(process.execPath, [
