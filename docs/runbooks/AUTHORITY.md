@@ -67,9 +67,9 @@ Install the final trusted public keys in both trust stores:
 - Authority private trust store: owned by `sompi-authority`;
 - Authority client trust store: owned by `sompi-api`.
 
-The roles are closed: `authority`, `merchant-checkout`, `merchant-receipt`, and
-`payment-receipt`. Install keys only through an authenticated operator channel.
-Never trust a key embedded in Merchant content.
+The only trusted signing role is `authority`. Install its public key only
+through an authenticated operator channel. Never trust a key embedded in
+Merchant content.
 
 After initialization, transfer only `ipc-mac.key` and `trust.json` in the
 client directory to `sompi-api`. The API must not be able to traverse the

@@ -1,263 +1,177 @@
 # Sompi context
 
-## Product definition
+## Product
 
-Sompi is a deterministic agent treasury and purchasing system for Kaspa. It
-lets an agent request a purchase while keeping authorization, keys, spending
-policy, payment execution, recovery, and audit evidence outside the agent's
-control.
+Sompi is a local purchasing runtime for agents. It converts one paid HTTP
+request into a durable `Purchase`: verified Merchant terms, exact user
+authorization, policy reservation, KAS payment, settlement evidence,
+fulfilment, and one receipt.
 
-Sompi is not a new commerce protocol, an AP2 fork, or an x402 implementation.
-It composes evolving standards around a stable local Purchase model:
+The agent never receives wallet keys, Authority keys, policy credentials, bot
+tokens, or operator recovery access.
 
-- AP2 expresses authorization and evidence when a supported profile is
-  available. The generic path retains AP2-derived authorization evidence
-  locally without requiring Merchant AP2 support.
-- x402 carries HTTP payment negotiation and settlement.
-- Kaspa-x402 executes supported x402 payments on Kaspa.
-- Sompi owns the user/agent experience, treasury controls, orchestration,
-  durable history, and recovery.
+## Current scope
 
-## Actors
+- Network: Kaspa Testnet-10.
+- Authorization: human-present, AP2-derived internal evidence.
+- Payment: Kaspa-x402 `0.1.0-alpha.8`.
+- Exact profiles: `standard-native` and `additive`.
+- Batch: capital-backed channels with approval for every charge increment.
+- Agent interface: authenticated local API and `sompi-agent`.
+- Compatibility: stateless MCP wrapper.
+- Approval projection: terminal or Telegram through the isolated Authority.
 
-### User
+AP2 v0.2 source and schemas are pinned for provenance monitoring. Sompi does
+not emit AP2 Merchant artifacts or claim AP2 interoperability. A generic
+supported x402 Merchant needs no Sompi integration.
 
-Owns the treasury and decides the policy under which an agent may purchase.
-For human-present purchases, the User approves exact terms through the Trusted
-Authority.
-
-### Agent
-
-Requests purchases through the authenticated Purchase API or its MCP
-compatibility adapter and receives structured status and receipts. The Agent is
-untrusted for authorization, key custody, evidence validation, policy
-enforcement, and payment state transitions.
-
-### Merchant
-
-Offers a resource under verified x402 terms, accepts payment, and fulfils the
-resource. An explicitly supported AP2-aware Merchant may additionally verify
-official authorization artifacts and emit AP2 receipt evidence.
-
-### Trusted Authority
-
-A deterministic, non-agentic executable and security context. It displays the
-exact merchant, resource, amount, asset, network, expiry, and request identity;
-then returns approval evidence or denial. It owns or reaches the authority
-credential. The MCP process cannot invoke its signer without the deterministic
-approval ceremony.
-
-### Kaspa network
-
-The external settlement system. Blockchain submission cannot be transacted
-atomically with Sompi's SQLite journal, so every submitted operation must be
-recoverable and reconcilable.
-
-## Domain language
-
-### Purchase Intent
-
-The Agent's request to acquire one resource from one Merchant, including the
-HTTP method and resource identity needed to prevent request substitution. It is
-not authorization.
-
-### Checkout Terms
-
-The exact proposed terms: operator-allowed Merchant origin, payee, resource,
-amount, asset, network, expiry, selected payment profile, and relevant request
-fingerprint. Verified x402 requirements are sufficient for the generic path.
-Official AP2 artifacts may add evidence under an explicitly supported profile,
-but protocol SDK types are not the canonical representation.
+## Domain model
 
 ### Purchase
 
-Sompi's durable record of one acquisition from intent through authorization,
-payment, fulfilment, receipt, failure, and recovery. `PurchaseId` is the
-canonical correlation identifier inside Sompi.
+The stable lifecycle record. It owns:
 
-### Purchase API
+- caller request key and canonical resource request;
+- Merchant origin and verified x402 requirements;
+- authorization and policy reservation;
+- payment attempt and Treasury movement references;
+- settlement and chain evidence;
+- fulfilment digest and content reference;
+- one canonical receipt;
+- durable recovery state.
 
-The canonical authenticated HTTP projection of the Purchase module's
-`purchase`, `status`, and `recover` operations. Its OpenAPI description and
-runtime validation share the same schemas. MCP is a stateless compatibility
-projection over the same operations, not a separate lifecycle or authority
-surface. Production HTTP is carried only over a pre-provisioned permissioned
-Unix socket; loopback TCP is not a supported transport.
+Raw AP2-derived and x402 bytes are immutable Evidence Attachments, not fields
+in the stable domain model.
 
-### Purchase Authorization
+### Purchase module
 
-The signed decision that this Agent may buy this exact resource from this exact
-Merchant under these exact Checkout Terms and x402 requirements. AP2 belongs
-at this seam as an evidence/interop adapter; the canonical decision remains a
-Sompi domain record.
+The deep module owning orchestration and recovery. API, CLI, skill, and MCP all
+call this same module.
 
-### Treasury Reservation
+### Trusted Authority
 
-The durable reservation of spending capacity required before signing or
-submitting a payment. It covers the Merchant price plus explicitly bounded
-additional treasury costs, including network, vault-staging, claim, refund, or
-recovery fees. For batch, it may also reserve an authorized channel ceiling.
-The KIP-10 additive successor delta is the Merchant price itself; there is no
-additional Merchant top-up. A Treasury Reservation is not Purchase
-Authorization.
+A separate deterministic, non-agentic process. It displays and signs the exact
+Purchase decision. It cannot alter the request and the agent cannot produce an
+approval.
 
-### Treasury Movement
+### Treasury
 
-Funding, deposit, payment, refund, claim, or recovery executed by the wallet or
-consensus vault. Vault policy governs this movement separately from Purchase
-Authorization.
-
-### Payment Attempt
-
-One idempotent attempt to execute an authorized Purchase through Kaspa-x402,
-either as one exact transaction authorization or one batch voucher increment.
-It has a stable payment identifier and enough persisted material to determine
-whether an interrupted external action occurred.
-
-### Settlement
-
-Verified evidence that the payment reached the required Kaspa finality and
-matches the authorized Merchant, resource, amount, asset, network, request, and
-Payment Attempt.
-
-### Fulfilment
-
-The Merchant's delivery of the purchased resource. Payment success and
-Fulfilment are separate facts.
-
-### Receipt
-
-Evidence linking Checkout Terms, Purchase Authorization, Payment Attempt,
-Settlement, and Fulfilment. A Receipt does not replace the underlying signed
-artifacts.
-
-### Evidence Attachment
-
-An immutable protocol artifact stored with media type or format, exact
-protocol profile, issuer, digest, creation time, and verification status.
-Examples include AP2-derived authorization evidence, official AP2 mandates and
-receipts when supported, x402 requirements and settlement responses, Merchant
-offers, and Kaspa transaction evidence.
-
-### Purchase Journal
-
-The authoritative SQLite record of Purchase state, idempotency, policy
-reservations, planned external effects, observations, and Evidence Attachment
-metadata.
-
-### Reconciliation
-
-Deterministic recovery that compares persisted intent with Kaspa and Merchant
-observations after interruption. It advances or repairs state without blindly
-repeating an irreversible action.
-
-### Operator Provisioning
-
-A short-lived, non-agentic ceremony that validates and installs one immutable
-Operator Manifest before either production executable starts. It owns the
-recovery public key, vault cap/window, Treasury policy, Merchant HTTPS allow
-rules, supported testnet profile, trusted chain-evidence sources, and finality
-floors. The Agent and MCP process cannot create, replace, or loosen it.
-
-### Operator Manifest
-
-The canonical, versioned operator configuration installed by Operator
-Provisioning. Its exact bytes have a stable digest and monotonic revision.
-Runtime modules receive immutable typed projections plus that identity; they do
-not independently parse environment variables or policy files. A funded vault
-is bound to the static manifest facts from which its script and address were
-derived.
+Operator-controlled policy and money movement. It reserves capacity before
+signing, owns the vault and staging lifecycle, and exposes only bounded
+capabilities to payment execution.
 
 ### Chain Evidence
 
-A durable, typed assertion about one Kaspa transaction, outpoint, spend, or
-continuation. It records canonical facts, observation/proof profile, source
-identity, finality level, time, and digest. Current UTXO or mempool presence is
-an observation, not durable accepted history and not Kaspa consensus finality.
+The only module allowed to turn raw node/witness observations into privileged
+state transitions. Temporary absence, contradiction, pruning, or unavailable
+history fails closed.
 
-### Finality Floor
+## Protocol ownership
 
-The operator-owned minimum evidence level required before a specific Purchase
-or Treasury transition becomes terminal. Protocol finality, local
-depth-confirmation policy, and Kaspa consensus finality remain separate facts.
-A Merchant may require a stronger floor but cannot lower Sompi's floor. The
-effective floor is part of exact human-present Purchase Authorization.
+Sompi owns the Purchase lifecycle, policy, authorization, Treasury, Journal,
+fulfilment, receipt, and recovery.
 
-### Admission Lease
+The AP2 adapter owns only internal authorization/evidence encoding and upstream
+source monitoring.
 
-A bounded, expiring right to consume one scarce runtime resource such as an
-Authority socket/prompt, pre-validation Purchase/evidence capacity, or direct
-Treasury preparation slot. The owning module durably defines acquisition,
-cancellation, expiry, recovery, and terminal release; cancellation after a
-possible external effect always enters Reconciliation.
+The Kaspa-x402 adapter owns payment-requirement validation, client transaction
+construction, payment transport, settlement verification, and channel
+operations. Sompi does not reimplement the x402 schemes.
 
-## Product invariants
+There is no universal payment-rail plugin system. A broader execution seam is
+introduced only after a second real payment adapter demonstrates the common
+contract.
 
-1. The Agent can request but cannot authorize its own Purchase.
-2. The MCP process cannot access authority signing credentials.
-3. A Purchase Authorization binds exact Merchant, resource/request, amount,
-   asset, network, expiry, and Purchase identity.
-4. Treasury capacity is reserved durably before payment signing or submission.
-5. A batch/channel deposit never authorizes its later individual purchases.
-6. Every external side effect has a persisted idempotency identity and a
-   recovery path.
-7. Settlement must match the authorization and payment attempt before Sompi
-   marks a Purchase paid.
-8. Payment does not imply Fulfilment; both are recorded.
-9. Canonical Purchase state never depends on an AP2 or x402 library object.
-10. Unknown protocol profiles, malformed evidence, mismatched hashes, replay,
-    and ambiguous recovery fail closed.
-11. Agent-controlled URLs are subject to egress policy, redirect checks,
-    private-network protection, and request fingerprinting.
-12. Mainnet remains disabled until every recorded mainnet gate is satisfied.
-13. Only Operator Provisioning may establish or loosen operator trust,
-    recovery authority, policy, Merchant transport, or chain-evidence floors.
-14. Only the Chain Evidence module may promote raw node observations into facts
-    that terminalize Settlement, Treasury Movement, or recovery.
-15. `mempool`, `accepted`, local depth confirmation, and Kaspa consensus
-    finality are never treated as interchangeable.
-16. Scarce work acquires a bounded Admission Lease before consuming sockets,
-    prompts, evidence bytes, Purchase rows, or exclusive Treasury preparation.
-17. HTTP and MCP call the same Purchase interface; neither transport owns
-    lifecycle or recovery state.
-18. Every exact payment uses `kaspa-exact-v2` with an explicitly supported
-    `standard-native` or `additive` profile.
-19. An additive successor delta is the entire Merchant payment and no separate
-    Merchant output is allowed.
-20. A batch voucher ceiling never replaces the individual Purchase
-    Authorization or the separately recorded actual charge.
-21. Generic x402 execution never requires Sompi-specific Merchant headers,
-    mandate-presentation endpoints, or AP2 receipts.
-22. AP2-derived local evidence is never presented as Merchant-issued or strict
-    end-to-end AP2 interoperability.
+## Canonical interfaces
 
-## Non-goals for the first end-to-end release
+The authenticated local API exposes:
 
-- Maintaining Sompi's bespoke x402 v1 protocol or its state.
-- Creating a competing AP2 specification or a Sompi-specific x402 standard.
-- Modifying Kaspa-x402 to understand AP2.
-- Supporting carts, tax, shipping, fulfilment orchestration, or order lifecycle
-  through UCP.
-- Autonomous/open AP2 mandates.
-- Making WebAuthn/passkeys mandatory before the authority threat model and
-  recovery requirements are understood.
-- A generic multi-rail plugin marketplace.
-- Public OAuth, A2A, or another generic agent protocol before the local
-  Purchase API proves its lifecycle.
-- Compatibility readers or migrations for pre-cutover development Journal
-  epochs.
-- Mainnet production claims.
+- `POST /purchases`
+- `GET /purchases/{purchaseId}`
+- `POST /purchases/{purchaseId}/recover`
 
-## Success for the first end-to-end release
+The `sompi-agent` CLI uses that API. `sompi-mcp` exposes only `purchase`,
+`purchase_status`, and `purchase_recover`, and holds no privileged capability
+beyond the agent API credential.
 
-A human-present testnet Purchase can be initiated through the authenticated
-Purchase API or its MCP compatibility adapter, bound to verified generic x402
-terms, deterministically approved outside the agent process, reserved in the
-Purchase Journal, paid through either Kaspa-x402 `kaspa-exact-v2` profile,
-reconciled after injected crashes, fulfilled by an unchanged x402 Merchant,
-and returned with linked authorization, x402, and Kaspa evidence. The
-separately gated batch proof
-demonstrates deposit, individually authorized voucher increments, claim,
-continuation, and strict-boundary refund without treating the channel as
-authorization. Replays, substitutions, unknown versions, unsafe egress, and
-state mismatches are rejected.
+## Lifecycle
+
+```text
+created
+  -> terms_verified
+  -> authorized or denied
+  -> funds_reserved
+  -> payment_prepared
+  -> payment_submitted
+  -> settled
+  -> fulfilled
+  -> receipted
+```
+
+Every irreversible edge is Journal-first. Before a blockchain or Merchant
+effect, Sompi commits canonical intent, authorization, policy reservation,
+prepared bytes or a secure reference, idempotency identity, and an effect
+fence.
+
+Ambiguous outcomes enter recovery. Recovery observes before retrying and never
+creates replacement payment authority. Fulfilment recovery reuses the same
+settled payment and request.
+
+Journal epoch 15 is the only active schema.
+
+## Authorization facts
+
+The signed decision binds at least:
+
+- Purchase ID and request key;
+- Merchant identity and origin;
+- URL, method, body digest, and resource identity;
+- x402 requirements digest and payee;
+- network, scheme, exact profile or batch channel epoch;
+- advertised amount or maximum batch charge;
+- effective fee and total-cost ceilings;
+- effective finality floor;
+- expiry and Authority identity.
+
+For batch, the accepted actual charge must be no greater than the authorized
+ceiling and is recorded separately.
+
+## Payment rules
+
+### Standard-native
+
+A version-0 transaction pays exactly the advertised amount to the Merchant.
+The payer cost is that amount plus the explicit bounded network fee.
+
+### Additive
+
+A version-1 KIP-10-based transaction advances a reusable Merchant head. The
+successor increase equals the advertised amount and is the only Merchant gain.
+Unpaid offers do not reserve or retire heads. Unknown lineage disables that
+head until trusted recovery proves the successor.
+
+### Batch
+
+Channel funding is capital, not Purchase authorization. Every voucher increase
+requires a separate signed decision. Charges are cumulative and monotonic,
+preserve the claim-fee reserve, and recover through an accepted claim and
+continuation or a refund after the strict absolute DAA boundary.
+
+## Trust boundaries
+
+- Agent and MCP are untrusted.
+- Merchant and all HTTP inputs are untrusted until verified.
+- Telegram transports controls but does not create authority.
+- Authority signing material is unavailable to Agent/API/MCP processes.
+- Wallet, vault, and operator recovery are unavailable to the agent account.
+- Node observations require the configured Chain Evidence policy.
+- All protocol versions, algorithms, networks, schemes, and profiles are
+  exact allowlists.
+
+## Delivery boundary
+
+This is a testnet alpha. Mainnet, autonomous authorization, passkeys, UCP, and
+official AP2/x402 interoperability require separate accepted gates. Historical
+proofs and ADRs remain evidence of earlier development decisions; current
+behavior is defined by this file, the architecture, accepted ADRs, the
+implementation plan, and `CURRENT_STATE.md`.

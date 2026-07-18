@@ -118,12 +118,17 @@ test("current documentation exposes only the API-first alpha.8 cutover", () => {
   }
 
   const currentDocuments = [
+    "CONTEXT.md",
     "CURRENT_STATE.md",
     "README.md",
     "contracts/README.md",
     "docs/agent-interaction-ux.md",
     "docs/vault-poc.md",
+    "docs/architecture/AP2_PROFILE.md",
+    "docs/architecture/KASPA_X402_INTEGRATION.md",
     "docs/architecture/PURCHASE_JOURNAL.md",
+    "docs/architecture/SOMPI_ARCHITECTURE.md",
+    "docs/architecture/THREAT_MODEL.md",
     "docs/conformance/PROTOCOL_CONFORMANCE.md",
     "docs/runbooks/AUTHORITY.md",
     "docs/runbooks/CHANNEL_RECOVERY.md",
@@ -153,6 +158,9 @@ test("current documentation exposes only the API-first alpha.8 cutover", () => {
     "`estimate_fee`",
     "`network_status`",
     "`get_policy`",
+    "merchant-checkout",
+    "merchant-receipt",
+    "payment-receipt",
   ];
   for (const relative of currentDocuments) {
     const source = fs.readFileSync(path.join(ROOT, relative), "utf8");
@@ -174,7 +182,7 @@ test("current documentation exposes only the API-first alpha.8 cutover", () => {
     path.join(ROOT, "docs", "architecture", "PURCHASE_JOURNAL.md"),
     "utf8",
   );
-  assert.match(journal, /only supported schema is epoch \*\*14\*\*/);
+  assert.match(journal, /Epoch \*\*15\*\* is the only\s+active schema/);
 });
 
 function sourceFiles(directory: string): string[] {

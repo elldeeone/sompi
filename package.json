@@ -1,7 +1,7 @@
 {
   "name": "@elldeeone/sompi",
   "version": "0.8.0",
-  "description": "Deterministic AP2 and Kaspa-x402 purchasing on Kaspa Testnet-10.",
+  "description": "Operator-controlled KAS purchases for local agents on Kaspa Testnet-10.",
   "license": "MIT",
   "repository": {
     "type": "git",

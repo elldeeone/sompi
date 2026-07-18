@@ -2,178 +2,110 @@
 
 Last updated: **2026-07-18**
 
-## Plain-English status
+## Status
 
-The Sompi alpha.8 Purchase implementation is merged into `main`. The active
-product is an API-first modular monolith centred on the stable Purchase module:
+The generic x402 Merchant cutover is complete on `main`.
 
-- `sompi-api` is the canonical authenticated Purchase API;
-- `sompi-mcp` is a thin, untrusted compatibility wrapper over that API;
-- `sompi-authority` is the separate deterministic human-present authority;
-- `sompi-operator` installs the immutable Operator Manifest;
-- the demo Merchant is a test/conformance fixture.
+Sompi is an API-first local purchasing runtime:
 
-There is no supported alpha.6 runtime, state reader, wire profile, command,
-fixture, or fallback path. Journal epoch 14 is the only current epoch and old
-development epochs fail closed without migration.
+- `sompi-api` is the canonical Purchase interface;
+- `sompi-agent` is the agent-facing CLI;
+- `sompi-mcp` is an optional stateless compatibility wrapper;
+- `sompi-authority` is the isolated human-present Authority;
+- `sompi-operator` provisions policy, vault, chain evidence, and credentials.
 
-## Implemented protocol surface
+Journal epoch 15 is the only active schema.
 
-The pinned payment contract is Kaspa-x402 `0.1.0-alpha.8`.
+## Protocols
 
-Exact payment supports both `kaspa-exact-v2` profiles:
+Payment is pinned to Kaspa-x402 `0.1.0-alpha.8` on TN10.
 
-- `standard-native`: the default version-0 transaction;
-- `additive`: the optional version-1 KIP-10-based profile whose successor
-  delta is the entire Merchant payment.
+- `standard-native`: version 0, exact Merchant output.
+- `additive`: version 1, reusable KIP-10-based head; successor delta is the
+  entire Merchant payment.
+- `batch-settlement`: capital-backed channel with separate approval for every
+  charge increment.
 
-The additive profile has no separate Merchant output and no exclusive unpaid
-reservation. Reusable heads are request-bound, conflict-safe, and recovered
-only from trusted lineage evidence.
+The Merchant only needs to implement the supported x402 contract. Sompi sends
+no proprietary Merchant authorization headers or receipt protocol.
 
-Batch settlement remains a separate capital-backed lifecycle. A channel
-deposit never authorizes a Purchase. Each voucher increase requires its own
-human-present authorization, preserves a claim-fee reserve, and is recovered
-through the accepted claim/continuation or strict-boundary refund path.
+Authorization is internal AP2-derived evidence signed by the Trusted Authority.
+The exact AP2 v0.2 source/schema revision remains pinned as a provenance watch,
+but Sompi makes no AP2 interoperability claim.
 
-AP2 v0.2 remains an experimental native-KAS, human-present, testnet-only
-authorization/evidence profile. Raw AP2 and x402 artifacts are immutable
-Evidence Attachments; they are not canonical Purchase state.
+## Completed cutover
 
-## Durable and trust boundaries
+- Generic `PAYMENT-REQUIRED` evidence derives canonical Checkout Terms.
+- Authorization binds the Merchant, request, payee, requirements, profile or
+  channel, amount or ceiling, fees, finality, expiry, and Purchase.
+- Merchant communication uses only the supported x402 contract; AP2-derived
+  evidence remains internal to Sompi.
+- Fulfilment is verified from the authorized request, paid response, settlement,
+  and resource digest.
+- Each completed Purchase records one canonical receipt.
+- Standard-native, additive, and batch use the same authorization contract.
+- API, CLI, skill, MCP, Telegram, policy denial, replay, restart, and ambiguous
+  recovery paths are covered by tests.
 
-The Purchase module owns orchestration and recovery. Before any irreversible
-effect it durably records canonical intent, authorization, policy reservation,
-prepared material, idempotency identity, and effect fencing.
+## Fresh TN10 evidence
 
-The Trusted Authority runs as a distinct non-agentic process. The API and MCP
-processes do not hold its signing credential. The Operator Manifest owns
-Merchant allow rules, Treasury policy, chain-evidence sources/floors,
-admission budgets, and recovery authority.
+[`evidence/generic-x402-cutover/`](evidence/generic-x402-cutover/README.md)
+records current-branch funded proofs:
 
-The API exposes only the canonical `purchase`, `status`, and `recover`
-operations over pre-provisioned permissioned Unix sockets. Agent/MCP and
-operator recovery use separate credentials, groups, connection pools, and work
-budgets. MCP has no wallet, Journal, Authority, AP2, Kaspa-x402, or Treasury
-capability.
+- standard-native over the canonical HTTP API:
+  `5699adb798f2535605d84391e611dd88dee9e49089b4b79f57744cfea19dfd13`;
+- additive over MCP compatibility ingress:
+  `efd2ab90eda9ff75ca0fd76487a95654e2dce2decceb544238f04df546c366f2`;
+- batch claim:
+  `18cd57a98a4bcf4ee21bf1d040cfdecf632f2d95127df97c63f4eadbe4fefc49`;
+- strict-boundary batch refund:
+  `107b8792cc302148476bba0fec3d1ed70fcea619694557a04a9370c0dfb5d1af`.
 
-The Chain Evidence module is the only component allowed to promote raw node
-observations into privileged state transitions. Testnet-10 accepted evidence
-requires the pinned operator wRPC source and independent HTTPS witness;
-temporary absence, pruning, contradiction, or unavailable history fails
-closed.
+Both exact proofs show Merchant gain equal to the advertised 20,000,000 sompi.
+The additive transaction has one output and mass 874 versus standard-native
+mass 4,546 for these specific shapes. This is evidence for these transactions,
+not a universal fee claim.
 
-## Terah agent deployment
+The public `demo.kaspa-x402.org` gateway was checked read-only and advertised
+x402 v2 standard-native exact and batch settlement on a healthy TN10 chain.
 
-Terah now runs the API-first integration described by ADR-0016:
+## Terah
 
-- distinct `sompi-api` and `sompi-authority` system services;
-- separate API, Authority-decision, Telegram-callback, and recovery Unix
-  sockets and OS groups;
-- a Hermes skill that calls only `sompi-agent`;
-- a least-authority Hermes plugin that relays only authenticated Telegram
-  callback data;
-- no Sompi MCP server in the Hermes runtime;
-- an immutable Testnet-10 Operator Manifest with per-Purchase, hourly, fee,
-  Merchant-egress, and vault limits;
-- an isolated vault funded with 3 TN10 KAS from the existing Forge bootstrap
-  wallet without moving its private key.
+Terah remains the private operator-controlled Hermes deployment.
 
-The actual inline Telegram approval completed the production Purchase path as
-`receipted`. The Hermes process can reach the agent API and callback socket but
-cannot read Authority, wallet, operator-recovery, or bot credentials. All three
-services restart cleanly with the same durable state.
+- Hermes is active.
+- The installed Sompi skill and callback plugin match this repository.
+- The current tarball installs and passes offline smoke on Terah's Node 24
+  runtime without changing live services.
+- The live services still run the earlier `0.8.0-69c8a64` build. This cutover
+  has not been deployed there.
 
-## Funded Testnet-10 evidence
+The earlier Phase 11 Telegram human-present and funded service evidence remains
+valid for the unchanged Authority boundary. Fresh cutover exact proofs use the
+isolated auto-approval fixture and do not claim a new human-present ceremony.
 
-The active evidence set is under
-[`evidence/live-testnet10/`](evidence/live-testnet10/README.md). It contains:
+## Verification
 
-- standard-native exact over the canonical HTTP API;
-- additive exact over MCP-over-API compatibility;
-- additive head contention with one accepted winner, a no-cost loser, trusted
-  absence, and a separately authorized retry;
-- batch deposit, two independently authorized vouchers, claim, continuation,
-  and strict-boundary refund;
-- a complete human-present standard-native Purchase through the isolated
-  Authority.
+At this state:
 
-The funded human-present run reached `receipted` for Purchase
-`pur_QW-rngf254gaI8xOl2Na9g`. Its exact transaction is
-`95705c2a4e06415454d691a38f4f41adbf9cebedf958178d206c5f442371efcb`
-and its canonical public-report digest is
-`d550766dbe1a161566b310500192a81adfe0213bc3e6f561c652600fcf3558bd`.
+- 445 unit tests run: 444 pass and one root-only ownership test is skipped;
+- the three Hermes plugin tests pass;
+- local generic-Merchant E2E and crash recovery pass;
+- x402 package/source/vector conformance passes;
+- current and historical funded evidence locks pass;
+- OpenAPI and Arazzo checks pass;
+- production dependency audit reports zero vulnerabilities;
+- the 192-file package policy, clean install, licence audit, and consumer smoke
+  pass.
 
-That run proves:
+The project owner previously closed further formal security-scan iteration.
+The existing audit record remains under [`security/audits/`](security/audits/).
 
-`HTTP API -> Purchase -> separate human-present Authority -> Treasury staging
--> Kaspa-x402 standard-native -> Merchant fulfilment -> linked AP2 receipts`.
+## Remaining external actions
 
-The Authority decision was recorded by its owner-only SQLite store and joined
-to the same Purchase, issuer, and public report before the report was retained.
-The report contains public facts only; wallet keys, Authority credentials,
-private protocol payloads, and Journal databases remain outside Git.
+No push, npm publish, or Terah deployment was performed as part of this cutover.
+Those are operator release actions.
 
-Other canonical accepted transaction identifiers are recorded in the evidence
-README. No mainnet transaction was broadcast and no mainnet claim is made.
-
-Fresh Phase 11 evidence is under
-[`evidence/phase11-terah/`](evidence/phase11-terah/README.md). On Terah it adds:
-
-- a funded standard-native HTTP-API Purchase ending `receipted` at transaction
-  `331137376e0115aabda2a323402aa7ac3889c39fa2ede391a055cbdba37c4223`;
-- two funded batch Purchases, one accepted claim, its continuation, and a
-  strict-boundary refund;
-- restart recovery from a claim broadcast followed by temporary independent
-  witness lag, without rebuilding or rebroadcasting the transaction.
-
-## Verification and security
-
-The Phase 11 release candidate passes 491 tests: 490 pass and one documented
-privileged ownership test is skipped when the host cannot change file
-ownership. The independent Hermes plugin suite passes all three tests. The
-clean-tree release verifier also passes protocol conformance, all funded
-evidence checks, the local end-to-end proof, OpenAPI/Arazzo validation,
-production dependency audit, the 209-file packed-artifact verifier, and a clean
-consumer install and smoke test.
-
-The sealed full-branch security review covered every changed source-like file
-and reported three Low/P3 availability issues. The branch bounds Chain Evidence
-collections before Kaspa-WASM construction, rejects duplicate buckets, checks
-cancellation during traversal, and isolates operator recovery from the
-lower-trust Agent listener. The corresponding exploit regressions and complete
-test suite pass.
-
-The project owner explicitly closed additional security-scan iteration on
-2026-07-17 after reviewing the completed scan and verified remediation. This is
-not represented as a later zero-finding scan.
-
-Historical deep-scan evidence and fix reports remain under
-[`security/audits/2026-07-11-sompi-deep-scan/`](security/audits/2026-07-11-sompi-deep-scan/).
-Older alpha.6 and Phase 2D material is historical evidence only and does not
-describe the active runtime.
-
-## Release/readiness boundary
-
-This release is a testnet alpha implementation. It has one private,
-operator-controlled Terah deployment. It does not:
-
-- publish an npm package;
-- deploy a public Sompi service;
-- modify Kaspa-x402;
-- enable mainnet;
-- claim third-party AP2 interoperability;
-- enable autonomous/open mandates, passkeys, UCP, or a generic payment-rail
-  plugin system.
-
-Mainnet remains fail-closed until the gates in
-[`docs/mainnet-readiness.md`](docs/mainnet-readiness.md) are independently
-satisfied.
-
-## Current closeout
-
-Every Phase 0–11 acceptance item has direct test or recorded evidence. The
-implementation, documentation, public evidence, packed artifact, clean install,
-Terah deployment, restart, and rollback boundary are verified. The release is
-ready to publish, but npm publishing remains blocked by design until registry
-authentication is explicitly restored.
+Mainnet, autonomous authorization, passkeys, UCP, and official AP2/x402
+interoperability remain out of scope. See
+[`docs/mainnet-readiness.md`](docs/mainnet-readiness.md).

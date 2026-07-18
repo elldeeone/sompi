@@ -1,110 +1,91 @@
 # Purchase Journal
 
-Status: alpha.8 clean-cutover architecture.
+The SQLite Journal is Sompi's durable source of truth. Epoch **15** is the only
+active schema.
 
-The Purchase Journal is the API-owned SQLite source of truth for Purchase,
-Treasury, protocol evidence, and recovery state.
+## Rules
 
-## Schema boundary
+- WAL mode with explicit durability settings.
+- One writer/recovery coordinator.
+- Foreign keys and integrity checks enabled.
+- Owner-only database, WAL, SHM, and evidence paths.
+- Raw evidence stored as content-addressed 0600 files, not SQLite blobs.
+- Unknown schema epoch fails closed.
+- Protocol SDK objects never become schema.
 
-The only supported schema is epoch **14**.
+## Records
 
-- A new empty database is created directly at epoch 14.
-- Every older, newer, unversioned, corrupted, or substituted database is
-  rejected unchanged.
-- There is no runtime migration, compatibility reader, import command, or
-  alpha.6 state path.
+The Journal stores:
 
-The Journal verifies its application ID, schema version, schema checksum,
-filesystem identity, SQLite integrity, foreign keys, and immutable transition
-history at open.
+- Purchase and transition history;
+- Checkout Terms and evidence attachments;
+- Authority decisions and verification facts;
+- policy reservations and Admission Leases;
+- Treasury Movements and effect generations;
+- staging/payment plans and secure key references;
+- settlements and Chain Evidence;
+- batch Channels, vouchers, claims, continuations, and refunds;
+- fulfilment and one receipt per Purchase;
+- reconciliation and operator actions.
 
-## Owned state
+## Transaction boundaries
 
-The Journal records:
+State that grants authority or precedes an irreversible effect is committed in
+one transaction:
 
-- Purchase identity, intent, state, and transition history;
-- Checkout Terms and AP2 authorization decisions;
-- policy snapshots, Reservations, capacity, and observed spend;
-- Treasury Movements, prepared material, attempts, effects, and observations;
-- exact staging and abandoned-staging recovery;
-- Kaspa-x402 exact profile and Settlement facts;
-- additive head state and lineage evidence;
-- batch channels, voucher Movements, claim/refund attempts, and scan progress;
-- Fulfilment and linked receipts;
-- Admission Leases and fencing generations;
-- immutable Operator Manifest and Chain Evidence identities.
+- canonical intent;
+- exact authorization;
+- policy reservation;
+- prepared bytes or secure reference;
+- idempotency and payment identity;
+- expected outputs/effects;
+- lease/fencing generation;
+- next recovery action.
 
-Raw protocol bytes are not stored in canonical domain columns. They live in
-content-addressed evidence/prepared stores beside SQLite. The Journal stores
-their digest, length, profile, role, and relative reference.
+The external effect then runs. Observation and state promotion occur in a later
+transaction. A crash cannot leave an effect without a durable identity and
+recovery path.
 
-## Filesystem unit
+## Evidence
 
-The Operator Manifest binds one absolute API-owned data directory containing:
+Evidence Attachment metadata records digest, media type, profile, issuer, kind,
+storage reference, and verification history. Content files are immutable and
+verified on read.
 
-- `purchase.sqlite` and SQLite WAL/SHM files;
-- `purchase.sqlite.evidence/`;
-- `purchase.sqlite.prepared/`;
-- `staging-keys/`;
-- wallet and vault state;
-- Authority-client replay state.
+Raw AP2-derived authority evidence, x402 headers/payloads, transaction bytes,
+settlement responses, and Merchant responses remain attachments. Canonical
+Purchase state stores only stable facts and digests.
 
-The directory is mode `0700`; private files are `0600`. Symlinks, unsafe hard
-links, ownership drift, and group/other access fail closed. Backup and restore
-operate on the complete directory, not individual files.
+## Idempotency
 
-## Transaction rule
+- Caller request key identifies one logical Purchase.
+- Purchase ID, payment identifier, transaction/commitment ID, Movement ID, and
+  effect generation have unique constraints.
+- A duplicate request returns the same Purchase.
+- A changed request cannot reuse an existing key.
+- A possible submission keeps its effect fence until observation resolves it.
 
-Before an irreversible Merchant or blockchain effect, Sompi commits:
+## Recovery
 
-1. canonical intent and authorization;
-2. policy/Treasury capacity;
-3. immutable prepared material or its secure reference;
-4. stable idempotency identity;
-5. effect claim and fencing generation.
+Startup recovery:
 
-After the effect, Sompi records the exact observation and advances state in a
-separate transaction. SQLite and the external system are not atomically
-committable, so interruption always enters deterministic reconciliation.
+1. acquires the single-writer lease;
+2. validates schema and integrity;
+3. finds non-terminal Purchases and Movements;
+4. expires only leases whose recovery rules permit takeover;
+5. observes external effects before any retry;
+6. applies the next idempotent transition.
 
-## Recovery rule
+Payment recovery never creates a new signed artifact. Fulfilment recovery never
+repays. Unknown or contradictory evidence remains recoverable/blocked for the
+operator.
 
-Recovery is observation-first. It may adopt a proven winner or replay an
-idempotent Merchant lookup. It may submit saved bytes only under the exact
-durable proof contract for that effect.
+## Operations
 
-Temporary absence, cancellation after invocation, timeout, process death, or a
-new worker generation cannot prove non-execution. They do not release capacity
-or authorize a replacement payment.
-
-## Concurrency
-
-- Request keys identify one immutable Purchase intent.
-- Payment identifiers identify one immutable attempt.
-- Effect capabilities are generation-bound.
-- Stale workers cannot mutate newer state.
-- Policy Reservations serialize shared capacity.
-- Additive head and batch channel transitions use compare-and-swap invariants.
-- Admission Leases bound Purchase, evidence, Authority, and Treasury work.
-
-## Evidence and finality
-
-Chain Evidence is durable and source-separated. Mempool presence, accepted
-history, operator depth, and Kaspa consensus finality are distinct facts. Only
-the configured effective Finality Floor may terminalize Settlement or release
-effect-capable capacity.
-
-Protocol verification rows are append-only. Settlement, Fulfilment, and
-receipts remain separate facts linked to the same Purchase and attempt.
-
-## Operational rules
-
-- Stop API before a planned backup.
-- Never edit Journal rows or prepared/evidence files.
-- Never delete WAL files to repair state.
-- Never open an old database with a newer runtime expecting migration.
-- Never reset while an external effect is unresolved.
+Back up the database, WAL/SHM when present, evidence directory, secure key
+references, and Operator Manifest as one consistent set. Never edit Journal
+rows manually. Use `sompi-agent status`, `sompi-agent recover`, or the operator
+runbooks.
 
 See [`../runbooks/JOURNAL.md`](../runbooks/JOURNAL.md) and
 [`../runbooks/RECONCILIATION.md`](../runbooks/RECONCILIATION.md).

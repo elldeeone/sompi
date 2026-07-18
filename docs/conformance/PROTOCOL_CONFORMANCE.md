@@ -8,8 +8,9 @@ npm run test:conformance
 
 The gate verifies:
 
-- AP2 v0.2 source, schema, Python dependency, mandate, and receipt provenance;
-- TypeScript/Python AP2 artifact interoperability for the pinned profile;
+- AP2 v0.2 source, schema, and Python dependency provenance;
+- TypeScript/Python compatibility for Sompi's pinned internal authorization
+  evidence;
 - all four Kaspa-x402 `0.1.0-alpha.8` packages and npm integrity values;
 - Kaspa-x402 source/release identity;
 - unmodified exact HTTP and full-consensus standard-native/additive vectors;
@@ -26,7 +27,6 @@ SOMPI_CONFORMANCE_OFFLINE=1 npm run test:conformance
 Machine-readable provenance and claim boundaries are in
 [`test/conformance/provenance.json`](../../test/conformance/provenance.json).
 
-Passing this gate proves only the pinned offline profiles. Funded network
-evidence is separate. It does not prove general AP2 interoperability,
-standardized native-KAS AP2 support, mainnet readiness, or third-party
-deployment compatibility.
+Passing this gate proves only the pinned offline inputs and internal adapter.
+Funded network evidence is separate. It does not prove AP2 interoperability,
+mainnet readiness, or third-party deployment compatibility.

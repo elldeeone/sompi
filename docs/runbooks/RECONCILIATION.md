@@ -33,8 +33,8 @@ or payment bytes. Do not submit a transaction manually.
 | `authorised` | Authorized; payment not yet settled | Do not create a second Purchase |
 | `execution_prepared` | Immutable execution material exists | Recover the same Purchase if requested |
 | `submitted` | Submission may have succeeded | Observe; never repay |
-| `settled` | Payment verified | Recover fulfilment or receipts only |
-| `fulfilled` | Resource is durable | Recover receipts only |
+| `settled` | Payment verified | Recover fulfilment or the receipt only |
+| `fulfilled` | Resource is durable | Recover the receipt only |
 | `receipted` | Complete | No action |
 | `expired` | No new payment execution may begin | Resolve any existing staging output |
 | `failed_recoverable` | Durable evidence requires work | Recover once, then read status |

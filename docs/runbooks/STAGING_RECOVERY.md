@@ -23,7 +23,7 @@ Merchant input cannot choose another destination.
 1. Stop repeated calls for the Purchase.
 2. Preserve its Purchase ID, request key, version, manifest, API data directory,
    and node/witness configuration.
-3. Read status. If Settlement exists, recover fulfilment/receipts instead.
+3. Read status. If Settlement exists, recover fulfilment or the receipt instead.
 4. Confirm the same synced Testnet-10 evidence sources are available.
 5. Back up the complete API state using [`JOURNAL.md`](JOURNAL.md).
 
