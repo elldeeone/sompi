@@ -10,7 +10,9 @@ control.
 Sompi is not a new commerce protocol, an AP2 fork, or an x402 implementation.
 It composes evolving standards around a stable local Purchase model:
 
-- AP2 expresses user intent, merchant terms, authorization, and evidence.
+- AP2 expresses authorization and evidence when a supported profile is
+  available. The generic path retains AP2-derived authorization evidence
+  locally without requiring Merchant AP2 support.
 - x402 carries HTTP payment negotiation and settlement.
 - Kaspa-x402 executes supported x402 payments on Kaspa.
 - Sompi owns the user/agent experience, treasury controls, orchestration,
@@ -33,9 +35,9 @@ enforcement, and payment state transitions.
 
 ### Merchant
 
-Offers a resource under signed or otherwise verifiable terms, verifies the
-relevant authorization, accepts x402 payment, fulfils the resource, and emits
-receipt evidence.
+Offers a resource under verified x402 terms, accepts payment, and fulfils the
+resource. An explicitly supported AP2-aware Merchant may additionally verify
+official authorization artifacts and emit AP2 receipt evidence.
 
 ### Trusted Authority
 
@@ -61,10 +63,11 @@ not authorization.
 
 ### Checkout Terms
 
-The Merchant's exact proposed terms: Merchant identity, resource, amount,
-asset, network, expiry, and relevant request fingerprint. Signed AP2 artifacts
-or x402 offers may be attached as evidence, but their SDK types are not the
-canonical representation.
+The exact proposed terms: operator-allowed Merchant origin, payee, resource,
+amount, asset, network, expiry, selected payment profile, and relevant request
+fingerprint. Verified x402 requirements are sufficient for the generic path.
+Official AP2 artifacts may add evidence under an explicitly supported profile,
+but protocol SDK types are not the canonical representation.
 
 ### Purchase
 
@@ -83,8 +86,10 @@ Unix socket; loopback TCP is not a supported transport.
 
 ### Purchase Authorization
 
-The decision that this Agent may buy this exact resource from this exact
-Merchant under these exact Checkout Terms. AP2 belongs here.
+The signed decision that this Agent may buy this exact resource from this exact
+Merchant under these exact Checkout Terms and x402 requirements. AP2 belongs
+at this seam as an evidence/interop adapter; the canonical decision remains a
+Sompi domain record.
 
 ### Treasury Reservation
 
@@ -130,8 +135,9 @@ artifacts.
 
 An immutable protocol artifact stored with media type or format, exact
 protocol profile, issuer, digest, creation time, and verification status.
-Examples include AP2 mandates and receipts, x402 requirements and settlement
-responses, merchant offers, and Kaspa transaction evidence.
+Examples include AP2-derived authorization evidence, official AP2 mandates and
+receipts when supported, x402 requirements and settlement responses, Merchant
+offers, and Kaspa transaction evidence.
 
 ### Purchase Journal
 
@@ -220,6 +226,10 @@ possible external effect always enters Reconciliation.
     Merchant output is allowed.
 20. A batch voucher ceiling never replaces the individual Purchase
     Authorization or the separately recorded actual charge.
+21. Generic x402 execution never requires Sompi-specific Merchant headers,
+    mandate-presentation endpoints, or AP2 receipts.
+22. AP2-derived local evidence is never presented as Merchant-issued or strict
+    end-to-end AP2 interoperability.
 
 ## Non-goals for the first end-to-end release
 
@@ -241,11 +251,12 @@ possible external effect always enters Reconciliation.
 ## Success for the first end-to-end release
 
 A human-present testnet Purchase can be initiated through the authenticated
-Purchase API or its MCP compatibility adapter, bound to verified Merchant
+Purchase API or its MCP compatibility adapter, bound to verified generic x402
 terms, deterministically approved outside the agent process, reserved in the
 Purchase Journal, paid through either Kaspa-x402 `kaspa-exact-v2` profile,
-reconciled after injected crashes, fulfilled by a demo Merchant, and returned
-with linked AP2, x402, and Kaspa evidence. The separately gated batch proof
+reconciled after injected crashes, fulfilled by an unchanged x402 Merchant,
+and returned with linked authorization, x402, and Kaspa evidence. The
+separately gated batch proof
 demonstrates deposit, individually authorized voucher increments, claim,
 continuation, and strict-boundary refund without treating the channel as
 authorization. Replays, substitutions, unknown versions, unsafe egress, and

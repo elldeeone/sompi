@@ -2,6 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-07-11
+- Amended by: ADR-0017 (internal AP2-derived evidence; no Merchant
+  interoperability claim)
 
 ## Context
 

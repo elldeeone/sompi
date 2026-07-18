@@ -2,7 +2,8 @@
 
 Status: **Accepted for implementation**
 
-Accepted: **2026-07-11**; amended by ADR-0015 on **2026-07-16**
+Accepted: **2026-07-11**; amended by ADR-0015 on **2026-07-16** and ADR-0017
+on **2026-07-18**
 
 Applies to: the clean cutover after `ux-agent-native-payments`
 
@@ -43,13 +44,13 @@ flowchart TD
     Purchase --> Journal["SQLite Purchase Journal"]
     Purchase --> Policy["Purchase and treasury policy"]
     Purchase --> Vault["Wallet and consensus vault"]
-    Purchase --> AP2["Pinned AP2 adapter"]
+    Purchase --> AP2["Pinned AP2 evidence / interop adapter"]
     Purchase --> X402["Kaspa-x402 execution adapter"]
     Purchase --> Chain["Chain Evidence module"]
 
-    AP2 --> Merchant["AP2-aware Merchant fixture"]
     X402 --> KX["Kaspa-x402"]
-    KX --> Merchant
+    KX --> Merchant["Generic x402 Merchant fixture"]
+    AP2 -. "future official profile" .-> Merchant
     KX --> Kaspa["Kaspa testnet"]
     Chain --> Kaspa
 
@@ -70,7 +71,8 @@ direct wallet, Journal, Authority, AP2, or Kaspa-x402 access.
 | MCP compatibility tools and explanations | Sompi MCP adapter | Purchase implementation or credentials |
 | Canonical Purchase lifecycle | Purchase module | Protocol SDK objects |
 | Durable workflow and recovery | Purchase Journal | Ad-hoc JSON files |
-| Purchase Authorization | Trusted Authority + AP2 adapter | Agent/LLM process |
+| Purchase Authorization | Trusted Authority + Purchase module | Agent/LLM process or Merchant |
+| AP2-derived/official evidence | AP2 adapter | Canonical Purchase state or Kaspa-x402 |
 | Treasury reservation and movement | Policy + wallet/vault modules | AP2 mandate semantics |
 | Operator trust and configuration | Operator Provisioning module | Agent/MCP input or protocol wires |
 | HTTP payment negotiation | x402/Kaspa-x402 | Sompi-owned wire encoders |
@@ -89,9 +91,11 @@ Sompi evaluates two different decisions:
 2. **Treasury Movement:** may the treasury fund or execute this exact movement,
    including explicitly bounded non-price costs?
 
-AP2 answers the first. Sompi policy, wallet/vault, and Kaspa-x402 funding answer
-the second. A channel deposit or treasury allowance cannot stand in for later
-per-resource Purchase Authorization.
+The Trusted Authority and Purchase module answer the first. The AP2 adapter
+represents or verifies authorization evidence for supported profiles. Sompi
+policy, wallet/vault, and Kaspa-x402 funding answer the second. A channel
+deposit or treasury allowance cannot stand in for later per-resource Purchase
+Authorization.
 
 ## 4. Stable Purchase model
 
@@ -295,21 +299,25 @@ The AP2 adapter owns:
 
 - exact supported AP2 profile/schema identifiers;
 - AP2 parsing, deterministic verification, construction, and signing requests;
-- Checkout and Payment Mandate mapping;
-- AP2 receipt mapping;
+- the experimental internal AP2-derived authorization mapping;
+- official Checkout/Payment Mandate and Receipt mapping only when an explicit
+  interoperable profile is supported;
 - extraction of verified canonical facts into the Purchase model;
 - storage of original signed AP2 artifacts as Evidence Attachments.
 
-The initial semantic target is AP2 v0.2 human-present. Phase 1 records an exact
-upstream commit/schema pin for that profile. Moving to a different AP2 version
-is a deliberate adapter upgrade, not an incidental dependency refresh.
+The initial semantic target is human-present AP2-derived local authorization.
+It does not require Merchant AP2 support and is not strict AP2 interoperability.
+The exact upstream AP2 v0.2 commit/schema remains pinned for evidence mapping
+and conformance. Moving to a different AP2 version or adopting an official
+AP2/x402 profile is a deliberate adapter upgrade, not an incidental dependency
+refresh.
 
 It accepts only the explicitly pinned profile and fails closed on an unknown
 version or credential type. AP2 types are not re-exported from the Purchase
 interface.
 
-Human-present closed mandates are first. Autonomous/open mandates are a later
-capability with separate policy and threat-model acceptance gates.
+Human-present exact authorization is first. Autonomous/open mandates are a
+later capability with separate policy and threat-model acceptance gates.
 
 ### 6.8 Kaspa-x402 adapter
 
@@ -398,15 +406,19 @@ enters Reconciliation. No central scheduler is introduced.
 
 AP2 and x402 are complementary:
 
-- AP2 proves what terms were presented and what the User authorized.
+- Sompi's Trusted Authority proves what verified x402 terms the User authorized.
+- AP2 represents authorization/evidence under the selected local or official
+  profile.
 - x402 negotiates and executes payment for the HTTP resource.
 - Sompi proves that both refer to the same Purchase.
 
-Checkout discovery preserves that separation in code. A Sompi-owned composition
-module performs bounded HTTP/header acquisition, an AP2-only verifier validates
-the Merchant-signed Checkout and its opaque payment-requirements digest, and a
-Kaspa-x402-only verifier validates the exact `PAYMENT-REQUIRED` bytes against
-canonical Checkout Terms. Neither protocol adapter imports the other.
+Checkout discovery preserves that separation in code. A Sompi-owned deep module
+performs bounded HTTP/header acquisition, and a Kaspa-x402-only verifier
+validates the exact `PAYMENT-REQUIRED` bytes into canonical Checkout Terms and
+an execution plan. The operator-allowed HTTPS origin is the Merchant identity
+for this generic profile; the payee remains a separate exact fact. An optional
+official AP2-aware adapter may add verified Merchant evidence. Neither protocol
+adapter imports the other.
 
 The initial composition does not invent a proprietary AP2-in-x402 wire format:
 
@@ -420,9 +432,9 @@ sequenceDiagram
 
     A->>S: purchase / status / recover
     S->>M: Request Checkout Terms
-    M-->>S: Merchant-signed terms
+    M-->>S: Verified x402 payment requirements
     S->>T: Exact canonical approval request
-    T-->>S: AP2 authorization evidence
+    T-->>S: Signed Purchase Authorization + AP2-derived evidence
     S->>S: Reserve policy and persist attempt
     S->>X: Execute x402 payment with payment identifier
     X->>M: x402 payment payload
@@ -446,10 +458,14 @@ The binding includes at least:
 - Fulfilment digest;
 - receipt evidence digests.
 
+Generic Merchants receive no Sompi-specific AP2 headers, mandate-presentation
+requests, or receipt requirements. Sompi creates its canonical Receipt from
+Purchase Authorization, verified Settlement, Fulfilment, and evidence digests.
+
 If an official AP2-compatible x402 extension becomes available, it is
-implemented as a replacement adapter at the protocol seam. It is not allowed to
-change canonical Purchase semantics. Temporary old/new conformance testing is
-allowed during the upgrade; permanent dual runtime support is not.
+implemented as a replacement adapter at the existing protocol seams. It is not
+allowed to change canonical Purchase semantics. Temporary old/new conformance
+testing is allowed during the upgrade; permanent dual runtime support is not.
 
 Official x402 already provides an extension model and examples such as Payment
 Identifier and Signed Offers & Receipts. Sompi does not require x402 to change
@@ -536,9 +552,9 @@ wallet, agent transports, journal, or canonical receipts.
 - both Kaspa-x402 `kaspa-exact-v2` profiles on testnet;
 - clean deletion of Sompi x402 v1;
 - separate deterministic Trusted Authority;
-- pinned human-present AP2 profile;
-- demo Merchant;
-- linked evidence and receipts;
+- pinned human-present AP2-derived evidence profile;
+- generic x402 demo Merchant;
+- linked authorization, x402, Kaspa, fulfilment, and receipt evidence;
 - crash, replay, tampering, SSRF, and end-to-end tests.
 
 ### Subsequent gated phases

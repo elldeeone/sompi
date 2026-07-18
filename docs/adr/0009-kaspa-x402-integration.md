@@ -2,7 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-07-11
-- Amended by: ADR-0015 (pinned alpha.8 exact and batch scope)
+- Amended by: ADR-0015 (pinned alpha.8 exact and batch scope) and ADR-0017
+  (generic x402 Merchant path)
 
 ## Context
 

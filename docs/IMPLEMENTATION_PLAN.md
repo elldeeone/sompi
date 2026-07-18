@@ -1,6 +1,6 @@
 # Sompi AP2 + Kaspa-x402 implementation plan
 
-Status: **Alpha.8 clean cutover Phases 3-8 verified; funded and security closure in progress**
+Status: **Phases 0-11 verified; Phase 12 generic x402 Merchant cutover active**
 
 Architecture: [`docs/architecture/SOMPI_ARCHITECTURE.md`](architecture/SOMPI_ARCHITECTURE.md)
 
@@ -544,6 +544,55 @@ Gate:
 - Exact and batch paid canaries reconcile after restart without duplicate
   payment or fulfilment.
 - The live Hermes gateway has a tested rollback and no unpreserved local state.
+
+## Phase 12: Generic x402 Merchant and AP2 readiness cutover
+
+Purpose: make ordinary Kaspa-x402 Merchants usable without Sompi-specific AP2
+wire behavior while preserving exact human authorization and a clean future
+upgrade path to official AP2/x402 interoperability.
+
+- [ ] Accept ADR-0017 and align `CONTEXT.md`, the target architecture, this
+  plan, and current documentation.
+- [ ] Make verified Kaspa-x402 `PAYMENT-REQUIRED` evidence sufficient to derive
+  canonical Checkout Terms for an operator-allowed HTTPS Merchant origin.
+- [ ] Bind Merchant origin, payee, request, requirements digest, amount or
+  batch ceiling, actual charge, profile/channel, fees, finality, expiry, and
+  Purchase identity in the signed Purchase Authorization.
+- [ ] Retain AP2-derived authorization only as internal Evidence Attachments;
+  do not fabricate Merchant-issued AP2 evidence or claim interoperability.
+- [ ] Remove `SOMPI-CHECKOUT`, both Sompi AP2 Receipt headers, and the
+  proprietary mandate-presentation endpoints from the active runtime.
+- [ ] Delete the commerce-authorization effect, store, recovery state,
+  Merchant issuer configuration, obsolete fixtures, tests, examples, and
+  commands.
+- [ ] Verify generic Fulfilment from the authorized request, bounded paid
+  response, x402 Settlement, and any precommitted resource digest; create one
+  canonical Sompi Receipt.
+- [ ] Start the next clean Journal epoch and reject every prior development
+  epoch unchanged.
+- [ ] Apply the same authorization contract to standard-native, additive, and
+  every batch voucher increment without changing Kaspa-x402.
+- [ ] Keep exact official AP2 and x402 source/profile pins plus a non-runtime
+  conformance watch so an official integration can replace the adapters after
+  explicit review.
+- [ ] Prove direct API, skill, MCP compatibility, Telegram Authority, policy
+  denial, both exact profiles, batch, restart, replay, substitution, and
+  ambiguous recovery against generic x402 Merchant behavior.
+- [ ] Run the complete build/test/offline/conformance/package verifier and
+  record fresh funded Testnet-10 and Terah evidence without secrets.
+
+Gate:
+
+- A generic supported Kaspa-x402 Merchant needs no Sompi or AP2 integration.
+- Treasury execution remains impossible without the exact signed human-present
+  Purchase Authorization.
+- Standard-native, additive, and batch retain their existing settlement and
+  recovery invariants.
+- No active proprietary Merchant AP2 header, endpoint, state, configuration,
+  fixture, command, or current documentation remains.
+- Official AP2/x402 support can replace adapter behavior without changing the
+  Purchase model, Journal lifecycle, Treasury, Authority, Telegram, or agent
+  interfaces.
 
 ## Deferred tracks (not part of the alpha.8 clean cutover)
 

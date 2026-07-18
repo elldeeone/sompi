@@ -2,6 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-07-16
+- Amended by: ADR-0017 (generic x402 Merchant path and internal AP2-derived
+  authorization evidence)
 
 ## Context
 

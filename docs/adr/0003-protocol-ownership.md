@@ -2,7 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-07-11
-- Amended by: ADR-0015 (HTTP/MCP transport ownership)
+- Amended by: ADR-0015 (HTTP/MCP transport ownership) and ADR-0017 (generic
+  x402 Merchant path; AP2-derived local evidence)
 
 ## Context
 
