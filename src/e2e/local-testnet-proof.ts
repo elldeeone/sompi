@@ -104,7 +104,7 @@ import { PolicyEngine } from "../policy.js";
 const NOW_MS = 2_000_000_000_000;
 const MERCHANT_ORIGIN = "https://merchant.example";
 const RESOURCE_URL = `${MERCHANT_ORIGIN}/paid-resource`;
-const RESOURCE_BODY = Buffer.from("Sompi deterministic AP2 + x402 resource\n", "utf8");
+const RESOURCE_BODY = Buffer.from("Sompi deterministic generic x402 resource\n", "utf8");
 const PAY_TO = "kaspatest:qpumuen7l8wthtz45p3ftn58pvrs9xlumvkuu2xet8egzkcklqtes5z8rkmpd";
 const PRICE_ATOMIC = "20000000";
 const ADDITIONAL_COST_CEILING_ATOMIC = "30000000";
@@ -133,7 +133,7 @@ export interface LocalTestnetProofReport {
   readonly initiationMode:
     | "direct-purchase-module"
     | "mcp-sdk-in-memory-transport";
-  readonly adapterTransport: "sompi-demo-local-ap2-presentation-endpoints";
+  readonly merchantProfile: "generic-x402";
   readonly protocolPins: typeof SUPPORTED_PROTOCOL_PROFILES;
   readonly purchase: {
     readonly id: PurchaseId;
@@ -163,7 +163,7 @@ export interface LocalTestnetProofReport {
   };
   readonly protocolSeparation: {
     readonly paidRequestExtensionKeys: readonly ["payment-identifier"];
-    readonly ap2DataInX402Request: false;
+    readonly authorityDataInX402Request: false;
   };
 }
 
@@ -187,7 +187,7 @@ export interface RunLocalTestnetProofOptions {
 /**
  * Runs one fully local vertical proof. The external Kaspa/RPC boundary alone
  * is deterministic in-memory Testnet-10, so this never claims live network
- * conformance. Every Sompi module, AP2 signature, Unix authority frame,
+ * conformance. Every Sompi module, authority signature, Unix authority frame,
  * Kaspa-x402 alpha.8 transaction, Merchant acceptance, and journal write is
  * the production implementation.
  */
@@ -475,7 +475,7 @@ class DemoPinnedTransport implements PinnedHttpTransport {
     const keys = Object.keys(decoded.extensions ?? {}).sort();
     this.paidRequestExtensionKeys.push(keys);
     if (keys.length !== 1 || keys[0] !== "payment-identifier") {
-      throw new Error("x402 paid request contained non-standard AP2 correlation data");
+      throw new Error("x402 paid request contained Sompi authority data");
     }
     const paymentIdentifier = paymentIdentifierFromPayload(decoded);
     const paid = await this.merchant.handlePaid({
@@ -545,7 +545,7 @@ function composeCoordinator(input: {
     observedStagingSource: observedStaging,
     // @kaspa-x402/client derives the short-lived request authorization from
     // wall-clock time. Keep the signing adapter on that same clock even though
-    // the surrounding deterministic proof uses a fixed AP2 business clock.
+    // the surrounding deterministic proof uses a fixed business clock.
     builder: new ExactTransactionBuilder({ keyStore }),
   });
   const chainVerifier = new KaspaExactChainVerifier({
@@ -976,7 +976,7 @@ function proofReport(
       (keys) => keys.length !== 1 || keys[0] !== "payment-identifier"
     )
   ) {
-    throw new Error("local proof did not preserve AP2/x402 wire separation");
+    throw new Error("local proof did not preserve authority/x402 wire separation");
   }
   const report: LocalTestnetProofReport = Object.freeze({
     profile: LOCAL_TESTNET_PROOF_PROFILE,
@@ -985,7 +985,7 @@ function proofReport(
     liveNetworkConformanceClaimed: false,
     authorityMode,
     initiationMode,
-    adapterTransport: "sompi-demo-local-ap2-presentation-endpoints",
+    merchantProfile: "generic-x402",
     protocolPins: SUPPORTED_PROTOCOL_PROFILES,
     purchase: Object.freeze({
       id: first.id,
@@ -1017,7 +1017,7 @@ function proofReport(
     }),
     protocolSeparation: Object.freeze({
       paidRequestExtensionKeys: Object.freeze(["payment-identifier"] as const),
-      ap2DataInX402Request: false,
+      authorityDataInX402Request: false,
     }),
   });
   assertSecretFreeReport(report);

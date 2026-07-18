@@ -10,7 +10,7 @@ import {
   writeLocalTestnetProofReport,
 } from "./local-testnet-proof.js";
 
-test("deterministic local Testnet-10 proof joins AP2, x402, Settlement, Fulfilment, and Receipts", async () => {
+test("deterministic local Testnet-10 proof joins authority, generic x402, settlement, fulfilment, and receipt", async () => {
   const report = await runLocalTestnetProof();
   assert.equal(report.profile, LOCAL_TESTNET_PROOF_PROFILE);
   assert.equal(report.purchase.state, "receipted");
@@ -22,7 +22,7 @@ test("deterministic local Testnet-10 proof joins AP2, x402, Settlement, Fulfilme
   assert.deepEqual(report.protocolSeparation.paidRequestExtensionKeys, [
     "payment-identifier",
   ]);
-  assert.equal(report.protocolSeparation.ap2DataInX402Request, false);
+  assert.equal(report.protocolSeparation.authorityDataInX402Request, false);
   assert.equal(report.recovery.restartCount, 0);
   assert.match(report.transactions.stagingOutpoint, /^[a-f0-9]{64}:0$/);
   assert.match(report.transactions.merchantOutpoint, /^[a-f0-9]{64}:0$/);

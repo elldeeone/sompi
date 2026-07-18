@@ -152,12 +152,12 @@ import {
 
 const MERCHANT_ORIGIN = "https://merchant.example";
 const RESOURCE_URL = `${MERCHANT_ORIGIN}/paid-resource`;
-const RESOURCE_BODY = Buffer.from("Sompi live Testnet-10 AP2 + Kaspa-x402 resource\n", "utf8");
+const RESOURCE_BODY = Buffer.from("Sompi live Testnet-10 generic x402 resource\n", "utf8");
 const AUTHORITY_TIMEOUT_MS = 5_000;
 const PROOF_TIMEOUT_MS = 12 * 60_000;
 
 export const LIVE_TESTNET_PROOF_PROFILE =
-  "urn:sompi:e2e:live-testnet10-ap2-kaspa-x402-exact:2" as const;
+  "urn:sompi:e2e:live-testnet10-generic-x402-exact:3" as const;
 
 export type LiveExactProfile = "standard-native" | "additive";
 export type LivePurchaseIngress = "http-api" | "mcp-api-compatibility";
@@ -179,7 +179,7 @@ export interface LiveTestnetProofReport {
   readonly liveKaspaTestnet10ExecutionProved: true;
   readonly exactProfile: LiveExactProfile;
   readonly purchaseIngress: LivePurchaseIngress;
-  readonly ap2HumanPresentConformanceClaimed: boolean;
+  readonly humanPresentAuthorityProved: boolean;
   readonly authorityMode:
     | "in-process-local-auto-approved-test-fixture"
     | "separate-process-human-present";
@@ -238,7 +238,7 @@ export interface LiveTestnetProofReport {
   };
   readonly protocolSeparation: {
     readonly paidRequestExtensionKeys: readonly ["payment-identifier"];
-    readonly ap2DataInX402Request: false;
+    readonly authorityDataInX402Request: false;
   };
   readonly evidenceHandling: {
     readonly reportMode: "0600";
@@ -273,7 +273,7 @@ export interface LiveAuthorityBinding {
   readonly issuer: string;
   readonly instrumentId: string;
   readonly report: Readonly<{
-    readonly ap2HumanPresentConformanceClaimed: boolean;
+    readonly humanPresentAuthorityProved: boolean;
     readonly authorityMode:
       | "in-process-local-auto-approved-test-fixture"
       | "separate-process-human-present";
@@ -433,7 +433,7 @@ export async function runLiveTestnetProof(
       options.purchaseIngress
     );
     resources.push(() => ingress.close());
-    options.onProgress?.("running resumable AP2 authorization and Kaspa-x402 exact Purchase");
+    options.onProgress?.("running resumable human authorization and generic x402 Purchase");
     const first = await drivePurchase(
       ingress.application,
       purchaseJournal,
@@ -1123,7 +1123,7 @@ export async function createLiveAuthority(
     issuer: FIXED_AUTHORITY_ISSUER,
     instrumentId: FIXED_INSTRUMENT_ID,
     report: Object.freeze({
-      ap2HumanPresentConformanceClaimed: false,
+      humanPresentAuthorityProved: false,
       authorityMode: "in-process-local-auto-approved-test-fixture" as const,
       authorityIsolationAppliedToThisRun: false,
       separateAuthorityIsolationProofAvailable: false,
@@ -1172,7 +1172,7 @@ export function createExternalLiveAuthority(
     issuer: options.issuer,
     instrumentId: options.instrumentId,
     report: Object.freeze({
-      ap2HumanPresentConformanceClaimed: true,
+      humanPresentAuthorityProved: true,
       authorityMode: "separate-process-human-present" as const,
       authorityIsolationAppliedToThisRun: true,
       separateAuthorityIsolationProofAvailable: true,
@@ -1485,8 +1485,8 @@ async function createReport(input: {
     liveKaspaTestnet10ExecutionProved: true,
     exactProfile: input.exactProfile,
     purchaseIngress: input.purchaseIngress,
-    ap2HumanPresentConformanceClaimed:
-      input.authority.ap2HumanPresentConformanceClaimed,
+    humanPresentAuthorityProved:
+      input.authority.humanPresentAuthorityProved,
     authorityMode: input.authority.authorityMode,
     authorityIsolationAppliedToThisRun:
       input.authority.authorityIsolationAppliedToThisRun,
@@ -1537,7 +1537,7 @@ async function createReport(input: {
     }),
     protocolSeparation: Object.freeze({
       paidRequestExtensionKeys: input.transport.extensionKeys(),
-      ap2DataInX402Request: false as const,
+      authorityDataInX402Request: false as const,
     }),
     evidenceHandling: Object.freeze({
       reportMode: "0600" as const,
@@ -1791,7 +1791,7 @@ function assertSecretFreeReport(value: unknown): void {
 
 function assertExactReportSchema(report: LiveTestnetProofReport): void {
   exactKeys(report, [
-    "ap2HumanPresentConformanceClaimed",
+    "humanPresentAuthorityProved",
     "authorityIsolationAppliedToThisRun",
     "authorityMode",
     "bootstrapFunding",
@@ -1876,7 +1876,7 @@ function assertExactReportSchema(report: LiveTestnetProofReport): void {
     "uniqueMerchantExactTransactions",
   ], "idempotency");
   exactKeys(report.protocolSeparation, [
-    "ap2DataInX402Request", "paidRequestExtensionKeys",
+    "authorityDataInX402Request", "paidRequestExtensionKeys",
   ], "protocol separation");
   exactKeys(report.evidenceHandling, [
     "acceptingBlockDaaScoreMeaning", "outputBlockDaaScoreMeaning", "publicFactsOnly",
@@ -1887,12 +1887,12 @@ function assertExactReportSchema(report: LiveTestnetProofReport): void {
   ], "lifecycle limitations");
   const autoApprovedAuthority =
     report.authorityMode === "in-process-local-auto-approved-test-fixture" &&
-    report.ap2HumanPresentConformanceClaimed === false &&
+    report.humanPresentAuthorityProved === false &&
     report.authorityIsolationAppliedToThisRun === false &&
     report.separateAuthorityIsolationProofAvailable === false;
   const humanPresentAuthority =
     report.authorityMode === "separate-process-human-present" &&
-    report.ap2HumanPresentConformanceClaimed === true &&
+    report.humanPresentAuthorityProved === true &&
     report.authorityIsolationAppliedToThisRun === true &&
     report.separateAuthorityIsolationProofAvailable === true;
   if (

@@ -96,7 +96,7 @@ const REFUND_PROOF_DAA_LEAD = 1_800n;
 const PROOF_TIMEOUT_MS = 15 * 60_000;
 
 export const LIVE_BATCH_PROOF_PROFILE =
-  "urn:sompi:e2e:live-testnet10-ap2-kaspa-x402-batch:1" as const;
+  "urn:sompi:e2e:live-testnet10-generic-x402-batch:2" as const;
 
 export interface LiveBatchProofReport {
   readonly profile: typeof LIVE_BATCH_PROOF_PROFILE;

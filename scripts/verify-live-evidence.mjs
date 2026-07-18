@@ -6,8 +6,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const evidence = path.join(root, "evidence", "live-testnet10");
-const expected = Object.freeze({
+const historicalEvidence = path.join(root, "evidence", "live-testnet10");
+const currentEvidence = path.join(root, "evidence", "generic-x402-cutover");
+const historicalExpected = Object.freeze({
   "standard-native.json": Object.freeze({
     digest: "b17898cc726f46e8ee35bbad07c800e19117536350996f7600b0006bb688e1a8",
     profile: "urn:sompi:e2e:live-testnet10-ap2-kaspa-x402-exact:2",
@@ -30,8 +31,8 @@ const expected = Object.freeze({
   }),
 });
 
-for (const [filename, contract] of Object.entries(expected)) {
-  const bytes = fs.readFileSync(path.join(evidence, filename));
+for (const [filename, contract] of Object.entries(historicalExpected)) {
+  const bytes = fs.readFileSync(path.join(historicalEvidence, filename));
   const report = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
   const encoded = JSON.stringify(report);
   const digest = createHash("sha256").update(encoded).digest("hex");
@@ -41,38 +42,38 @@ for (const [filename, contract] of Object.entries(expected)) {
     report.network !== "kaspa:testnet-10" ||
     /(?:0\.1\.0-alpha\.6|kaspa-exact-v1|borrowInventory|privateKey|wallet-key|owner\.key|ipc-mac\.key|sourceWalletDirectory|nodeUrl)/i.test(encoded)
   ) {
-    throw new Error(`live Testnet-10 evidence ${filename} is invalid`);
+    throw new Error(`historical live Testnet-10 evidence ${filename} is invalid`);
   }
 }
 
-const standard = read("standard-native.json");
+const historicalStandard = readHistorical("standard-native.json");
 if (
-  standard.exactProfile !== "standard-native" ||
-  standard.purchaseIngress !== "http-api" ||
-  standard.economics?.merchantGainAtomic !== standard.economics?.advertisedAmountAtomic ||
-  standard.economics?.transactionVersion !== 0
+  historicalStandard.exactProfile !== "standard-native" ||
+  historicalStandard.purchaseIngress !== "http-api" ||
+  historicalStandard.economics?.merchantGainAtomic !== historicalStandard.economics?.advertisedAmountAtomic ||
+  historicalStandard.economics?.transactionVersion !== 0
 ) throw new Error("standard-native live evidence invariants changed");
 
-const additive = read("additive.json");
+const historicalAdditive = readHistorical("additive.json");
 if (
-  additive.exactProfile !== "additive" ||
-  additive.purchaseIngress !== "mcp-api-compatibility" ||
-  additive.economics?.merchantGainAtomic !== additive.economics?.advertisedAmountAtomic ||
-  additive.economics?.transactionVersion !== 1 ||
-  additive.economics?.outputCount !== 1
+  historicalAdditive.exactProfile !== "additive" ||
+  historicalAdditive.purchaseIngress !== "mcp-api-compatibility" ||
+  historicalAdditive.economics?.merchantGainAtomic !== historicalAdditive.economics?.advertisedAmountAtomic ||
+  historicalAdditive.economics?.transactionVersion !== 1 ||
+  historicalAdditive.economics?.outputCount !== 1
 ) throw new Error("additive live evidence invariants changed");
 
-const batch = read("batch.json");
+const historicalBatch = readHistorical("batch.json");
 if (
-  batch.claimChannel?.purchases?.length !== 2 ||
-  batch.claimChannel?.chargedCumulativeAtomic !== "12000000" ||
-  batch.claimChannel?.continuation?.amountAtomic !== "28000000" ||
-  batch.refundChannel?.refundOutput?.amountAtomic !== "38000000" ||
-  BigInt(batch.refundChannel?.observedAfterBoundaryDaa ?? 0) <=
-    BigInt(batch.refundChannel?.refundTimeoutDaa ?? 0)
+  historicalBatch.claimChannel?.purchases?.length !== 2 ||
+  historicalBatch.claimChannel?.chargedCumulativeAtomic !== "12000000" ||
+  historicalBatch.claimChannel?.continuation?.amountAtomic !== "28000000" ||
+  historicalBatch.refundChannel?.refundOutput?.amountAtomic !== "38000000" ||
+  BigInt(historicalBatch.refundChannel?.observedAfterBoundaryDaa ?? 0) <=
+    BigInt(historicalBatch.refundChannel?.refundTimeoutDaa ?? 0)
 ) throw new Error("batch live evidence invariants changed");
 
-const contention = read("additive-contention.json");
+const contention = readHistorical("additive-contention.json");
 if (
   contention.assertions?.oneWinner !== true ||
   contention.assertions?.loserPaidNothing !== true ||
@@ -82,7 +83,7 @@ if (
   contention.winner?.transactionId === contention.explicitRetry?.transactionId
 ) throw new Error("additive contention live evidence invariants changed");
 
-const humanPresent = read("human-present-standard-native.json");
+const humanPresent = readHistorical("human-present-standard-native.json");
 if (
   humanPresent.exactProfile !== "standard-native" ||
   humanPresent.purchaseIngress !== "http-api" ||
@@ -95,8 +96,49 @@ if (
   humanPresent.economics?.transactionVersion !== 0
 ) throw new Error("human-present standard-native live evidence invariants changed");
 
-process.stdout.write("Alpha.8 live Testnet-10 evidence passed.\n");
+const currentExpected = Object.freeze({
+  "standard-native.json": "219511a816da502555b52d02189c243ef48329637ac29178a308a364a0afa377",
+  "additive.json": "54409a9bb062ddbc234bf6efe38a3afbbb883f47c8c88bb97a070f4c9f33b3e3",
+  "batch.json": "238a21c0543278835145a782637a56834d4b1d82ff6097d4da2703244943ad68",
+});
+for (const [filename, expectedDigest] of Object.entries(currentExpected)) {
+  const report = readCurrent(filename);
+  const encoded = JSON.stringify(report);
+  if (
+    createHash("sha256").update(encoded).digest("hex") !== expectedDigest ||
+    report.profile !== "urn:sompi:evidence:generic-x402-cutover:1" ||
+    report.network !== "kaspa:testnet-10" ||
+    report.merchantProfile !== "generic-x402" ||
+    report.privateMaterialIncluded !== false ||
+    /(?:privateKey|wallet-key|owner\.key|ipc-mac\.key|sourceWalletDirectory|nodeUrl)/i.test(encoded)
+  ) throw new Error(`generic x402 cutover evidence ${filename} is invalid`);
+}
+const currentStandard = readCurrent("standard-native.json");
+const currentAdditive = readCurrent("additive.json");
+const currentBatch = readCurrent("batch.json");
+if (
+  currentStandard.exactProfile !== "standard-native" ||
+  currentStandard.purchaseIngress !== "http-api" ||
+  currentStandard.purchaseState !== "receipted" ||
+  currentStandard.merchantGainAtomic !== currentStandard.advertisedAmountAtomic ||
+  currentStandard.transactionVersion !== 0 ||
+  currentAdditive.exactProfile !== "additive" ||
+  currentAdditive.purchaseIngress !== "mcp-api-compatibility" ||
+  currentAdditive.purchaseState !== "receipted" ||
+  currentAdditive.merchantGainAtomic !== currentAdditive.advertisedAmountAtomic ||
+  currentAdditive.transactionVersion !== 1 ||
+  currentBatch.paymentScheme !== "batch-settlement" ||
+  currentBatch.authorizedCharges !== 2 ||
+  currentBatch.strictBoundarySatisfied !== true ||
+  BigInt(currentBatch.observedAfterBoundaryDaa ?? 0) <= BigInt(currentBatch.refundTimeoutDaa ?? 0)
+) throw new Error("generic x402 cutover evidence invariants changed");
 
-function read(filename) {
-  return JSON.parse(fs.readFileSync(path.join(evidence, filename), "utf8"));
+process.stdout.write("Generic x402 cutover and historical TN10 evidence passed.\n");
+
+function readHistorical(filename) {
+  return JSON.parse(fs.readFileSync(path.join(historicalEvidence, filename), "utf8"));
+}
+
+function readCurrent(filename) {
+  return JSON.parse(fs.readFileSync(path.join(currentEvidence, filename), "utf8"));
 }

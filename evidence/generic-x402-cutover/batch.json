@@ -1,0 +1,22 @@
+{
+  "profile": "urn:sompi:evidence:generic-x402-cutover:1",
+  "generatedAt": "2026-07-18T08:31:30.784Z",
+  "network": "kaspa:testnet-10",
+  "merchantProfile": "generic-x402",
+  "paymentScheme": "batch-settlement",
+  "purchaseStates": ["receipted", "receipted"],
+  "authorizedCharges": 2,
+  "chargedCumulativeAtomic": "12000000",
+  "claimChannelId": "722f318ef28827e8ea4965315c4ea7ee5da02a23aa83877feb274b89864aee30",
+  "claimTransactionId": "18cd57a98a4bcf4ee21bf1d040cfdecf632f2d95127df97c63f4eadbe4fefc49",
+  "continuationAmountAtomic": "28000000",
+  "refundChannelId": "224b49a7f048d48b0a77a83eec6c75c65e1b5557c21e376a23b03d3ae196a081",
+  "refundTimeoutDaa": "520047800",
+  "observedBeforeBoundaryDaa": "520046141",
+  "observedAfterBoundaryDaa": "520047969",
+  "strictBoundarySatisfied": true,
+  "refundTransactionId": "107b8792cc302148476bba0fec3d1ed70fcea619694557a04a9370c0dfb5d1af",
+  "sourceReportSha256": "548c9719dbcce492b93fbd049e05ab84cce9a5c77b0c4be4a81a5759f711b850",
+  "sourceReportDigest": "79ff273a667aa153aa05da562f5af74cdde564bf24cd633b785deb3070b2a751",
+  "privateMaterialIncluded": false
+}

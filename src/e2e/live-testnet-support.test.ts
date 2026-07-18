@@ -774,11 +774,11 @@ test("live report has an exact honest schema and excludes actual key bytes", asy
     const filename = path.join(root, "public", "report.json");
     writeLiveTestnetProofReport(filename, report, initialized);
     assert.equal(fs.statSync(filename).mode & 0o777, 0o600);
-    assert.equal(report.ap2HumanPresentConformanceClaimed, false);
+    assert.equal(report.humanPresentAuthorityProved, false);
     assert.equal(report.authorityIsolationAppliedToThisRun, false);
     const humanPresentReport: LiveTestnetProofReport = {
       ...report,
-      ap2HumanPresentConformanceClaimed: true,
+      humanPresentAuthorityProved: true,
       authorityMode: "separate-process-human-present",
       authorityIsolationAppliedToThisRun: true,
       separateAuthorityIsolationProofAvailable: true,
@@ -920,7 +920,7 @@ function fakeReport(
     "300000000"
   );
   const report: LiveTestnetProofReport = Object.freeze({
-    profile: "urn:sompi:e2e:live-testnet10-ap2-kaspa-x402-exact:2",
+    profile: "urn:sompi:e2e:live-testnet10-generic-x402-exact:3",
     generatedAt: new Date().toISOString(),
     network: LIVE_NETWORK,
     chainMode: "operator-pinned-live-testnet-10-wrpc",
@@ -936,7 +936,7 @@ function fakeReport(
     liveKaspaTestnet10ExecutionProved: true,
     exactProfile: "additive",
     purchaseIngress: "http-api",
-    ap2HumanPresentConformanceClaimed: false,
+    humanPresentAuthorityProved: false,
     authorityMode: "in-process-local-auto-approved-test-fixture",
     authorityIsolationAppliedToThisRun: false,
     separateAuthorityIsolationProofAvailable: false,
@@ -1002,7 +1002,7 @@ function fakeReport(
     },
     protocolSeparation: {
       paidRequestExtensionKeys: ["payment-identifier"] as const,
-      ap2DataInX402Request: false as const,
+      authorityDataInX402Request: false as const,
     },
     evidenceHandling: {
       reportMode: "0600" as const,
