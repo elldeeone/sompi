@@ -204,6 +204,47 @@ if (
   )
 ) throw new Error("wallet and Transfer live evidence invariants changed");
 
+const transferLimitFix = JSON.parse(
+  fs.readFileSync(path.join(walletTransferEvidence, "terah-transfer-limit-0.9.1.json"), "utf8")
+);
+const transferLimitFixEncoded = JSON.stringify(transferLimitFix);
+if (
+  createHash("sha256").update(transferLimitFixEncoded).digest("hex") !==
+    "fce30b67d8539d9f628f4f1761c63a4b93c74b6bc79905deadbbc9f4d58eaff4" ||
+  transferLimitFix.profile !== "urn:sompi:evidence:terah-transfer-limit-fix:1" ||
+  transferLimitFix.network !== "kaspa:testnet-10" ||
+  transferLimitFix.packageVersion !== "0.9.1" ||
+  transferLimitFix.journalEpoch !== 16 ||
+  transferLimitFix.deployment?.stateReinitialized !== false ||
+  transferLimitFix.deployment?.walletIdentityPreserved !== true ||
+  transferLimitFix.deployment?.journalPreserved !== true ||
+  transferLimitFix.deployment?.privateMaterialIncluded !== false ||
+  transferLimitFix.regression?.maxPerTransferAtomic !== transferLimitFix.transfer?.amountAtomic ||
+  transferLimitFix.regression?.oldTransferState !== "failed_terminal" ||
+  transferLimitFix.regression?.oldTransferTransactionBroadcast !== false ||
+  transferLimitFix.regression?.oldTransferRetried !== false ||
+  transferLimitFix.transfer?.state !== "receipted" ||
+  transferLimitFix.transfer?.authorizationDecision !== "approved" ||
+  transferLimitFix.transfer?.amountAtomic !== transferLimitFix.transfer?.destinationOutputAtomic ||
+  BigInt(transferLimitFix.transfer?.feeAtomic ?? -1) >
+    BigInt(transferLimitFix.regression?.feeCeilingAtomic ?? -1) ||
+  transferLimitFix.transfer?.paymentTransactionCount !== 1 ||
+  transferLimitFix.transfer?.receiptRecorded !== true ||
+  transferLimitFix.transfer?.recoveryRequired !== false ||
+  transferLimitFix.acceptedChainEvidence?.recipientOutputAddress !== transferLimitFix.transfer?.destination ||
+  transferLimitFix.acceptedChainEvidence?.recipientOutputAtomic !== transferLimitFix.transfer?.amountAtomic ||
+  transferLimitFix.acceptedChainEvidence?.continuationOutputAtomic !==
+    transferLimitFix.walletAfter?.observedAtomic ||
+  transferLimitFix.walletAfter?.vaultOutpoint?.transactionId !== transferLimitFix.transfer?.transactionId ||
+  transferLimitFix.walletAfter?.vaultOutpoint?.index !== transferLimitFix.transfer?.continuationOutputIndex ||
+  transferLimitFix.walletAfter?.unboundAtomic !== "0" ||
+  transferLimitFix.walletAfter?.reservedAtomic !== "0" ||
+  transferLimitFix.walletAfter?.availableAtomic !== transferLimitFix.walletAfter?.observedAtomic ||
+  /(?:privateKey|wallet-key|owner\.key|ipc-mac\.key|sourceWalletDirectory|nodeUrl|telegramBotToken|apiCredential)/i.test(
+    transferLimitFixEncoded
+  )
+) throw new Error("0.9.1 transfer-limit evidence invariants changed");
+
 process.stdout.write("Generic x402, wallet/Transfer, and historical TN10 evidence passed.\n");
 
 function readHistorical(filename) {

@@ -1,6 +1,6 @@
 # Wallet and Transfer canary
 
-This directory records the funded Testnet-10 canary for Sompi `0.9.0`.
+This directory records the funded Testnet-10 wallet and Transfer canaries.
 
 The run used a clean Journal epoch, a fresh SilverScript vault, the isolated
 Telegram Authority, the local Sompi API, and the installed Hermes skill on
@@ -16,3 +16,8 @@ Terah. It proves:
 
 The report contains no wallet key, Authority key, API credential, Telegram
 token, recovery key, prepared transaction, or private node URL.
+
+`terah-transfer-limit-0.9.1.json` records the `0.9.1` regression canary. A
+human-approved Transfer sent exactly the configured per-transfer maximum of
+`100,000,000` sompi while accounting for its fee separately. The old failed
+Transfer remained terminal and was not retried.

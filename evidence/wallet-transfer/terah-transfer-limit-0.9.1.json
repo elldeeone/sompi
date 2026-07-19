@@ -1,0 +1,74 @@
+{
+  "profile": "urn:sompi:evidence:terah-transfer-limit-fix:1",
+  "recordedAt": "2026-07-19T13:41:00.000Z",
+  "network": "kaspa:testnet-10",
+  "packageVersion": "0.9.1",
+  "runtimeCommit": "f8320ad74726de286eee3bf9c525597cba7b959f",
+  "packageArchiveSha256": "cdcbbfb90d892d8e46dc510dcb6347fea4ca48194d9e3a6e41d053f077b97bd9",
+  "packageRegistryShasum": "a82cbf4929636de1fd5dc10d38d5b4bbdb18a417",
+  "packageRegistryIntegrity": "sha512-1Fc0H2zbsER6wuxGKh056z2xaSfGYev5HMiWsWjhEYd8UAfcqg8fr8AWqFt7esOEyGjDPp+UYN2Y3af5Ua972A==",
+  "journalEpoch": 16,
+  "deployment": {
+    "priorVersion": "0.9.0",
+    "currentVersion": "0.9.1",
+    "stateReinitialized": false,
+    "walletIdentityPreserved": true,
+    "journalPreserved": true,
+    "sompiApi": "active",
+    "sompiAuthority": "active",
+    "hermesGateway": "active",
+    "privateMaterialIncluded": false
+  },
+  "regression": {
+    "description": "The exact recipient amount may equal maxPerTransferAtomic; the independent fee ceiling is reserved against rolling capacity.",
+    "maxPerTransferAtomic": "100000000",
+    "maxPerHourAtomic": "500000000",
+    "feeCeilingAtomic": "25000000",
+    "oldTransferId": "trf_CHEU5qVrUkxl42UEKNGKlw",
+    "oldTransferState": "failed_terminal",
+    "oldTransferTransactionBroadcast": false,
+    "oldTransferRetried": false
+  },
+  "transfer": {
+    "profile": "sompi.transfer.1",
+    "ingress": "local-api-cli",
+    "transferId": "trf_2ip8z9sGA8usB9bQQ0m8AA",
+    "requestKey": "sompi-091-limit-canary-20260719T1338Z",
+    "state": "receipted",
+    "authorizationDecision": "approved",
+    "destination": "kaspatest:qq0fhnuh5hma5fl83dnrv3y20hx0dcgvyx7a9fmdqn302g3zknfzzk30gnxqy",
+    "amountAtomic": "100000000",
+    "feeAtomic": "6153180",
+    "maximumTotalAtomic": "125000000",
+    "transactionId": "35be8e0493513ec977e8bfd54337f36e09584c57c49d0f0525431ebe028f0f65",
+    "destinationOutputIndex": 0,
+    "destinationOutputAtomic": "100000000",
+    "continuationOutputIndex": 1,
+    "continuationOutputAtomic": "86725800",
+    "paymentTransactionCount": 1,
+    "finality": "accepted",
+    "receiptRecorded": true,
+    "recoveryRequired": false,
+    "safeToRetry": false
+  },
+  "acceptedChainEvidence": {
+    "acceptingBlockHash": "031a209fe0fd86124ed01a5aae66b12b90701e53513123c724cfb1596a10a61e",
+    "acceptingDaaScore": "521097688",
+    "recipientOutputAddress": "kaspatest:qq0fhnuh5hma5fl83dnrv3y20hx0dcgvyx7a9fmdqn302g3zknfzzk30gnxqy",
+    "recipientOutputAtomic": "100000000",
+    "continuationOutputAddress": "kaspatest:ppsqw756p7529xyf8drw4du9uzwzn9483wldd4vmjzycyem6nm25u3wdrgve3",
+    "continuationOutputAtomic": "86725800"
+  },
+  "walletAfter": {
+    "chainStatus": "observed",
+    "vaultOutpoint": {
+      "transactionId": "35be8e0493513ec977e8bfd54337f36e09584c57c49d0f0525431ebe028f0f65",
+      "index": 1
+    },
+    "observedAtomic": "86725800",
+    "unboundAtomic": "0",
+    "reservedAtomic": "0",
+    "availableAtomic": "86725800",
+    "vaultSpentInWindowAtomic": "106153180"
+  }
+}

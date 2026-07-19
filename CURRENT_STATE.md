@@ -38,13 +38,9 @@ epoch-15 reader.
 - The complete local suite passes 476 tests (475 pass, one privileged-only
   ownership test skipped) plus the offline smoke.
 
-The published and deployed `0.9.0` exposed a boundary error when a transfer
-equal to the per-transfer limit was combined with its separate fee ceiling.
-The source now corrects that behavior and the approval ordering. A patch
-release and Terah deployment are still required before retrying a live transfer.
-
-Version `0.9.0` is published, tagged `v0.9.0`, and deployed on Terah from the
-byte-verified public registry package.
+Version `0.9.1` is published, tagged `v0.9.1`, and deployed on Terah from the
+byte-verified public registry package. It corrects the `0.9.0` boundary error
+that combined an exact per-transfer-limit amount with its separate fee ceiling.
 
 ## Protocols
 
@@ -124,6 +120,14 @@ fresh `0.9.0` wallet cutover:
   `633fbf7e7540d6de9bf422c0abf43a9f476d13d622b656f7c482070bfd60e4eb`
   and returned the report.
 
+The `0.9.1` regression canary then sent exactly the configured per-transfer
+maximum of `100,000,000` sompi to the approved recipient in transaction
+`35be8e0493513ec977e8bfd54337f36e09584c57c49d0f0525431ebe028f0f65`.
+The fee was `6,153,180` sompi, below its independent `25,000,000`-sompi
+ceiling. Independent accepted-chain evidence shows the exact recipient output
+and an `86,725,800`-sompi vault continuation. The earlier failed Transfer was
+not retried and has no transaction.
+
 ## Terah
 
 Terah remains the private operator-controlled Hermes deployment.
@@ -131,8 +135,8 @@ Terah remains the private operator-controlled Hermes deployment.
 - Hermes is active.
 - Sompi `0.8.2` was quiesced, backed up, and owner-recovered. The old runtime
   was removed to a plain-Hermes baseline, then `0.9.0` was installed through
-  the public bootstrap workflow and replaced in place by the byte-verified npm
-  package without reusing old state.
+  the public bootstrap workflow. The byte-verified `0.9.1` package replaced
+  the release files without replacing the epoch-16 state.
 - The installed Sompi skill, callback plugin, isolated compatibility overlay,
   systemd units, and package match this repository.
 - Authority, API, Hermes gateway, and all local sockets are healthy.
@@ -144,17 +148,17 @@ Terah remains the private operator-controlled Hermes deployment.
   limits, and chain status through the Sompi API.
 - Human-approved direct Transfers and the standard-native x402 regression are
   receipted. The current vault outpoint is
-  `5b6bf2c4652646998c5f8d6224f3e04bb40f8e46f977070122f8c9c7dff3332b:1`
-  with `192,878,980` sompi and no reservation.
+  `35be8e0493513ec977e8bfd54337f36e09584c57c49d0f0525431ebe028f0f65:1`
+  with `86,725,800` sompi and no reservation.
 - Authority, API, Hermes gateway, and all local sockets remain healthy.
 
 The earlier Phase 11 and `0.8.2` evidence remains historical.
 
 ## Verification
 
-For the published `0.9.0` release:
+For the published `0.9.1` release:
 
-- 473 unit tests run: 472 pass and one root-only ownership test is skipped;
+- 476 unit tests run: 475 pass and one root-only ownership test is skipped;
 - the three Hermes plugin tests pass;
 - local generic-Merchant E2E and crash recovery pass;
 - x402 package/source/vector conformance passes;
@@ -171,9 +175,9 @@ The existing audit record remains under [`security/audits/`](security/audits/).
 
 ## Release
 
-The current release is `@elldeeone/sompi@0.9.0`, tagged `v0.9.0`. The registry
-tarball is byte-identical to the locked 205-file release artifact (SHA-256
-`0c8f7e1a670963460ba601517e6627c14bd50c94998253a96e62c50820630181`).
+The current release is `@elldeeone/sompi@0.9.1`, tagged `v0.9.1`. The registry
+tarball is byte-identical to the verified 205-file release artifact (SHA-256
+`cdcbbfb90d892d8e46dc510dcb6347fea4ca48194d9e3a6e41d053f077b97bd9`).
 The published package is live on Terah and its wallet, Transfer, x402 Purchase,
 recovery, and agent-skill paths are canary proven.
 

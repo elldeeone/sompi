@@ -700,6 +700,15 @@ Gate:
   policy, operator, or recovery capabilities.
 - x402 purchases continue to pass unchanged.
 
+Fresh evidence (2026-07-19): `@elldeeone/sompi@0.9.1` was published and
+deployed to Terah without replacing epoch-16 state. Human-approved Transfer
+`trf_2ip8z9sGA8usB9bQQ0m8AA` sent exactly the `100,000,000`-sompi
+per-transfer maximum in transaction
+`35be8e0493513ec977e8bfd54337f36e09584c57c49d0f0525431ebe028f0f65`.
+Its `6,153,180`-sompi fee remained below the separate ceiling, accepted-chain
+evidence matched both outputs, and the superseded failed Transfer was not
+retried.
+
 ## Deferred tracks (not part of the alpha.8 clean cutover)
 
 ### Autonomous AP2
