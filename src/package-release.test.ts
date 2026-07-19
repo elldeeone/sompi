@@ -102,18 +102,24 @@ test("MCP production code has only the canonical API client capability", () => {
   }
 });
 
-test("current documentation exposes only the API-first alpha.8 cutover", () => {
+test("current documentation exposes the API-first wallet and alpha.8 payment cutover", () => {
   const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
   for (const required of [
     "Kaspa-x402 `0.1.0-alpha.8`",
     "`standard-native`",
     "`additive`",
     "Kaspa-x402 batch settlement",
+    "`GET /wallet`",
+    "`GET /wallet/activity`",
+    "`POST /transfers`",
+    "`GET /transfers/{transferId}`",
+    "`POST /transfers/{transferId}/recover`",
     "`POST /purchases`",
     "`GET /purchases/{purchaseId}`",
     "`POST /purchases/{purchaseId}/recover`",
-    "`purchase_status`",
-    "`purchase_recover`",
+    "sompi-agent wallet",
+    "sompi-agent transfer",
+    "`sompi-mcp`",
   ]) {
     assert.ok(readme.includes(required), `README is missing ${required}`);
   }
@@ -183,7 +189,7 @@ test("current documentation exposes only the API-first alpha.8 cutover", () => {
     path.join(ROOT, "docs", "architecture", "PURCHASE_JOURNAL.md"),
     "utf8",
   );
-  assert.match(journal, /Epoch \*\*15\*\* is the only\s+active schema/);
+  assert.match(journal, /Epoch \*\*16\*\* is the only\s+active schema/);
 });
 
 function sourceFiles(directory: string): string[] {

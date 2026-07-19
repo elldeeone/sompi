@@ -17,7 +17,7 @@ reach the chain or a merchant.
 - Human-present approval only.
 - Kaspa-x402 `0.1.0-alpha.8`.
 - Exact `standard-native` and `additive` purchases.
-- Batch settlement with approval for every charge increase.
+- Kaspa-x402 batch settlement with approval for every charge increase.
 - Local authenticated API and CLI.
 - Optional MCP compatibility wrapper.
 
