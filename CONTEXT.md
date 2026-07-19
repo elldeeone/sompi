@@ -21,6 +21,7 @@ tokens, or operator recovery access.
 - Approval projection: terminal or Telegram through the isolated Authority.
 - Direct transfer: human-present native KAS from the spending-limited vault.
 - Wallet visibility: read-only Treasury balance, identity, limits, and activity.
+- Funding intake: automatic receive-address detection and secure vault deposit.
 
 AP2 v0.2 source and schemas are pinned for provenance monitoring. Sompi does
 not emit AP2 Merchant artifacts or claim AP2 interoperability. A generic
@@ -64,10 +65,20 @@ Agent.
 
 ### Wallet View
 
-A read-only Treasury projection for network, receive and vault identities,
-observed balance, reserved and available capacity, hard limits, chain status,
-and bounded Sompi-recorded activity. It never exposes signing or recovery
-capabilities.
+A read-only, KAS-first Treasury projection for the stable receive address,
+total, available, incoming/securing, protected, and pending balances, hard
+limits, chain status, and bounded Sompi-recorded activity. Exact sompi values
+remain attached as evidence. Vault identity is nested security detail, not a
+second address the user must manage. Wallet View never exposes signing or
+recovery capabilities.
+
+### Funding Intake
+
+The deep module that detects UTXOs at Sompi's stable receive address and moves
+eligible funds into the exact operator-bound SilverScript vault through the
+existing durable vault-deposit Treasury lifecycle. It may narrow custody into
+the vault without human spend authorization, but cannot select an external
+recipient, create a Purchase or Transfer, or loosen policy.
 
 ### Trusted Authority
 
@@ -123,6 +134,9 @@ The authenticated local API exposes:
 The `sompi-agent` CLI uses that API. `sompi-mcp` projects the same wallet,
 Transfer, and Purchase operations and holds no privileged capability beyond the
 agent API credential.
+
+Public amount projections lead with `tKAS` on Testnet-10. Canonical domain and
+Journal accounting remains integer sompi.
 
 ## Lifecycle
 

@@ -1,3 +1,5 @@
+import { displayKas } from "./amount-display.js";
+
 /**
  * Immutable spending policy enforced below the Agent. Operator Provisioning
  * validates and installs the source manifest; this module receives one typed
@@ -122,13 +124,5 @@ export class PolicyViolation extends Error {
 }
 
 function displayAmount(sompi: bigint): string {
-  return `${formatKas(sompi)} KAS (${sompi} sompi)`;
-}
-
-function formatKas(sompi: bigint): string {
-  const sign = sompi < 0n ? "-" : "";
-  const absolute = sompi < 0n ? -sompi : sompi;
-  const whole = absolute / 100_000_000n;
-  const fraction = (absolute % 100_000_000n).toString().padStart(8, "0").replace(/0+$/, "");
-  return `${sign}${whole}${fraction ? `.${fraction}` : ""}`;
+  return displayKas(sompi);
 }

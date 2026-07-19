@@ -5,6 +5,8 @@ import * as path from "node:path";
 
 import Database from "better-sqlite3";
 
+import { displayKas } from "../amount-display.js";
+
 import type {
   AnyAuthorityApprovalDisplay,
   AuthorityApprovalPrompt,
@@ -598,10 +600,10 @@ function telegramApprovalText(display: AnyAuthorityApprovalDisplay): string {
       "<b>Sompi KAS transfer approval</b>",
       "",
       `<b>Recipient:</b> <code>${html(display.destination)}</code>`,
-      `<b>Amount:</b> ${html(display.amountAtomic)} sompi (${html(display.asset)})`,
+      `<b>Amount:</b> ${html(displayKas(display.amountAtomic))}`,
       `<b>Network:</b> ${html(display.network)}`,
-      `<b>Maximum fee:</b> ${html(display.feeCeilingAtomic)} sompi`,
-      `<b>Maximum total:</b> ${html(display.maximumTotalAtomic)} sompi`,
+      `<b>Maximum fee:</b> ${html(displayKas(display.feeCeilingAtomic))}`,
+      `<b>Maximum total:</b> ${html(displayKas(display.maximumTotalAtomic))}`,
       `<b>Source vault:</b> <code>${html(display.sourceVaultAddress)}</code>`,
       `<b>Finality floor:</b> ${html(display.finalityFloor)}`,
       `<b>Expires:</b> ${html(display.termsExpiresAt)}`,
@@ -621,13 +623,13 @@ function telegramApprovalText(display: AnyAuthorityApprovalDisplay): string {
     `<b>Origin:</b> ${html(display.merchant.origin)}`,
     `<b>Request:</b> ${html(display.request.method)} ${html(display.request.url)}`,
     `<b>Request fingerprint:</b> <code>${html(display.request.fingerprint)}</code>`,
-    `<b>Price:</b> ${html(display.price.amountAtomic)} sompi (${html(display.price.asset)})`,
+    `<b>Price:</b> ${html(displayKas(display.price.amountAtomic))}`,
     `<b>Network:</b> ${html(display.price.network)}`,
     `<b>Payee:</b> <code>${html(display.price.payTo)}</code>`,
-    `<b>Additional-cost ceiling:</b> ${html(display.additionalCostCeilingAtomic)} sompi`,
+    `<b>Additional-cost ceiling:</b> ${html(displayKas(display.additionalCostCeilingAtomic))}`,
     `<b>Finality floor:</b> ${html(display.effectiveFinalityFloor)}`,
     `<b>Execution:</b> ${html(display.execution.mechanism)} / ${html(display.execution.profile)}`,
-    `<b>Maximum charge:</b> ${html(display.execution.maximumChargeAtomic)} sompi`,
+    `<b>Maximum charge:</b> ${html(displayKas(display.execution.maximumChargeAtomic))}`,
     `<b>Expires:</b> ${html(display.termsExpiresAt)}`,
     `<b>Purchase:</b> <code>${html(display.purchaseId)}</code>`,
     "",

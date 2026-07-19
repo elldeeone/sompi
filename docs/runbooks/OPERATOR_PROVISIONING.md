@@ -23,11 +23,12 @@ the pinned package and host boundaries, starts the services, and writes the
 owner recovery record below `/root`. The Agent must not run this command or
 read either secret.
 
-The `ready` receipt returns a normal Testnet-10 funding address, minimum funding
-amount, and exact `activateCommand`. Send funds only to that funding address,
-then run `activateCommand` locally. It stops the API, journals and reconciles
+The `ready` receipt returns the stable Testnet-10 receive address, minimum
+funding amount, and exact `activateCommand`. Send funds only to that address,
+then run `activateCommand` locally once. It stops the API, journals and reconciles
 one covenant deposit as the API principal, restarts the API, and returns the
-active vault covenant/outpoint. Never send ordinary funds directly to the P2SH
+active vault covenant/outpoint. Future deposits to the receive address are
+secured automatically. Never send ordinary funds directly to the P2SH
 vault address: that does not create its covenant binding.
 
 The remaining sections document the lower-level primitives used by the

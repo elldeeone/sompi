@@ -25,3 +25,4 @@ or documentation is not allowed.
 | [0017](0017-generic-x402-ap2-evidence-cutover.md) | Generic x402 with internal AP2-derived authorization evidence | Accepted |
 | [0018](0018-near-automatic-host-onboarding.md) | Near-automatic host onboarding through the trusted operator | Accepted |
 | [0019](0019-wallet-visibility-and-direct-transfers.md) | Wallet visibility and vault-backed direct transfers | Accepted |
+| [0020](0020-automatic-funding-intake-and-wallet-ux.md) | Automatic funding intake and KAS-first wallet UX | Accepted |

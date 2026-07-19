@@ -3671,6 +3671,25 @@ export class PurchaseJournal {
     return operation;
   }
 
+  listTreasuryOperations(
+    kind: TreasuryOperationRecord["kind"],
+    limit: number,
+  ): readonly TreasuryOperationRecord[] {
+    if (!(["wallet_send", "vault_send", "vault_deposit", "batch_refund"] as const).includes(kind)) {
+      throw new JournalInvariantError("Treasury Operation activity kind is invalid");
+    }
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw new JournalInvariantError("Treasury Operation activity limit is invalid");
+    }
+    const rows = this.db.prepare(
+      `SELECT * FROM treasury_operations
+        WHERE kind = ?
+        ORDER BY created_at_ms DESC, operation_key DESC
+        LIMIT ?`
+    ).all(kind, limit) as TreasuryOperationRow[];
+    return Object.freeze(rows.map(treasuryOperationFromRow));
+  }
+
   treasuryOperationSpentLastHour(): bigint {
     const cutoff = this.timestamp() - 60 * 60 * 1000;
     const rows = this.db.prepare(

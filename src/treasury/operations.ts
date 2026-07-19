@@ -45,6 +45,8 @@ export interface TreasuryOperationView {
   readonly safeToRetry: boolean;
   readonly cancellationRequested: boolean;
   readonly preparationFenced: boolean;
+  readonly createdAtMs?: number;
+  readonly updatedAtMs?: number;
 }
 
 export interface TreasuryOperationModuleOptions {
@@ -195,6 +197,13 @@ export class TreasuryOperationModule {
 
   status(operationKey: string): TreasuryOperationView {
     return view(this.journal.requireTreasuryOperation(requireOperationKey(operationKey)));
+  }
+
+  recent(kind: TreasuryOperationKind, limit = 20): readonly TreasuryOperationView[] {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw new TreasuryOperationError("Treasury activity limit must be between 1 and 100");
+    }
+    return Object.freeze(this.journal.listTreasuryOperations(kind, limit).map(view));
   }
 
   async recover(operationKey: string, signal?: AbortSignal): Promise<TreasuryOperationView> {
@@ -659,6 +668,8 @@ function view(record: TreasuryOperationRecord): TreasuryOperationView {
     safeToRetry: record.cancellationRequested ? false : safeToRetry,
     cancellationRequested: record.cancellationRequested,
     preparationFenced: record.preparationFenced,
+    createdAtMs: record.createdAtMs,
+    updatedAtMs: record.updatedAtMs,
   });
 }
 

@@ -1,3 +1,4 @@
+import { kasAmountView } from "../amount-display.js";
 import type {
   CheckoutTerms,
   PaymentAttemptView,
@@ -11,7 +12,6 @@ import type {
 } from "./types.js";
 
 export const MAX_INLINE_FULFILMENT_BYTES = 8 * 1024;
-const SOMPI_PER_KAS = 100_000_000n;
 const MAX_SUMMARY_CHARACTERS = 240;
 const MAX_DISPLAY_LABEL_CHARACTERS = 80;
 const MAX_FULFILMENT_HANDLE_CHARACTERS = 240;
@@ -139,6 +139,15 @@ export function projectPurchaseView(snapshot: PurchaseProjectionSnapshot): Proje
       : stateProjection.userAction,
     resourceFingerprint: snapshot.resourceFingerprint,
     ...(snapshot.terms ? { terms: copyTerms(snapshot.terms) } : {}),
+    ...(snapshot.terms ? {
+      display: Object.freeze({
+        price: kasAmountView(snapshot.terms.amountAtomic),
+        additionalCostCeiling: kasAmountView(snapshot.treasury.additionalCostCeilingAtomic ?? "0"),
+        maximumCharge: kasAmountView(
+          BigInt(snapshot.terms.amountAtomic) + BigInt(snapshot.treasury.additionalCostCeilingAtomic ?? "0"),
+        ),
+      }),
+    } : {}),
     authorization: copyAuthorization(snapshot.authorization),
     treasury: copyTreasury(snapshot.treasury),
     paymentAttempts: copyPaymentAttempts(snapshot.paymentAttempts),
@@ -288,23 +297,10 @@ function atomicAmountDisplay(amountAtomic: string, asset: string, network: strin
   const safeAsset = boundedLabel(asset, "asset");
   if (asset !== "KAS") return `${amountAtomic} atomic units of ${safeAsset}`;
 
-  const unit = kasDisplayUnit(network);
-  const atomic = `${amountAtomic} sompi`;
-  return unit === undefined ? atomic : `${atomic} (${formatKas(BigInt(amountAtomic))} ${unit})`;
-}
-
-function kasDisplayUnit(network: string): "KAS" | "tKAS" | undefined {
-  if (/^kaspa:testnet(?:-|$)/.test(network)) return "tKAS";
-  if (network === "kaspa:mainnet") return "KAS";
-  return undefined;
-}
-
-function formatKas(sompi: bigint): string {
-  const whole = sompi / SOMPI_PER_KAS;
-  const remainder = sompi % SOMPI_PER_KAS;
-  if (remainder === 0n) return whole.toString();
-  const fraction = remainder.toString().padStart(8, "0").replace(/0+$/, "");
-  return `${whole}.${fraction}`;
+  if (network === "kaspa:testnet-10" || network === "kaspa:mainnet") {
+    return kasAmountView(amountAtomic, network).display;
+  }
+  return `${amountAtomic} atomic units of ${safeAsset}`;
 }
 
 function explicitlyUtf8TextMediaType(mediaType: string | undefined): boolean {

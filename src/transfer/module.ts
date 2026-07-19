@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from "node:crypto";
 
 import { Address } from "../kaspa-wasm.js";
-import type { TreasuryOperationModule, TreasuryOperationView } from "../treasury/operations.js";
+import { kasAmountView } from "../amount-display.js";
+import { TreasuryOperationError, type TreasuryOperationModule, type TreasuryOperationView } from "../treasury/operations.js";
 import type { TransferJournal } from "./journal.js";
 import type {
   TransferAuthorizationFacts,
@@ -203,7 +204,9 @@ export class TransferModule {
         }
         throw new TransferModuleError(
           "TRANSFER_FAILED",
-          "Transfer was rejected before Treasury execution",
+          error instanceof TreasuryOperationError
+            ? `Transfer could not start: ${error.message}. No funds were sent.`
+            : "Transfer could not start safely. No funds were sent; inspect the returned Transfer state before retrying.",
           { cause: error },
         );
       }
@@ -255,6 +258,13 @@ export class TransferModule {
     const receipt = this.options.journal.findTransferReceipt(record.id);
     return Object.freeze({
       ...record,
+      summary: transferSummary(record),
+      display: Object.freeze({
+        amount: kasAmountView(record.amountAtomic),
+        feeCeiling: kasAmountView(record.feeCeilingAtomic),
+        maximumTotal: kasAmountView(record.maximumTotalAtomic),
+        ...(record.actualFeeAtomic === undefined ? {} : { actualFee: kasAmountView(record.actualFeeAtomic) }),
+      }),
       ...(authorization ? { authorization } : {}),
       ...(receipt ? { receipt } : {}),
       recoveryRequired: record.state === "failed_recoverable",
@@ -275,6 +285,23 @@ export class TransferModule {
       throw new TransferModuleError("TRANSFER_FAILED", "Transfer clock is unavailable");
     }
     return value;
+  }
+}
+
+function transferSummary(record: TransferRecord): string {
+  const amount = kasAmountView(record.amountAtomic).display;
+  switch (record.state) {
+    case "created": return `Transfer request recorded for ${amount} to ${record.destination}.`;
+    case "awaiting_authority": return `Waiting for approval to send ${amount} to ${record.destination}.`;
+    case "authorised": return `Transfer approved for ${amount}; Treasury execution has not started.`;
+    case "denied": return `Transfer of ${amount} was denied. No funds were sent.`;
+    case "funds_reserved": return `${amount} is reserved for this transfer.`;
+    case "prepared": return `Transfer of ${amount} is prepared but has not been submitted.`;
+    case "submitted": return `Transfer of ${amount} was submitted and is waiting for settlement.`;
+    case "settled": return `Transfer of ${amount} settled; receipt finalization is pending.`;
+    case "receipted": return `${amount} sent successfully to ${record.destination}.`;
+    case "failed_recoverable": return `Transfer of ${amount} needs recovery; do not create a replacement transfer.`;
+    case "failed_terminal": return `Transfer of ${amount} stopped safely and cannot continue automatically.`;
   }
 }
 

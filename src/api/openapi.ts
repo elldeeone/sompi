@@ -56,14 +56,14 @@ export function sompiOpenApiDocument(version: string): Readonly<Record<string, u
       "/wallet": {
         get: {
           operationId: "getWallet",
-          summary: "Read wallet balance, vault identity, and spending limits",
+          summary: "Read the receive address, useful balances, deposit status, and spending limits",
           responses: apiResponses("Wallet state", "WalletView"),
         },
       },
       "/wallet/activity": {
         get: {
           operationId: "listWalletActivity",
-          summary: "List recent Purchases and direct Transfers",
+          summary: "List recent deposits, securing operations, Purchases, and Transfers",
           parameters: [{
             name: "limit", in: "query", required: false,
             schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },

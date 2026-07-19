@@ -41,18 +41,20 @@ test("projects every Purchase state with a concise deterministic summary and sta
   }
 });
 
-test("amount summaries preserve sompi and add deterministic testnet KAS projections", () => {
+test("amount summaries lead with deterministic testnet KAS projections", () => {
   const snapshot = makeSnapshot("authorised");
   const summary = projectPurchaseSummary(snapshot);
 
   assert.equal(
     summary,
-    "Purchase approved for 20000000 sompi (0.2 tKAS), with additional costs capped at 2000000 sompi (0.02 tKAS), from Test Merchant with whitespace. Payment has not been submitted."
+    "Purchase approved for 0.2 tKAS, with additional costs capped at 0.02 tKAS, from Test Merchant with whitespace. Payment has not been submitted."
   );
   assert.equal(summary.includes("20000000 KAS"), false);
   assert.equal(summary.includes("2000000 KAS"), false);
   assert.equal(projectPurchaseView(snapshot).terms?.amountAtomic, "20000000");
   assert.equal(projectPurchaseView(snapshot).treasury.additionalCostCeilingAtomic, "2000000");
+  assert.equal(projectPurchaseView(snapshot).display?.price.display, "0.2 tKAS");
+  assert.equal(projectPurchaseView(snapshot).display?.maximumCharge.display, "0.22 tKAS");
 });
 
 test("an external effect awaiting reconciliation overrides an otherwise passive state action", () => {

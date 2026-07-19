@@ -9,10 +9,26 @@ sompi-agent wallet
 sompi-agent activity --limit 20
 ```
 
-The wallet view reports the Testnet-10 funding address, vault address, observed
-vault balance, reserved and available amounts, limits, and chain status. Activity
-is bounded Sompi history, not a complete chain index. The agent never receives a
-private key or mutation credential.
+The wallet view reports one Testnet-10 receive address and four useful balances:
+
+- total;
+- available to spend;
+- incoming and being secured;
+- pending in active operations.
+
+Amounts lead with tKAS. Exact atomic values remain in structured fields for
+machines and evidence. The internal vault address is a security detail, not the
+normal receive experience.
+
+After the one-time activation ceremony, users always send to the same receive
+address. Sompi detects eligible UTXOs and moves them through its existing
+journal-first vault-deposit lifecycle automatically. This inward move grants no
+new spending authority and needs no user approval. If interrupted, Sompi
+recovers the same operation instead of creating a blind replacement.
+
+Activity includes incoming deposits, automatic securing, transfers, purchases,
+fees, transaction IDs, and status. It is bounded Sompi history, not a complete
+chain index. The agent never receives a private key or mutation credential.
 
 ## Send KAS
 
@@ -24,7 +40,7 @@ sompi-agent transfer \
 ```
 
 The request key must be stable for that logical send. Sompi shows the user the
-exact recipient, amount, maximum fee, maximum total cost, source vault,
+exact recipient, tKAS amount, maximum fee, maximum total cost, source vault,
 finality, and expiry. The user approves or denies through the configured trusted
 Authority surface. Approval submits one SilverScript-vault transaction; denial
 or expiry spends nothing.
@@ -84,6 +100,7 @@ The agent may:
 
 - create, inspect, and recover its Purchases;
 - inspect its read-only wallet view and bounded Sompi activity;
+- give users the receive address and explain automatic deposit securing;
 - propose, inspect, and recover exact human-approved Transfers;
 - receive fulfilled content;
 - report policy denial or operator action.

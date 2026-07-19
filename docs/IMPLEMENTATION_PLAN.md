@@ -709,6 +709,46 @@ Its `6,153,180`-sompi fee remained below the separate ceiling, accepted-chain
 evidence matched both outputs, and the superseded failed Transfer was not
 retried.
 
+## Phase 15: Automatic funding intake and wallet UX
+
+Purpose: make the protected wallet feel like one wallet without weakening the
+SilverScript or Authority boundaries.
+
+- [x] Accept ADR-0020 and use one stable Testnet-10 receive address.
+- [x] Detect bounded canonical receive-address UTXOs through the trusted node.
+- [x] Move eligible incoming funds automatically through the existing durable
+  `vault_deposit` Treasury operation, with deterministic idempotency and
+  recovery.
+- [x] Never require approval for inward securing; retain exact human approval
+  for every outgoing Transfer and Purchase.
+- [x] Project total, available, incoming, protected, and pending balances with
+  tKAS-first display values and exact atomic evidence.
+- [x] Include incoming, securing, Transfer, Purchase, fee, transaction, and
+  status events in one bounded activity view.
+- [x] Make the receive address, network warning, QR payload, securing state, and
+  user action explicit through API, CLI, skill, MCP compatibility, and docs.
+- [x] Lead with tKAS/KAS in Telegram, policy, Purchase, Transfer, receipt, and
+  error summaries. Show raw sompi only as structured evidence or on request.
+- [x] Prove node failure, small deposits, duplicate reconciliation, concurrent
+  Treasury work, restart recovery, display schemas, and unchanged outgoing
+  authorization behavior.
+
+Gate:
+
+- A user funds the same receive address and Sompi makes eligible funds available
+  from the protected vault without another command or approval.
+- Wallet questions have useful answers without exposing funding/vault/unbound
+  implementation language.
+- No automatic path can create an outward payment or weaken policy.
+- Transfers and x402 Purchases continue to pass unchanged.
+
+Local acceptance evidence (2026-07-19): 486 tests run, with 485 passing and
+one privileged ownership test skipped. The offline smoke proof, Kaspa-x402
+alpha.8 conformance, OpenAPI and Arazzo checks, Hermes compatibility tests,
+SilverScript compiler fixture reproduction, and production dependency audit
+all pass. A funded automatic-intake canary and deployment remain release work;
+the published `0.9.1` package and Terah do not yet contain Phase 15.
+
 ## Deferred tracks (not part of the alpha.8 clean cutover)
 
 ### Autonomous AP2

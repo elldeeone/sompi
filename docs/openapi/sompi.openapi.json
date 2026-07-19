@@ -341,7 +341,7 @@
     "/wallet": {
       "get": {
         "operationId": "getWallet",
-        "summary": "Read wallet balance, vault identity, and spending limits",
+        "summary": "Read the receive address, useful balances, deposit status, and spending limits",
         "responses": {
           "200": {
             "description": "Wallet state",
@@ -439,7 +439,7 @@
     "/wallet/activity": {
       "get": {
         "operationId": "listWalletActivity",
-        "summary": "List recent Purchases and direct Transfers",
+        "summary": "List recent deposits, securing operations, Purchases, and Transfers",
         "parameters": [
           {
             "name": "limit",
@@ -879,7 +879,7 @@
       "AgentCredential": {
         "type": "http",
         "scheme": "bearer",
-        "bearerFormat": "sompi-agent-api-v1"
+        "bearerFormat": "sompi-agent-api-v2"
       }
     },
     "schemas": {
@@ -1073,6 +1073,107 @@
               }
             }
           },
+          "display": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "price",
+              "additionalCostCeiling",
+              "maximumCharge"
+            ],
+            "properties": {
+              "price": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "atomic",
+                  "kas",
+                  "unit",
+                  "display"
+                ],
+                "properties": {
+                  "atomic": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)$",
+                    "maxLength": 20
+                  },
+                  "kas": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
+                    "maxLength": 32
+                  },
+                  "unit": {
+                    "const": "tKAS"
+                  },
+                  "display": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})? tKAS$",
+                    "maxLength": 40
+                  }
+                }
+              },
+              "additionalCostCeiling": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "atomic",
+                  "kas",
+                  "unit",
+                  "display"
+                ],
+                "properties": {
+                  "atomic": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)$",
+                    "maxLength": 20
+                  },
+                  "kas": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
+                    "maxLength": 32
+                  },
+                  "unit": {
+                    "const": "tKAS"
+                  },
+                  "display": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})? tKAS$",
+                    "maxLength": 40
+                  }
+                }
+              },
+              "maximumCharge": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "atomic",
+                  "kas",
+                  "unit",
+                  "display"
+                ],
+                "properties": {
+                  "atomic": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)$",
+                    "maxLength": 20
+                  },
+                  "kas": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
+                    "maxLength": 32
+                  },
+                  "unit": {
+                    "const": "tKAS"
+                  },
+                  "display": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})? tKAS$",
+                    "maxLength": 40
+                  }
+                }
+              }
+            }
+          },
           "authorization": {
             "type": "object",
             "additionalProperties": false,
@@ -1257,7 +1358,7 @@
         "required": [
           "requestKey",
           "destination",
-          "amountAtomic"
+          "amountKas"
         ],
         "properties": {
           "requestKey": {
@@ -1270,10 +1371,10 @@
             "pattern": "^kaspatest:[a-z0-9]{20,256}$",
             "maxLength": 266
           },
-          "amountAtomic": {
+          "amountKas": {
             "type": "string",
-            "pattern": "^[1-9][0-9]*$",
-            "maxLength": 20
+            "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
+            "maxLength": 32
           }
         }
       },
@@ -1285,6 +1386,8 @@
           "requestKey",
           "requestDigest",
           "state",
+          "summary",
+          "display",
           "destination",
           "amountAtomic",
           "asset",
@@ -1333,6 +1436,142 @@
               "failed_recoverable",
               "failed_terminal"
             ]
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "display": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "amount",
+              "feeCeiling",
+              "maximumTotal"
+            ],
+            "properties": {
+              "amount": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "atomic",
+                  "kas",
+                  "unit",
+                  "display"
+                ],
+                "properties": {
+                  "atomic": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)$",
+                    "maxLength": 20
+                  },
+                  "kas": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
+                    "maxLength": 32
+                  },
+                  "unit": {
+                    "const": "tKAS"
+                  },
+                  "display": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})? tKAS$",
+                    "maxLength": 40
+                  }
+                }
+              },
+              "feeCeiling": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "atomic",
+                  "kas",
+                  "unit",
+                  "display"
+                ],
+                "properties": {
+                  "atomic": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)$",
+                    "maxLength": 20
+                  },
+                  "kas": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
+                    "maxLength": 32
+                  },
+                  "unit": {
+                    "const": "tKAS"
+                  },
+                  "display": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})? tKAS$",
+                    "maxLength": 40
+                  }
+                }
+              },
+              "maximumTotal": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "atomic",
+                  "kas",
+                  "unit",
+                  "display"
+                ],
+                "properties": {
+                  "atomic": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)$",
+                    "maxLength": 20
+                  },
+                  "kas": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
+                    "maxLength": 32
+                  },
+                  "unit": {
+                    "const": "tKAS"
+                  },
+                  "display": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})? tKAS$",
+                    "maxLength": 40
+                  }
+                }
+              },
+              "actualFee": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "atomic",
+                  "kas",
+                  "unit",
+                  "display"
+                ],
+                "properties": {
+                  "atomic": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)$",
+                    "maxLength": 20
+                  },
+                  "kas": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
+                    "maxLength": 32
+                  },
+                  "unit": {
+                    "const": "tKAS"
+                  },
+                  "display": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})? tKAS$",
+                    "maxLength": 40
+                  }
+                }
+              }
+            }
           },
           "destination": {
             "type": "string",
@@ -1677,10 +1916,11 @@
         "required": [
           "network",
           "asset",
-          "fundingAddress",
-          "vaultAddress",
+          "receive",
           "balance",
+          "securing",
           "limits",
+          "security",
           "chainStatus"
         ],
         "properties": {
@@ -1690,32 +1930,31 @@
           "asset": {
             "const": "KAS"
           },
-          "fundingAddress": {
-            "type": "string",
-            "pattern": "^kaspatest:[a-z0-9]{20,256}$",
-            "maxLength": 266
-          },
-          "vaultAddress": {
-            "type": "string",
-            "pattern": "^kaspatest:[a-z0-9]{20,256}$",
-            "maxLength": 266
-          },
-          "vaultOutpoint": {
+          "receive": {
             "type": "object",
             "additionalProperties": false,
             "required": [
-              "txid",
-              "index"
+              "address",
+              "qrPayload",
+              "networkLabel",
+              "warning"
             ],
             "properties": {
-              "txid": {
+              "address": {
                 "type": "string",
-                "pattern": "^[a-f0-9]{64}$"
+                "pattern": "^kaspatest:[a-z0-9]{20,256}$",
+                "maxLength": 266
               },
-              "index": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 4294967295
+              "qrPayload": {
+                "type": "string",
+                "pattern": "^kaspatest:[a-z0-9]{20,256}$",
+                "maxLength": 266
+              },
+              "networkLabel": {
+                "const": "Kaspa Testnet-10"
+              },
+              "warning": {
+                "const": "Testnet funds only — do not send mainnet KAS."
               }
             }
           },
@@ -1723,33 +1962,164 @@
             "type": "object",
             "additionalProperties": false,
             "required": [
-              "observedAtomic",
-              "unboundAtomic",
-              "reservedAtomic",
-              "availableAtomic",
+              "total",
+              "available",
+              "incoming",
+              "protected",
+              "pending",
               "provenance",
               "observedAt"
             ],
             "properties": {
-              "observedAtomic": {
-                "type": "string",
-                "pattern": "^(?:0|[1-9][0-9]*)$",
-                "maxLength": 20
+              "total": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "atomic",
+                  "kas",
+                  "unit",
+                  "display"
+                ],
+                "properties": {
+                  "atomic": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)$",
+                    "maxLength": 20
+                  },
+                  "kas": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
+                    "maxLength": 32
+                  },
+                  "unit": {
+                    "const": "tKAS"
+                  },
+                  "display": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})? tKAS$",
+                    "maxLength": 40
+                  }
+                }
               },
-              "unboundAtomic": {
-                "type": "string",
-                "pattern": "^(?:0|[1-9][0-9]*)$",
-                "maxLength": 20
+              "available": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "atomic",
+                  "kas",
+                  "unit",
+                  "display"
+                ],
+                "properties": {
+                  "atomic": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)$",
+                    "maxLength": 20
+                  },
+                  "kas": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
+                    "maxLength": 32
+                  },
+                  "unit": {
+                    "const": "tKAS"
+                  },
+                  "display": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})? tKAS$",
+                    "maxLength": 40
+                  }
+                }
               },
-              "reservedAtomic": {
-                "type": "string",
-                "pattern": "^(?:0|[1-9][0-9]*)$",
-                "maxLength": 20
+              "incoming": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "atomic",
+                  "kas",
+                  "unit",
+                  "display"
+                ],
+                "properties": {
+                  "atomic": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)$",
+                    "maxLength": 20
+                  },
+                  "kas": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
+                    "maxLength": 32
+                  },
+                  "unit": {
+                    "const": "tKAS"
+                  },
+                  "display": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})? tKAS$",
+                    "maxLength": 40
+                  }
+                }
               },
-              "availableAtomic": {
-                "type": "string",
-                "pattern": "^(?:0|[1-9][0-9]*)$",
-                "maxLength": 20
+              "protected": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "atomic",
+                  "kas",
+                  "unit",
+                  "display"
+                ],
+                "properties": {
+                  "atomic": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)$",
+                    "maxLength": 20
+                  },
+                  "kas": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
+                    "maxLength": 32
+                  },
+                  "unit": {
+                    "const": "tKAS"
+                  },
+                  "display": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})? tKAS$",
+                    "maxLength": 40
+                  }
+                }
+              },
+              "pending": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "atomic",
+                  "kas",
+                  "unit",
+                  "display"
+                ],
+                "properties": {
+                  "atomic": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)$",
+                    "maxLength": 20
+                  },
+                  "kas": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
+                    "maxLength": 32
+                  },
+                  "unit": {
+                    "const": "tKAS"
+                  },
+                  "display": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})? tKAS$",
+                    "maxLength": 40
+                  }
+                }
               },
               "provenance": {
                 "const": "operator-node-and-local-vault-lineage"
@@ -1761,33 +2131,181 @@
               }
             }
           },
+          "securing": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "automatic",
+              "state",
+              "summary",
+              "userAction",
+              "minimumAmount"
+            ],
+            "properties": {
+              "automatic": {
+                "const": true
+              },
+              "state": {
+                "enum": [
+                  "idle",
+                  "detected",
+                  "securing",
+                  "attention",
+                  "unavailable"
+                ]
+              },
+              "summary": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "userAction": {
+                "enum": [
+                  "none",
+                  "wait",
+                  "operator"
+                ]
+              },
+              "minimumAmount": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "atomic",
+                  "kas",
+                  "unit",
+                  "display"
+                ],
+                "properties": {
+                  "atomic": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)$",
+                    "maxLength": 20
+                  },
+                  "kas": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
+                    "maxLength": 32
+                  },
+                  "unit": {
+                    "const": "tKAS"
+                  },
+                  "display": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})? tKAS$",
+                    "maxLength": 40
+                  }
+                }
+              },
+              "operationId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._:-]{1,160}$"
+              },
+              "transactionId": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            }
+          },
           "limits": {
             "type": "object",
             "additionalProperties": false,
             "required": [
-              "maxPerTransferAtomic",
-              "maxPerHourAtomic",
-              "approvalThresholdAtomic",
+              "perTransfer",
+              "perHour",
+              "approvalThreshold",
               "allowlist",
-              "vaultMaxOutflowAtomic",
-              "vaultWindowSizeDaa",
-              "vaultSpentInWindowAtomic"
+              "vaultWindow"
             ],
             "properties": {
-              "maxPerTransferAtomic": {
-                "type": "string",
-                "pattern": "^(?:0|[1-9][0-9]*)$",
-                "maxLength": 20
+              "perTransfer": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "atomic",
+                  "kas",
+                  "unit",
+                  "display"
+                ],
+                "properties": {
+                  "atomic": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)$",
+                    "maxLength": 20
+                  },
+                  "kas": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
+                    "maxLength": 32
+                  },
+                  "unit": {
+                    "const": "tKAS"
+                  },
+                  "display": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})? tKAS$",
+                    "maxLength": 40
+                  }
+                }
               },
-              "maxPerHourAtomic": {
-                "type": "string",
-                "pattern": "^(?:0|[1-9][0-9]*)$",
-                "maxLength": 20
+              "perHour": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "atomic",
+                  "kas",
+                  "unit",
+                  "display"
+                ],
+                "properties": {
+                  "atomic": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)$",
+                    "maxLength": 20
+                  },
+                  "kas": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
+                    "maxLength": 32
+                  },
+                  "unit": {
+                    "const": "tKAS"
+                  },
+                  "display": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})? tKAS$",
+                    "maxLength": 40
+                  }
+                }
               },
-              "approvalThresholdAtomic": {
-                "type": "string",
-                "pattern": "^(?:0|[1-9][0-9]*)$",
-                "maxLength": 20
+              "approvalThreshold": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "atomic",
+                  "kas",
+                  "unit",
+                  "display"
+                ],
+                "properties": {
+                  "atomic": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)$",
+                    "maxLength": 20
+                  },
+                  "kas": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
+                    "maxLength": 32
+                  },
+                  "unit": {
+                    "const": "tKAS"
+                  },
+                  "display": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})? tKAS$",
+                    "maxLength": 40
+                  }
+                }
               },
               "allowlist": {
                 "type": "array",
@@ -1798,20 +2316,114 @@
                   "maxLength": 266
                 }
               },
-              "vaultMaxOutflowAtomic": {
+              "vaultWindow": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "maximumOutflow",
+                  "spent",
+                  "sizeDaa"
+                ],
+                "properties": {
+                  "maximumOutflow": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "atomic",
+                      "kas",
+                      "unit",
+                      "display"
+                    ],
+                    "properties": {
+                      "atomic": {
+                        "type": "string",
+                        "pattern": "^(?:0|[1-9][0-9]*)$",
+                        "maxLength": 20
+                      },
+                      "kas": {
+                        "type": "string",
+                        "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
+                        "maxLength": 32
+                      },
+                      "unit": {
+                        "const": "tKAS"
+                      },
+                      "display": {
+                        "type": "string",
+                        "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})? tKAS$",
+                        "maxLength": 40
+                      }
+                    }
+                  },
+                  "spent": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "atomic",
+                      "kas",
+                      "unit",
+                      "display"
+                    ],
+                    "properties": {
+                      "atomic": {
+                        "type": "string",
+                        "pattern": "^(?:0|[1-9][0-9]*)$",
+                        "maxLength": 20
+                      },
+                      "kas": {
+                        "type": "string",
+                        "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
+                        "maxLength": 32
+                      },
+                      "unit": {
+                        "const": "tKAS"
+                      },
+                      "display": {
+                        "type": "string",
+                        "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})? tKAS$",
+                        "maxLength": 40
+                      }
+                    }
+                  },
+                  "sizeDaa": {
+                    "type": "string",
+                    "pattern": "^[1-9][0-9]*$",
+                    "maxLength": 20
+                  }
+                }
+              }
+            }
+          },
+          "security": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "vaultAddress"
+            ],
+            "properties": {
+              "vaultAddress": {
                 "type": "string",
-                "pattern": "^(?:0|[1-9][0-9]*)$",
-                "maxLength": 20
+                "pattern": "^kaspatest:[a-z0-9]{20,256}$",
+                "maxLength": 266
               },
-              "vaultWindowSizeDaa": {
-                "type": "string",
-                "pattern": "^[1-9][0-9]*$",
-                "maxLength": 20
-              },
-              "vaultSpentInWindowAtomic": {
-                "type": "string",
-                "pattern": "^(?:0|[1-9][0-9]*)$",
-                "maxLength": 20
+              "vaultOutpoint": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "txid",
+                  "index"
+                ],
+                "properties": {
+                  "txid": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "index": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 4294967295
+                  }
+                }
               }
             }
           },
@@ -1832,22 +2444,32 @@
           "additionalProperties": false,
           "required": [
             "kind",
+            "direction",
             "id",
-            "requestKey",
             "state",
-            "createdAt",
-            "updatedAt"
+            "summary",
+            "occurredAt"
           ],
           "properties": {
             "kind": {
               "enum": [
+                "incoming",
+                "securing",
                 "purchase",
                 "transfer"
               ]
             },
+            "direction": {
+              "enum": [
+                "incoming",
+                "internal",
+                "outgoing"
+              ]
+            },
             "id": {
               "type": "string",
-              "pattern": "^(?:pur|trf)_[A-Za-z0-9_-]{22}$"
+              "minLength": 1,
+              "maxLength": 160
             },
             "requestKey": {
               "type": "string",
@@ -1859,10 +2481,70 @@
               "minLength": 1,
               "maxLength": 64
             },
-            "amountAtomic": {
+            "summary": {
               "type": "string",
-              "pattern": "^[1-9][0-9]*$",
-              "maxLength": 20
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "amount": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "atomic",
+                "kas",
+                "unit",
+                "display"
+              ],
+              "properties": {
+                "atomic": {
+                  "type": "string",
+                  "pattern": "^(?:0|[1-9][0-9]*)$",
+                  "maxLength": 20
+                },
+                "kas": {
+                  "type": "string",
+                  "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
+                  "maxLength": 32
+                },
+                "unit": {
+                  "const": "tKAS"
+                },
+                "display": {
+                  "type": "string",
+                  "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})? tKAS$",
+                  "maxLength": 40
+                }
+              }
+            },
+            "fee": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "atomic",
+                "kas",
+                "unit",
+                "display"
+              ],
+              "properties": {
+                "atomic": {
+                  "type": "string",
+                  "pattern": "^(?:0|[1-9][0-9]*)$",
+                  "maxLength": 20
+                },
+                "kas": {
+                  "type": "string",
+                  "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
+                  "maxLength": 32
+                },
+                "unit": {
+                  "const": "tKAS"
+                },
+                "display": {
+                  "type": "string",
+                  "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})? tKAS$",
+                  "maxLength": 40
+                }
+              }
             },
             "counterparty": {
               "type": "string",
@@ -1873,12 +2555,7 @@
               "type": "string",
               "pattern": "^[a-f0-9]{64}$"
             },
-            "createdAt": {
-              "type": "string",
-              "format": "date-time",
-              "maxLength": 40
-            },
-            "updatedAt": {
+            "occurredAt": {
               "type": "string",
               "format": "date-time",
               "maxLength": 40

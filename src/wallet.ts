@@ -47,6 +47,12 @@ export interface PreparedWalletSend {
   }[];
 }
 
+export interface FundingUtxo {
+  readonly transactionId: string;
+  readonly index: number;
+  readonly amountAtomic: string;
+}
+
 export type WalletPreparationErrorCode =
   | "invalid_input"
   | "insufficient_funds"
@@ -181,6 +187,55 @@ export class KaspaWallet {
     const target = address ?? this.address;
     const { entries } = await rpc.getBalancesByAddresses([target]);
     return entries.reduce((acc: bigint, e: any) => acc + BigInt(e.balance ?? 0), 0n);
+  }
+
+  /** Bounded, canonical public receive-address UTXOs for Funding Intake and Wallet View. */
+  async fundingUtxos(): Promise<readonly FundingUtxo[]> {
+    let entries: any[];
+    try {
+      const rpc = await this.client();
+      ({ entries } = await rpc.getUtxosByAddresses([this.address]));
+    } catch (cause) {
+      throw new WalletPreparationError("rpc_unavailable", "wallet receive-address data is unavailable", { cause });
+    }
+    if (!Array.isArray(entries) || entries.length > 4_096) {
+      throw new WalletPreparationError("rpc_unavailable", "wallet receive-address data exceeds its safety bound");
+    }
+    const seen = new Set<string>();
+    const normalized = entries.map((candidate): FundingUtxo => {
+      const entry = candidate?.entry ?? candidate;
+      const outpoint = candidate?.outpoint ?? entry?.outpoint;
+      const transactionId = String(outpoint?.transactionId ?? "");
+      const index = Number(outpoint?.index);
+      const amount = BigInt(entry?.amount ?? candidate?.amount ?? -1);
+      if (
+        !/^[a-f0-9]{64}$/.test(transactionId) ||
+        !Number.isSafeInteger(index) || index < 0 || index > 0xffff_ffff ||
+        amount <= 0n || amount > (1n << 64n) - 1n
+      ) {
+        throw new WalletPreparationError("rpc_unavailable", "wallet receive-address UTXO is invalid");
+      }
+      let derived: Address | undefined;
+      try {
+        derived = addressFromScriptPublicKey(entry?.scriptPublicKey ?? candidate?.scriptPublicKey, this.networkId);
+        if (!derived || derived.toString() !== this.address) {
+          throw new WalletPreparationError("rpc_unavailable", "wallet receive-address UTXO script is invalid");
+        }
+      } catch (cause) {
+        if (cause instanceof WalletPreparationError) throw cause;
+        throw new WalletPreparationError("rpc_unavailable", "wallet receive-address UTXO script is invalid", { cause });
+      } finally {
+        derived?.free();
+      }
+      const key = `${transactionId}:${index}`;
+      if (seen.has(key)) throw new WalletPreparationError("rpc_unavailable", "wallet receive-address UTXO is duplicated");
+      seen.add(key);
+      return Object.freeze({ transactionId, index, amountAtomic: amount.toString() });
+    });
+    normalized.sort((left, right) =>
+      left.transactionId.localeCompare(right.transactionId) || left.index - right.index
+    );
+    return Object.freeze(normalized);
   }
 
   async feeEstimate() {
@@ -357,8 +412,8 @@ export class KaspaWallet {
         () =>
           finish(
             new Error(
-              `timed out after ${timeoutMs}ms; received ${formatKas(received)} KAS (${received} sompi) ` +
-                `of ${formatKas(minAmountSompi)} KAS (${minAmountSompi} sompi)`
+              `timed out after ${timeoutMs}ms; received ${formatKas(received)} tKAS ` +
+                `of ${formatKas(minAmountSompi)} tKAS required`
             )
           ),
         timeoutMs

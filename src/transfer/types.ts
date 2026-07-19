@@ -111,6 +111,13 @@ export interface TransferReceipt {
 }
 
 export interface TransferView extends TransferRecord {
+  readonly summary: string;
+  readonly display: Readonly<{
+    amount: KasAmountView;
+    feeCeiling: KasAmountView;
+    maximumTotal: KasAmountView;
+    actualFee?: KasAmountView;
+  }>;
   readonly authorization?: Omit<TransferAuthorizationRecord, "facts"> & {
     readonly facts: TransferAuthorizationFacts;
   };
@@ -119,3 +126,4 @@ export interface TransferView extends TransferRecord {
   readonly safeToRetry: boolean;
   readonly userAction: "approve_or_deny" | "wait" | "recover" | "none";
 }
+import type { KasAmountView } from "../amount-display.js";

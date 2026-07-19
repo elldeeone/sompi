@@ -9,10 +9,14 @@ test("Wallet View reports authoritative vault balance, reservations, and policy 
   const module = fixture();
   const view = await module.wallet();
   assert.equal(view.network, "kaspa:testnet-10");
-  assert.equal(view.balance.observedAtomic, "5000");
-  assert.equal(view.balance.reservedAtomic, "1200");
-  assert.equal(view.balance.availableAtomic, "3800");
-  assert.equal(view.limits.maxPerTransferAtomic, "2000");
+  assert.equal(view.receive.address, ADDRESS);
+  assert.equal(view.balance.total.display, "0.000053 tKAS");
+  assert.equal(view.balance.protected.atomic, "5000");
+  assert.equal(view.balance.incoming.atomic, "300");
+  assert.equal(view.balance.pending.atomic, "1200");
+  assert.equal(view.balance.available.atomic, "3800");
+  assert.equal(view.limits.perTransfer.atomic, "2000");
+  assert.equal(view.securing.state, "detected");
   assert.equal(view.chainStatus, "observed");
 });
 
@@ -20,12 +24,12 @@ test("Wallet View fails read-only balance closed and bounds merged activity", as
   const module = fixture({ unavailable: true });
   const view = await module.wallet();
   assert.equal(view.chainStatus, "unavailable");
-  assert.equal(view.balance.availableAtomic, "0");
-  assert.deepEqual(module.activity(2).map((entry) => [entry.kind, entry.id]), [
+  assert.equal(view.balance.available.atomic, "0");
+  assert.deepEqual((await module.activity(2)).map((entry) => [entry.kind, entry.id]), [
     ["transfer", "trf_0123456789ABCDEFGHIJKL"],
     ["purchase", "pur_0123456789ABCDEFGHIJKL"],
   ]);
-  assert.throws(() => module.activity(101), /between 1 and 100/);
+  await assert.rejects(() => module.activity(101), /between 1 and 100/);
 });
 
 function fixture(input: { unavailable?: boolean } = {}): WalletViewModule {
@@ -42,7 +46,14 @@ function fixture(input: { unavailable?: boolean } = {}): WalletViewModule {
         return { spendableSompi: 5000n, unboundSompi: 300n };
       },
     } as any,
-    treasury: { pendingCapacityUsed: () => 1200n } as any,
+    fundingIntake: {
+      status: async () => ({
+        state: "detected", automatic: true, incomingAtomic: "300", minimumToSecureAtomic: "101",
+        summary: "Incoming funds were detected and are queued for automatic securing.", userAction: "wait",
+        incomingUtxos: [],
+      }),
+    } as any,
+    treasury: { pendingCapacityUsed: () => 1200n, recent: () => [] } as any,
     policy: { policy: { maxSompiPerTx: 2000n, maxSompiPerHour: 8000n, requireApprovalAboveSompi: 1n, allowlist: [ADDRESS] } } as any,
     journal: {
       listTransfers: () => [{
@@ -54,8 +65,8 @@ function fixture(input: { unavailable?: boolean } = {}): WalletViewModule {
         id: "pur_0123456789ABCDEFGHIJKL", requestKey: "buy:one", state: "receipted",
         createdAtMs: 1_900_000_000_100, updatedAtMs: 1_900_000_000_400,
       }],
-      findCheckoutTerms: () => ({ amountAtomic: "2000", payTo: ADDRESS }),
-      findSettlementForPurchase: () => ({ transactionId: "33".repeat(32) }),
+      findCheckoutTerms: () => ({ amountAtomic: "2000", payTo: ADDRESS, merchant: { name: "Test merchant", origin: "https://merchant.example" } }),
+      findSettlementForPurchase: () => ({ transactionId: "33".repeat(32), actualAdditionalCostAtomic: "50" }),
     } as any,
     now: () => 1_900_000_000_500,
   });

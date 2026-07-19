@@ -102,7 +102,7 @@ test("completed vault activation is idempotent after the funding wallet has been
       minimumFunding: 85_000_000n,
       keepFloat: 10_000_000n,
     }),
-    /needs at least 85000000/,
+    /needs at least 0\.85 tKAS/,
   );
   assert.equal(executeCalls, 0);
 });

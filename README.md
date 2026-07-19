@@ -21,6 +21,10 @@ reach the chain or a merchant.
 - Local authenticated API and CLI.
 - Optional MCP compatibility wrapper.
 
+The automatic funding-intake and unified wallet view described below are
+implemented but not yet included in the published `0.9.1` package or Terah
+deployment.
+
 Sompi uses AP2-derived internal authorization evidence. It does not claim AP2
 interoperability or send AP2 artifacts to ordinary x402 merchants.
 
@@ -34,10 +38,12 @@ Tell Hermes:
 
 Hermes gathers non-secret setup facts and gives you one command to run locally.
 That command asks for the Telegram bot token with hidden input, installs the
-isolated services, and returns a Testnet-10 funding address.
+isolated services, and returns one Testnet-10 receive address.
 
-Fund the displayed address, then run the returned `activateCommand` locally.
-After activation reports `ready`, the agent can use Sompi. Hermes never receives
+Fund the displayed address, then run the returned `activateCommand` once to
+create the protected vault. After that, the same receive address remains the
+only address a user needs: new deposits are detected and secured automatically.
+Hermes never receives
 sudo, wallet keys, API credentials, the recovery key, or the Telegram token.
 
 See [the Hermes skill](integrations/hermes/sompi/SKILL.md) and
@@ -51,6 +57,11 @@ An agent can answer normal wallet questions through:
 sompi-agent wallet
 sompi-agent activity --limit 20
 ```
+
+The wallet view leads with `total`, `available`, `incoming`, and `pending`
+amounts in tKAS. It also returns the receive address, QR payload, deposit status,
+limits, and recent incoming, transfer, and purchase activity. Raw sompi remains
+available as exact machine-readable evidence but is not the default display.
 
 Send native KAS:
 
@@ -128,7 +139,7 @@ Transfer       Purchase
    |              |
    +---- Trusted Authority
    +---- operator policy
-   +---- SilverScript vault / Treasury
+   +---- Funding Intake / SilverScript vault / Treasury
    +---- chain evidence and recovery
 ```
 

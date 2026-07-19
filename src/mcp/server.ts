@@ -10,14 +10,13 @@ import {
   assertPurchaseView,
   type SompiApplication,
   type PurchaseCreateRequest,
-  type TransferCreateRequest,
 } from "../api/contracts.js";
 
 const PURCHASE_ID = z.string().regex(/^pur_[A-Za-z0-9_-]{22}$/);
 const PURCHASE_REQUEST_KEY = z.string().regex(/^[A-Za-z0-9._:-]{1,160}$/);
 const TRANSFER_ID = z.string().regex(/^trf_[A-Za-z0-9_-]{22}$/);
 const KASPA_TESTNET_ADDRESS = z.string().regex(/^kaspatest:[a-z0-9]{20,256}$/);
-const POSITIVE_ATOMIC = z.string().regex(/^[1-9][0-9]{0,19}$/);
+const POSITIVE_KAS = z.string().regex(/^(?:0|[1-9][0-9]*)(?:\.[0-9]{1,8})?$/);
 const HTTP_METHOD = z.string().regex(/^[A-Z][A-Z0-9!#$%&'*+.^_`|~-]{0,31}$/).default("GET");
 const MAX_MCP_RESULT_BYTES = 64 * 1024;
 
@@ -107,14 +106,14 @@ export function registerSompiTools(registrar: McpToolRegistrar, application: Som
   );
   register(
     "wallet",
-    "Read the agent wallet balance, vault identity, and current spending limits.",
+    "Read the receive address, tKAS balances, deposit status, and current spending limits.",
     {},
     (_args, signal) => application.wallet(signal),
     assertWalletView,
   );
   register(
     "wallet_activity",
-    "Read recent Sompi purchases and direct KAS transfers without performing a side effect.",
+    "Read recent deposits, securing operations, purchases, and transfers without performing a side effect.",
     { limit: z.number().int().min(1).max(100).default(20) },
     ({ limit }: { limit: number }, signal) => application.activity(limit, signal),
     assertWalletActivity,
@@ -125,9 +124,10 @@ export function registerSompiTools(registrar: McpToolRegistrar, application: Som
     {
       requestKey: PURCHASE_REQUEST_KEY,
       destination: KASPA_TESTNET_ADDRESS,
-      amountAtomic: POSITIVE_ATOMIC,
+      amountKas: POSITIVE_KAS,
     },
-    (args: TransferCreateRequest, signal) => application.transfer(args, signal),
+    (args: Readonly<{ requestKey: string; destination: string; amountKas: string }>, signal) =>
+      application.transfer(args, signal),
     assertTransferView,
   );
   register(

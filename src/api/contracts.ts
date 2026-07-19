@@ -11,8 +11,9 @@ import type { PurchaseIntent, PurchaseModule, PurchaseView } from "../purchase/t
 import { TRANSFER_STATES, type TransferIntent, type TransferView } from "../transfer/types.js";
 import type { TransferModule } from "../transfer/module.js";
 import type { WalletActivityItem, WalletView, WalletViewModule } from "../wallet-view/module.js";
+import { parseKasAmount } from "../amount-display.js";
 
-export const SOMPI_API_VERSION = "sompi-agent-api-v1" as const;
+export const SOMPI_API_VERSION = "sompi-agent-api-v2" as const;
 export const MAX_SOMPI_API_BODY_BYTES = 1_500_000;
 export const MAX_PURCHASE_BODY_BYTES = 1024 * 1024;
 export const MAX_SOMPI_API_RESPONSE_BYTES = 64 * 1024;
@@ -24,6 +25,18 @@ const DIGEST_PATTERN = "^sha256:[A-Za-z0-9_-]{43}$";
 const POSITIVE_ATOMIC_PATTERN = "^[1-9][0-9]*$";
 const NONNEGATIVE_ATOMIC_PATTERN = "^(?:0|[1-9][0-9]*)$";
 const BASE64_PATTERN = "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$";
+
+const KAS_AMOUNT_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["atomic", "kas", "unit", "display"],
+  properties: {
+    atomic: { type: "string", pattern: NONNEGATIVE_ATOMIC_PATTERN, maxLength: 20 },
+    kas: { type: "string", pattern: "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$", maxLength: 32 },
+    unit: { const: "tKAS" },
+    display: { type: "string", pattern: "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})? tKAS$", maxLength: 40 },
+  },
+} as const;
 
 export interface PurchaseCreateRequest {
   readonly requestKey: string;
@@ -54,7 +67,7 @@ export interface PurchaseApplication {
 export interface TransferCreateRequest {
   readonly requestKey: string;
   readonly destination: string;
-  readonly amountAtomic: string;
+  readonly amountKas: string;
 }
 
 export interface SompiApplication extends PurchaseApplication {
@@ -147,6 +160,16 @@ export const PURCHASE_VIEW_SCHEMA = {
         checkoutDigest: { type: "string", pattern: DIGEST_PATTERN },
       },
     },
+    display: {
+      type: "object",
+      additionalProperties: false,
+      required: ["price", "additionalCostCeiling", "maximumCharge"],
+      properties: {
+        price: KAS_AMOUNT_SCHEMA,
+        additionalCostCeiling: KAS_AMOUNT_SCHEMA,
+        maximumCharge: KAS_AMOUNT_SCHEMA,
+      },
+    },
     authorization: {
       type: "object",
       additionalProperties: false,
@@ -227,11 +250,11 @@ export const TRANSFER_CREATE_REQUEST_SCHEMA = {
   $id: "https://sompi.local/schemas/transfer-create-request.json",
   type: "object",
   additionalProperties: false,
-  required: ["requestKey", "destination", "amountAtomic"],
+  required: ["requestKey", "destination", "amountKas"],
   properties: {
     requestKey: { type: "string", pattern: REQUEST_KEY_PATTERN, maxLength: 160 },
     destination: { type: "string", pattern: "^kaspatest:[a-z0-9]{20,256}$", maxLength: 266 },
-    amountAtomic: { type: "string", pattern: POSITIVE_ATOMIC_PATTERN, maxLength: 20 },
+    amountKas: { type: "string", pattern: "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$", maxLength: 32 },
   },
 } as const;
 
@@ -269,7 +292,7 @@ export const TRANSFER_VIEW_SCHEMA = {
   type: "object",
   additionalProperties: false,
   required: [
-    "id", "requestKey", "requestDigest", "state", "destination", "amountAtomic", "asset",
+    "id", "requestKey", "requestDigest", "state", "summary", "display", "destination", "amountAtomic", "asset",
     "network", "sourceVaultAddress", "sourceVaultDigest", "feeCeilingAtomic", "maximumTotalAtomic",
     "expiresAtMs", "policyDigest", "manifestRevision", "manifestDigest", "finalityFloor", "version",
     "createdAtMs", "updatedAtMs", "recoveryRequired", "safeToRetry", "userAction",
@@ -279,6 +302,17 @@ export const TRANSFER_VIEW_SCHEMA = {
     requestKey: { type: "string", pattern: REQUEST_KEY_PATTERN, maxLength: 160 },
     requestDigest: { type: "string", pattern: DIGEST_PATTERN },
     state: { enum: TRANSFER_STATES },
+    summary: { type: "string", minLength: 1, maxLength: 512 },
+    display: {
+      type: "object", additionalProperties: false,
+      required: ["amount", "feeCeiling", "maximumTotal"],
+      properties: {
+        amount: KAS_AMOUNT_SCHEMA,
+        feeCeiling: KAS_AMOUNT_SCHEMA,
+        maximumTotal: KAS_AMOUNT_SCHEMA,
+        actualFee: KAS_AMOUNT_SCHEMA,
+      },
+    },
     destination: { type: "string", pattern: "^kaspatest:[a-z0-9]{20,256}$", maxLength: 266 },
     amountAtomic: { type: "string", pattern: POSITIVE_ATOMIC_PATTERN, maxLength: 20 },
     asset: { const: "KAS" },
@@ -351,42 +385,76 @@ export const WALLET_VIEW_SCHEMA = {
   $id: "https://sompi.local/schemas/wallet-view.json",
   type: "object",
   additionalProperties: false,
-  required: ["network", "asset", "fundingAddress", "vaultAddress", "balance", "limits", "chainStatus"],
+  required: ["network", "asset", "receive", "balance", "securing", "limits", "security", "chainStatus"],
   properties: {
     network: { const: "kaspa:testnet-10" },
     asset: { const: "KAS" },
-    fundingAddress: { type: "string", pattern: "^kaspatest:[a-z0-9]{20,256}$", maxLength: 266 },
-    vaultAddress: { type: "string", pattern: "^kaspatest:[a-z0-9]{20,256}$", maxLength: 266 },
-    vaultOutpoint: {
-      type: "object", additionalProperties: false, required: ["txid", "index"],
+    receive: {
+      type: "object", additionalProperties: false,
+      required: ["address", "qrPayload", "networkLabel", "warning"],
       properties: {
-        txid: { type: "string", pattern: "^[a-f0-9]{64}$" },
-        index: { type: "integer", minimum: 0, maximum: 0xffffffff },
+        address: { type: "string", pattern: "^kaspatest:[a-z0-9]{20,256}$", maxLength: 266 },
+        qrPayload: { type: "string", pattern: "^kaspatest:[a-z0-9]{20,256}$", maxLength: 266 },
+        networkLabel: { const: "Kaspa Testnet-10" },
+        warning: { const: "Testnet funds only — do not send mainnet KAS." },
       },
     },
     balance: {
       type: "object", additionalProperties: false,
-      required: ["observedAtomic", "unboundAtomic", "reservedAtomic", "availableAtomic", "provenance", "observedAt"],
+      required: ["total", "available", "incoming", "protected", "pending", "provenance", "observedAt"],
       properties: {
-        observedAtomic: { type: "string", pattern: NONNEGATIVE_ATOMIC_PATTERN, maxLength: 20 },
-        unboundAtomic: { type: "string", pattern: NONNEGATIVE_ATOMIC_PATTERN, maxLength: 20 },
-        reservedAtomic: { type: "string", pattern: NONNEGATIVE_ATOMIC_PATTERN, maxLength: 20 },
-        availableAtomic: { type: "string", pattern: NONNEGATIVE_ATOMIC_PATTERN, maxLength: 20 },
+        total: KAS_AMOUNT_SCHEMA,
+        available: KAS_AMOUNT_SCHEMA,
+        incoming: KAS_AMOUNT_SCHEMA,
+        protected: KAS_AMOUNT_SCHEMA,
+        pending: KAS_AMOUNT_SCHEMA,
         provenance: { const: "operator-node-and-local-vault-lineage" },
         observedAt: { type: "string", format: "date-time", maxLength: 40 },
       },
     },
+    securing: {
+      type: "object", additionalProperties: false,
+      required: ["automatic", "state", "summary", "userAction", "minimumAmount"],
+      properties: {
+        automatic: { const: true },
+        state: { enum: ["idle", "detected", "securing", "attention", "unavailable"] },
+        summary: { type: "string", minLength: 1, maxLength: 512 },
+        userAction: { enum: ["none", "wait", "operator"] },
+        minimumAmount: KAS_AMOUNT_SCHEMA,
+        operationId: { type: "string", pattern: "^[A-Za-z0-9._:-]{1,160}$" },
+        transactionId: { type: "string", pattern: "^[a-f0-9]{64}$" },
+      },
+    },
     limits: {
       type: "object", additionalProperties: false,
-      required: ["maxPerTransferAtomic", "maxPerHourAtomic", "approvalThresholdAtomic", "allowlist", "vaultMaxOutflowAtomic", "vaultWindowSizeDaa", "vaultSpentInWindowAtomic"],
+      required: ["perTransfer", "perHour", "approvalThreshold", "allowlist", "vaultWindow"],
       properties: {
-        maxPerTransferAtomic: { type: "string", pattern: NONNEGATIVE_ATOMIC_PATTERN, maxLength: 20 },
-        maxPerHourAtomic: { type: "string", pattern: NONNEGATIVE_ATOMIC_PATTERN, maxLength: 20 },
-        approvalThresholdAtomic: { type: "string", pattern: NONNEGATIVE_ATOMIC_PATTERN, maxLength: 20 },
+        perTransfer: KAS_AMOUNT_SCHEMA,
+        perHour: KAS_AMOUNT_SCHEMA,
+        approvalThreshold: KAS_AMOUNT_SCHEMA,
         allowlist: { type: "array", maxItems: 1_000, uniqueItems: true, items: { type: "string", maxLength: 266 } },
-        vaultMaxOutflowAtomic: { type: "string", pattern: NONNEGATIVE_ATOMIC_PATTERN, maxLength: 20 },
-        vaultWindowSizeDaa: { type: "string", pattern: POSITIVE_ATOMIC_PATTERN, maxLength: 20 },
-        vaultSpentInWindowAtomic: { type: "string", pattern: NONNEGATIVE_ATOMIC_PATTERN, maxLength: 20 },
+        vaultWindow: {
+          type: "object", additionalProperties: false,
+          required: ["maximumOutflow", "spent", "sizeDaa"],
+          properties: {
+            maximumOutflow: KAS_AMOUNT_SCHEMA,
+            spent: KAS_AMOUNT_SCHEMA,
+            sizeDaa: { type: "string", pattern: POSITIVE_ATOMIC_PATTERN, maxLength: 20 },
+          },
+        },
+      },
+    },
+    security: {
+      type: "object", additionalProperties: false, required: ["vaultAddress"],
+      properties: {
+        vaultAddress: { type: "string", pattern: "^kaspatest:[a-z0-9]{20,256}$", maxLength: 266 },
+        vaultOutpoint: {
+          type: "object", additionalProperties: false, required: ["txid", "index"],
+          properties: {
+            txid: { type: "string", pattern: "^[a-f0-9]{64}$" },
+            index: { type: "integer", minimum: 0, maximum: 0xffffffff },
+          },
+        },
       },
     },
     chainStatus: { enum: ["observed", "unfunded", "unavailable"] },
@@ -399,17 +467,19 @@ export const WALLET_ACTIVITY_SCHEMA = {
   maxItems: 100,
   items: {
     type: "object", additionalProperties: false,
-    required: ["kind", "id", "requestKey", "state", "createdAt", "updatedAt"],
+    required: ["kind", "direction", "id", "state", "summary", "occurredAt"],
     properties: {
-      kind: { enum: ["purchase", "transfer"] },
-      id: { type: "string", pattern: "^(?:pur|trf)_[A-Za-z0-9_-]{22}$" },
+      kind: { enum: ["incoming", "securing", "purchase", "transfer"] },
+      direction: { enum: ["incoming", "internal", "outgoing"] },
+      id: { type: "string", minLength: 1, maxLength: 160 },
       requestKey: { type: "string", pattern: REQUEST_KEY_PATTERN, maxLength: 160 },
       state: { type: "string", minLength: 1, maxLength: 64 },
-      amountAtomic: { type: "string", pattern: POSITIVE_ATOMIC_PATTERN, maxLength: 20 },
+      summary: { type: "string", minLength: 1, maxLength: 512 },
+      amount: KAS_AMOUNT_SCHEMA,
+      fee: KAS_AMOUNT_SCHEMA,
       counterparty: { type: "string", minLength: 1, maxLength: 2048 },
       transactionId: { type: "string", pattern: "^[a-f0-9]{64}$" },
-      createdAt: { type: "string", format: "date-time", maxLength: 40 },
-      updatedAt: { type: "string", format: "date-time", maxLength: 40 },
+      occurredAt: { type: "string", format: "date-time", maxLength: 40 },
     },
   },
 } as const;
@@ -496,7 +566,7 @@ export function createSompiApplication(
   return Object.freeze({
     ...purchaseApplication,
     wallet: async () => assertWalletView(await walletView.wallet()),
-    activity: async (limit: number) => assertWalletActivity(walletView.activity(limit)),
+    activity: async (limit: number) => assertWalletActivity(await walletView.activity(limit)),
     transfer: async (input: TransferCreateRequest, signal?: AbortSignal) =>
       assertTransferView(await transfer.transfer(transferIntent(input), signal)),
     transferStatus: async (transferId: string) => assertTransferView(transfer.status(assertTransferId(transferId))),
@@ -506,18 +576,28 @@ export function createSompiApplication(
 }
 
 export function parseTransferCreateRequest(value: unknown): TransferCreateRequest {
-  if (!validateTransferCreate(value) || BigInt(value.amountAtomic) > (1n << 64n) - 1n) {
+  if (!validateTransferCreate(value)) {
+    throw new SompiApiContractError("Transfer request does not match the canonical schema");
+  }
+  try {
+    parseKasAmount(value.amountKas);
+  } catch {
     throw new SompiApiContractError("Transfer request does not match the canonical schema");
   }
   return Object.freeze({
     requestKey: value.requestKey,
     destination: value.destination,
-    amountAtomic: value.amountAtomic,
+    amountKas: value.amountKas,
   });
 }
 
 export function transferIntent(value: unknown): TransferIntent {
-  return parseTransferCreateRequest(value);
+  const request = parseTransferCreateRequest(value);
+  return Object.freeze({
+    requestKey: request.requestKey,
+    destination: request.destination,
+    amountAtomic: parseKasAmount(request.amountKas),
+  });
 }
 
 export function assertTransferView(value: unknown): TransferView {

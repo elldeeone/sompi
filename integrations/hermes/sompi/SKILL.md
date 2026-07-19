@@ -39,9 +39,9 @@ When the user asks to install Sompi:
    ```
 
 5. Show the complete preview and its exact `nextCommand`. The user must run that command in a local terminal. Do not run it, submit sudo approval, or ask the user to paste the Telegram token into chat. The local command prompts for the token with input hidden and writes the owner recovery record under `/root`.
-6. Report the returned Testnet-10 `fundingAddress`, `minimumFundingSompi`, and `activateCommand`. Never tell the user to fund the vault address directly.
-7. After the user sends at least the minimum to the funding address, show the exact `activateCommand`. The user runs it locally; the agent must not run it or receive sudo. It moves the funds into the spending-limited SilverScript vault through Sompi's durable Treasury journal.
-8. Continue only after activation returns `ready`. Then use `sompi-agent` for wallet reads, Transfers, and Purchases.
+6. Report the returned Testnet-10 receive address and required funding in tKAS. If bootstrap returns an atomic amount, divide it by 100,000,000 for the user and retain the exact atomic value only as supporting detail. Never tell the user to fund the internal vault address directly.
+7. After the user sends at least the minimum to the receive address, show the exact `activateCommand`. The user runs it locally; the agent must not run it or receive sudo. It moves the funds into the spending-limited SilverScript vault through Sompi's durable Treasury journal.
+8. Continue only after activation returns `ready`. This is a one-time ceremony. Future deposits to the same receive address are detected and secured automatically; never ask the user to run a second deposit command.
 
 ## When to Use
 
@@ -71,7 +71,16 @@ sompi-agent transfer-recover TRANSFER_ID
 
 ## Wallet
 
-For balance, address, limits, or recent-activity questions, use `sompi-agent wallet` or `sompi-agent activity --limit 20`. Report the returned facts and chain status. Do not inspect keys, credential files, the Journal, or the node directly.
+For balance, address, limits, deposit status, or recent-activity questions, use `sompi-agent wallet` or `sompi-agent activity --limit 20`. Lead with the returned tKAS/KAS `display` fields:
+
+- `balance.total`: all observed wallet funds;
+- `balance.available`: protected funds available to spend;
+- `balance.incoming`: funds at the receive address being secured;
+- `balance.pending`: funds committed to active operations;
+- `receive.address`: the one address users fund;
+- `securing.summary`: whether a deposit is detected, moving, complete, or needs attention.
+
+Do not call these balances “sompi” unless the user asks for atomic units. Do not expose the internal vault address unless the user explicitly asks for security details. Do not inspect keys, credential files, the Journal, or the node directly.
 
 ## Direct KAS Transfer
 
@@ -81,7 +90,7 @@ When the user explicitly asks to send an exact amount of KAS to an exact Testnet
 sompi-agent transfer --request-key TASK_KEY --to KASPATEST_ADDRESS --amount-kas KAS
 ```
 
-Sompi sends a separate exact approval prompt to the trusted human surface. Wait for the command. Do not treat the user's original chat instruction, an MCP call, or a shell-command approval as the cryptographic approval. Report success only when the returned Transfer is `receipted`, including its amount, recipient, fee, and transaction ID.
+Sompi sends a separate exact approval prompt to the trusted human surface. Wait for the command. Do not treat the user's original chat instruction, an MCP call, or a shell-command approval as the cryptographic approval. Report success only when the returned Transfer is `receipted`, including its tKAS/KAS display amount, recipient, display fee, and transaction ID.
 
 If the Transfer is `funds_reserved`, `prepared`, `submitted`, or `settled`, keep the same Transfer ID and use `sompi-agent transfer-recover TRANSFER_ID` to observe and finish it. If `userAction` says `recover`, do the same. Bound the polling time, report an unresolved status honestly, and never create a replacement send.
 
@@ -97,7 +106,7 @@ If the Transfer is `funds_reserved`, `prepared`, `submitted`, or `settled`, keep
    For a body, write it to a bounded local file and add `--body-file /absolute/path` and `--media-type TYPE`. If the expected merchant identity is known, add `--merchant-id ID` and `--merchant-origin ORIGIN`.
 
 3. Sompi may send an exact Approve/Deny prompt into the user's trusted chat. Do not answer it for the user, infer approval from conversation, ask for credentials, or retry with altered terms. Wait for the command to finish.
-4. Read the returned Purchase view. Use the fulfilled content only when the state is `fulfilled` or `receipted`. Report denials and policy failures plainly.
+4. Read the returned Purchase view. Use the fulfilled content only when the state is `fulfilled` or `receipted`. Report amounts in tKAS/KAS, and report denials, policy failures, and recovery instructions plainly.
 
 ## Recovery
 

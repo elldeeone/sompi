@@ -2,6 +2,7 @@ import { purchaseRuntimeConfigFromEnv } from "../runtime/config.js";
 import { createSompiPurchaseRuntime } from "../runtime/purchase-runtime.js";
 import { JournalNotFoundError } from "../purchase/journal.js";
 import type { TreasuryOperationView } from "../treasury/operations.js";
+import { displayKas } from "../amount-display.js";
 import { HostBootstrapError } from "./host-bootstrap.js";
 
 const DIGEST = /^sha256:[A-Za-z0-9_-]{43}$/;
@@ -78,7 +79,7 @@ export async function driveBootstrapVaultDeposit(
   } catch (error) {
     if (!(error instanceof JournalNotFoundError)) throw error;
     if (input.fundingBalance < input.minimumFunding) {
-      throw new HostBootstrapError(`funding wallet needs at least ${input.minimumFunding} sompi before vault activation`);
+      throw new HostBootstrapError(`funding wallet needs at least ${displayKas(input.minimumFunding)} before vault activation`);
     }
     view = await operations.execute({
       operationKey: input.operationKey,

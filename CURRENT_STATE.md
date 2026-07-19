@@ -5,7 +5,8 @@ Last updated: **2026-07-19**
 ## Status
 
 The generic x402 Merchant cutover, near-automatic Hermes onboarding, wallet
-visibility, and direct native-KAS Transfers are complete on `main`.
+visibility, direct native-KAS Transfers, and the automatic funding-intake UX
+are implemented in the current working tree.
 
 Sompi is an API-first local agent wallet and purchasing runtime:
 
@@ -20,9 +21,14 @@ epoch-15 reader.
 
 ## Wallet and Transfer integration
 
-- `wallet` reports the TN10 funding and vault identities, observed vault
-  balance, pending reservations, conservative available balance, policy limits,
-  chain status, and bounded Sompi activity without exposing keys.
+- `wallet` reports one TN10 receive address, total/available/incoming/pending
+  tKAS balances, automatic securing status, policy limits, chain status, and
+  bounded activity without exposing keys.
+- Future deposits to the receive address are detected and moved automatically
+  through the durable vault-deposit Treasury operation. Only the initial
+  vault activation remains an explicit operator ceremony.
+- Public summaries, approvals, errors, and activity lead with tKAS. Exact sompi
+  remains structured atomic evidence for consensus and accounting.
 - `transfer` creates one durable, human-present, vault-backed native KAS send.
 - The signed `sompi.transfer.1` decision binds the recipient, amount, source,
   fee and total ceilings, policy, manifest, expiry, finality, and Transfer ID.
@@ -35,8 +41,13 @@ epoch-15 reader.
   durable intent repeats the same check against current capacity.
 - API, CLI, MCP compatibility, OpenAPI, Arazzo, and the Hermes skill use the
   same Transfer and Wallet View interfaces.
-- The complete local suite passes 476 tests (475 pass, one privileged-only
+- The complete local suite passes 486 tests (485 pass, one privileged-only
   ownership test skipped) plus the offline smoke.
+
+This automatic-intake and wallet-UX cutover is implemented but not yet
+published or deployed. The currently published `0.9.1` package and Terah still
+run the preceding wallet interface until a new release is deliberately cut and
+canary tested.
 
 Version `0.9.1` is published, tagged `v0.9.1`, and deployed on Terah from the
 byte-verified public registry package. It corrects the `0.9.0` boundary error

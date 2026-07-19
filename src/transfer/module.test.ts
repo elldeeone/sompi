@@ -150,7 +150,7 @@ test("a post-approval Treasury race fails terminally without a retry capability"
       destination: ADDRESS,
       amountAtomic: "5000",
     }),
-    /rejected before Treasury execution/,
+    /could not start.*No funds were sent/,
   );
   const record = fixture.journal.findTransferByRequestKey("telegram:send:policy-rejected");
   assert.equal(record?.state, "failed_terminal");

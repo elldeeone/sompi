@@ -12,6 +12,7 @@ import { createSompiApplication } from "./api/contracts.js";
 import { startSompiApiServer, startSompiRecoveryApiServer } from "./api/server.js";
 import { SompiRuntimeConfigError, purchaseRuntimeConfigFromEnv } from "./runtime/config.js";
 import { createSompiPurchaseRuntime } from "./runtime/purchase-runtime.js";
+import { startFundingIntake, type RunningFundingIntake } from "./funding-intake/module.js";
 
 if (process.argv.length > 3 || (process.argv[2] && !["start", "help", "--help"].includes(process.argv[2]))) {
   fatal("usage: sompi-api [start|--help]", 2);
@@ -26,6 +27,7 @@ async function main(): Promise<void> {
   let runtime: ReturnType<typeof createSompiPurchaseRuntime> | undefined;
   let api: Awaited<ReturnType<typeof startSompiApiServer>> | undefined;
   let recoveryApi: Awaited<ReturnType<typeof startSompiRecoveryApiServer>> | undefined;
+  let fundingIntake: RunningFundingIntake | undefined;
   try {
     const listener = sompiApiListenerConfigFromEnv();
     const recoveryListener = sompiRecoveryApiListenerConfigFromEnv();
@@ -51,10 +53,14 @@ async function main(): Promise<void> {
       maxMutationConcurrency: listener.maxMutationConcurrency,
       maxControlConcurrency: listener.maxControlConcurrency,
     });
+    fundingIntake = startFundingIntake(runtime.fundingIntake, {
+      onError: () => console.error("sompi warning: automatic funding intake needs reconciliation"),
+    });
     let closing = false;
     const close = async () => {
       if (closing) return;
       closing = true;
+      await fundingIntake?.close();
       await api?.close();
       await recoveryApi?.close();
       await runtime?.close();
@@ -66,6 +72,7 @@ async function main(): Promise<void> {
   } catch (error) {
     await api?.close().catch(() => undefined);
     await recoveryApi?.close().catch(() => undefined);
+    await fundingIntake?.close().catch(() => undefined);
     await runtime?.close().catch(() => undefined);
     if (error instanceof SompiApiConfigError || error instanceof SompiRuntimeConfigError) fatal(error.message);
     fatal("Sompi API could not start. Inspect the local operator configuration.");

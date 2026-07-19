@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import { SompiApiClient, SompiApiClientError } from "./api/client.js";
 import { MAX_PURCHASE_BODY_BYTES, type PurchaseCreateRequest } from "./api/contracts.js";
 import { SompiApiConfigError, sompiApiConnectionConfigFromEnv } from "./api/config.js";
+import { kasAmountView, parseKasAmount } from "./amount-display.js";
 import {
   AGENT_USAGE,
   AgentCliArgumentError,
@@ -41,7 +42,7 @@ async function main(): Promise<void> {
               ? await client.transfer({
                   requestKey: command.requestKey,
                   destination: command.destination,
-                  amountAtomic: transferAmountAtomic(command),
+                  amountKas: transferAmountKas(command),
                 })
               : command.kind === "transfer-status"
                 ? await client.transferStatus(command.transferId)
@@ -55,21 +56,20 @@ function unreachable(value: never): never {
   throw new AgentCliArgumentError(`unsupported command: ${JSON.stringify(value)}`);
 }
 
-function transferAmountAtomic(command: Extract<ReturnType<typeof parseAgentArguments>, { kind: "transfer" }>): string {
+function transferAmountKas(command: Extract<ReturnType<typeof parseAgentArguments>, { kind: "transfer" }>): string {
   if (command.amountSompi !== undefined) {
     if (!/^[1-9][0-9]{0,19}$/.test(command.amountSompi)) {
       throw new AgentCliArgumentError("--amount-sompi must be a positive canonical integer");
     }
     const amount = BigInt(command.amountSompi);
     if (amount > (1n << 64n) - 1n) throw new AgentCliArgumentError("transfer amount exceeds uint64");
-    return amount.toString();
+    return kasAmountView(amount).kas;
   }
-  const value = command.amountKas ?? "";
-  const match = /^(0|[1-9][0-9]*)(?:\.([0-9]{1,8}))?$/.exec(value);
-  if (!match) throw new AgentCliArgumentError("--amount-kas must be a positive decimal with at most 8 places");
-  const amount = BigInt(match[1]) * 100_000_000n + BigInt((match[2] ?? "").padEnd(8, "0") || "0");
-  if (amount <= 0n || amount > (1n << 64n) - 1n) throw new AgentCliArgumentError("transfer amount is outside the supported range");
-  return amount.toString();
+  try {
+    return kasAmountView(parseKasAmount(command.amountKas ?? "")).kas;
+  } catch (cause) {
+    throw new AgentCliArgumentError(cause instanceof Error ? `--amount-kas ${cause.message}` : "--amount-kas is invalid");
+  }
 }
 
 function purchaseRequest(command: Extract<ReturnType<typeof parseAgentArguments>, { kind: "purchase" }>): PurchaseCreateRequest {

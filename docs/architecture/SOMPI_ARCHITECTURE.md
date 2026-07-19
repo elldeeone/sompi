@@ -20,6 +20,8 @@ Agent skill / sompi-agent / MCP compatibility
                     |
                     v
              Chain Evidence
+
+stable receive address -> Funding Intake -> Treasury -> SilverScript vault
 ```
 
 API, CLI, skill, and MCP do not own purchasing or transfer behavior. They
@@ -58,9 +60,18 @@ and recovery. It has no Merchant, Checkout, x402, or fulfilment semantics.
 
 ### Wallet View module
 
-Projects read-only Treasury identity, observed vault balance, reserved and
-available capacity, operator hard limits, chain status, and bounded
-Sompi-recorded activity. It exposes no mutation or signing capability.
+Projects the stable receive identity, KAS-first total/available/incoming/
+protected/pending balances, automatic-securing status, operator hard limits,
+chain status, and bounded Sompi-recorded activity. Technical vault identity is
+nested security detail. It exposes no mutation or signing capability.
+
+### Funding Intake module
+
+Observes bounded receive-address UTXOs and drives one deterministic,
+idempotent vault deposit through the existing Treasury and Chain Evidence
+modules. Its public interface is reconcile and status; UTXO selection,
+idempotency, fee thresholds, execution serialization, and recovery stay inside
+the implementation. A read-only Wallet View never triggers this mutation.
 
 ### Checkout Terms seam
 

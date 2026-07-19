@@ -93,6 +93,11 @@ export interface PurchaseView {
   userAction?: string;
   resourceFingerprint: Sha256Digest;
   terms?: CheckoutTerms;
+  display?: Readonly<{
+    price: KasAmountView;
+    additionalCostCeiling: KasAmountView;
+    maximumCharge: KasAmountView;
+  }>;
   authorization: PurchaseAuthorizationView;
   treasury: TreasuryView;
   paymentAttempts: readonly PaymentAttemptView[];
@@ -117,3 +122,4 @@ export interface PurchaseModule {
   status(id: PurchaseId, signal?: AbortSignal): Promise<PurchaseView>;
   recover(id: PurchaseId, signal?: AbortSignal): Promise<PurchaseView>;
 }
+import type { KasAmountView } from "../amount-display.js";

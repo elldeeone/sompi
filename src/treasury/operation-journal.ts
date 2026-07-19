@@ -179,6 +179,7 @@ export interface TreasuryOperationJournal {
   ): TreasuryOperationRecord;
   completeTreasuryOperation(operationKey: string, driver?: TreasuryDriverLease): TreasuryOperationRecord;
   requireTreasuryOperation(operationKey: string): TreasuryOperationRecord;
+  listTreasuryOperations(kind: TreasuryOperationKind, limit: number): readonly TreasuryOperationRecord[];
   treasuryOperationSpentLastHour(): bigint;
   treasuryPolicyCapacityUsed(): bigint;
   treasuryPendingCapacityUsed(): bigint;

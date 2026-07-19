@@ -81,11 +81,13 @@ import {
 import { TransferAuthorityClient } from "../transfer/authority.js";
 import { TransferModule } from "../transfer/module.js";
 import { WalletViewModule } from "../wallet-view/module.js";
+import { FundingIntakeModule } from "../funding-intake/module.js";
 
 export interface SompiPurchaseRuntime {
   readonly purchase: PurchaseModule;
   readonly transfer: TransferModule;
   readonly walletView: WalletViewModule;
+  readonly fundingIntake: FundingIntakeModule;
   readonly journal: PurchaseJournal;
   readonly wallet: KaspaWallet;
   readonly vault: VaultManager;
@@ -351,11 +353,17 @@ export function createSompiPurchaseRuntime(
       finalityFloor: config.finalityFloors.vault,
       now,
     });
+    const fundingIntake = new FundingIntakeModule({
+      wallet,
+      vault,
+      treasury: treasuryOperations,
+    });
     const walletView = new WalletViewModule({
       wallet,
       vault,
       journal,
       treasury: treasuryOperations,
+      fundingIntake,
       policy,
       now,
     });
@@ -397,6 +405,7 @@ export function createSompiPurchaseRuntime(
       purchase,
       transfer,
       walletView,
+      fundingIntake,
       journal,
       wallet,
       vault,

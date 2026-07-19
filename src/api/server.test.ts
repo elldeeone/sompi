@@ -68,7 +68,7 @@ test("canonical wallet and Transfer routes stay authenticated and recovery-scope
     assert.equal((await apiRequest(running.socketPath, "GET", "/wallet/activity?limit=7", auth)).status, 200);
     assert.equal((await apiRequest(running.socketPath, "POST", "/transfers", {
       ...auth, "content-type": "application/json",
-    }, JSON.stringify({ requestKey: "api:transfer:one", destination: ADDRESS, amountAtomic: "1000" }))).status, 200);
+    }, JSON.stringify({ requestKey: "api:transfer:one", destination: ADDRESS, amountKas: "0.00001" }))).status, 200);
     assert.equal((await apiRequest(running.socketPath, "GET", `/transfers/${fakeTransfer().id}`, auth)).status, 200);
     assert.equal((await apiRequest(running.socketPath, "POST", `/transfers/${fakeTransfer().id}/recover`, auth)).status, 200);
     assert.equal((await apiRequest(running.socketPath, "GET", "/wallet/activity?limit=101", auth)).status, 400);
@@ -334,7 +334,7 @@ const ADDRESS = "kaspatest:qq2n2shqkghczyel57af242ffs50x5uj07w7ezg7kwm8frwt5xhlj
 function fakeTransfer(): TransferView {
   return {
     id: "trf_0123456789ABCDEFGHIJKL", requestKey: "api:transfer:one",
-    requestDigest: `sha256:${"B".repeat(43)}`, state: "created", destination: ADDRESS,
+    requestDigest: `sha256:${"B".repeat(43)}`, state: "created", summary: "Transfer request recorded.", display: { amount: amount("1000"), feeCeiling: amount("100"), maximumTotal: amount("1100") }, destination: ADDRESS,
     amountAtomic: "1000", asset: "KAS", network: "kaspa:testnet-10", sourceVaultAddress: ADDRESS,
     sourceVaultDigest: `sha256:${"C".repeat(43)}`, feeCeilingAtomic: "100", maximumTotalAtomic: "1100",
     expiresAtMs: 2_000_000_000_000, policyDigest: `sha256:${"D".repeat(43)}`, manifestRevision: 1,
@@ -346,9 +346,17 @@ function fakeTransfer(): TransferView {
 
 function fakeWallet(): WalletView {
   return {
-    network: "kaspa:testnet-10", asset: "KAS", fundingAddress: ADDRESS, vaultAddress: ADDRESS,
-    balance: { observedAtomic: "10000", unboundAtomic: "0", reservedAtomic: "0", availableAtomic: "10000", provenance: "operator-node-and-local-vault-lineage", observedAt: "2030-01-01T00:00:00.000Z" },
-    limits: { maxPerTransferAtomic: "1000", maxPerHourAtomic: "5000", approvalThresholdAtomic: "1", allowlist: [], vaultMaxOutflowAtomic: "5000", vaultWindowSizeDaa: "100", vaultSpentInWindowAtomic: "0" },
+    network: "kaspa:testnet-10", asset: "KAS",
+    receive: { address: ADDRESS, qrPayload: ADDRESS, networkLabel: "Kaspa Testnet-10", warning: "Testnet funds only — do not send mainnet KAS." },
+    balance: { total: amount("10000"), available: amount("10000"), incoming: amount("0"), protected: amount("10000"), pending: amount("0"), provenance: "operator-node-and-local-vault-lineage", observedAt: "2030-01-01T00:00:00.000Z" },
+    securing: { automatic: true, state: "idle", summary: "No incoming funds are waiting to be secured.", userAction: "none", minimumAmount: amount("101") },
+    limits: { perTransfer: amount("1000"), perHour: amount("5000"), approvalThreshold: amount("1"), allowlist: [], vaultWindow: { maximumOutflow: amount("5000"), spent: amount("0"), sizeDaa: "100" } },
+    security: { vaultAddress: ADDRESS },
     chainStatus: "observed",
   };
+}
+
+function amount(atomic: string) {
+  const kas = atomic === "0" ? "0" : `0.${atomic.padStart(8, "0").replace(/0+$/, "")}`;
+  return { atomic, kas, unit: "tKAS" as const, display: `${kas} tKAS` };
 }
