@@ -538,7 +538,7 @@ export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
         );
       }
       const processed = await this.processPaymentResponse(
-        "paid-http-response",
+        "recovery-observer",
         input.context,
         rehydrated,
         Buffer.from(strictHeaderString(paymentResponse, PAYMENT_RESPONSE_HEADER), "ascii")
@@ -569,7 +569,7 @@ export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
     );
     if (!paymentResponse) return { status: "pending" };
     const processed = await this.processPaymentResponse(
-      "paid-http-response",
+      "recovery-observer",
       input.context,
       rehydrated,
       Buffer.from(strictHeaderString(paymentResponse, PAYMENT_RESPONSE_HEADER), "ascii")

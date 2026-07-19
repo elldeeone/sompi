@@ -142,6 +142,10 @@ test("paid retry is address-pinned, bounded, settlement-verified, and replay-ide
   assert.equal(fixture.calls.payExact, 1, "replay must not construct another exact transaction");
   assert.equal(fixture.calls.transport, 2);
   assert.equal(fixture.calls.settlementVerify, 2);
+  assert.deepEqual(fixture.calls.settlementSources, [
+    "paid-http-response",
+    "paid-http-response",
+  ]);
   assert.deepEqual(fixture.calls.providerPurposes, ["prepare"]);
   assert.equal(fixture.paymentSignatures.length, 2);
   assert.equal(fixture.paymentSignatures[0], fixture.paymentSignatures[1]);
@@ -160,6 +164,25 @@ test("post-Settlement fulfilment recovery replays the same keyless payment paylo
   assert.equal(fixture.calls.payExact, 1, "recovery must not construct another payment");
   assert.equal(fixture.calls.transport, 1);
   assert.equal(fixture.paymentSignatures.length, 1);
+  assert.deepEqual(fixture.calls.settlementSources, ["recovery-observer"]);
+});
+
+test("expired exact recovery replays are verified as recovery evidence", async () => {
+  const fixture = makeFixture({
+    recoveryStatus: "transaction_observed",
+    requireRecoverySettlementSource: true,
+    termsExpiresAt: new Date(NOW + 1).toISOString(),
+  });
+  const prepared = await fixture.prepareExact();
+  fixture.setNow(NOW + 2);
+  const result = await fixture.module.observe({
+    context: fixture.preparedContext(prepared),
+    effect: fixture.effect("kaspa-x402-payment", prepared.preparedDigest),
+    egress: fixture.egress,
+  });
+  assert.equal(result.status, "settled");
+  assert.deepEqual(fixture.calls.settlementSources, ["recovery-observer"]);
+  assert.equal(fixture.calls.payExact, 1, "recovery must reuse the immutable signed payment");
 });
 
 test("canonical rehydration rejects tampering, payment-id replay, and provider reuse", async () => {
@@ -450,8 +473,11 @@ function makeFixture(
     advertisePaymentIdentifier?: boolean;
     providerFactory?: (context: any) => Promise<any>;
     transportSend?: (request: any) => Promise<any>;
+    requireRecoverySettlementSource?: boolean;
+    termsExpiresAt?: string;
   } = {}
 ) {
+  let nowMs = NOW;
   const calls = {
     stagingPrepare: 0,
     stagingSubmit: 0,
@@ -459,6 +485,7 @@ function makeFixture(
     payExact: 0,
     transport: 0,
     settlementVerify: 0,
+    settlementSources: [] as string[],
     recoveryObserve: 0,
     providerPurposes: [] as string[],
   };
@@ -508,7 +535,7 @@ function makeFixture(
     asset: "KAS",
     network: "kaspa:testnet-10",
     payTo: PAY_TO,
-    expiresAt: "2099-01-01T00:00:00.000Z",
+    expiresAt: options.termsExpiresAt ?? "2099-01-01T00:00:00.000Z",
     checkoutDigest: CHECKOUT_DIGEST,
   };
   const authorizationRequest = {
@@ -700,7 +727,7 @@ function makeFixture(
 
   const treasuryStaging: any = new KaspaX402TreasuryStagingAdapter({
     driver: staging as any,
-    now: () => NOW,
+    now: () => nowMs,
   });
   const module: any = new KaspaX402ExactPaymentModule({
     funding: {
@@ -733,6 +760,13 @@ function makeFixture(
     settlementVerifier: {
       verify: async (input: any) => {
         calls.settlementVerify += 1;
+        calls.settlementSources.push(input.source);
+        if (
+          options.requireRecoverySettlementSource &&
+          input.source !== "recovery-observer"
+        ) {
+          throw new Error("expired checkout was not verified through recovery");
+        }
         assert.equal(input.transactionId, EXACT_TX);
         assert.equal(
           input.response.extensions.kaspa.exactProfile,
@@ -783,7 +817,7 @@ function makeFixture(
         return { status: "pending" as const, detailDigest: digest("payment-pending") };
       },
     },
-    now: () => NOW,
+    now: () => nowMs,
   } as any);
 
   const egress = {
@@ -848,6 +882,9 @@ function makeFixture(
     paymentSignatures,
     transportRequests,
     makeProvider,
+    setNow(value: number) {
+      nowMs = value;
+    },
     effect(kind: string, payloadDigest: string) {
       return {
         id: `effect-${kind}`,
