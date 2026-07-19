@@ -106,6 +106,11 @@ export interface StagingRecoveryExpectedCandidate {
   readonly outputScriptPublicKey: string;
 }
 
+export interface StagingRecoveryExpectedExactCandidate
+  extends StagingRecoveryExpectedCandidate {
+  readonly profile: "standard-native" | "additive";
+}
+
 export type StagingRecoveryCandidateObservation =
   | {
       readonly status: "absent";
@@ -154,7 +159,7 @@ export interface StagingRecoveryRaceRequest {
     readonly scriptPublicKey: string;
     readonly blockDaaScore: string;
   };
-  readonly exactPayment: Readonly<StagingRecoveryExpectedCandidate> | null;
+  readonly exactPayment: Readonly<StagingRecoveryExpectedExactCandidate> | null;
   readonly recovery: Readonly<StagingRecoveryExpectedCandidate>;
   readonly deadlineAtMs: number;
   readonly signal: AbortSignal;
@@ -287,7 +292,7 @@ export class AbandonedStagingRecoveryError extends Error {
   }
 }
 
-interface ExactCandidateFacts extends StagingRecoveryExpectedCandidate {
+interface ExactCandidateFacts extends StagingRecoveryExpectedExactCandidate {
   readonly artifact: string;
 }
 
@@ -306,7 +311,7 @@ export interface AbandonedStagingRecoveryEnvelope {
     readonly blockDaaScore: string;
     readonly evidenceDigest: Sha256Digest;
   };
-  readonly exactPayment: StagingRecoveryExpectedCandidate | null;
+  readonly exactPayment: StagingRecoveryExpectedExactCandidate | null;
   readonly recovery: {
     readonly transaction: string;
     readonly transactionEncoding: typeof ABANDONED_STAGING_RECOVERY_ENCODING;
@@ -740,6 +745,7 @@ export class AbandonedStagingRecovery {
           input.exactPayment === null
             ? null
             : Object.freeze({
+                profile: input.exactPayment.profile,
                 transactionId: input.exactPayment.transactionId,
                 transactionArtifactDigest: input.exactPayment.transactionArtifactDigest,
                 inputOutpoint: input.exactPayment.inputOutpoint,
@@ -1222,8 +1228,9 @@ function validateEnvelopeShape(value: unknown): AbandonedStagingRecoveryEnvelope
 function validateExpectedCandidateRecord(
   value: unknown,
   label: string
-): StagingRecoveryExpectedCandidate {
+): StagingRecoveryExpectedExactCandidate {
   const record = exactRecord(value, [
+    "profile",
     "transactionId",
     "transactionArtifactDigest",
     "inputOutpoint",
@@ -1234,6 +1241,10 @@ function validateExpectedCandidateRecord(
     "outputScriptPublicKey",
   ], label);
   const transactionId = requireHash(record.transactionId, `${label} transaction ID`);
+  const profile = record.profile;
+  if (profile !== "standard-native" && profile !== "additive") {
+    throw adapterError("profile_mismatch", `${label} profile is unsupported`);
+  }
   const transactionArtifactDigest = requireDigest(
     record.transactionArtifactDigest,
     `${label} artifact digest`
@@ -1245,6 +1256,7 @@ function validateExpectedCandidateRecord(
     throw adapterError("artifact_mismatch", `${label} output identity changed`);
   }
   return {
+    profile,
     transactionId,
     transactionArtifactDigest,
     inputOutpoint,
@@ -1374,6 +1386,7 @@ function validateExactCandidate(
   );
   const outputAddress = addressForScript(codec, outputScriptPublicKey, "immutable exact Merchant output");
   return {
+    profile: value.profile,
     artifact,
     transactionId,
     transactionArtifactDigest: digestBytes(Buffer.from(artifact, "utf8")),

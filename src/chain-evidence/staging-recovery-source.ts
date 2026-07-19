@@ -57,7 +57,10 @@ export class ChainEvidenceStagingRecoveryRaceSource implements StagingRecoveryRa
       }],
       expectedInputs: [input],
       watchedAddresses: [request.staging.address, candidate.outputAddress],
-      mechanism: role === "exact" ? "kip10-script-template" : "ordinary",
+      mechanism:
+        role === "exact" && "profile" in candidate && candidate.profile === "additive"
+          ? "kip10-script-template"
+          : "ordinary",
       protocolFinality: "accepted",
       operatorFloor: this.floor,
       signal: request.signal,

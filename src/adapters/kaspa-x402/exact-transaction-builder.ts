@@ -13,6 +13,7 @@ import {
   KIP10_EXACT_TRANSACTION_ENCODING,
   buildKip10AdditiveBorrowArgs,
   buildKip10AdditiveRedeemScript,
+  calculateKaspaStorageMass,
   kip10AdditiveScriptPublicKey,
   serializedScriptPublicKey,
 } from "@kaspa-x402/covenant";
@@ -278,6 +279,18 @@ export class ExactTransactionBuilder {
         subnetworkId: NATIVE_SUBNETWORK,
         gas: 0n,
         payload: "",
+        storageMass: calculateKaspaStorageMass({
+          inputs: [{
+            amount: input.stagingAmount,
+            scriptPublicKey: input.stagingScript,
+            hasCovenant: false,
+          }],
+          outputs: [{
+            amount: input.price,
+            scriptPublicKey: input.paymentScript,
+            hasCovenant: false,
+          }],
+        }),
       };
       const unsigned = new Transaction(shape as never);
       const signature = createInputSignature(unsigned, 0, privateKey, SighashType.All).toLowerCase();
@@ -334,6 +347,25 @@ export class ExactTransactionBuilder {
         subnetworkId: NATIVE_SUBNETWORK,
         gas: 0n,
         payload: "",
+        storageMass: calculateKaspaStorageMass({
+          inputs: [
+            {
+              amount: head.amount,
+              scriptPublicKey: head.script,
+              hasCovenant: false,
+            },
+            {
+              amount: input.stagingAmount,
+              scriptPublicKey: input.stagingScript,
+              hasCovenant: false,
+            },
+          ],
+          outputs: [{
+            amount: checkedAdd(head.amount, input.price, "additive successor"),
+            scriptPublicKey: head.script,
+            hasCovenant: false,
+          }],
+        }),
       };
       const unsigned = new Transaction(shape as never);
       const signature = createInputSignature(unsigned, 1, privateKey, SighashType.All).toLowerCase();

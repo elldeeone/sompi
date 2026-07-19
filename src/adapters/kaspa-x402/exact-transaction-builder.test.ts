@@ -7,6 +7,7 @@ import test from "node:test";
 import type { ExactTransactionPaymentRequest } from "@kaspa-x402/client";
 import {
   buildKip10AdditiveRedeemScript,
+  calculateKaspaStorageMass,
   kip10AdditiveScriptPublicKey,
   serializedScriptPublicKey,
 } from "@kaspa-x402/covenant";
@@ -47,6 +48,8 @@ test("standard-native pays the advertised amount once in a version-0 transaction
     assert.equal(transaction.inputs[0]?.transactionId, STAGING_TXID);
     assert.equal(transaction.inputs[0]?.sigOpCount, 1);
     assert.equal(transaction.inputs[0]?.computeBudget, 0);
+    assert.equal(transaction.storageMass, contextualStorageMass(transaction));
+    assert.notEqual(transaction.storageMass, "0");
     assert.equal(BigInt(input.staging.amountAtomic) - BigInt(input.request.amount), 2_000_000n);
   });
 });
@@ -64,6 +67,7 @@ test("additive makes the successor delta the sole merchant payment", async () =>
     assert.equal(transaction.inputs[1]?.computeBudget, 10);
     assert.equal(transaction.outputs[0]?.value, "120000000");
     assert.equal(transaction.outputs[0]?.scriptPublicKey, input.request.payToScriptPublicKey);
+    assert.equal(transaction.storageMass, contextualStorageMass(transaction));
     assert.equal(result.paymentOutputIndex, 0);
     assert.equal(result.authorization.inputIndex, 1);
 
@@ -138,6 +142,25 @@ interface ParsedTransaction {
   version: number;
   inputs: Array<Record<string, unknown>>;
   outputs: Array<Record<string, unknown>>;
+  storageMass: string;
+}
+
+function contextualStorageMass(transaction: ParsedTransaction): string {
+  return calculateKaspaStorageMass({
+    inputs: transaction.inputs.map((input) => {
+      const utxo = input.utxo as Record<string, unknown>;
+      return {
+        amount: String(utxo.amount),
+        scriptPublicKey: String(utxo.scriptPublicKey),
+        hasCovenant: false,
+      };
+    }),
+    outputs: transaction.outputs.map((output) => ({
+      amount: String(output.value),
+      scriptPublicKey: String(output.scriptPublicKey),
+      hasCovenant: false,
+    })),
+  }).toString();
 }
 
 function parseTransaction(serialized: string): ParsedTransaction {

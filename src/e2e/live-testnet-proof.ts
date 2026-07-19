@@ -1410,6 +1410,7 @@ async function createReport(input: {
     : LIVE_PRICE_ATOMIC;
   const clientObservation = await input.clientChain.observeExactOutput({
     network: LIVE_NETWORK,
+    profile: input.exactProfile,
     transactionId: spend.transactionId,
     outpoint: spend.outpoint,
     outputIndex: merchantIndex,

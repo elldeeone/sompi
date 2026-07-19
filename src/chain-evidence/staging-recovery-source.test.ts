@@ -69,7 +69,10 @@ function request(): StagingRecoveryRaceRequest {
       scriptPublicKey: SCRIPT,
       blockDaaScore: "90",
     },
-    exactPayment: candidate(EXACT_ID, "kaspatest:qmerchant"),
+    exactPayment: {
+      ...candidate(EXACT_ID, "kaspatest:qmerchant"),
+      profile: "standard-native",
+    },
     recovery: candidate(RECOVERY_ID, "kaspatest:qrecovery"),
     deadlineAtMs: Date.now() + 60_000,
     signal: new AbortController().signal,

@@ -730,6 +730,7 @@ async function makeFixture(options: FixtureOptions = {}): Promise<Fixture> {
       chainRequest(minimumFinality) {
         return {
           network: "kaspa:testnet-10",
+          profile: "additive",
           transactionId: built.transactionId,
           outpoint: `${built.transactionId}:0`,
           outputIndex: 0,

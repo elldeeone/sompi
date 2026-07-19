@@ -21,6 +21,7 @@ import type { IdempotencyStore } from "@kaspa-x402/server";
 import {
   buildKip10AdditiveBorrowArgs,
   buildKip10AdditiveRedeemScript,
+  calculateKaspaStorageMass,
   kip10AdditiveScriptPublicKey,
   serializedScriptPublicKey,
 } from "@kaspa-x402/covenant";
@@ -95,6 +96,7 @@ export interface TreasuryStagingFeeSource {
 
 export interface ChainObservationRequest {
   network: typeof NETWORK;
+  profile: "standard-native" | "additive";
   transactionId: Hash32Hex;
   outpoint: string;
   outputIndex: number;
@@ -517,6 +519,7 @@ export class KaspaExactChainVerifier
       callerSignal,
       (signal) => this.chain.observeExactOutput({
         network: NETWORK,
+        profile: parsed.profile,
         transactionId: parsed.transactionId,
         outpoint: `${parsed.transactionId}:${parsed.merchantOutputIndex}`,
         outputIndex: parsed.merchantOutputIndex,
@@ -720,6 +723,7 @@ function parseExactPayment(
     document.payload === "" &&
     outputs.length === 1;
   if (!commonEnvelope) throw error("artifact_mismatch", "safe-JSON exact transaction envelope changed");
+  assertContextualStorageMass(document, inputs, outputs);
 
   let stagingInput: ReturnType<typeof validateVersionedInput>;
   let threshold = 0n;
@@ -886,6 +890,53 @@ function parseExactPayment(
     requiredFinality,
     bindingDigest,
   };
+}
+
+function assertContextualStorageMass(
+  document: Record<string, unknown>,
+  inputs: readonly unknown[],
+  outputs: readonly unknown[]
+): void {
+  try {
+    const committed = uint64(document.storageMass, "exact transaction storage mass");
+    const calculated = calculateKaspaStorageMass({
+      inputs: inputs.map((value) => {
+        const input = requireRecord(value, "exact transaction input");
+        const utxo = requireRecord(input.utxo, "exact transaction input UTXO");
+        return {
+          amount: uint64(utxo.amount, "exact transaction input amount", { positive: true }),
+          scriptPublicKey: canonicalScript(
+            utxo.scriptPublicKey,
+            "exact transaction input script public key"
+          ),
+          hasCovenant: false,
+        };
+      }),
+      outputs: outputs.map((value) => {
+        const output = requireRecord(value, "exact transaction output");
+        if (output.covenant !== null) {
+          throw error("artifact_mismatch", "exact transaction output unexpectedly carries a covenant");
+        }
+        return {
+          amount: uint64(output.value, "exact transaction output amount", { positive: true }),
+          scriptPublicKey: canonicalScript(
+            output.scriptPublicKey,
+            "exact transaction output script public key"
+          ),
+          hasCovenant: false,
+        };
+      }),
+    });
+    if (committed !== calculated) {
+      throw error(
+        "artifact_mismatch",
+        "exact transaction storage mass does not match contextual KIP-9 mass"
+      );
+    }
+  } catch (cause) {
+    if (cause instanceof KaspaExactChainVerifierError) throw cause;
+    throw error("artifact_mismatch", "exact transaction storage mass is invalid", { cause });
+  }
 }
 
 function assertAuthorizationBindings(

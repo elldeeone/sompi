@@ -25,7 +25,8 @@ export class ChainEvidenceExactOutputSource implements ChainObservationSource {
         address: request.merchantAddress,
       }],
       watchedAddresses: [request.merchantAddress],
-      mechanism: "kip10-script-template",
+      mechanism:
+        request.profile === "additive" ? "kip10-script-template" : "ordinary",
       protocolFinality: request.minimumFinality,
       operatorFloor: this.operatorFloor,
       signal: request.signal,
