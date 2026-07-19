@@ -1,0 +1,67 @@
+{
+  "schema": "sompi-host-bootstrap-v1",
+  "packageVersion": "0.8.2",
+  "agent": {
+    "kind": "hermes",
+    "user": "agent-user"
+  },
+  "ownerRecoveryFile": "/root/sompi-owner-recovery.json",
+  "telegramBotTokenFile": "/root/sompi-telegram-bot-token",
+  "initialVault": {
+    "minimumDepositSompi": "50000000",
+    "keepFloatSompi": "10000000"
+  },
+  "operator": {
+    "revision": 1,
+    "maxOutflowSompi": "500000000",
+    "windowSizeDaa": "36000",
+    "treasury": {
+      "maxSompiPerTx": "100000000",
+      "maxSompiPerHour": "500000000",
+      "allowlist": [],
+      "requireApprovalAboveSompi": "0",
+      "additionalCostCeilingAtomic": "25000000",
+      "operationFeeCeilingAtomic": "25000000"
+    },
+    "merchant": {
+      "allowRules": [
+        {
+          "hostname": "demo.kaspa-x402.org",
+          "ports": [443]
+        }
+      ]
+    },
+    "batch": {
+      "claimFeeReserveAtomic": "100000"
+    },
+    "authority": {
+      "provider": "telegram",
+      "telegram": {
+        "profile": "telegram-inline-v1",
+        "botId": "123456789",
+        "userId": "123456789",
+        "chatId": "123456789",
+        "promptTimeoutMs": 300000
+      }
+    },
+    "chainEvidence": {
+      "operatorNodeUrl": "ws://127.0.0.1:17210/",
+      "witnessBaseUrl": "https://api-tn10.kaspa.org/",
+      "depthConfirmationDaa": "10",
+      "finalityFloors": {
+        "settlement": "depth-confirmed",
+        "directTreasury": "accepted",
+        "vault": "accepted",
+        "staging": "accepted",
+        "recoveryRelease": "depth-confirmed"
+      }
+    },
+    "admission": {
+      "authorityPreauthSockets": 32,
+      "authorityPrompts": 4,
+      "prevalidationPurchases": 128,
+      "evidenceBytes": 67108864,
+      "directTreasuryRetries": 3
+    }
+  }
+}

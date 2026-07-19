@@ -28,6 +28,7 @@ test("package manifest exposes only supported executables and no import side eff
   });
   assert.ok(Array.isArray(manifest.files));
   assert.ok(manifest.files.includes("integrations"));
+  assert.ok(manifest.files.includes("host-bootstrap.example.json"));
   assert.ok(manifest.files.includes("!integrations/**/__pycache__/**"));
   assert.ok(manifest.files.includes("!integrations/**/*.pyc"));
   assert.ok(manifest.files.includes("!integrations/**/tests/**"));

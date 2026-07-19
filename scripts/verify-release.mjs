@@ -97,7 +97,7 @@ function assertInstalledPackage(consumer) {
   const manifest = JSON.parse(fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"));
   if (
     manifest.name !== "@elldeeone/sompi" ||
-    manifest.version !== "0.8.1" ||
+    manifest.version !== "0.8.2" ||
     Object.prototype.hasOwnProperty.call(manifest, "main") ||
     JSON.stringify(manifest.exports) !== JSON.stringify({ "./package.json": "./package.json" })
   ) fail("clean installation exposed an unexpected package identity or export");

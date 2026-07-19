@@ -605,6 +605,60 @@ Gate:
   Purchase model, Journal lifecycle, Treasury, Authority, Telegram, or agent
   interfaces.
 
+## Phase 13: Near-automatic Hermes onboarding
+
+Purpose: let a user give Hermes one pinned Sompi instruction while preserving
+the operator, Authority, wallet, and recovery trust boundaries.
+
+- [x] Accept ADR-0018 and define the agent, local operator, funding, and vault
+  activation responsibilities.
+- [x] Add a strict secret-free host request, canonical digest, and
+  side-effect-free preview command.
+- [x] Add one transactional root bootstrap that installs the pinned package,
+  isolated principals, manifests, credentials, sockets, hardened services,
+  Hermes skill, and callback plugin, with rollback for incomplete unfunded
+  state.
+- [x] Keep the Telegram token prompt, owner recovery key, wallet key, API
+  credentials, Authority keys, and sudo outside agent context and command-line
+  arguments.
+- [x] Detect a native Hermes callback hook and otherwise install the exact
+  compatibility patch in an isolated overlay without editing the Hermes
+  checkout.
+- [x] Generate a normal TN10 funding address, publish the minimum funding
+  amount, and activate the SilverScript vault through one digest-bound,
+  journaled, idempotent local command.
+- [x] Reproduce and fix low-balance KIP-9 vault fee convergence with the real
+  DAA/window/amount shape.
+- [x] Remove the previous Terah installation, prove plain Hermes health, then
+  perform a clean install from the packed `0.8.2` artifact.
+- [x] Fund and activate a fresh TN10 vault, complete a human-approved purchase
+  from `demo.kaspa-x402.org`, reconcile the accepted staging effect, and prove
+  one receipt without duplicate payment.
+- [x] Update the concise agent skill, README, operator/Hermes runbooks, package
+  policy, and current-state evidence.
+
+Gate:
+
+- The agent can prepare onboarding from one pinned instruction but cannot run
+  privileged setup, receive secrets, fund the wallet, or activate the vault.
+- The user performs one reviewed local install command, funds one displayed
+  address, and runs one returned local activation command.
+- A clean host reaches healthy Authority, API, and Hermes services, and a paid
+  Purchase completes through the same local API used after onboarding.
+- Failed or repeated activation is safe and idempotent; irreversible effects
+  remain journal-first and recoverable.
+- The packed artifact and complete release verifier pass before publication.
+
+Fresh evidence (2026-07-19): bootstrap request
+`sha256:6tLNPCEGZEh_YGzPvCFKeMPu8YdwWPy_aexaFXPzoww` installed the `0.8.2`
+release candidate on the clean Terah baseline. Vault activation transaction
+`e8dc10f8aeaa267a75f2a106bf2ce3a64db6a21441a5f5faf74376402a170f69`
+created the covenant head. Human-approved Purchase
+`pur_bR9Get_H0IHPmLoEfGItpQ` advanced it through staging transaction
+`ff0f448336879f2ce2dfb03e689ab125577c661508abff8f9c3c71a7e815e788`
+and paid the generic demo Merchant once in transaction
+`522e8ded26d9378406d85b610660be189f82c74f3152fe2a2f98f591f372e17a`.
+
 ## Deferred tracks (not part of the alpha.8 clean cutover)
 
 ### Autonomous AP2

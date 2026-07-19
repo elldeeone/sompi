@@ -1,6 +1,6 @@
 {
   "name": "@elldeeone/sompi",
-  "version": "0.8.1",
+  "version": "0.8.2",
   "description": "Operator-controlled KAS purchases for local agents on Kaspa Testnet-10.",
   "license": "MIT",
   "repository": {
@@ -47,6 +47,7 @@
     "!integrations/**/*.pyc",
     "!integrations/**/tests/**",
     "operator.example.json",
+    "host-bootstrap.example.json",
     "scripts/package.json",
     "scripts/prepare-package.mjs",
     "scripts/require-source-tree.mjs",

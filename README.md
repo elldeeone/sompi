@@ -21,15 +21,22 @@ AP2 v0.2 is watched as an upstream source and informs Sompi's internal
 authorization evidence. Sompi does not claim AP2 interoperability and does not
 send AP2 artifacts to ordinary x402 Merchants.
 
-## Agent flow
+## Install with Hermes
 
-Install the CLI on the agent host:
+Tell Hermes:
 
-```sh
-npm install -g @elldeeone/sompi@0.8.1
-```
+> Install the Sompi skill from
+> https://raw.githubusercontent.com/elldeeone/sompi/v0.8.2/integrations/hermes/sompi/SKILL.md
+> and set up Sompi for this host.
 
-Install the packaged skill for the agent, then the agent uses:
+Hermes gathers non-secret host and policy facts and shows one reviewed setup
+command. Run that command locally. It asks for the Telegram bot token with
+input hidden, installs the isolated services, and returns a Testnet-10 funding
+address. Hermes never receives sudo, keys, credentials, or the bot token.
+
+Send at least the displayed minimum to the funding address, then run the
+returned `activateCommand` locally. That command journals one deposit into the
+spending-limited SilverScript vault. After it returns `ready`, the agent uses:
 
 ```sh
 sompi-agent purchase \
@@ -49,10 +56,11 @@ sompi-agent recover PURCHASE_ID
 The request key identifies the logical purchase. Reusing it is safe and
 idempotent. Creating a new key does not bypass a denial or policy limit.
 
-The portable agent instructions are in
+The complete agent instructions are in
 [`integrations/hermes/sompi/SKILL.md`](integrations/hermes/sompi/SKILL.md).
-Hermes-specific installation is covered by
-[`docs/runbooks/HERMES.md`](docs/runbooks/HERMES.md).
+Manual operator and Hermes recovery procedures remain in
+[`docs/runbooks/OPERATOR_PROVISIONING.md`](docs/runbooks/OPERATOR_PROVISIONING.md)
+and [`docs/runbooks/HERMES.md`](docs/runbooks/HERMES.md).
 
 ## Approval flow
 

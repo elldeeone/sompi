@@ -10,7 +10,10 @@ export const AUTHORITY_USAGE = [
 ].join("\n");
 
 export const OPERATOR_USAGE = [
-  "usage: sompi-operator preview SPEC.json",
+  "usage: sompi-operator bootstrap-preview REQUEST.json",
+  "       sompi-operator bootstrap REQUEST.json EXPECTED_DIGEST",
+  "       sompi-operator bootstrap-activate REQUEST.json EXPECTED_DIGEST",
+  "       sompi-operator preview SPEC.json",
   "       sompi-operator provision SPEC.json CANDIDATE_DIR",
   "       sompi-operator install CANDIDATE_DIR MANIFEST.json EXPECTED_DIGEST OPERATOR_UID RUNTIME_UID RUNTIME_GID",
   "       sompi-operator status MANIFEST.json OPERATOR_UID RUNTIME_UID RUNTIME_GID",
@@ -30,6 +33,10 @@ export type AuthorityCliCommand =
   | Readonly<{ kind: "help" }>;
 
 export type OperatorCliCommand =
+  | Readonly<{ kind: "bootstrap-preview"; request: string }>
+  | Readonly<{ kind: "bootstrap"; request: string; digest: string }>
+  | Readonly<{ kind: "bootstrap-activate"; request: string; digest: string }>
+  | Readonly<{ kind: "bootstrap-activate-worker" }>
   | Readonly<{ kind: "preview"; spec: string }>
   | Readonly<{ kind: "provision"; spec: string; bundle: string }>
   | Readonly<{ kind: "install"; bundle: string; manifest: string; digest: string; operatorUid: number; runtimeUid: number; runtimeGid: number }>
@@ -86,6 +93,18 @@ export function parseOperatorArguments(args: readonly string[]): OperatorCliComm
   }
   if (args.length === 1 && (args[0] === "--help" || args[0] === "help")) return Object.freeze({ kind: "help" });
   if (args.length === 1 && args[0] === "owner-key") return Object.freeze({ kind: "owner-key" });
+  if (args.length === 2 && args[0] === "bootstrap-preview") return Object.freeze({ kind: "bootstrap-preview", request: args[1] });
+  if (args.length === 3 && args[0] === "bootstrap") {
+    if (!/^sha256:[A-Za-z0-9_-]{43}$/.test(args[2])) throw new CliArgumentError("host bootstrap digest is invalid");
+    return Object.freeze({ kind: "bootstrap", request: args[1], digest: args[2] });
+  }
+  if (args.length === 3 && args[0] === "bootstrap-activate") {
+    if (!/^sha256:[A-Za-z0-9_-]{43}$/.test(args[2])) throw new CliArgumentError("host bootstrap digest is invalid");
+    return Object.freeze({ kind: "bootstrap-activate", request: args[1], digest: args[2] });
+  }
+  if (args.length === 1 && args[0] === "bootstrap-activate-worker") {
+    return Object.freeze({ kind: "bootstrap-activate-worker" });
+  }
   if (args.length === 2 && args[0] === "preview") return Object.freeze({ kind: "preview", spec: args[1] });
   if (args.length === 3 && args[0] === "provision") return Object.freeze({ kind: "provision", spec: args[1], bundle: args[2] });
   if (args.length === 5 && args[0] === "status") {

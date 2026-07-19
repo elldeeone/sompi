@@ -4,7 +4,8 @@ Last updated: **2026-07-19**
 
 ## Status
 
-The generic x402 Merchant cutover is complete on `main`.
+The generic x402 Merchant cutover and near-automatic Hermes onboarding are
+complete on `main`.
 
 Sompi is an API-first local purchasing runtime:
 
@@ -81,38 +82,53 @@ recorded fulfilment and a receipt without another payment.
 Terah remains the private operator-controlled Hermes deployment.
 
 - Hermes is active.
-- The installed Sompi skill and callback plugin match this repository.
-- The live services run the immutable `0.8.1-62f6ee2` build with Journal epoch
-  15 preserved.
+- Sompi was removed to a plain-Hermes baseline, then installed from the packed
+  `0.8.2` release candidate through the public bootstrap workflow.
+- The installed Sompi skill, callback plugin, isolated compatibility overlay,
+  systemd units, and package match this repository.
 - Authority, API, Hermes gateway, and all local sockets are healthy.
-- The Telegram purchase flow completed against `demo.kaspa-x402.org` and the
-  recovered Purchase is `receipted`.
+- Bootstrap created a normal TN10 funding wallet without exposing its key. The
+  trusted activation command deposited `73,569,300` sompi into the new
+  SilverScript vault in transaction
+  `e8dc10f8aeaa267a75f2a106bf2ce3a64db6a21441a5f5faf74376402a170f69`.
+- Human approval in Telegram completed Purchase
+  `pur_bR9Get_H0IHPmLoEfGItpQ` against `demo.kaspa-x402.org`.
+- Vault staging transaction
+  `ff0f448336879f2ce2dfb03e689ab125577c661508abff8f9c3c71a7e815e788`
+  advanced the covenant exactly once. Standard-native payment transaction
+  `522e8ded26d9378406d85b610660be189f82c74f3152fe2a2f98f591f372e17a`
+  paid `20,000,000` sompi and the Purchase is `receipted`.
+- The live continuation UTXO matches the journaled vault outpoint. Recovery
+  reconciled the accepted staging effect before settlement and did not submit
+  a duplicate transaction.
 
-The earlier Phase 11 Telegram human-present and funded service evidence remains
-valid for the unchanged Authority boundary. Fresh cutover exact proofs use the
-isolated auto-approval fixture and do not claim a new human-present ceremony.
+The earlier Phase 11 evidence remains historical. The evidence above is a new
+clean-install, human-present onboarding canary.
 
 ## Verification
 
-At this state:
+At this release state:
 
-- 454 unit tests run: 453 pass and one root-only ownership test is skipped;
+- 461 unit tests run: 460 pass and one root-only ownership test is skipped;
 - the three Hermes plugin tests pass;
 - local generic-Merchant E2E and crash recovery pass;
 - x402 package/source/vector conformance passes;
 - current and historical funded evidence locks pass;
 - OpenAPI and Arazzo checks pass;
 - production dependency audit reports zero vulnerabilities;
-- the 192-file package policy, clean install, licence audit, and consumer smoke
+- the 199-file package policy, clean install, licence audit, and consumer smoke
   pass.
+
+The complete release verifier passes, including its final clean-tree assertion.
 
 The project owner previously closed further formal security-scan iteration.
 The existing audit record remains under [`security/audits/`](security/audits/).
 
 ## Release
 
-The release version is `@elldeeone/sompi@0.8.1`. Main and the npm package are
-the release surfaces; Terah runs the same verified package build.
+The release version is `@elldeeone/sompi@0.8.2`, tagged `v0.8.2`. Main and the
+npm package are the release surfaces; Terah runs the same verified package
+build.
 
 Mainnet, autonomous authorization, passkeys, UCP, and official AP2/x402
 interoperability remain out of scope. See

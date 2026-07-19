@@ -5,6 +5,10 @@ Purchase approval stays in the separate `sompi-authority` process.
 
 ## Install
 
+For a clean host, use the pinned Sompi skill and host bootstrap described in
+the README. It installs these files and settings together and verifies the
+gateway after restart. The steps below are the manual recovery path.
+
 Complete operator and Authority provisioning first. Then, as the Hermes OS
 user:
 

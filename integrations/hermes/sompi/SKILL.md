@@ -1,7 +1,7 @@
 ---
 name: sompi
-description: Buy paid API resources through local Sompi.
-version: 0.8.1
+description: Install Sompi on a Hermes host and buy paid API resources through its local API.
+version: 0.8.2
 author: Sompi contributors
 license: MIT
 platforms: [linux]
@@ -15,13 +15,41 @@ metadata:
 
 Sompi owns authorization, policy, wallet use, settlement, replay protection, and recovery. Use only `sompi-agent`; never construct a Kaspa payment, call x402 directly, read Sompi credentials, or treat ordinary chat text as payment approval.
 
+## Install
+
+When the user asks to install Sompi:
+
+1. Require Linux with systemd, Node.js 22+, and a working Hermes gateway. Never ask for sudo, a Telegram token, a wallet key, or an Authority key.
+2. Download the pinned non-secret request template:
+
+   ```sh
+   mkdir -p ~/.sompi
+   curl --proto '=https' --tlsv1.2 --fail --location --max-time 30 \
+     https://raw.githubusercontent.com/elldeeone/sompi/v0.8.2/host-bootstrap.example.json \
+     -o ~/.sompi/bootstrap-request.json
+   chmod 600 ~/.sompi/bootstrap-request.json
+   ```
+
+3. Set only these non-secret fields: Hermes OS user, Telegram bot/user/chat IDs, trusted TN10 node URL, Merchant allow rules, and spending limits. Do not add fields or secrets.
+4. Preview with the pinned package:
+
+   ```sh
+   npm exec --yes --package=@elldeeone/sompi@0.8.2 -- \
+     sompi-operator bootstrap-preview ~/.sompi/bootstrap-request.json
+   ```
+
+5. Show the complete preview and its exact `nextCommand`. The user must run that command in a local terminal. Do not run it, submit sudo approval, or ask the user to paste the Telegram token into chat. The local command prompts for the token with input hidden and writes the owner recovery record under `/root`.
+6. Report the returned Testnet-10 `fundingAddress`, `minimumFundingSompi`, and `activateCommand`. Never tell the user to fund the vault address directly.
+7. After the user sends at least the minimum to the funding address, show the exact `activateCommand`. The user runs it locally; the agent must not run it or receive sudo. It moves the funds into the spending-limited SilverScript vault through Sompi's durable Treasury journal.
+8. Continue only after activation returns `ready`. Then use `sompi-agent` to make purchases.
+
 ## When to Use
 
 Use this skill when a task reaches a paid HTTP resource, the user asks to buy API access with KAS, or an existing Sompi Purchase needs inspection or recovery.
 
 ## Prerequisites
 
-- `sompi-agent` is installed and provisioned by the operator.
+- `sompi-agent` is installed and provisioned by the operator bootstrap.
 - The local Sompi API is running.
 
 ## How to Run

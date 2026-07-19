@@ -1,0 +1,294 @@
+diff --git a/gateway/plugin_callbacks.py b/gateway/plugin_callbacks.py
+new file mode 100644
+index 000000000..1c248ebd1
+--- /dev/null
++++ b/gateway/plugin_callbacks.py
+@@ -0,0 +1,79 @@
++"""Strict dispatch for plugin-owned messaging callback queries."""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++from typing import Optional
++
++
++_VALID_STATUSES = {
++    "approved",
++    "denied",
++    "expired",
++    "replayed",
++    "unauthorized",
++    "invalid",
++    "error",
++}
++
++
++@dataclass(frozen=True)
++class PluginCallbackResult:
++    status: str
++    message: str
++
++
++def dispatch_plugin_callback_query(
++    *,
++    platform: str,
++    callback_data: str,
++    user_id: str,
++    chat_id: str,
++    thread_id: Optional[str],
++    chat_type: Optional[str],
++) -> Optional[PluginCallbackResult]:
++    """Invoke the generic callback hook and require one unambiguous owner."""
++    from hermes_cli.plugins import get_plugin_manager, invoke_hook
++
++    manager = get_plugin_manager()
++    if not manager.has_hook("gateway_callback_query"):
++        return None
++    results = invoke_hook(
++        "gateway_callback_query",
++        platform=platform,
++        callback_data=callback_data,
++        user_id=user_id,
++        chat_id=chat_id,
++        thread_id=thread_id,
++        chat_type=chat_type,
++    )
++    handled: list[PluginCallbackResult] = []
++    invalid = False
++    for value in results:
++        if not isinstance(value, dict):
++            invalid = True
++            continue
++        action = value.get("action")
++        if action == "unhandled" and set(value) == {"action"}:
++            continue
++        if action != "handled" or set(value) != {"action", "status", "message"}:
++            invalid = True
++            continue
++        status = value.get("status")
++        message = value.get("message")
++        if (
++            not isinstance(status, str)
++            or status not in _VALID_STATUSES
++            or not isinstance(message, str)
++            or not 1 <= len(message) <= 200
++            or any(ord(char) < 0x20 and char not in "\t" for char in message)
++        ):
++            invalid = True
++            continue
++        handled.append(PluginCallbackResult(status=status, message=message))
++    if invalid or len(handled) > 1 or (not results and manager.has_hook("gateway_callback_query")):
++        return PluginCallbackResult(
++            status="error",
++            message="This external action could not be processed safely.",
++        )
++    return handled[0] if handled else None
+diff --git a/hermes_cli/plugins.py b/hermes_cli/plugins.py
+index 6ca393fca..f7aba4e95 100644
+--- a/hermes_cli/plugins.py
++++ b/hermes_cli/plugins.py
+@@ -171,6 +171,13 @@ VALID_HOOKS: Set[str] = {
+     #   {"action": "allow"}  /  None             -> normal dispatch
+     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
+     "pre_gateway_dispatch",
++    # Gateway callback-query hook for standalone plugins that render their own
++    # inline controls. Telegram invokes it only after built-in callback
++    # namespaces have been excluded and platform authorization has passed.
++    # Callbacks receive sanitized scalar metadata and must return exactly one
++    # of {"action": "unhandled"} or
++    # {"action": "handled", "status": str, "message": str}.
++    "gateway_callback_query",
+     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
+     # command needs an approval decision -- fires for CLI-interactive prompts,
+     # gateway/ACP approvals, and smart-mode auxiliary-LLM decisions.
+diff --git a/plugins/platforms/telegram/adapter.py b/plugins/platforms/telegram/adapter.py
+index aa36e2d51..de99cf0f5 100644
+--- a/plugins/platforms/telegram/adapter.py
++++ b/plugins/platforms/telegram/adapter.py
+@@ -6146,7 +6146,4 @@ class TelegramAdapter(BasePlatformAdapter):
+         # --- Update prompt callbacks ---
+-        if not data.startswith("update_prompt:"):
+-            return
+-        answer = data.split(":", 1)[1]  # "y" or "n"
+         caller_id = str(getattr(query.from_user, "id", ""))
+         if not self._is_callback_user_authorized(
+             caller_id,
+@@ -6155,8 +6152,42 @@ class TelegramAdapter(BasePlatformAdapter):
+             thread_id=str(query_thread_id) if query_thread_id is not None else None,
+             user_name=query_user_name,
+         ):
+-            await query.answer(text="⛔ You are not authorized to answer update prompts.")
++            await query.answer(text="⛔ You are not authorized to use this control.")
++            return
++        if not data.startswith("update_prompt:"):
++            try:
++                from gateway.plugin_callbacks import dispatch_plugin_callback_query
++
++                plugin_result = dispatch_plugin_callback_query(
++                    platform="telegram",
++                    callback_data=str(data),
++                    user_id=caller_id,
++                    chat_id=str(query_chat_id or ""),
++                    thread_id=(str(query_thread_id) if query_thread_id is not None else None),
++                    chat_type=(str(query_chat_type) if query_chat_type is not None else None),
++                )
++            except Exception:
++                logger.exception("[%s] plugin callback dispatch failed", self.name)
++                plugin_result = None
++                try:
++                    from hermes_cli.plugins import get_plugin_manager
++
++                    if get_plugin_manager().has_hook("gateway_callback_query"):
++                        await query.answer(text="This external action could not be processed safely.")
++                        return
++                except Exception:
++                    pass
++            if plugin_result is not None:
++                await query.answer(text=plugin_result.message)
++                try:
++                    await query.edit_message_text(
++                        text=plugin_result.message,
++                        reply_markup=None,
++                    )
++                except Exception:
++                    pass
+             return
++        answer = data.split(":", 1)[1]  # "y" or "n"
+         await query.answer(text=f"Sent '{answer}' to the update process.")
+         # Edit the message to show the choice and remove buttons
+         label = "Yes" if answer == "y" else "No"
+diff --git a/tests/gateway/test_plugin_callback_query.py b/tests/gateway/test_plugin_callback_query.py
+new file mode 100644
+index 000000000..e4f271969
+--- /dev/null
++++ b/tests/gateway/test_plugin_callback_query.py
+@@ -0,0 +1,129 @@
++from unittest.mock import AsyncMock, MagicMock, patch
++
++import pytest
++
++from gateway.plugin_callbacks import (
++    PluginCallbackResult,
++    dispatch_plugin_callback_query,
++)
++
++
++def test_plugin_callback_dispatch_requires_one_exact_owner():
++    manager = MagicMock()
++    manager.has_hook.return_value = True
++    with (
++        patch("hermes_cli.plugins.get_plugin_manager", return_value=manager),
++        patch("hermes_cli.plugins.invoke_hook", return_value=[
++            {"action": "unhandled"},
++            {"action": "handled", "status": "approved", "message": "Approved."},
++        ]),
++    ):
++        assert dispatch_plugin_callback_query(
++            platform="telegram",
++            callback_data="external:value",
++            user_id="1",
++            chat_id="2",
++            thread_id=None,
++            chat_type="private",
++        ) == PluginCallbackResult(status="approved", message="Approved.")
++
++    with (
++        patch("hermes_cli.plugins.get_plugin_manager", return_value=manager),
++        patch("hermes_cli.plugins.invoke_hook", return_value=[
++            {"action": "handled", "status": "approved", "message": "First"},
++            {"action": "handled", "status": "denied", "message": "Second"},
++        ]),
++    ):
++        assert dispatch_plugin_callback_query(
++            platform="telegram",
++            callback_data="external:value",
++            user_id="1",
++            chat_id="2",
++            thread_id=None,
++            chat_type="private",
++        ).status == "error"
++
++
++@pytest.mark.asyncio
++async def test_telegram_forwards_authorized_unknown_callback_to_plugin():
++    from plugins.platforms.telegram.adapter import TelegramAdapter
++
++    adapter = object.__new__(TelegramAdapter)
++    adapter._is_callback_user_authorized = MagicMock(return_value=True)
++    query = MagicMock()
++    query.data = "sp:a:opaque"
++    query.from_user.id = 123
++    query.from_user.first_name = "Luke"
++    query.message.chat_id = 456
++    query.message.chat.type = "private"
++    query.message.message_thread_id = None
++    query.answer = AsyncMock()
++    query.edit_message_text = AsyncMock()
++    update = MagicMock(callback_query=query)
++
++    with patch(
++        "gateway.plugin_callbacks.dispatch_plugin_callback_query",
++        return_value=PluginCallbackResult(status="approved", message="Sompi Purchase approved."),
++    ) as dispatch:
++        await TelegramAdapter._handle_callback_query(adapter, update, MagicMock())
++
++    dispatch.assert_called_once_with(
++        platform="telegram",
++        callback_data="sp:a:opaque",
++        user_id="123",
++        chat_id="456",
++        thread_id=None,
++        chat_type="private",
++    )
++    query.answer.assert_awaited_once_with(text="Sompi Purchase approved.")
++    query.edit_message_text.assert_awaited_once_with(
++        text="Sompi Purchase approved.",
++        reply_markup=None,
++    )
++
++
++@pytest.mark.asyncio
++async def test_telegram_rejects_unauthorized_external_callback_before_plugin():
++    from plugins.platforms.telegram.adapter import TelegramAdapter
++
++    adapter = object.__new__(TelegramAdapter)
++    adapter._is_callback_user_authorized = MagicMock(return_value=False)
++    query = MagicMock()
++    query.data = "sp:a:opaque"
++    query.from_user.id = 999
++    query.from_user.first_name = "Mallory"
++    query.message.chat_id = 456
++    query.message.chat.type = "private"
++    query.message.message_thread_id = None
++    query.answer = AsyncMock()
++    update = MagicMock(callback_query=query)
++
++    with patch("gateway.plugin_callbacks.dispatch_plugin_callback_query") as dispatch:
++        await TelegramAdapter._handle_callback_query(adapter, update, MagicMock())
++
++    dispatch.assert_not_called()
++    query.answer.assert_awaited_once_with(text="⛔ You are not authorized to use this control.")
++
++
++@pytest.mark.asyncio
++async def test_telegram_keeps_builtin_update_callbacks_out_of_plugin_dispatch():
++    from plugins.platforms.telegram.adapter import TelegramAdapter
++
++    adapter = object.__new__(TelegramAdapter)
++    adapter._is_callback_user_authorized = MagicMock(return_value=True)
++    query = MagicMock()
++    query.data = "update_prompt:y"
++    query.from_user.id = 123
++    query.from_user.first_name = "Luke"
++    query.message.chat_id = 456
++    query.message.chat.type = "private"
++    query.message.message_thread_id = None
++    query.answer = AsyncMock()
++    query.edit_message_text = AsyncMock()
++    update = MagicMock(callback_query=query)
++
++    with patch("gateway.plugin_callbacks.dispatch_plugin_callback_query") as dispatch:
++        await TelegramAdapter._handle_callback_query(adapter, update, MagicMock())
++
++    dispatch.assert_not_called()
++    query.answer.assert_awaited_once_with(text="Sent 'y' to the update process.")

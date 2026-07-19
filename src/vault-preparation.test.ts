@@ -20,7 +20,7 @@ test("vault staging is prepared, submitted, observed, and committed at separate 
     dataDir: path.join(directory, "wallet"),
   });
   const vault = new VaultManager(directory, "testnet-10");
-  const created = vault.create(500_000_000n, generateOwnerKey().publicKey, 300n);
+  const created = vault.create(500_000_000n, generateOwnerKey().publicKey, 36_000n);
   const covenantId = "aa".repeat(32);
   const fundingTxid = "bb".repeat(32);
   const funded = {
@@ -31,7 +31,7 @@ test("vault staging is prepared, submitted, observed, and committed at separate 
   const configPath = path.join(directory, "vault", "config.json");
   fs.writeFileSync(configPath, JSON.stringify(funded, null, 2), { mode: 0o600 });
 
-  const vaultAmount = 400_000_000n;
+  let vaultAmount = 400_000_000n;
   const vaultScript = payToScriptHashScript(
     buildRedeemScript(
       funded.agentPublic,
@@ -59,7 +59,7 @@ test("vault staging is prepared, submitted, observed, and committed at separate 
               outpoint: { transactionId: fundingTxid, index: 0 },
               amount: vaultAmount,
               scriptPublicKey: vaultScript,
-              blockDaaScore: 1n,
+              blockDaaScore: 520_928_580n,
               isCoinbase: false,
               covenantId,
             },
@@ -100,7 +100,7 @@ test("vault staging is prepared, submitted, observed, and committed at separate 
         failPoint = undefined;
         throw new Error("injected pre-sign getServerInfo timeout");
       }
-      return { virtualDaaScore: "100" };
+      return { virtualDaaScore: "520936570" };
     },
     getMempoolEntry: async () => {
       throw new Error("transaction not found");
@@ -142,6 +142,11 @@ test("vault staging is prepared, submitted, observed, and committed at separate 
         `${stage} must be a typed pre-sign no-effect RPC failure`,
       );
     }
+    vaultAmount = 73_569_300n;
+    const lowBalancePrepared = await vault.prepareSend(wallet, wallet.address, 22_000_000n, undefined, 25_000_000n);
+    assert.equal(lowBalancePrepared.amountSompi, 22_000_000n);
+    assert.ok(lowBalancePrepared.feeSompi <= 25_000_000n);
+    vaultAmount = 400_000_000n;
     await assert.rejects(
       vault.prepareSend(wallet, wallet.address, 70_000_000n, undefined, 1n),
       /fee exceeds the capacity reserved before signing/

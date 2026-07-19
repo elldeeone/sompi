@@ -3,10 +3,37 @@
 `sompi-operator` is the short-lived administrative boundary for the initial
 testnet-10 release. Never run it from an Agent or MCP session. Production uses
 separate operator/root, trusted `sompi-api`, and untrusted `sompi-mcp` OS users.
-The Agent-facing socket uses a shared IPC group; the protected recovery socket
+The Agent-facing socket uses the selected Agent principal's group; the protected recovery socket
 uses a different operator-only group.
 
-## Prepare and review
+## Host bootstrap
+
+Use `host-bootstrap.example.json` for a new Hermes host. It contains no
+secrets. Set the OS user, Telegram IDs, trusted TN10 node, Merchant allow rules,
+and spending limits, then preview it:
+
+```bash
+npm exec --yes --package=@elldeeone/sompi@0.8.2 -- \
+  sompi-operator bootstrap-preview REQUEST.json
+```
+
+Review the complete output. Run its exact `nextCommand` in a local terminal.
+The privileged command asks for the Telegram token with input hidden, installs
+the pinned package and host boundaries, starts the services, and writes the
+owner recovery record below `/root`. The Agent must not run this command or
+read either secret.
+
+The `ready` receipt returns a normal Testnet-10 funding address, minimum funding
+amount, and exact `activateCommand`. Send funds only to that funding address,
+then run `activateCommand` locally. It stops the API, journals and reconciles
+one covenant deposit as the API principal, restarts the API, and returns the
+active vault covenant/outpoint. Never send ordinary funds directly to the P2SH
+vault address: that does not create its covenant binding.
+
+The remaining sections document the lower-level primitives used by the
+bootstrap and are for recovery or manual inspection.
+
+## Manual prepare and review
 
 1. Generate the recovery key offline with `sompi-operator owner-key`. Store the
    private line offline and place only the public line in a copy of

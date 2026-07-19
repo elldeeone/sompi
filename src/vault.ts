@@ -688,7 +688,11 @@ interface VaultSpendParams {
 const MIN_VAULT_CHANGE_SOMPI = 100_000_000n;
 const DUMMY_SIGNATURE = new Uint8Array(65).fill(0xab);
 const DUMMY_WALLET_SIGNATURE_SCRIPT = `41${"ab".repeat(65)}`;
-const MAX_FEE_CONVERGENCE_PASSES = 12;
+// Small covenant continuations feed KIP-9 storage mass back into the required
+// fee. The fixed point can take more than a dozen integer-rounded passes even
+// at the minimum node feerate; keep the loop bounded but large enough for that
+// legitimate shape.
+const MAX_FEE_CONVERGENCE_PASSES = 64;
 
 async function spendVault(
   params: VaultSpendParams

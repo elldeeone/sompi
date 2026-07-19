@@ -23,3 +23,4 @@ or documentation is not allowed.
 | [0015](0015-api-first-alpha8-clean-cutover.md) | API-first alpha.8 clean cutover with MCP compatibility | Accepted |
 | [0016](0016-telegram-human-authority.md) | Request-bound Telegram approval through the isolated Authority | Accepted |
 | [0017](0017-generic-x402-ap2-evidence-cutover.md) | Generic x402 with internal AP2-derived authorization evidence | Accepted |
+| [0018](0018-near-automatic-host-onboarding.md) | Near-automatic host onboarding through the trusted operator | Accepted |
