@@ -8,7 +8,7 @@ the displayed Purchase ID.
 
 The agent, MCP process, and API process must not hold the Authority signing
 key. Only `sompi-api` receives the Authority client MAC copy and public trust
-store. `sompi-mcp` talks only to the Purchase API.
+store. `sompi-mcp` talks only to the Sompi API.
 
 ## Principals
 
@@ -99,7 +99,7 @@ sudo -u sompi-authority env \
 
 Do not pipe stdin or expose this terminal to the agent.
 
-### 2. Purchase API
+### 2. Sompi API
 
 Start `sompi-api` as the trusted API UID. It receives:
 

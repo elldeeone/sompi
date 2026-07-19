@@ -15,14 +15,14 @@ export const SOMPI_ARAZZO_SCHEMA_SHA256 =
 
 type JsonObject = Record<string, unknown>;
 
-/** Canonical workflow for recovering one interrupted Purchase through the HTTP API. */
+/** Canonical recovery workflows for Sompi's durable mutation lifecycles. */
 export function sompiArazzoDocument(version: string): Readonly<JsonObject> {
   assertVersion(version);
   return Object.freeze({
     arazzo: SOMPI_ARAZZO_VERSION,
     info: {
-      title: "Sompi interrupted Purchase recovery",
-      summary: "Create, inspect, recover, and verify a terminal Purchase receipt.",
+      title: "Sompi recovery workflows",
+      summary: "Create, inspect, recover, and verify terminal Purchase and Transfer receipts.",
       description:
         "Uses only the authenticated, protocol-neutral Sompi API. " +
         "The recovery step reconciles durable evidence and never authorizes blind resubmission.",

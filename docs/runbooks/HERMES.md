@@ -29,7 +29,7 @@ user:
 4. Give the Hermes service only:
 
    ```text
-   SOMPI_API_SOCKET=/run/sompi-api/purchase.sock
+   SOMPI_API_SOCKET=/run/sompi-api/sompi.sock
    SOMPI_AGENT_API_CREDENTIAL=/etc/sompi/agent-api.json
    SOMPI_OPERATOR_UID=<operator uid>
    SOMPI_API_UID=<sompi-api uid>

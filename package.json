@@ -1,7 +1,7 @@
 {
   "name": "@elldeeone/sompi",
-  "version": "0.8.2",
-  "description": "Operator-controlled KAS purchases for local agents on Kaspa Testnet-10.",
+  "version": "0.9.0",
+  "description": "Operator-controlled KAS wallet, transfers, and x402 purchases for local agents on Testnet-10.",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -14,6 +14,8 @@
     "api",
     "mcp",
     "agent",
+    "wallet",
+    "transfers",
     "payments",
     "micropayments",
     "model-context-protocol"

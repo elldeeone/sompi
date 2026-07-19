@@ -120,9 +120,9 @@ The authenticated local API exposes:
 - `GET /transfers/{transferId}`
 - `POST /transfers/{transferId}/recover`
 
-The `sompi-agent` CLI uses that API. `sompi-mcp` exposes only `purchase`,
-`purchase_status`, and `purchase_recover`, and holds no privileged capability
-beyond the agent API credential.
+The `sompi-agent` CLI uses that API. `sompi-mcp` projects the same wallet,
+Transfer, and Purchase operations and holds no privileged capability beyond the
+agent API credential.
 
 ## Lifecycle
 
@@ -147,7 +147,7 @@ Ambiguous outcomes enter recovery. Recovery observes before retrying and never
 creates replacement payment authority. Fulfilment recovery reuses the same
 settled payment and request.
 
-Journal epoch 15 is the only active schema.
+Journal epoch 16 is the only active schema.
 
 ## Authorization facts
 

@@ -1,6 +1,6 @@
 # Mainnet is not supported
 
-Status: explicit v0.8 release boundary
+Status: explicit v0.9 release boundary
 
 Sompi supports only Kaspa Testnet-10. Configuration rejects every other
 network before opening the Purchase Journal or creating signing material.
@@ -14,7 +14,7 @@ software, and all release evidence is testnet evidence.
 
 Mainnet would require a separate ADR and release profile covering at least:
 
-- independent review of Purchase, authority, x402, wallet, vault, staging
+- independent review of Purchase, Transfer, authority, x402, wallet, vault, staging
   recovery, and shared policy-accounting paths;
 - live Testnet-10 evidence across every ambiguous crash edge over an extended
   soak period;

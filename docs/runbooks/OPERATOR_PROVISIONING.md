@@ -13,7 +13,7 @@ secrets. Set the OS user, Telegram IDs, trusted TN10 node, Merchant allow rules,
 and spending limits, then preview it:
 
 ```bash
-npm exec --yes --package=@elldeeone/sompi@0.8.2 -- \
+npm exec --yes --package=@elldeeone/sompi@0.9.0 -- \
   sompi-operator bootstrap-preview REQUEST.json
 ```
 
@@ -69,7 +69,7 @@ Check the installed boundary before starting the API:
 sompi-operator status /etc/sompi/operator-manifest.json OPERATOR_UID RUNTIME_UID RUNTIME_GID
 ```
 
-Provision both local Purchase API transports separately. Each directory is
+Provision both local Sompi API transports separately. Each directory is
 owned by the trusted API/operator principal and grants only its declared group
 traversal; the API creates one `0660` socket inside each. Neither `sompi-api`
 nor `sompi-mcp` repairs unsafe directory permissions at startup.
@@ -85,7 +85,7 @@ sompi-operator recovery-credential \
 ```
 
 Configure `sompi-api` with
-`SOMPI_API_SOCKET=/run/sompi-api/purchase.sock`,
+`SOMPI_API_SOCKET=/run/sompi-api/sompi.sock`,
 `SOMPI_AGENT_API_CREDENTIAL=/etc/sompi/agent-api.json`,
 `SOMPI_RECOVERY_API_SOCKET=/run/sompi-recovery/recovery.sock`,
 `SOMPI_RECOVERY_API_CREDENTIAL=/etc/sompi/recovery-api.json`,
@@ -100,7 +100,7 @@ group, or credential. Both credentials remain operator-owned and readable only
 by their intended group. `SOMPI_API_HOST` and `SOMPI_API_PORT` are rejected and
 TCP is disabled.
 
-The MCP environment contains only the Agent Purchase API socket and least-authority
+The MCP environment contains only the Agent Sompi API socket and least-authority
 credential locators, `SOMPI_OPERATOR_UID`, and `SOMPI_RUNTIME_GID`. It does not
 receive `SOMPI_OPERATOR_MANIFEST`, Authority, wallet, policy, Merchant, node,
 receipt, or finality configuration. The trusted API runtime receives the

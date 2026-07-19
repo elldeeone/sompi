@@ -205,7 +205,7 @@ export const PURCHASE_VIEW_SCHEMA = {
 } as const;
 
 export const SOMPI_API_ERROR_SCHEMA: JSONSchemaType<SompiApiErrorBody> = {
-  $id: "https://sompi.local/schemas/purchase-api-error.json",
+  $id: "https://sompi.local/schemas/sompi-api-error.json",
   type: "object",
   additionalProperties: false,
   required: ["error"],

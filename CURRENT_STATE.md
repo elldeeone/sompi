@@ -128,7 +128,7 @@ clean-install, human-present onboarding canary.
 
 ## Verification
 
-At this release state:
+At the last published release state:
 
 - 461 unit tests run: 460 pass and one root-only ownership test is skipped;
 - the three Hermes plugin tests pass;
@@ -147,9 +147,9 @@ The existing audit record remains under [`security/audits/`](security/audits/).
 
 ## Release
 
-The release version is `@elldeeone/sompi@0.8.2`, tagged `v0.8.2`. Main and the
-npm package are the release surfaces; Terah runs the same verified package
-build.
+The last published release is `@elldeeone/sompi@0.8.2`, tagged `v0.8.2`.
+Version `0.9.0` is the local Wallet/Transfer release candidate. It is not yet
+published or deployed; Terah still runs the verified `0.8.2` build.
 
 Mainnet, autonomous authorization, passkeys, UCP, and official AP2/x402
 interoperability remain out of scope. See
