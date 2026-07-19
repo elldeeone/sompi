@@ -1,6 +1,6 @@
 {
   "name": "@elldeeone/sompi",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "description": "Operator-controlled KAS purchases for local agents on Kaspa Testnet-10.",
   "license": "MIT",
   "repository": {

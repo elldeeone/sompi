@@ -20,6 +20,8 @@ const PURCHASE_ID_PATTERN = /^pur_[A-Za-z0-9_-]{22}$/;
 const MAX_CALLBACK_BODY_BYTES = 1_024;
 const MAX_TELEGRAM_RESPONSE_BYTES = 64 * 1024;
 const TELEGRAM_MESSAGE_LIMIT = 4_096;
+const PRIVATE_RUNTIME_DIRECTORY_MODE = 0o700;
+const GROUP_RUNTIME_DIRECTORY_MODE = 0o710;
 
 const SCHEMA_SQL = `
 CREATE TABLE telegram_authority_meta (
@@ -401,6 +403,7 @@ export async function startTelegramCallbackServer(
   if (!path.isAbsolute(options.socketPath) || path.resolve(options.socketPath) !== options.socketPath) {
     throw new Error("Telegram callback socket path is invalid");
   }
+  prepareCallbackSocketDirectory(options.socketPath, options.socketGroupId);
   if (fs.existsSync(options.socketPath)) throw new Error("Telegram callback socket already exists");
   const server = http.createServer((request, response) => {
     void handleCallbackRequest(options, request, response);
@@ -431,6 +434,53 @@ export async function startTelegramCallbackServer(
       }
     },
   });
+}
+
+function prepareCallbackSocketDirectory(socketPath: string, groupId?: number): void {
+  if (
+    groupId !== undefined &&
+    (!Number.isSafeInteger(groupId) || groupId < 0 || groupId > 0x7fffffff)
+  ) {
+    throw new Error("Telegram callback socket group is invalid");
+  }
+  const directory = path.dirname(socketPath);
+  fs.mkdirSync(directory, {
+    recursive: true,
+    mode: groupId === undefined
+      ? PRIVATE_RUNTIME_DIRECTORY_MODE
+      : GROUP_RUNTIME_DIRECTORY_MODE,
+  });
+  let stat = fs.lstatSync(directory);
+  const uid = typeof process.getuid === "function" ? process.getuid() : stat.uid;
+  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== uid) {
+    throw new Error("Telegram callback socket directory is unsafe");
+  }
+  if (groupId === undefined) {
+    if ((stat.mode & 0o077) !== 0) {
+      throw new Error("Telegram callback socket directory is unsafe");
+    }
+    return;
+  }
+  const groups = typeof process.getgroups === "function"
+    ? process.getgroups()
+    : typeof process.getgid === "function"
+      ? [process.getgid()]
+      : [stat.gid];
+  if (!groups.includes(groupId)) {
+    throw new Error("Telegram callback socket group is unavailable");
+  }
+  fs.chownSync(directory, uid, groupId);
+  fs.chmodSync(directory, GROUP_RUNTIME_DIRECTORY_MODE);
+  stat = fs.lstatSync(directory);
+  if (
+    !stat.isDirectory() ||
+    stat.isSymbolicLink() ||
+    stat.uid !== uid ||
+    stat.gid !== groupId ||
+    (stat.mode & 0o077) !== 0o010
+  ) {
+    throw new Error("Telegram callback socket directory is unsafe");
+  }
 }
 
 async function handleCallbackRequest(

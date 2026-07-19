@@ -21,8 +21,8 @@ const PURCHASE_ID = "pur_0123456789ABCDEFGHIJKL" as PurchaseView["id"];
 const RECEIPT_DIGEST = `sha256:${"B".repeat(43)}` as PurchaseView["resourceFingerprint"];
 
 test("Arazzo 1.1 workflow validates against the pinned schema and canonical OpenAPI operations", () => {
-  const document = sompiArazzoDocument("0.8.0") as any;
-  validateSompiArazzoDocument(document, sompiOpenApiDocument("0.8.0"));
+  const document = sompiArazzoDocument("0.8.1") as any;
+  validateSompiArazzoDocument(document, sompiOpenApiDocument("0.8.1"));
   assert.equal(document.arazzo, "1.1.0");
   assert.match(SOMPI_ARAZZO_SCHEMA_SHA256, /^[a-f0-9]{64}$/);
   assert.deepEqual(
@@ -34,18 +34,18 @@ test("Arazzo 1.1 workflow validates against the pinned schema and canonical Open
       "$sourceDescriptions.sompi.getPurchase",
     ],
   );
-  assert.equal(canonicalArazzoBytes("0.8.0").toString("utf8").endsWith("\n"), true);
+  assert.equal(canonicalArazzoBytes("0.8.1").toString("utf8").endsWith("\n"), true);
 
   const changed = structuredClone(document);
   changed.workflows[0].steps[2].operationId = "$sourceDescriptions.sompi.unknownOperation";
   assert.throws(
-    () => validateSompiArazzoDocument(changed, sompiOpenApiDocument("0.8.0")),
+    () => validateSompiArazzoDocument(changed, sompiOpenApiDocument("0.8.1")),
     /unknown OpenAPI operationId/,
   );
   const missingParameter = structuredClone(document);
   delete missingParameter.workflows[0].steps[2].parameters;
   assert.throws(
-    () => validateSompiArazzoDocument(missingParameter, sompiOpenApiDocument("0.8.0")),
+    () => validateSompiArazzoDocument(missingParameter, sompiOpenApiDocument("0.8.1")),
     /omits required OpenAPI parameter purchaseId/,
   );
 });
@@ -84,7 +84,7 @@ test("Arazzo recovery scenario runs create, status, recover, and terminal receip
       requestKey: "workflow:recoverable",
       url: "https://merchant.example/paid-resource",
     };
-    const workflow = (sompiArazzoDocument("0.8.0") as any).workflows[0];
+    const workflow = (sompiArazzoDocument("0.8.1") as any).workflows[0];
     let purchaseId: string | undefined;
     let terminal: PurchaseView | undefined;
     for (const step of workflow.steps as Array<{ operationId: string }>) {

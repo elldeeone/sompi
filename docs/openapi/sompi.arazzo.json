@@ -4,7 +4,7 @@
     "title": "Sompi interrupted Purchase recovery",
     "summary": "Create, inspect, recover, and verify a terminal Purchase receipt.",
     "description": "Uses only the authenticated, protocol-neutral Sompi Purchase API. The recovery step reconciles durable evidence and never authorizes blind resubmission.",
-    "version": "0.8.0"
+    "version": "0.8.1"
   },
   "sourceDescriptions": [
     {

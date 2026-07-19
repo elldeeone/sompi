@@ -1,7 +1,7 @@
 ---
 name: sompi
 description: Buy paid API resources through local Sompi.
-version: 0.8.0
+version: 0.8.1
 author: Sompi contributors
 license: MIT
 platforms: [linux]

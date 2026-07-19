@@ -161,6 +161,39 @@ test("Telegram callback server accepts only its bounded exact envelope", async (
   assert.equal(seen.length, 1);
 });
 
+test("Telegram callback server makes a shared callback directory traversable by its pinned group", async (t) => {
+  if (
+    typeof process.getuid !== "function" ||
+    typeof process.getgid !== "function"
+  ) {
+    return;
+  }
+  const directory = temporaryDirectory(t);
+  const socketPath = path.join(directory, "callback.sock");
+  const groupId = process.getgid();
+  const server = await startTelegramCallbackServer({
+    socketPath,
+    socketGroupId: groupId,
+    handle() {
+      return { status: "approved", message: "ok" };
+    },
+  });
+  t.after(() => server.close());
+
+  const runtime = fs.lstatSync(directory);
+  assert.equal(runtime.uid, process.getuid());
+  assert.equal(runtime.gid, groupId);
+  assert.equal(runtime.mode & 0o777, 0o710);
+  const socket = fs.lstatSync(socketPath);
+  assert.equal(socket.uid, process.getuid());
+  assert.equal(socket.gid, groupId);
+  assert.equal(socket.mode & 0o777, 0o660);
+  assert.equal(
+    (await unixRequest(socketPath, JSON.stringify(envelope(`sp:a:${TOKEN_A}`)))).status,
+    200,
+  );
+});
+
 test("Telegram Bot API verifies the pinned bot and sends escaped exact facts", async (t) => {
   const directory = temporaryDirectory(t);
   const tokenFile = path.join(directory, "telegram-bot-token");
