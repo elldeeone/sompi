@@ -29,10 +29,19 @@ epoch-15 reader.
 - The Journal links approved Transfer evidence to the exact Treasury Movement.
   Approval may satisfy the approval threshold but cannot bypass the allowlist,
   per-transfer, rolling-hour, or fee ceilings.
+- The per-transfer ceiling applies to the exact recipient amount. The fee has a
+  separate ceiling and amount plus fee consume rolling capacity. A read-only
+  Treasury preflight rejects impossible requests before Authority approval;
+  durable intent repeats the same check against current capacity.
 - API, CLI, MCP compatibility, OpenAPI, Arazzo, and the Hermes skill use the
   same Transfer and Wallet View interfaces.
-- The complete local suite passes 473 tests (472 pass, one privileged-only
+- The complete local suite passes 476 tests (475 pass, one privileged-only
   ownership test skipped) plus the offline smoke.
+
+The published and deployed `0.9.0` exposed a boundary error when a transfer
+equal to the per-transfer limit was combined with its separate fee ceiling.
+The source now corrects that behavior and the approval ordering. A patch
+release and Terah deployment are still required before retrying a live transfer.
 
 Version `0.9.0` is published, tagged `v0.9.0`, and deployed on Terah from the
 byte-verified public registry package.

@@ -154,6 +154,38 @@ export class TreasuryOperationModule {
     return this.drive(record.operationKey, signal);
   }
 
+  /**
+   * Read-only hard-policy and capacity check for an operation that will obtain
+   * exact human authorization before execution. The Journal repeats the same
+   * check transactionally when the durable intent is claimed.
+   */
+  preflightHumanAuthorized(
+    request: Readonly<TreasuryOperationRequest>,
+  ): Readonly<{ policyDigest: string; feeCeilingAtomic: string }> {
+    const normalized = normalizeRequest(request);
+    if (normalized.amountAtomic === "max") {
+      throw new TreasuryOperationError("Human-authorized Treasury preflight requires an exact amount");
+    }
+    const adapter = this.requireAdapter(normalized.kind);
+    adapter.validateRequest?.({
+      ...normalized,
+      requestedAmountAtomic: normalized.amountAtomic,
+    });
+    const policy = this.installCurrentPolicy();
+    this.journal.preflightTreasuryOperation({
+      kind: normalized.kind,
+      destination: normalized.destination,
+      amountAtomic: normalized.amountAtomic,
+      feeCeilingAtomic: this.feeCeilingAtomic,
+      policyDigest: policy.digest,
+      humanApprovalExpected: true,
+    });
+    return Object.freeze({
+      policyDigest: policy.digest,
+      feeCeilingAtomic: this.feeCeilingAtomic,
+    });
+  }
+
   authorizationContext(): Readonly<{ policyDigest: string; feeCeilingAtomic: string }> {
     return Object.freeze({
       policyDigest: this.installCurrentPolicy().digest,

@@ -682,6 +682,11 @@ Authority, policy, vault, Journal, or Chain Evidence model.
 - [x] Prove substitution, malformed address, fee spike, insufficient funds,
   policy denial, replay, duplicate approval, crash, restart, ambiguous
   broadcast, finality, and secret-isolation behavior.
+- [x] Enforce the per-transfer ceiling on the exact recipient amount, reserve
+  the separate fee ceiling against rolling capacity, and repeat both checks at
+  durable Treasury intent.
+- [x] Preflight immutable policy and current capacity before requesting human
+  approval, without creating a Transfer or Treasury intent.
 - [x] Run a funded Testnet-10 Terah canary, cut the next release, publish it,
   deploy it, and verify natural wallet and Transfer interactions end to end.
 

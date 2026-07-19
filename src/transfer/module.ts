@@ -21,7 +21,7 @@ export interface TransferModuleOptions {
   readonly authority: TransferAuthorityModule;
   readonly treasury: Pick<
     TreasuryOperationModule,
-    "authorizationContext" | "executeUnderPolicy" | "status" | "recover"
+    "preflightHumanAuthorized" | "executeUnderPolicy" | "status" | "recover"
   >;
   readonly source: () => Readonly<{ vaultAddress: string; vaultDigest: string }>;
   readonly manifest: () => Readonly<{ revision: number; digest: string }>;
@@ -76,9 +76,27 @@ export class TransferModule {
       }
       return this.drive(existing.id, signal);
     }
-    const context = this.options.treasury.authorizationContext();
     const source = canonicalSource(this.options.source());
     const manifest = canonicalManifest(this.options.manifest());
+    const id = createTransferId();
+    let context: Readonly<{ policyDigest: string; feeCeilingAtomic: string }>;
+    try {
+      context = this.options.treasury.preflightHumanAuthorized({
+        operationKey: `transfer:${id}`,
+        kind: "vault_send",
+        destination: intent.destination,
+        amountAtomic: intent.amountAtomic,
+      });
+    } catch (cause) {
+      const detail = cause instanceof Error && cause.message.length > 0
+        ? cause.message
+        : "current Treasury policy or available capacity rejected the transfer";
+      throw new TransferModuleError(
+        "INVALID_TRANSFER",
+        `Transfer cannot be authorized: ${detail}`,
+        { cause },
+      );
+    }
     const now = this.timestamp();
     const expiresAtMs = now + this.authorityTtlMs;
     const amount = BigInt(intent.amountAtomic);
@@ -87,7 +105,7 @@ export class TransferModule {
       throw new TransferModuleError("INVALID_TRANSFER", "Transfer maximum total exceeds uint64");
     }
     const record = this.options.journal.claimTransferIntent({
-      id: createTransferId(),
+      id,
       requestKey: intent.requestKey,
       requestDigest: requestDigest(intent),
       destination: intent.destination,

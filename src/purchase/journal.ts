@@ -44,6 +44,7 @@ import {
 import type {
   PreparedTreasuryOperation,
   TreasuryOperationIntent,
+  TreasuryOperationPreflight,
   TreasuryOperationObservationStatus,
   TreasuryOperationRecord,
   TreasuryOperationState,
@@ -2825,6 +2826,26 @@ export class PurchaseJournal {
       .get() as PolicySnapshotRow | undefined;
     if (!row) throw new PolicyReservationError("no active treasury policy is installed");
     return policyFromRow(row, this.policyAllowlist(row.digest));
+  }
+
+  preflightTreasuryOperation(input: TreasuryOperationPreflight): void {
+    validateTreasuryOperationPreflight(input);
+    const policy = this.requireActivePolicy();
+    if (policy.digest !== input.policyDigest) {
+      throw new PolicyReservationError(
+        "treasury policy changed; direct operation must re-evaluate against the active snapshot"
+      );
+    }
+    this.assertDirectTreasuryCapacity(
+      policy,
+      input.kind,
+      input.destination,
+      input.amountAtomic,
+      input.feeCeilingAtomic,
+      this.timestamp(),
+      undefined,
+      input.humanApprovalExpected,
+    );
   }
 
   claimTreasuryOperationIntent(input: TreasuryOperationIntent): TreasuryOperationRecord {
@@ -8583,9 +8604,9 @@ export class PurchaseJournal {
       "approval threshold",
       true
     );
-    if (gross > maxPerPayment) {
+    if (policyAmount > maxPerPayment) {
       throw new PolicyReservationError(
-        `gross direct Treasury movement ${gross} exceeds per-payment limit ${maxPerPayment}`
+        `direct Treasury amount ${policyAmount} exceeds per-payment limit ${maxPerPayment}`
       );
     }
     if (approvalThreshold > 0n && policyAmount > approvalThreshold && !humanApproved) {
@@ -10463,6 +10484,23 @@ function canonicalPolicy(definition: PolicyDefinition): PolicyDefinition {
     approvalAboveAtomic: definition.approvalAboveAtomic,
     allowlist,
   };
+}
+
+function validateTreasuryOperationPreflight(input: TreasuryOperationPreflight): void {
+  if (!(["wallet_send", "vault_send", "vault_deposit", "batch_refund"] as const).includes(input.kind)) {
+    throw new JournalInvariantError("direct Treasury operation kind is invalid");
+  }
+  assertBoundedText(input.destination, "direct Treasury destination", 300);
+  decimalBigInt(
+    input.amountAtomic,
+    "direct Treasury amount",
+    input.kind === "vault_deposit",
+  );
+  decimalBigInt(input.feeCeilingAtomic, "direct Treasury fee ceiling", true);
+  assertDigest(input.policyDigest, "direct Treasury policy digest");
+  if (typeof input.humanApprovalExpected !== "boolean") {
+    throw new JournalInvariantError("direct Treasury approval expectation is invalid");
+  }
 }
 
 function validatePolicyReservationInput(input: PolicyReservationInput): void {

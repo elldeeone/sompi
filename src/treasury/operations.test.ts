@@ -652,7 +652,53 @@ test("Purchase capacity blocks a direct operation before signing or submission",
   );
 });
 
-test("fee ceiling is reserved before signing", async () => {
+test("the per-payment limit applies to the recipient amount and reserves the fee separately", async () => {
+  await withFixture(
+    async ({ journal, module, wallet }) => {
+      assert.doesNotThrow(() => module.preflightHumanAuthorized({
+        operationKey: "direct:recipient-limit:preflight",
+        kind: "wallet_send",
+        destination: DESTINATION,
+        amountAtomic: "100",
+      }));
+      assert.equal(journal.unresolvedTreasuryOperationCount(), 0, "preflight must not create durable intent");
+      wallet.probes.push(observed(wallet.transactionId));
+      const completed = await module.execute({
+        operationKey: "direct:recipient-limit:exact",
+        kind: "wallet_send",
+        destination: DESTINATION,
+        amountAtomic: "100",
+      });
+      assert.equal(completed.state, "completed");
+      assert.equal(completed.amountAtomic, "100");
+      assert.equal(completed.feeAtomic, "10");
+      assert.equal(journal.treasuryPolicyCapacityUsed(), 110n);
+    },
+    { maxPerPaymentAtomic: "100", maxPerHourAtomic: "110" }
+  );
+});
+
+test("an amount above the per-payment limit fails preflight before signing", async () => {
+  await withFixture(
+    async ({ journal, module, wallet }) => {
+      assert.throws(
+        () => module.preflightHumanAuthorized({
+          operationKey: "direct:recipient-limit:blocked",
+          kind: "wallet_send",
+          destination: DESTINATION,
+          amountAtomic: "101",
+        }),
+        /amount 101 exceeds per-payment limit 100/,
+      );
+      assert.equal(journal.unresolvedTreasuryOperationCount(), 0);
+      assert.equal(wallet.prepareCalls, 0);
+      assert.equal(wallet.submitCalls, 0);
+    },
+    { maxPerPaymentAtomic: "100", maxPerHourAtomic: "1000" }
+  );
+});
+
+test("fee ceiling is reserved against the rolling limit before signing", async () => {
   await withFixture(
     async ({ module, wallet }) => {
       await assert.rejects(

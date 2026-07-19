@@ -93,6 +93,9 @@ recipient, amount, policy, source vault, or transaction. A denial spends
 nothing. A crash or ambiguous broadcast stays attached to the original signed
 effect and must be recovered rather than replaced.
 
+For direct Transfers, the per-transfer limit applies to the amount received.
+The network fee has its own ceiling, and the rolling spend limit counts both.
+
 ## Interfaces
 
 The canonical interface is the authenticated local API:

@@ -71,6 +71,15 @@ export interface TreasuryOperationIntent {
   readonly authorizationEvidenceDigest?: string;
 }
 
+export interface TreasuryOperationPreflight {
+  readonly kind: TreasuryOperationKind;
+  readonly destination: string;
+  readonly amountAtomic: string;
+  readonly feeCeilingAtomic: string;
+  readonly policyDigest: string;
+  readonly humanApprovalExpected: boolean;
+}
+
 export interface TreasuryOperationValidationInput {
   readonly operationKey: string;
   readonly kind: TreasuryOperationKind;
@@ -119,6 +128,7 @@ export interface TreasuryOperationJournal {
     readonly approvalAboveAtomic: string;
     readonly allowlist: readonly string[];
   }): { readonly digest: string };
+  preflightTreasuryOperation(input: TreasuryOperationPreflight): void;
   claimTreasuryOperationIntent(input: TreasuryOperationIntent): TreasuryOperationRecord;
   claimTreasuryOperationDriver(
     operationKey: string,

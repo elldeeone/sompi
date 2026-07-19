@@ -101,7 +101,7 @@ test("denial is durable and cannot reach Treasury", async (t) => {
   assert.equal(fixture.treasury.calls, 0);
 });
 
-test("invalid recipients and pre-effect Treasury rejection fail without a retry capability", async (t) => {
+test("invalid recipients and Treasury preflight rejection never reach Authority", async (t) => {
   const fixture = setup(t);
   await assert.rejects(
     fixture.module.transfer({
@@ -112,6 +112,27 @@ test("invalid recipients and pre-effect Treasury rejection fail without a retry 
     (error: unknown) => error instanceof TransferModuleError && error.code === "INVALID_TRANSFER",
   );
   assert.equal(fixture.authority.calls, 0);
+
+  fixture.treasury.rejectPreflight = true;
+  await assert.rejects(
+    fixture.module.transfer({
+      requestKey: "telegram:send:policy-preflight",
+      destination: ADDRESS,
+      amountAtomic: "5000",
+    }),
+    (error: unknown) =>
+      error instanceof TransferModuleError &&
+      error.code === "INVALID_TRANSFER" &&
+      /cannot be authorized/.test(error.message),
+  );
+  assert.equal(fixture.journal.findTransferByRequestKey("telegram:send:policy-preflight"), undefined);
+  assert.equal(fixture.treasury.preflightCalls, 1);
+  assert.equal(fixture.treasury.calls, 0);
+  assert.equal(fixture.authority.calls, 0);
+});
+
+test("a post-approval Treasury race fails terminally without a retry capability", async (t) => {
+  const fixture = setup(t);
 
   const rejectingTreasury = new FakeTreasury(fixture.policyDigest, false);
   rejectingTreasury.rejectBeforeIntent = true;
@@ -133,6 +154,7 @@ test("invalid recipients and pre-effect Treasury rejection fail without a retry 
   );
   const record = fixture.journal.findTransferByRequestKey("telegram:send:policy-rejected");
   assert.equal(record?.state, "failed_terminal");
+  assert.equal(rejectingTreasury.preflightCalls, 1);
   assert.equal(rejectingTreasury.calls, 1);
   assert.equal(fixture.authority.calls, 1);
 });
@@ -228,6 +250,8 @@ class FakeAuthority implements TransferAuthorityModule {
 
 class FakeTreasury {
   calls = 0;
+  preflightCalls = 0;
+  rejectPreflight = false;
   rejectBeforeIntent = false;
   lastAuthorization?: Readonly<{
     expectedPolicyDigest?: string;
@@ -235,7 +259,11 @@ class FakeTreasury {
   }>;
   private failed = false;
   constructor(readonly policyDigest: string, private readonly failFirst: boolean) {}
-  authorizationContext() { return { policyDigest: this.policyDigest, feeCeilingAtomic: "200000" }; }
+  preflightHumanAuthorized() {
+    this.preflightCalls += 1;
+    if (this.rejectPreflight) throw new Error("recipient amount exceeds the per-transfer limit");
+    return { policyDigest: this.policyDigest, feeCeilingAtomic: "200000" };
+  }
   async executeUnderPolicy(
     request: { operationKey: string; destination: string; amountAtomic: string },
     authorization: Readonly<{
