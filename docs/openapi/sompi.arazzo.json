@@ -4,7 +4,7 @@
     "title": "Sompi recovery workflows",
     "summary": "Create, inspect, recover, and verify terminal Purchase and Transfer receipts.",
     "description": "Uses only the authenticated, protocol-neutral Sompi API. The recovery step reconciles durable evidence and never authorizes blind resubmission.",
-    "version": "0.9.0"
+    "version": "0.9.1"
   },
   "sourceDescriptions": [
     {

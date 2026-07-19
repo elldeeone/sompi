@@ -13,7 +13,7 @@ secrets. Set the OS user, Telegram IDs, trusted TN10 node, Merchant allow rules,
 and spending limits, then preview it:
 
 ```bash
-npm exec --yes --package=@elldeeone/sompi@0.9.0 -- \
+npm exec --yes --package=@elldeeone/sompi@0.9.1 -- \
   sompi-operator bootstrap-preview REQUEST.json
 ```
 
