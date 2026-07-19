@@ -78,9 +78,14 @@ import {
   JournalTreasuryStagingObservationSource,
   createJournalTreasuryStagingMetadataSource,
 } from "./journal-sources.js";
+import { TransferAuthorityClient } from "../transfer/authority.js";
+import { TransferModule } from "../transfer/module.js";
+import { WalletViewModule } from "../wallet-view/module.js";
 
 export interface SompiPurchaseRuntime {
   readonly purchase: PurchaseModule;
+  readonly transfer: TransferModule;
+  readonly walletView: WalletViewModule;
   readonly journal: PurchaseJournal;
   readonly wallet: KaspaWallet;
   readonly vault: VaultManager;
@@ -241,23 +246,25 @@ export function createSompiPurchaseRuntime(
       now,
       clockSkewSec: 0,
     });
+    const authorityTransport = new AuthorityUnixDecisionClient({
+      socketPath: config.authority.paths.socket,
+      timeoutMs: AUTHORITY_DECISION_TRANSPORT_TIMEOUT_MS,
+      ...(!sameUserAuthorityTest && config.authority.socketAccess
+        ? {
+            expectedSocketOwnerUserId:
+              config.authority.socketAccess.expectedOwnerUserId,
+            socketGroupId: config.authority.socketAccess.groupId,
+          }
+        : {}),
+    });
+    const authorityAuthentication = new AuthorityMacKeyFile(
+      config.authority.paths.macKey,
+      config.authority.keyId,
+    );
     const authority = new Ap2AuthorityModule({
-      authenticationProvider: new AuthorityMacKeyFile(
-        config.authority.paths.macKey,
-        config.authority.keyId
-      ),
+      authenticationProvider: authorityAuthentication,
       replayStore: authorityReplay,
-      transport: new AuthorityUnixDecisionClient({
-        socketPath: config.authority.paths.socket,
-        timeoutMs: AUTHORITY_DECISION_TRANSPORT_TIMEOUT_MS,
-        ...(!sameUserAuthorityTest && config.authority.socketAccess
-          ? {
-              expectedSocketOwnerUserId:
-                config.authority.socketAccess.expectedOwnerUserId,
-              socketGroupId: config.authority.socketAccess.groupId,
-            }
-          : {}),
-      }),
+      transport: authorityTransport,
       verifier: authorityVerifier,
       now,
     });
@@ -322,6 +329,36 @@ export function createSompiPurchaseRuntime(
       now,
     });
     const payment = new KaspaX402PaymentModule(exactPayment, batchPayment);
+    const transferAuthority = new TransferAuthorityClient({
+      authenticationProvider: authorityAuthentication,
+      transport: authorityTransport,
+      trust,
+      expectedAuthorityIssuer: config.authority.issuer,
+      now,
+    });
+    const transfer = new TransferModule({
+      journal,
+      authority: transferAuthority,
+      treasury: treasuryOperations,
+      source: () => {
+        const current = vault.config();
+        return Object.freeze({
+          vaultAddress: current.address,
+          vaultDigest: vaultStaticConfigurationDigest(current),
+        });
+      },
+      manifest: () => config.operatorManifest.identity,
+      finalityFloor: config.finalityFloors.vault,
+      now,
+    });
+    const walletView = new WalletViewModule({
+      wallet,
+      vault,
+      journal,
+      treasury: treasuryOperations,
+      policy,
+      now,
+    });
     const stagingRecovery = new KaspaStagingRecoveryModule({
       recovery: new AbandonedStagingRecovery({
         keyStore,
@@ -358,6 +395,8 @@ export function createSompiPurchaseRuntime(
     let closePromise: Promise<void> | undefined;
     return Object.freeze({
       purchase,
+      transfer,
+      walletView,
       journal,
       wallet,
       vault,

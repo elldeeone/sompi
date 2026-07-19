@@ -32,6 +32,11 @@ import {
   startTelegramCallbackServer,
   type RunningTelegramCallbackServer,
 } from "./telegram-authority.js";
+import {
+  TransferAuthorityDecisionStore,
+  TransferAuthorityService,
+  isTransferAuthorityRequestWire,
+} from "../transfer/authority.js";
 
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
@@ -337,6 +342,13 @@ export async function startAuthorityRuntime(
     humanDecision,
     ...(access.admission ? { admission: { authorityPrompts: access.admission.authorityPrompts } } : {}),
   });
+  const transferDecisions = new TransferAuthorityDecisionStore(`${paths.decisionDatabase}.transfers`);
+  const transferService = new TransferAuthorityService({
+    authenticationProvider: authentication,
+    signer,
+    prompt,
+    decisions: transferDecisions,
+  });
   const server = new AuthorityUnixDecisionServer({
     socketPath: paths.socket,
     timeoutMs: AUTHORITY_DECISION_TRANSPORT_TIMEOUT_MS,
@@ -344,7 +356,11 @@ export async function startAuthorityRuntime(
       ? {}
       : { socketGroupId: access.socketGroupId }),
     ...(access.admission ? { admission: access.admission } : {}),
-    endpoint: new AuthorityDecisionEndpoint(service),
+    endpoint: new AuthorityDecisionEndpoint({
+      handleDecision: (wire, signal) => isTransferAuthorityRequestWire(wire)
+        ? transferService.handleDecision(wire, signal)
+        : service.handleDecision(wire, signal),
+    }),
   });
   try {
     await server.start();
@@ -355,6 +371,7 @@ export async function startAuthorityRuntime(
     telegramStore?.close();
     replay.close();
     decisions.close();
+    transferDecisions.close();
     throw error;
   }
   let closed = false;
@@ -371,6 +388,7 @@ export async function startAuthorityRuntime(
       telegramStore?.close();
       replay.close();
       decisions.close();
+      transferDecisions.close();
     },
   });
 }

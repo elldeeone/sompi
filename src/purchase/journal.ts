@@ -56,6 +56,17 @@ import {
   validateAdmissionBudgets,
   type AdmissionBudgetProjection,
 } from "../admission.js";
+import { assertTransferTransition } from "../transfer/state-machine.js";
+import type {
+  TransferAuthorizationFacts,
+  TransferAuthorizationRecord,
+  TransferAuthorityDecision,
+  TransferReceipt,
+  TransferRecord,
+  TransferState,
+} from "../transfer/types.js";
+import type { TransferJournalIntent } from "../transfer/journal.js";
+import type { TreasuryOperationView } from "../treasury/operations.js";
 
 const PAYMENT_ATTEMPT_STATES = ["planned", "prepared", "submitted", "observed", "failed"] as const;
 const EFFECT_STATES = [
@@ -126,6 +137,242 @@ export interface PurchaseJournalOptions {
   operatorManifestIdentity?: Readonly<{ revision: number; digest: string }>;
   /** Manifest projection in production; explicit values are used by hermetic tests. */
   admission?: AdmissionBudgetProjection;
+}
+
+function transferFromRow(row: TransferRow): TransferRecord {
+  return Object.freeze({
+    id: row.id,
+    requestKey: row.request_key,
+    requestDigest: row.request_digest,
+    state: row.state,
+    destination: row.destination,
+    amountAtomic: row.amount_atomic,
+    asset: row.asset,
+    network: row.network,
+    sourceVaultAddress: row.source_vault_address,
+    sourceVaultDigest: row.source_vault_digest,
+    feeCeilingAtomic: row.fee_ceiling_atomic,
+    maximumTotalAtomic: row.maximum_total_atomic,
+    expiresAtMs: row.expires_at_ms,
+    policyDigest: row.policy_digest,
+    manifestRevision: row.manifest_revision,
+    manifestDigest: row.manifest_digest,
+    finalityFloor: row.finality_floor,
+    ...(row.treasury_operation_key === null ? {} : { treasuryOperationKey: row.treasury_operation_key }),
+    ...(row.transaction_id === null ? {} : { transactionId: row.transaction_id }),
+    ...(row.actual_fee_atomic === null ? {} : { actualFeeAtomic: row.actual_fee_atomic }),
+    ...(row.failure_code === null ? {} : { failureCode: row.failure_code }),
+    version: row.version,
+    createdAtMs: row.created_at_ms,
+    updatedAtMs: row.updated_at_ms,
+  });
+}
+
+function transferAuthorizationFromRow(row: TransferAuthorizationRow): TransferAuthorizationRecord {
+  let facts: unknown;
+  try { facts = JSON.parse(row.facts_json); } catch {
+    throw new JournalInvariantError("Transfer authorization facts JSON is invalid");
+  }
+  if (evidenceDigest(row.facts_json) !== row.facts_digest) {
+    throw new JournalInvariantError("Transfer authorization facts digest changed");
+  }
+  if (evidenceDigest(row.evidence) !== row.evidence_digest) {
+    throw new JournalInvariantError("Transfer authorization evidence digest changed");
+  }
+  return Object.freeze({
+    transferId: row.transfer_id,
+    facts: facts as TransferAuthorizationFacts,
+    factsDigest: row.facts_digest,
+    decision: row.decision,
+    authorityId: row.authority_id,
+    ...(row.denial_code === null ? {} : { denialCode: row.denial_code }),
+    evidenceDigest: row.evidence_digest,
+    verificationProfile: row.verification_profile,
+    verifierId: row.verifier_id,
+    decidedAtMs: row.decided_at_ms,
+    expiresAtMs: row.expires_at_ms,
+  });
+}
+
+function validateTransferIntent(input: TransferJournalIntent): void {
+  assertTransferId(input.id);
+  assertTransferRequestKey(input.requestKey);
+  assertDigest(input.requestDigest, "Transfer request digest");
+  assertTransferAddress(input.destination, "Transfer destination");
+  assertTransferAtomic(input.amountAtomic, "Transfer amount", false);
+  assertTransferAddress(input.sourceVaultAddress, "Transfer source vault");
+  assertDigest(input.sourceVaultDigest, "Transfer source vault digest");
+  const amount = assertTransferAtomic(input.amountAtomic, "Transfer amount", false);
+  const fee = assertTransferAtomic(input.feeCeilingAtomic, "Transfer fee ceiling", true);
+  const total = assertTransferAtomic(input.maximumTotalAtomic, "Transfer maximum total", false);
+  if (amount + fee !== total) throw new JournalInvariantError("Transfer maximum total is inconsistent");
+  if (!Number.isSafeInteger(input.expiresAtMs) || input.expiresAtMs <= 0) {
+    throw new JournalInvariantError("Transfer expiry is invalid");
+  }
+  assertDigest(input.policyDigest, "Transfer policy digest");
+  if (!Number.isSafeInteger(input.manifestRevision) || input.manifestRevision < 1) {
+    throw new JournalInvariantError("Transfer manifest revision is invalid");
+  }
+  assertDigest(input.manifestDigest, "Transfer manifest digest");
+  if (input.finalityFloor !== "accepted" && input.finalityFloor !== "depth-confirmed") {
+    throw new JournalInvariantError("Transfer finality floor is invalid");
+  }
+}
+
+function sameTransferIntent(record: TransferRecord, input: TransferJournalIntent): boolean {
+  return record.id === input.id &&
+    record.requestDigest === input.requestDigest &&
+    record.destination === input.destination &&
+    record.amountAtomic === input.amountAtomic &&
+    record.sourceVaultAddress === input.sourceVaultAddress &&
+    record.sourceVaultDigest === input.sourceVaultDigest &&
+    record.feeCeilingAtomic === input.feeCeilingAtomic &&
+    record.maximumTotalAtomic === input.maximumTotalAtomic &&
+    record.expiresAtMs === input.expiresAtMs &&
+    record.policyDigest === input.policyDigest &&
+    record.manifestRevision === input.manifestRevision &&
+    record.manifestDigest === input.manifestDigest &&
+    record.finalityFloor === input.finalityFloor;
+}
+
+function canonicalTransferFactsJson(facts: TransferAuthorizationFacts): string {
+  if (!facts || facts.profile !== "sompi.transfer.1") {
+    throw new JournalInvariantError("Transfer authorization profile is unsupported");
+  }
+  return JSON.stringify({
+    profile: facts.profile,
+    transferId: facts.transferId,
+    requestKey: facts.requestKey,
+    sourceVaultAddress: facts.sourceVaultAddress,
+    sourceVaultDigest: facts.sourceVaultDigest,
+    destination: facts.destination,
+    amountAtomic: facts.amountAtomic,
+    asset: facts.asset,
+    network: facts.network,
+    feeCeilingAtomic: facts.feeCeilingAtomic,
+    maximumTotalAtomic: facts.maximumTotalAtomic,
+    expiresAt: facts.expiresAt,
+    policyDigest: facts.policyDigest,
+    operatorManifestRevision: facts.operatorManifestRevision,
+    operatorManifestDigest: facts.operatorManifestDigest,
+    finalityFloor: facts.finalityFloor,
+  });
+}
+
+function assertTransferFactsMatchIntent(facts: TransferAuthorizationFacts, transfer: TransferRecord): void {
+  if (
+    facts.transferId !== transfer.id ||
+    facts.requestKey !== transfer.requestKey ||
+    facts.sourceVaultAddress !== transfer.sourceVaultAddress ||
+    facts.sourceVaultDigest !== transfer.sourceVaultDigest ||
+    facts.destination !== transfer.destination ||
+    facts.amountAtomic !== transfer.amountAtomic ||
+    facts.asset !== transfer.asset ||
+    facts.network !== transfer.network ||
+    facts.feeCeilingAtomic !== transfer.feeCeilingAtomic ||
+    facts.maximumTotalAtomic !== transfer.maximumTotalAtomic ||
+    Date.parse(facts.expiresAt) !== transfer.expiresAtMs ||
+    facts.policyDigest !== transfer.policyDigest ||
+    facts.operatorManifestRevision !== transfer.manifestRevision ||
+    facts.operatorManifestDigest !== transfer.manifestDigest ||
+    facts.finalityFloor !== transfer.finalityFloor
+  ) {
+    throw new JournalInvariantError("Transfer authorization facts changed from durable intent");
+  }
+}
+
+function validateTransferAuthorityDecision(decision: TransferAuthorityDecision): void {
+  if (!decision || (decision.decision !== "approved" && decision.decision !== "denied")) {
+    throw new JournalInvariantError("Transfer Authority decision is invalid");
+  }
+  if (!(decision.evidence instanceof Uint8Array) || decision.evidence.byteLength < 1 || decision.evidence.byteLength > 256 * 1024) {
+    throw new JournalInvariantError("Transfer Authority evidence is invalid");
+  }
+  assertDigest(decision.evidenceDigest, "Transfer Authority evidence digest");
+  assertDigest(decision.factsDigest, "Transfer Authority facts digest");
+  assertBoundedText(decision.authorityId, "Transfer Authority identity", 200);
+  assertBoundedText(decision.verificationProfile, "Transfer verification profile", 200);
+  assertBoundedText(decision.verifierId, "Transfer verifier identity", 200);
+  if (!Number.isSafeInteger(decision.decidedAtMs) || decision.decidedAtMs <= 0) {
+    throw new JournalInvariantError("Transfer Authority decision time is invalid");
+  }
+  if (decision.decision === "approved" && decision.denialCode !== undefined) {
+    throw new JournalInvariantError("Approved Transfer has a denial code");
+  }
+  if (decision.decision === "denied" && decision.denialCode !== "user_denied" && decision.denialCode !== "terms_expired") {
+    throw new JournalInvariantError("Denied Transfer has an invalid denial code");
+  }
+}
+
+function sameTransferAuthorization(
+  existing: TransferAuthorizationRecord,
+  facts: TransferAuthorizationFacts,
+  decision: TransferAuthorityDecision,
+): boolean {
+  return existing.factsDigest === decision.factsDigest &&
+    existing.evidenceDigest === decision.evidenceDigest &&
+    existing.decision === decision.decision &&
+    existing.authorityId === decision.authorityId &&
+    canonicalTransferFactsJson(existing.facts) === canonicalTransferFactsJson(facts);
+}
+
+function transferStateForTreasury(operation: TreasuryOperationView): TransferState {
+  switch (operation.state) {
+    case "intent": return "funds_reserved";
+    case "prepared": return "prepared";
+    case "submission_planned":
+    case "submitted": return "submitted";
+    case "observed":
+    case "completed": return "settled";
+    case "failed_terminal": return "failed_terminal";
+  }
+}
+
+function assertTransferReceiptMatches(receipt: TransferReceipt, transfer: TransferRecord): void {
+  if (
+    receipt.profile !== "urn:sompi:receipt:transfer:1" ||
+    receipt.transferId !== transfer.id ||
+    receipt.requestKey !== transfer.requestKey ||
+    receipt.destination !== transfer.destination ||
+    receipt.amountAtomic !== transfer.amountAtomic ||
+    receipt.network !== transfer.network ||
+    receipt.fundingSource !== "vault-treasury" ||
+    receipt.transactionId !== transfer.transactionId ||
+    receipt.finality !== transfer.finalityFloor ||
+    receipt.feeAtomic !== transfer.actualFeeAtomic ||
+    !Number.isFinite(Date.parse(receipt.settledAt))
+  ) {
+    throw new JournalInvariantError("Transfer receipt does not match settled Transfer facts");
+  }
+}
+
+function assertTransferId(value: string): void {
+  if (typeof value !== "string" || !/^trf_[A-Za-z0-9_-]{22}$/.test(value)) {
+    throw new JournalInvariantError("Transfer ID is invalid");
+  }
+}
+
+function assertTransferRequestKey(value: string): void {
+  if (typeof value !== "string" || value.length < 1 || value.length > 160 || !/^[A-Za-z0-9._:-]+$/.test(value)) {
+    throw new JournalInvariantError("Transfer request key is invalid");
+  }
+}
+
+function assertTransferAddress(value: string, label: string): void {
+  if (typeof value !== "string" || value.length > 256 || !/^kaspatest:[a-z0-9]+$/.test(value)) {
+    throw new JournalInvariantError(`${label} is invalid`);
+  }
+}
+
+function assertTransferAtomic(value: string, label: string, zeroAllowed: boolean): bigint {
+  if (typeof value !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(value)) {
+    throw new JournalInvariantError(`${label} is invalid`);
+  }
+  const parsed = BigInt(value);
+  if (parsed > (1n << 64n) - 1n || (!zeroAllowed && parsed === 0n)) {
+    throw new JournalInvariantError(`${label} is outside uint64 bounds`);
+  }
+  return parsed;
 }
 
 function batchChannelFromRow(row: BatchChannelRow): BatchChannelJournalRecord {
@@ -1222,6 +1469,55 @@ interface BatchRaceRecoveryRow {
   updated_at_ms: number;
 }
 
+interface TransferRow {
+  id: string;
+  request_key: string;
+  request_digest: string;
+  state: TransferState;
+  destination: string;
+  amount_atomic: string;
+  asset: "KAS";
+  network: "kaspa:testnet-10";
+  source_vault_address: string;
+  source_vault_digest: string;
+  fee_ceiling_atomic: string;
+  maximum_total_atomic: string;
+  expires_at_ms: number;
+  policy_digest: string;
+  manifest_revision: number;
+  manifest_digest: string;
+  finality_floor: "accepted" | "depth-confirmed";
+  treasury_operation_key: string | null;
+  transaction_id: string | null;
+  actual_fee_atomic: string | null;
+  failure_code: string | null;
+  version: number;
+  created_at_ms: number;
+  updated_at_ms: number;
+}
+
+interface TransferAuthorizationRow {
+  transfer_id: string;
+  facts_json: string;
+  facts_digest: string;
+  decision: "approved" | "denied";
+  authority_id: string;
+  denial_code: string | null;
+  evidence: Buffer;
+  evidence_digest: string;
+  verification_profile: string;
+  verifier_id: string;
+  decided_at_ms: number;
+  expires_at_ms: number;
+}
+
+interface TransferReceiptRow {
+  transfer_id: string;
+  receipt_json: string;
+  receipt_digest: string;
+  created_at_ms: number;
+}
+
 export class PurchaseJournal {
   private readonly db: Database.Database;
   private readonly now: () => number;
@@ -1312,6 +1608,319 @@ export class PurchaseJournal {
         saturated: evidenceUsed >= row.evidence_byte_limit,
       }),
     });
+  }
+
+  claimTransferIntent(input: TransferJournalIntent): TransferRecord {
+    validateTransferIntent(input);
+    const claim = this.db.transaction(() => {
+      const byKey = this.findTransferByRequestKey(input.requestKey);
+      if (byKey) {
+        if (!sameTransferIntent(byKey, input)) {
+          throw new JournalInvariantError("Transfer request key is already bound to different intent");
+        }
+        return byKey;
+      }
+      if (this.findTransfer(input.id)) {
+        throw new JournalInvariantError("Transfer ID is already bound to different intent");
+      }
+      this.requirePolicy(input.policyDigest as Sha256Digest);
+      const manifest = this.operatorManifestIdentity();
+      if (
+        !manifest ||
+        manifest.revision !== input.manifestRevision ||
+        manifest.digest !== input.manifestDigest
+      ) {
+        throw new JournalInvariantError("Transfer intent does not match the bound Operator Manifest");
+      }
+      const now = this.timestamp();
+      this.db.prepare(
+        `INSERT INTO transfers (
+           id, request_key, request_digest, state, destination, amount_atomic,
+           asset, network, source_vault_address, source_vault_digest,
+           fee_ceiling_atomic, maximum_total_atomic, expires_at_ms,
+           policy_digest, manifest_revision, manifest_digest, finality_floor,
+           created_at_ms, updated_at_ms
+         ) VALUES (?, ?, ?, 'created', ?, ?, 'KAS', 'kaspa:testnet-10', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        input.id,
+        input.requestKey,
+        input.requestDigest,
+        input.destination,
+        input.amountAtomic,
+        input.sourceVaultAddress,
+        input.sourceVaultDigest,
+        input.feeCeilingAtomic,
+        input.maximumTotalAtomic,
+        input.expiresAtMs,
+        input.policyDigest,
+        input.manifestRevision,
+        input.manifestDigest,
+        input.finalityFloor,
+        now,
+        now,
+      );
+      this.db.prepare(
+        `INSERT INTO transfer_transitions
+           (transfer_id, from_state, to_state, reason_code, created_at_ms)
+         VALUES (?, NULL, 'created', 'intent_recorded', ?)`
+      ).run(input.id, now);
+      return this.requireTransfer(input.id);
+    });
+    return claim.immediate();
+  }
+
+  findTransferByRequestKey(requestKey: string): TransferRecord | undefined {
+    assertTransferRequestKey(requestKey);
+    const row = this.db.prepare("SELECT * FROM transfers WHERE request_key = ?").get(requestKey) as TransferRow | undefined;
+    return row ? transferFromRow(row) : undefined;
+  }
+
+  findTransfer(id: string): TransferRecord | undefined {
+    assertTransferId(id);
+    const row = this.db.prepare("SELECT * FROM transfers WHERE id = ?").get(id) as TransferRow | undefined;
+    return row ? transferFromRow(row) : undefined;
+  }
+
+  requireTransfer(id: string): TransferRecord {
+    const transfer = this.findTransfer(id);
+    if (!transfer) throw new JournalNotFoundError(`Transfer ${id} does not exist`);
+    return transfer;
+  }
+
+  transitionTransfer(
+    id: string,
+    to: TransferState,
+    reasonCode: string,
+    detailDigest?: string,
+  ): TransferRecord {
+    assertTransferId(id);
+    assertBoundedText(reasonCode, "Transfer transition reason", 120);
+    if (detailDigest !== undefined) assertDigest(detailDigest, "Transfer transition detail digest");
+    const transition = this.db.transaction(() =>
+      this.transitionTransferInternal(id, to, reasonCode, detailDigest)
+    );
+    return transition.immediate();
+  }
+
+  recordTransferAuthorization(
+    id: string,
+    facts: TransferAuthorizationFacts,
+    decision: TransferAuthorityDecision,
+  ): TransferAuthorizationRecord {
+    assertTransferId(id);
+    const factsJson = canonicalTransferFactsJson(facts);
+    const factsDigest = evidenceDigest(factsJson);
+    if (facts.transferId !== id || decision.factsDigest !== factsDigest) {
+      throw new JournalInvariantError("Transfer authorization facts do not match the Transfer intent");
+    }
+    validateTransferAuthorityDecision(decision);
+    if (evidenceDigest(decision.evidence) !== decision.evidenceDigest) {
+      throw new JournalInvariantError("Transfer authorization evidence digest changed");
+    }
+    const record = this.db.transaction(() => {
+      const transfer = this.requireTransfer(id);
+      if (transfer.state !== "awaiting_authority") {
+        const existing = this.findTransferAuthorization(id);
+        if (existing && sameTransferAuthorization(existing, facts, decision)) return existing;
+        throw new JournalInvariantError("Transfer is not awaiting an Authority decision");
+      }
+      assertTransferFactsMatchIntent(facts, transfer);
+      if (decision.decidedAtMs > transfer.expiresAtMs) {
+        throw new JournalInvariantError("Transfer authorization was decided after expiry");
+      }
+      this.db.prepare(
+        `INSERT INTO transfer_authorizations (
+           transfer_id, facts_json, facts_digest, decision, authority_id,
+           denial_code, evidence, evidence_digest, verification_profile,
+           verifier_id, decided_at_ms, expires_at_ms
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        id,
+        factsJson,
+        factsDigest,
+        decision.decision,
+        decision.authorityId,
+        decision.denialCode ?? null,
+        Buffer.from(decision.evidence),
+        decision.evidenceDigest,
+        decision.verificationProfile,
+        decision.verifierId,
+        decision.decidedAtMs,
+        transfer.expiresAtMs,
+      );
+      this.transitionTransferInternal(
+        id,
+        decision.decision === "approved" ? "authorised" : "denied",
+        `authorization_${decision.decision}`,
+        decision.evidenceDigest,
+      );
+      return this.requireTransferAuthorization(id);
+    });
+    return record.immediate();
+  }
+
+  findTransferAuthorization(id: string): TransferAuthorizationRecord | undefined {
+    assertTransferId(id);
+    const row = this.db.prepare(
+      "SELECT * FROM transfer_authorizations WHERE transfer_id = ?"
+    ).get(id) as TransferAuthorizationRow | undefined;
+    return row ? transferAuthorizationFromRow(row) : undefined;
+  }
+
+  requireTransferAuthorization(id: string): TransferAuthorizationRecord {
+    const authorization = this.findTransferAuthorization(id);
+    if (!authorization) throw new JournalNotFoundError(`Transfer ${id} has no authorization decision`);
+    return authorization;
+  }
+
+  readTransferAuthorizationEvidence(id: string): Buffer {
+    assertTransferId(id);
+    const row = this.db.prepare(
+      "SELECT evidence FROM transfer_authorizations WHERE transfer_id = ?"
+    ).get(id) as { evidence: Buffer } | undefined;
+    if (!row) throw new JournalNotFoundError(`Transfer ${id} has no authorization evidence`);
+    return Buffer.from(row.evidence);
+  }
+
+  bindTransferTreasuryOperation(id: string, operationKey: string): TransferRecord {
+    assertTransferId(id);
+    assertTreasuryOperationKey(operationKey);
+    const bind = this.db.transaction(() => {
+      const transfer = this.requireTransfer(id);
+      if (transfer.treasuryOperationKey) {
+        if (transfer.treasuryOperationKey !== operationKey) {
+          throw new JournalInvariantError("Transfer is bound to a different Treasury operation");
+        }
+        return transfer;
+      }
+      if (transfer.state !== "authorised") {
+        throw new JournalInvariantError("Transfer requires approved Authority evidence before Treasury reservation");
+      }
+      const authorization = this.findTransferAuthorization(id);
+      if (authorization?.decision !== "approved") {
+        throw new JournalInvariantError("Transfer approval evidence is unavailable");
+      }
+      this.db.prepare(
+        "UPDATE transfers SET treasury_operation_key = ?, updated_at_ms = ? WHERE id = ?"
+      ).run(operationKey, this.timestamp(), id);
+      return this.transitionTransferInternal(id, "funds_reserved", "treasury_operation_bound");
+    });
+    return bind.immediate();
+  }
+
+  syncTransferTreasuryOperation(id: string, operation: TreasuryOperationView): TransferRecord {
+    assertTransferId(id);
+    const sync = this.db.transaction(() => {
+      let transfer = this.requireTransfer(id);
+      if (transfer.treasuryOperationKey !== operation.operationKey || operation.kind !== "vault_send") {
+        throw new JournalInvariantError("Treasury operation does not belong to this Transfer");
+      }
+      if (
+        operation.destination !== transfer.destination ||
+        operation.requestedAmountAtomic !== transfer.amountAtomic ||
+        operation.feeCeilingAtomic !== transfer.feeCeilingAtomic
+      ) {
+        throw new JournalInvariantError("Treasury operation changed the authorized Transfer intent");
+      }
+      const target = transferStateForTreasury(operation);
+      const failure = operation.state === "failed_terminal" ? "treasury_operation_failed" : null;
+      this.db.prepare(
+        `UPDATE transfers
+            SET transaction_id = COALESCE(transaction_id, ?),
+                actual_fee_atomic = COALESCE(actual_fee_atomic, ?),
+                failure_code = COALESCE(failure_code, ?),
+                updated_at_ms = ?
+          WHERE id = ?`
+      ).run(operation.transactionId ?? null, operation.feeAtomic ?? null, failure, this.timestamp(), id);
+      transfer = this.requireTransfer(id);
+      if (transfer.state !== target) {
+        transfer = this.transitionTransferInternal(id, target, `treasury_${operation.state}`);
+      }
+      return transfer;
+    });
+    return sync.immediate();
+  }
+
+  recordTransferReceipt(id: string, receipt: TransferReceipt): TransferReceipt {
+    assertTransferId(id);
+    const json = JSON.stringify(receipt);
+    const digest = evidenceDigest(json);
+    const record = this.db.transaction(() => {
+      const transfer = this.requireTransfer(id);
+      if (transfer.state === "receipted") {
+        const existing = this.findTransferReceipt(id);
+        if (existing && JSON.stringify(existing) === json) return existing;
+        throw new JournalInvariantError("Transfer receipt conflicts with immutable history");
+      }
+      if (transfer.state !== "settled") throw new JournalInvariantError("Transfer is not settled");
+      assertTransferReceiptMatches(receipt, transfer);
+      this.db.prepare(
+        `INSERT INTO transfer_receipts
+           (transfer_id, receipt_json, receipt_digest, created_at_ms)
+         VALUES (?, ?, ?, ?)`
+      ).run(id, json, digest, this.timestamp());
+      this.transitionTransferInternal(id, "receipted", "receipt_recorded", digest);
+      return receipt;
+    });
+    return record.immediate();
+  }
+
+  findTransferReceipt(id: string): TransferReceipt | undefined {
+    assertTransferId(id);
+    const row = this.db.prepare(
+      "SELECT * FROM transfer_receipts WHERE transfer_id = ?"
+    ).get(id) as TransferReceiptRow | undefined;
+    if (!row) return undefined;
+    let parsed: unknown;
+    try { parsed = JSON.parse(row.receipt_json); } catch {
+      throw new JournalInvariantError("Transfer receipt JSON is invalid");
+    }
+    if (evidenceDigest(row.receipt_json) !== row.receipt_digest) {
+      throw new JournalInvariantError("Transfer receipt digest changed");
+    }
+    return parsed as TransferReceipt;
+  }
+
+  listTransfers(limit: number): readonly TransferRecord[] {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw new JournalInvariantError("Transfer activity limit is invalid");
+    }
+    const rows = this.db.prepare(
+      "SELECT * FROM transfers ORDER BY created_at_ms DESC, id DESC LIMIT ?"
+    ).all(limit) as TransferRow[];
+    return Object.freeze(rows.map(transferFromRow));
+  }
+
+  listPurchases(limit: number): readonly PurchaseRecord[] {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw new JournalInvariantError("Purchase activity limit is invalid");
+    }
+    const rows = this.db.prepare(
+      "SELECT * FROM purchases ORDER BY created_at_ms DESC, id DESC LIMIT ?"
+    ).all(limit) as PurchaseRow[];
+    return Object.freeze(rows.map(purchaseFromRow));
+  }
+
+  private transitionTransferInternal(
+    id: string,
+    to: TransferState,
+    reasonCode: string,
+    detailDigest?: string,
+  ): TransferRecord {
+    const current = this.requireTransfer(id);
+    assertTransferTransition(current.state, to);
+    const now = this.timestamp();
+    const changed = this.db.prepare(
+      `UPDATE transfers SET state = ?, version = version + 1, updated_at_ms = ?
+        WHERE id = ? AND state = ? AND version = ?`
+    ).run(to, now, id, current.state, current.version).changes;
+    if (changed !== 1) throw new JournalInvariantError("Transfer state changed concurrently");
+    this.db.prepare(
+      `INSERT INTO transfer_transitions
+         (transfer_id, from_state, to_state, reason_code, detail_digest, created_at_ms)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    ).run(id, current.state, to, reasonCode, detailDigest ?? null, now);
+    return this.requireTransfer(id);
   }
 
   recordChainEvidence(record: Readonly<ChainEvidenceRecord>): ChainEvidenceRecord {
@@ -6156,7 +6765,8 @@ export class PurchaseJournal {
       .prepare(
         `SELECT
            (SELECT COUNT(*) FROM purchases) +
-           (SELECT COUNT(*) FROM treasury_operations) AS count`
+           (SELECT COUNT(*) FROM treasury_operations) +
+           (SELECT COUNT(*) FROM transfers) AS count`
       )
       .get() as { count: number };
     if (facts.count !== 0) {
@@ -6381,6 +6991,59 @@ export class PurchaseJournal {
       if (purchase.state !== "receipted" && receipts.length !== 0) {
         throw new JournalInvariantError(`Purchase ${purchase.id} has a canonical Receipt in state ${purchase.state}`);
       }
+    }
+
+    const transfers = this.db.prepare("SELECT * FROM transfers ORDER BY id").all() as TransferRow[];
+    for (const row of transfers) {
+      const transitions = this.db.prepare(
+        "SELECT * FROM transfer_transitions WHERE transfer_id = ? ORDER BY sequence"
+      ).all(row.id) as Array<{
+        from_state: TransferState | null;
+        to_state: TransferState;
+        reason_code: string;
+        detail_digest: string | null;
+        created_at_ms: number;
+      }>;
+      if (transitions.length === 0 || transitions[0].from_state !== null || transitions[0].to_state !== "created") {
+        throw new JournalInvariantError(`Transfer ${row.id} has invalid initial history`);
+      }
+      let state: TransferState = "created";
+      let timestamp = transitions[0].created_at_ms;
+      for (const transition of transitions.slice(1)) {
+        if (transition.from_state !== state || transition.created_at_ms < timestamp) {
+          throw new JournalInvariantError(`Transfer ${row.id} history is inconsistent`);
+        }
+        try { assertTransferTransition(state, transition.to_state); }
+        catch { throw new JournalInvariantError(`Transfer ${row.id} history contains an invalid transition`); }
+        state = transition.to_state;
+        timestamp = transition.created_at_ms;
+      }
+      if (state !== row.state || row.version !== transitions.length - 1) {
+        throw new JournalInvariantError(`Transfer ${row.id} state does not match immutable history`);
+      }
+      const transfer = transferFromRow(row);
+      const authorization = this.findTransferAuthorization(transfer.id);
+      const receipt = this.findTransferReceipt(transfer.id);
+      if (["authorised", "funds_reserved", "prepared", "submitted", "settled", "receipted", "denied", "failed_recoverable"].includes(state) && !authorization) {
+        throw new JournalInvariantError(`Transfer ${row.id} state requires an Authority decision`);
+      }
+      if (["authorised", "funds_reserved", "prepared", "submitted", "settled", "receipted", "failed_recoverable"].includes(state) && authorization?.decision !== "approved") {
+        throw new JournalInvariantError(`Transfer ${row.id} state requires approved Authority evidence`);
+      }
+      if (state === "denied" && authorization?.decision !== "denied") {
+        throw new JournalInvariantError(`Transfer ${row.id} denial lacks Authority evidence`);
+      }
+      if (authorization) assertTransferFactsMatchIntent(authorization.facts, transfer);
+      if (["funds_reserved", "prepared", "submitted", "settled", "receipted", "failed_recoverable"].includes(state) && !transfer.treasuryOperationKey) {
+        throw new JournalInvariantError(`Transfer ${row.id} state requires a Treasury operation`);
+      }
+      if (state === "receipted" && !receipt) {
+        throw new JournalInvariantError(`Transfer ${row.id} state requires one receipt`);
+      }
+      if (state !== "receipted" && receipt) {
+        throw new JournalInvariantError(`Transfer ${row.id} has a receipt before receipting`);
+      }
+      if (receipt) assertTransferReceiptMatches(receipt, transfer);
     }
 
     const attempts = this.db

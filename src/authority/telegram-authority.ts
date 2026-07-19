@@ -6,17 +6,17 @@ import * as path from "node:path";
 import Database from "better-sqlite3";
 
 import type {
-  AuthorityApprovalDisplay,
+  AnyAuthorityApprovalDisplay,
   AuthorityApprovalPrompt,
 } from "../adapters/ap2/human-authority.js";
 
 const APPLICATION_ID = 0x53544741;
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const CALLBACK_PROFILE = "sompi.telegram-authority-callback-v1" as const;
 const TOKEN_BYTES = 24;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{32}$/;
 const DIGEST_PATTERN = /^sha256:[A-Za-z0-9_-]{43}$/;
-const PURCHASE_ID_PATTERN = /^pur_[A-Za-z0-9_-]{22}$/;
+const SUBJECT_ID_PATTERN = /^(?:pur|trf)_[A-Za-z0-9_-]{22}$/;
 const MAX_CALLBACK_BODY_BYTES = 1_024;
 const MAX_TELEGRAM_RESPONSE_BYTES = 64 * 1024;
 const TELEGRAM_MESSAGE_LIMIT = 4_096;
@@ -32,7 +32,7 @@ CREATE TABLE telegram_authority_meta (
 CREATE TABLE telegram_authority_prompts (
   token_digest TEXT PRIMARY KEY,
   request_digest TEXT NOT NULL,
-  purchase_id TEXT NOT NULL,
+  subject_id TEXT NOT NULL,
   chat_id TEXT NOT NULL,
   user_id TEXT NOT NULL,
   expires_at_ms INTEGER NOT NULL CHECK (expires_at_ms > 0),
@@ -77,7 +77,7 @@ export type TelegramCallbackResult = Readonly<{
 
 export interface TelegramBotTransport {
   sendApproval(
-    display: AuthorityApprovalDisplay,
+    display: AnyAuthorityApprovalDisplay,
     approveData: string,
     denyData: string,
     signal: AbortSignal,
@@ -94,6 +94,7 @@ export interface TelegramAuthorityApprovalPromptOptions {
 
 interface PendingPrompt {
   readonly tokenDigest: string;
+  readonly subjectKind: "purchase" | "transfer";
   readonly resolve: (approved: boolean) => void;
   readonly reject: (error: Error) => void;
 }
@@ -113,7 +114,7 @@ export class TelegramAuthorityApprovalPrompt implements AuthorityApprovalPrompt 
     this.options.store.expirePending(this.timestamp());
   }
 
-  async approve(display: AuthorityApprovalDisplay, signal?: AbortSignal): Promise<boolean> {
+  async approve(display: AnyAuthorityApprovalDisplay, signal?: AbortSignal): Promise<boolean> {
     validateDisplay(display);
     const effectiveSignal = signal ?? new AbortController().signal;
     effectiveSignal.throwIfAborted();
@@ -131,7 +132,7 @@ export class TelegramAuthorityApprovalPrompt implements AuthorityApprovalPrompt 
     this.options.store.prepare({
       tokenDigest,
       requestDigest: display.authorityRequestDigest,
-      purchaseId: display.purchaseId,
+      subjectId: display.kind === "transfer" ? display.transferId : display.purchaseId,
       chatId: this.options.config.chatId,
       userId: this.options.config.userId,
       expiresAtMs,
@@ -141,7 +142,12 @@ export class TelegramAuthorityApprovalPrompt implements AuthorityApprovalPrompt 
     let abort: (() => void) | undefined;
     let expiryTimer: NodeJS.Timeout | undefined;
     const decision = new Promise<boolean>((resolve, reject) => {
-      const entry: PendingPrompt = { tokenDigest, resolve, reject };
+      const entry: PendingPrompt = {
+        tokenDigest,
+        subjectKind: display.kind === "transfer" ? "transfer" : "purchase",
+        resolve,
+        reject,
+      };
       this.pending.set(tokenDigest, entry);
       abort = () => {
         if (this.pending.delete(tokenDigest)) {
@@ -188,7 +194,7 @@ export class TelegramAuthorityApprovalPrompt implements AuthorityApprovalPrompt 
       !safeEqual(input.userId, this.options.config.userId) ||
       !safeEqual(input.chatId, this.options.config.chatId)
     ) {
-      return result("unauthorized", "You are not authorized to decide this Purchase.");
+      return result("unauthorized", "You are not authorized to decide this request.");
     }
     const now = this.timestamp();
     const tokenDigest = tokenHash(parsed.token);
@@ -213,7 +219,9 @@ export class TelegramAuthorityApprovalPrompt implements AuthorityApprovalPrompt 
     waiter.resolve(consumed === "approved");
     return result(
       consumed,
-      consumed === "approved" ? "Sompi Purchase approved." : "Sompi Purchase denied.",
+      consumed === "approved"
+        ? waiter.subjectKind === "transfer" ? "Sompi Transfer approved." : "Sompi Purchase approved."
+        : waiter.subjectKind === "transfer" ? "Sompi Transfer denied." : "Sompi Purchase denied.",
     );
   }
 
@@ -258,7 +266,7 @@ export class TelegramAuthorityPromptStore {
   prepare(input: Readonly<{
     tokenDigest: string;
     requestDigest: string;
-    purchaseId: string;
+    subjectId: string;
     chatId: string;
     userId: string;
     expiresAtMs: number;
@@ -276,13 +284,13 @@ export class TelegramAuthorityPromptStore {
       }
       this.db.prepare(
         `INSERT INTO telegram_authority_prompts
-           (token_digest, request_digest, purchase_id, chat_id, user_id,
+           (token_digest, request_digest, subject_id, chat_id, user_id,
             expires_at_ms, message_id, state, created_at_ms, resolved_at_ms)
          VALUES (?, ?, ?, ?, ?, ?, NULL, 'prepared', ?, NULL)`,
       ).run(
         input.tokenDigest,
         input.requestDigest,
-        input.purchaseId,
+        input.subjectId,
         input.chatId,
         input.userId,
         input.expiresAtMs,
@@ -529,7 +537,7 @@ export class TelegramBotApi implements TelegramBotTransport {
   }
 
   async sendApproval(
-    display: AuthorityApprovalDisplay,
+    display: AnyAuthorityApprovalDisplay,
     approveData: string,
     denyData: string,
     signal: AbortSignal,
@@ -584,7 +592,28 @@ export class TelegramBotApi implements TelegramBotTransport {
   }
 }
 
-function telegramApprovalText(display: AuthorityApprovalDisplay): string {
+function telegramApprovalText(display: AnyAuthorityApprovalDisplay): string {
+  if (display.kind === "transfer") {
+    const text = [
+      "<b>Sompi KAS transfer approval</b>",
+      "",
+      `<b>Recipient:</b> <code>${html(display.destination)}</code>`,
+      `<b>Amount:</b> ${html(display.amountAtomic)} sompi (${html(display.asset)})`,
+      `<b>Network:</b> ${html(display.network)}`,
+      `<b>Maximum fee:</b> ${html(display.feeCeilingAtomic)} sompi`,
+      `<b>Maximum total:</b> ${html(display.maximumTotalAtomic)} sompi`,
+      `<b>Source vault:</b> <code>${html(display.sourceVaultAddress)}</code>`,
+      `<b>Finality floor:</b> ${html(display.finalityFloor)}`,
+      `<b>Expires:</b> ${html(display.termsExpiresAt)}`,
+      `<b>Transfer:</b> <code>${html(display.transferId)}</code>`,
+      "",
+      "The agent proposed this transfer. Only your button press authorizes it.",
+    ].join("\n");
+    if (Buffer.byteLength(text, "utf8") > TELEGRAM_MESSAGE_LIMIT) {
+      throw new Error("Transfer facts exceed the Telegram approval display limit");
+    }
+    return text;
+  }
   const text = [
     "<b>Sompi Purchase approval</b>",
     "",
@@ -669,11 +698,14 @@ function validateTelegramAuthorityConfig(config: TelegramAuthorityConfig): void 
   ) throw new Error("Telegram Authority configuration is invalid");
 }
 
-function validateDisplay(display: AuthorityApprovalDisplay): void {
+function validateDisplay(display: AnyAuthorityApprovalDisplay): void {
+  const subjectId = display?.kind === "transfer"
+    ? display.transferId
+    : display?.purchaseId ?? "";
   if (
     !display ||
     !DIGEST_PATTERN.test(display.authorityRequestDigest) ||
-    !PURCHASE_ID_PATTERN.test(display.purchaseId) ||
+    !SUBJECT_ID_PATTERN.test(subjectId) ||
     !Number.isFinite(Date.parse(display.termsExpiresAt))
   ) throw new Error("Telegram Authority display is invalid");
 }
@@ -681,7 +713,7 @@ function validateDisplay(display: AuthorityApprovalDisplay): void {
 function validatePromptInput(input: Readonly<Record<string, unknown>>): void {
   validateDigest(String(input.tokenDigest), "Telegram callback token digest");
   validateDigest(String(input.requestDigest), "Authority request digest");
-  if (!PURCHASE_ID_PATTERN.test(String(input.purchaseId))) throw new Error("Purchase ID is invalid");
+  if (!SUBJECT_ID_PATTERN.test(String(input.subjectId))) throw new Error("Authority subject ID is invalid");
   if (!chatId(String(input.chatId)) || !userId(String(input.userId))) throw new Error("Telegram identity is invalid");
   if (!Number.isSafeInteger(input.expiresAtMs) || !Number.isSafeInteger(input.createdAtMs) || Number(input.expiresAtMs) <= Number(input.createdAtMs)) {
     throw new Error("Telegram prompt lifetime is invalid");

@@ -114,6 +114,14 @@ export class TreasuryOperationModule {
     request: Readonly<TreasuryOperationRequest>,
     signal?: AbortSignal,
   ): Promise<TreasuryOperationView> {
+    return this.executeUnderPolicy(request, undefined, signal);
+  }
+
+  async executeUnderPolicy(
+    request: Readonly<TreasuryOperationRequest>,
+    expectedPolicyDigest: string | undefined,
+    signal?: AbortSignal,
+  ): Promise<TreasuryOperationView> {
     throwIfAborted(signal);
     const normalized = normalizeRequest(request);
     const adapter = this.requireAdapter(normalized.kind);
@@ -122,6 +130,9 @@ export class TreasuryOperationModule {
       requestedAmountAtomic: normalized.amountAtomic,
     });
     const policy = this.installCurrentPolicy();
+    if (expectedPolicyDigest !== undefined && policy.digest !== expectedPolicyDigest) {
+      throw new TreasuryOperationError("Treasury policy changed after human authorization");
+    }
     const record = this.journal.claimTreasuryOperationIntent({
       ...normalized,
       requestDigest: requestDigest(normalized),
@@ -132,6 +143,13 @@ export class TreasuryOperationModule {
       policyDigest: policy.digest,
     });
     return this.drive(record.operationKey, signal);
+  }
+
+  authorizationContext(): Readonly<{ policyDigest: string; feeCeilingAtomic: string }> {
+    return Object.freeze({
+      policyDigest: this.installCurrentPolicy().digest,
+      feeCeilingAtomic: this.feeCeilingAtomic,
+    });
   }
 
   status(operationKey: string): TreasuryOperationView {

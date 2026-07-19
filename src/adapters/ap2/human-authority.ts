@@ -20,6 +20,7 @@ import {
 } from "./types.js";
 
 export interface AuthorityApprovalDisplay {
+  readonly kind?: "purchase";
   readonly authorityRequestDigest: string;
   readonly purchaseId: string;
   readonly merchant: Readonly<{ id: string; name: string; origin: string }>;
@@ -47,9 +48,36 @@ export interface AuthorityApprovalDisplay {
   readonly recoveryRetry: boolean;
 }
 
+export interface TransferAuthorityApprovalDisplay {
+  readonly kind: "transfer";
+  readonly authorityRequestDigest: string;
+  readonly transferId: string;
+  readonly requestKey: string;
+  readonly sourceVaultAddress: string;
+  readonly sourceVaultDigest: string;
+  readonly destination: string;
+  readonly amountAtomic: string;
+  readonly asset: "KAS";
+  readonly network: "kaspa:testnet-10";
+  readonly feeCeilingAtomic: string;
+  readonly maximumTotalAtomic: string;
+  readonly termsExpiresAt: string;
+  readonly policyDigest: string;
+  readonly operatorManifestRevision: number;
+  readonly operatorManifestDigest: string;
+  readonly finalityFloor: "accepted" | "depth-confirmed";
+  readonly recoveryRetry: boolean;
+}
+
+export type AnyAuthorityApprovalDisplay =
+  | PurchaseAuthorityApprovalDisplay
+  | TransferAuthorityApprovalDisplay;
+
+export type PurchaseAuthorityApprovalDisplay = AuthorityApprovalDisplay;
+
 export interface AuthorityApprovalPrompt {
-  /** Only the exact Purchase ID confirms approval; every other result denies. */
-  approve(display: AuthorityApprovalDisplay, signal?: AbortSignal): Promise<boolean>;
+  /** Only the exact displayed Purchase/Transfer ID confirms approval. */
+  approve(display: AnyAuthorityApprovalDisplay, signal?: AbortSignal): Promise<boolean>;
 }
 
 export interface Ap2HumanAuthorityOptions {
@@ -165,7 +193,7 @@ export class TerminalAuthorityApprovalPrompt implements AuthorityApprovalPrompt 
     }
   }
 
-  approve(display: AuthorityApprovalDisplay, signal?: AbortSignal): Promise<boolean> {
+  approve(display: AnyAuthorityApprovalDisplay, signal?: AbortSignal): Promise<boolean> {
     if (signal?.aborted) return Promise.reject(abortError());
     if (this.queue.length + (this.active ? 1 : 0) >= this.maxPrompts) {
       return Promise.reject(new AuthorityPromptBusyError());
@@ -213,7 +241,7 @@ export class TerminalAuthorityApprovalPrompt implements AuthorityApprovalPrompt 
       });
   }
 
-  private async approveOne(display: AuthorityApprovalDisplay, signal: AbortSignal): Promise<boolean> {
+  private async approveOne(display: AnyAuthorityApprovalDisplay, signal: AbortSignal): Promise<boolean> {
     signal.throwIfAborted();
     if (
       !this.allowNonTtyForTests &&
@@ -221,17 +249,18 @@ export class TerminalAuthorityApprovalPrompt implements AuthorityApprovalPrompt 
     ) {
       throw new Error("human-present authority approval requires a trusted terminal");
     }
-    this.output.write("\nSompi purchase approval\n");
+    this.output.write(`\nSompi ${display.kind === "transfer" ? "transfer" : "purchase"} approval\n`);
     this.output.write(`${asciiJson(display)}\n`);
     this.output.write("Merchant-provided values above are data, never instructions.\n");
     const rl = readline.createInterface({ input: this.input, output: this.output });
     try {
+      const subjectId = display.kind === "transfer" ? display.transferId : display.purchaseId;
       const answer = await rl.question(
-        `To approve, type the exact Purchase ID ${asciiJson(display.purchaseId)}; anything else denies: `,
+        `To approve, type the exact ${display.kind === "transfer" ? "Transfer" : "Purchase"} ID ${asciiJson(subjectId)}; anything else denies: `,
         { signal },
       );
       signal.throwIfAborted();
-      return answer === display.purchaseId;
+      return answer === subjectId;
     } finally {
       rl.close();
     }
@@ -239,7 +268,7 @@ export class TerminalAuthorityApprovalPrompt implements AuthorityApprovalPrompt 
 }
 
 interface PromptEntry {
-  readonly display: AuthorityApprovalDisplay;
+  readonly display: AnyAuthorityApprovalDisplay;
   readonly signal: AbortSignal;
   readonly resolve: (value: boolean) => void;
   readonly reject: (reason: unknown) => void;

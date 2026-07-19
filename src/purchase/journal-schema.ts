@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 
 export const JOURNAL_APPLICATION_ID = 0x534f4d50; // SOMP
-export const JOURNAL_SCHEMA_VERSION = 15;
+export const JOURNAL_SCHEMA_VERSION = 16;
 
 export const JOURNAL_SCHEMA_V1_SQL = `
   CREATE TABLE schema_migrations (
@@ -1058,6 +1058,99 @@ export const JOURNAL_SCHEMA_V14_MIGRATION_SQL = `
     ON batch_race_recoveries(state, updated_at_ms);
 `;
 
+/** Clean-cutover epoch for first-class native-KAS Transfers. */
+export const JOURNAL_SCHEMA_V16_MIGRATION_SQL = `
+  CREATE TABLE transfers (
+    id TEXT PRIMARY KEY,
+    request_key TEXT NOT NULL UNIQUE,
+    request_digest TEXT NOT NULL UNIQUE,
+    state TEXT NOT NULL CHECK (state IN (
+      'created', 'awaiting_authority', 'authorised', 'denied',
+      'funds_reserved', 'prepared', 'submitted', 'settled', 'receipted',
+      'failed_recoverable', 'failed_terminal'
+    )),
+    destination TEXT NOT NULL,
+    amount_atomic TEXT NOT NULL,
+    asset TEXT NOT NULL CHECK (asset = 'KAS'),
+    network TEXT NOT NULL CHECK (network = 'kaspa:testnet-10'),
+    source_vault_address TEXT NOT NULL,
+    source_vault_digest TEXT NOT NULL,
+    fee_ceiling_atomic TEXT NOT NULL,
+    maximum_total_atomic TEXT NOT NULL,
+    expires_at_ms INTEGER NOT NULL,
+    policy_digest TEXT NOT NULL REFERENCES policy_snapshots(digest) ON DELETE RESTRICT,
+    manifest_revision INTEGER NOT NULL CHECK (manifest_revision >= 1),
+    manifest_digest TEXT NOT NULL,
+    finality_floor TEXT NOT NULL CHECK (finality_floor IN ('accepted', 'depth-confirmed')),
+    treasury_operation_key TEXT UNIQUE,
+    transaction_id TEXT UNIQUE,
+    actual_fee_atomic TEXT,
+    failure_code TEXT,
+    version INTEGER NOT NULL DEFAULT 0 CHECK (version >= 0),
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL
+  ) STRICT;
+
+  CREATE TABLE transfer_transitions (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    transfer_id TEXT NOT NULL REFERENCES transfers(id) ON DELETE RESTRICT,
+    from_state TEXT,
+    to_state TEXT NOT NULL,
+    reason_code TEXT NOT NULL,
+    detail_digest TEXT,
+    created_at_ms INTEGER NOT NULL
+  ) STRICT;
+
+  CREATE TABLE transfer_authorizations (
+    transfer_id TEXT PRIMARY KEY REFERENCES transfers(id) ON DELETE RESTRICT,
+    facts_json TEXT NOT NULL,
+    facts_digest TEXT NOT NULL UNIQUE,
+    decision TEXT NOT NULL CHECK (decision IN ('approved', 'denied')),
+    authority_id TEXT NOT NULL,
+    denial_code TEXT,
+    evidence BLOB NOT NULL,
+    evidence_digest TEXT NOT NULL UNIQUE,
+    verification_profile TEXT NOT NULL,
+    verifier_id TEXT NOT NULL,
+    decided_at_ms INTEGER NOT NULL,
+    expires_at_ms INTEGER NOT NULL,
+    CHECK ((decision = 'approved' AND denial_code IS NULL) OR
+           (decision = 'denied' AND denial_code IS NOT NULL))
+  ) STRICT;
+
+  CREATE TABLE transfer_receipts (
+    transfer_id TEXT PRIMARY KEY REFERENCES transfers(id) ON DELETE RESTRICT,
+    receipt_json TEXT NOT NULL,
+    receipt_digest TEXT NOT NULL UNIQUE,
+    created_at_ms INTEGER NOT NULL
+  ) STRICT;
+
+  CREATE INDEX transfer_activity ON transfers(created_at_ms DESC, id);
+  CREATE INDEX transfer_recovery ON transfers(state, updated_at_ms);
+
+  CREATE TRIGGER immutable_transfer_identity
+    BEFORE UPDATE OF id, request_key, request_digest, destination, amount_atomic,
+                     asset, network, source_vault_address, source_vault_digest,
+                     fee_ceiling_atomic, maximum_total_atomic, expires_at_ms,
+                     policy_digest, manifest_revision, manifest_digest, finality_floor
+    ON transfers
+    BEGIN SELECT RAISE(ABORT, 'Transfer intent and authorization context are immutable'); END;
+  CREATE TRIGGER immutable_transfers_delete BEFORE DELETE ON transfers
+    BEGIN SELECT RAISE(ABORT, 'Transfers are immutable history'); END;
+  CREATE TRIGGER immutable_transfer_transitions_update BEFORE UPDATE ON transfer_transitions
+    BEGIN SELECT RAISE(ABORT, 'Transfer transitions are immutable'); END;
+  CREATE TRIGGER immutable_transfer_transitions_delete BEFORE DELETE ON transfer_transitions
+    BEGIN SELECT RAISE(ABORT, 'Transfer transitions are immutable'); END;
+  CREATE TRIGGER immutable_transfer_authorizations_update BEFORE UPDATE ON transfer_authorizations
+    BEGIN SELECT RAISE(ABORT, 'Transfer authorizations are immutable'); END;
+  CREATE TRIGGER immutable_transfer_authorizations_delete BEFORE DELETE ON transfer_authorizations
+    BEGIN SELECT RAISE(ABORT, 'Transfer authorizations are immutable'); END;
+  CREATE TRIGGER immutable_transfer_receipts_update BEFORE UPDATE ON transfer_receipts
+    BEGIN SELECT RAISE(ABORT, 'Transfer receipts are immutable'); END;
+  CREATE TRIGGER immutable_transfer_receipts_delete BEFORE DELETE ON transfer_receipts
+    BEGIN SELECT RAISE(ABORT, 'Transfer receipts are immutable'); END;
+`;
+
 export const JOURNAL_SCHEMA_V2_SQL = `${JOURNAL_SCHEMA_V1_SQL}\n${JOURNAL_SCHEMA_V2_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V3_SQL = `${JOURNAL_SCHEMA_V2_SQL}\n${JOURNAL_SCHEMA_V3_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V4_SQL = `${JOURNAL_SCHEMA_V3_SQL}\n${JOURNAL_SCHEMA_V4_MIGRATION_SQL}`;
@@ -1070,7 +1163,8 @@ export const JOURNAL_SCHEMA_V10_SQL = `${JOURNAL_SCHEMA_V9_SQL}\n${JOURNAL_SCHEM
 export const JOURNAL_SCHEMA_V11_SQL = JOURNAL_SCHEMA_V10_SQL;
 export const JOURNAL_SCHEMA_V12_SQL = JOURNAL_SCHEMA_V11_SQL;
 export const JOURNAL_SCHEMA_V13_SQL = JOURNAL_SCHEMA_V12_SQL;
-export const JOURNAL_SCHEMA_SQL = `${JOURNAL_SCHEMA_V13_SQL}\n${JOURNAL_SCHEMA_V14_MIGRATION_SQL}`;
+export const JOURNAL_SCHEMA_V15_SQL = `${JOURNAL_SCHEMA_V13_SQL}\n${JOURNAL_SCHEMA_V14_MIGRATION_SQL}`;
+export const JOURNAL_SCHEMA_SQL = `${JOURNAL_SCHEMA_V15_SQL}\n${JOURNAL_SCHEMA_V16_MIGRATION_SQL}`;
 
 export const JOURNAL_SCHEMA_V1_CHECKSUM = sha256Text(JOURNAL_SCHEMA_V1_SQL);
 export const JOURNAL_SCHEMA_V2_CHECKSUM = sha256Text(JOURNAL_SCHEMA_V2_SQL);
