@@ -15,6 +15,14 @@ import {
 const HASH32 = /^[a-f0-9]{64}$/;
 const DIGEST = /^sha256:[A-Za-z0-9_-]{43}$/;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
+const ABSENCE_PROPAGATION_INTERVAL_MS = 1_000;
+const ABSENCE_RETENTION_MS = 30_000;
+const MAX_TRACKED_ABSENCES = 1_024;
+
+interface AbsenceObservationWindow {
+  readonly firstSeenAtMs: number;
+  lastSeenAtMs: number;
+}
 
 export class ChainEvidenceError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
@@ -24,7 +32,7 @@ export class ChainEvidenceError extends Error {
 }
 
 export class ChainEvidenceModule {
-  private readonly absenceFirstSeen = new Map<string, number>();
+  private readonly absenceWindows = new Map<string, AbsenceObservationWindow>();
   constructor(
     private readonly primary: OperatorChainObserver,
     private readonly witness: IndependentChainWitness,
@@ -62,24 +70,62 @@ export class ChainEvidenceModule {
     const primary = await this.safePrimary(request, witness);
     request.signal.throwIfAborted();
     const observedAt = readTime(this.now());
+    this.pruneAbsenceWindows(observedAt);
     let record = merge(request, primary, witness, effectiveFloor, observedAt);
     if (record.status === "absent") {
       const key = `${request.operation}:${request.transactionId}:${expectedOutputsDigest}`;
-      const first = this.absenceFirstSeen.get(key);
-      if (first === undefined || observedAt - first < 1_000) {
-        if (first === undefined) this.absenceFirstSeen.set(key, observedAt);
+      const window = this.absenceWindows.get(key);
+      if (
+        window === undefined ||
+        observedAt - window.firstSeenAtMs < ABSENCE_PROPAGATION_INTERVAL_MS
+      ) {
+        if (window === undefined) {
+          this.trackAbsence(key, observedAt);
+        } else {
+          window.lastSeenAtMs = observedAt;
+        }
         record = Object.freeze({
           ...record,
           status: "unknown",
-          detailDigest: digest({ prior: record.detailDigest, result: "absence-propagation-interval-pending", firstSeenAtMs: first ?? observedAt }),
+          detailDigest: digest({
+            prior: record.detailDigest,
+            result: "absence-propagation-interval-pending",
+            firstSeenAtMs: window?.firstSeenAtMs ?? observedAt,
+          }),
         });
       } else {
-        this.absenceFirstSeen.delete(key);
+        // Retain the corroborated window briefly. Recovery deliberately checks
+        // candidate absence once while reconciling and again under the live
+        // Effect fence immediately before submission. Forgetting the first
+        // interval here makes those two safe checks oscillate forever between
+        // `absent` and `unknown`.
+        window.lastSeenAtMs = observedAt;
       }
     } else if (record.status === "present") {
-      this.absenceFirstSeen.delete(`${request.operation}:${request.transactionId}:${expectedOutputsDigest}`);
+      this.absenceWindows.delete(
+        `${request.operation}:${request.transactionId}:${expectedOutputsDigest}`
+      );
     }
     return this.store.record(record);
+  }
+
+  private trackAbsence(key: string, observedAtMs: number): void {
+    if (this.absenceWindows.size >= MAX_TRACKED_ABSENCES) {
+      const oldest = this.absenceWindows.keys().next().value as string | undefined;
+      if (oldest !== undefined) this.absenceWindows.delete(oldest);
+    }
+    this.absenceWindows.set(key, {
+      firstSeenAtMs: observedAtMs,
+      lastSeenAtMs: observedAtMs,
+    });
+  }
+
+  private pruneAbsenceWindows(observedAtMs: number): void {
+    for (const [key, window] of this.absenceWindows) {
+      if (observedAtMs - window.lastSeenAtMs > ABSENCE_RETENTION_MS) {
+        this.absenceWindows.delete(key);
+      }
+    }
   }
 
   private async safeWitness(request: Readonly<ChainEvidenceRequest>): Promise<ChainSourceEvidence> {

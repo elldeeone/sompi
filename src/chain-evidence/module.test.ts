@@ -73,6 +73,18 @@ test("corroborated absence requires a second observation after the propagation i
   assert.equal((await module.observe(request)).status, "unknown");
   now += 1;
   assert.equal((await module.observe(request)).status, "absent");
+  assert.equal(
+    (await module.observe(request)).status,
+    "absent",
+    "a fresh effect-fenced check must reuse the established propagation window"
+  );
+
+  now += 30_001;
+  assert.equal(
+    (await module.observe(request)).status,
+    "unknown",
+    "a stale absence window must be established again"
+  );
 });
 
 test("effective floor strengthens Merchant requirements and retained accepted evidence survives spent outputs", async () => {
