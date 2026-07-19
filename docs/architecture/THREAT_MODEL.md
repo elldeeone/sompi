@@ -5,7 +5,7 @@
 - wallet, vault, staging, Authority, bot, API, and recovery credentials;
 - KAS and policy capacity;
 - exact user decision and displayed facts;
-- Purchase/Movement/Channel/Journal integrity;
+- Purchase/Transfer/Movement/Channel/Journal integrity;
 - prepared transactions, vouchers, and idempotency identities;
 - settlement, chain, fulfilment, and receipt evidence;
 - paid resource content;
@@ -44,6 +44,8 @@ Trusted only within their narrow role:
 8. Secrets never enter agent-visible output, reports, package artifacts, or the
    Journal.
 9. Untrusted work is bounded before expensive parsing, chain reads, or signing.
+10. A direct Transfer moves exactly the approved amount to the approved Kaspa
+    address and is never represented as an x402 Purchase or AP2 Payment Mandate.
 
 ## Main attack classes
 
@@ -70,6 +72,10 @@ Trusted only within their narrow role:
 | REST/index amplification | Entry/byte/input caps, duplicate rejection, memoized reads, bounded scans |
 | Callback replay | Exact bot/user/chat/prompt/decision binding and one-time durable state |
 | Secret path/package leak | Owner-only no-follow reads, exact package allowlist, tarball inspection |
+| Agent fabricates a direct send | Agent proposes intent only; isolated Authority signs exact `sompi.transfer.1` facts |
+| Recipient or amount substitution | Transfer intent, approval, policy reservation, prepared outputs, observation, and receipt must match |
+| Direct-send retry double spends | One Transfer ID and Treasury operation key; observe the original transaction before any retry |
+| Wallet view leaks authority | Projection is read-only, bounded, public-fact only, and contains no mutation or recovery credentials |
 
 ## Authorization join
 
@@ -89,6 +95,12 @@ evidence, prepared payment, settlement, fulfilment, and receipt:
 No component may infer missing equality from another component's successful
 return.
 
+For a direct Transfer the corresponding join is Transfer ID and request key,
+source vault identity, recipient, amount, network, fee/total ceilings, expiry,
+policy and manifest identities, finality floor, Treasury operation key, and
+transaction ID. Direct transfers have no Merchant, Checkout, x402 profile, or
+fulfilment.
+
 ## Effect boundaries
 
 | Effect | Durable state required first | Recovery rule |
@@ -99,6 +111,7 @@ return.
 | Claim/refund | prepared transaction, expected continuation/output, absolute DAA rule, fence | observe claim/refund race before action |
 | Paid Merchant request | exact request, payment signature, payment identifier, settlement expectation | reuse only the same durable request |
 | Fulfilment | settled payment and bounded expected resource facts | recover content; never repay |
+| Direct Transfer | exact Authority evidence, policy capacity, Treasury intent, prepared bytes, expected recipient/vault continuation, fence | observe the original transaction and exact outputs; never create replacement authority |
 
 ## Availability and limits
 
@@ -116,6 +129,8 @@ ambiguous until authoritative observation proves otherwise.
 - Kaspa-x402 and SilverScript remain pre-1.0/experimental dependencies.
 - External node/witness availability can pause recovery.
 - Telegram account/device security remains part of the user's trust boundary.
+- Wallet activity is Sompi-recorded history, not a complete third-party chain
+  index.
 - The current deployment is testnet-only and operator-controlled.
 - Mainnet, autonomous authorization, passkeys, UCP, and hosted multi-user
   custody need new threat models and acceptance gates.

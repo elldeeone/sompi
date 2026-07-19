@@ -4,36 +4,26 @@ Status: accepted target and current implementation.
 
 ## Shape
 
-Sompi is a modular monolith centred on one deep `Purchase module`.
+Sompi is a modular monolith centred on deep `Purchase` and `Transfer` modules.
 
 ```text
 Agent skill / sompi-agent / MCP compatibility
                     |
                     v
           authenticated local API
-                    |
-                    v
-              Purchase module
-       +------------+-------------+
-       |            |             |
-       v            v             v
- generic x402   Trusted       policy and
- Merchant seam  Authority     Treasury
-       |            |             |
-       +------------+-------------+
-                    |
-                    v
-          Kaspa-x402 execution
+              /             \
+             v               v
+      Purchase module   Transfer module
+             \               /
+              v             v
+         Trusted Authority and Treasury
                     |
                     v
              Chain Evidence
-                    |
-                    v
-       fulfilment and one receipt
 ```
 
-API, CLI, skill, and MCP do not own purchasing behavior. They project the same
-Purchase interface.
+API, CLI, skill, and MCP do not own purchasing or transfer behavior. They
+project the same Purchase and Transfer interfaces.
 
 ## Stable domain
 
@@ -59,6 +49,18 @@ become Journal schema.
 
 Owns orchestration, idempotency, effect fencing, state transitions, recovery,
 and the public Purchase view.
+
+### Transfer module
+
+Owns canonical recipient/amount intent, idempotency, exact Authority approval,
+policy reservation, one vault-backed Treasury Movement, settlement, receipt,
+and recovery. It has no Merchant, Checkout, x402, or fulfilment semantics.
+
+### Wallet View module
+
+Projects read-only Treasury identity, observed vault balance, reserved and
+available capacity, operator hard limits, chain status, and bounded
+Sompi-recorded activity. It exposes no mutation or signing capability.
 
 ### Checkout Terms seam
 
@@ -188,10 +190,15 @@ The canonical operations are:
 - `POST /purchases`
 - `GET /purchases/{purchaseId}`
 - `POST /purchases/{purchaseId}/recover`
+- `GET /wallet`
+- `GET /wallet/activity`
+- `POST /transfers`
+- `GET /transfers/{transferId}`
+- `POST /transfers/{transferId}/recover`
 
 `sompi-agent` is the normal agent integration. The packaged skill instructs an
 agent to use only this CLI and to reuse stable request keys. MCP provides the
-same three operations as a compatibility projection over the API.
+same operations as a compatibility projection over the API.
 
 Telegram is an Authority projection, not an Agent approval capability. Callback
 data is bound to one user, chat, prompt, Purchase, decision, and expiry.

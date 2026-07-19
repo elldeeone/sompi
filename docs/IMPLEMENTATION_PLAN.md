@@ -1,6 +1,6 @@
 # Sompi AP2 + Kaspa-x402 implementation plan
 
-Status: **Phases 0-12 verified**
+Status: **Phases 0-12 verified; Phase 13 in progress**
 
 Architecture: [`docs/architecture/SOMPI_ARCHITECTURE.md`](architecture/SOMPI_ARCHITECTURE.md)
 
@@ -659,6 +659,42 @@ created the covenant head. Human-approved Purchase
 and paid the generic demo Merchant once in transaction
 `522e8ded26d9378406d85b610660be189f82c74f3152fe2a2f98f591f372e17a`.
 
+## Phase 13: Wallet visibility and direct native-KAS transfers
+
+Purpose: make Sompi usable as an agent wallet without weakening the existing
+Authority, policy, vault, Journal, or Chain Evidence model.
+
+- [ ] Accept ADR-0019 and map balance, address, activity, transfer, denial,
+  insufficient-funds, ambiguous-submission, and recovery user flows.
+- [ ] Add a protocol-neutral durable `Transfer` lifecycle and clean Journal
+  epoch with exact idempotency, authorization, reservation, effect, settlement,
+  receipt, and recovery records.
+- [ ] Add internal `sompi.transfer.1` Authority evidence and exact terminal and
+  Telegram displays for recipient, amount, network, fee, total, expiry,
+  manifest, finality, and Transfer identity.
+- [ ] Execute only through the existing vault-backed Treasury Movement and
+  Chain Evidence modules; do not use x402 or invent Merchant semantics.
+- [ ] Add one read-only Wallet View for public identities, observed balance,
+  reserved and available capacity, hard limits, chain status, and bounded
+  Sompi-recorded activity.
+- [ ] Add canonical local interface, CLI, MCP compatibility, OpenAPI, Arazzo,
+  and agent-skill support for wallet and Transfer operations.
+- [ ] Prove substitution, malformed address, fee spike, insufficient funds,
+  policy denial, replay, duplicate approval, crash, restart, ambiguous
+  broadcast, finality, and secret-isolation behavior.
+- [ ] Run a funded Testnet-10 Terah canary, cut the next release, publish it,
+  deploy it, and verify natural wallet and Transfer interactions end to end.
+
+Gate:
+
+- One Telegram approval authorizes exactly one arbitrary-recipient Transfer.
+- The destination receives exactly the approved amount and the payer cost is
+  bounded by the approved amount plus fee ceiling.
+- A crash or retry cannot sign or broadcast a replacement transfer.
+- The Agent can query useful wallet facts without gaining signing, Authority,
+  policy, operator, or recovery capabilities.
+- x402 purchases continue to pass unchanged.
+
 ## Deferred tracks (not part of the alpha.8 clean cutover)
 
 ### Autonomous AP2
@@ -666,6 +702,10 @@ and paid the generic demo Merchant once in transaction
 Begin only after human-present mode proves verification, revocation,
 escalation, policy, and recovery. Define bounded open-mandate semantics in a new
 ADR before implementation.
+
+This includes named/pre-approved recipient grants. Such grants must be
+Authority-signed, revocable, address/network exact, amount/period bounded,
+time-limited, and unable to loosen Operator Manifest ceilings.
 
 ### Passkeys
 

@@ -2,10 +2,9 @@
 
 ## Product
 
-Sompi is a local purchasing runtime for agents. It converts one paid HTTP
-request into a durable `Purchase`: verified Merchant terms, exact user
-authorization, policy reservation, KAS payment, settlement evidence,
-fulfilment, and one receipt.
+Sompi is a local KAS authority and purchasing runtime for agents. It converts
+one paid HTTP request into a durable `Purchase`, or one exact native-KAS send
+into a durable `Transfer`.
 
 The agent never receives wallet keys, Authority keys, policy credentials, bot
 tokens, or operator recovery access.
@@ -20,6 +19,8 @@ tokens, or operator recovery access.
 - Agent interface: authenticated local API and `sompi-agent`.
 - Compatibility: stateless MCP wrapper.
 - Approval projection: terminal or Telegram through the isolated Authority.
+- Direct transfer: human-present native KAS from the spending-limited vault.
+- Wallet visibility: read-only Treasury balance, identity, limits, and activity.
 
 AP2 v0.2 source and schemas are pinned for provenance monitoring. Sompi does
 not emit AP2 Merchant artifacts or claim AP2 interoperability. A generic
@@ -48,6 +49,26 @@ in the stable domain model.
 The deep module owning orchestration and recovery. API, CLI, skill, and MCP all
 call this same module.
 
+### Transfer
+
+The stable lifecycle record for one direct native-KAS send. It owns canonical
+recipient and amount intent, exact authorization, policy reservation, one
+vault-backed Treasury Movement, settlement evidence, one receipt, and durable
+recovery. It has no Merchant, Checkout, x402 requirement, or fulfilment.
+
+### Transfer module
+
+The deep module owning direct-transfer orchestration and recovery. It reuses
+the Authority, Treasury, and Chain Evidence seams without exposing them to the
+Agent.
+
+### Wallet View
+
+A read-only Treasury projection for network, receive and vault identities,
+observed balance, reserved and available capacity, hard limits, chain status,
+and bounded Sompi-recorded activity. It never exposes signing or recovery
+capabilities.
+
 ### Trusted Authority
 
 A separate deterministic, non-agentic process. It displays and signs the exact
@@ -71,6 +92,10 @@ history fails closed.
 Sompi owns the Purchase lifecycle, policy, authorization, Treasury, Journal,
 fulfilment, receipt, and recovery.
 
+Sompi also owns the Transfer lifecycle and Wallet View. Direct transfers do not
+use x402. Their internal signed evidence borrows AP2 Agent Authorization
+patterns but is not an AP2 Payment Mandate interoperability claim.
+
 The AP2 adapter owns only internal authorization/evidence encoding and upstream
 source monitoring.
 
@@ -89,6 +114,11 @@ The authenticated local API exposes:
 - `POST /purchases`
 - `GET /purchases/{purchaseId}`
 - `POST /purchases/{purchaseId}/recover`
+- `GET /wallet`
+- `GET /wallet/activity`
+- `POST /transfers`
+- `GET /transfers/{transferId}`
+- `POST /transfers/{transferId}/recover`
 
 The `sompi-agent` CLI uses that API. `sompi-mcp` exposes only `purchase`,
 `purchase_status`, and `purchase_recover`, and holds no privileged capability
