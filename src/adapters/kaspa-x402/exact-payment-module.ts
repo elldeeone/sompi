@@ -59,6 +59,7 @@ import {
   sendBoundedPaidRequest,
   type BoundedPaidHttpResponse,
 } from "./paid-http-transport.js";
+import { x402HttpRequestHash } from "./request-hash.js";
 
 const CLIENT_VERSION: SupportedProtocolProfiles["x402"]["packages"]["client"]["version"] =
   "0.1.0-alpha.8";
@@ -354,14 +355,15 @@ export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
     }
 
     const header = strictPaymentRequiredArtifact(input.paymentRequirements);
-    const requestHash = requestHashHex(input.request.requestFingerprint);
+    const selector = this.createReplayClient();
+    const selected = selector.selectPaymentRequirement(header);
+    assertExactRequirement(selected, input.execution, input.request, this.now);
+    const requestHash = x402HttpRequestHash(input.request, selected.accepted);
     const client = await this.createPreparationClient(
       Object.freeze({ ...input, staging: input.staging }),
       requestHash,
       input.additionalCostCeilingAtomic
     );
-    const selected = client.selectPaymentRequirement(header);
-    assertExactRequirement(selected, input.execution, input.request, this.now);
     assertUsableStagingAmount(
       input.staging.amountAtomic,
       selected.accepted,
@@ -706,7 +708,6 @@ export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
         "persisted transaction identity does not match the Purchase preparation"
       );
     }
-    const requestHash = requestHashHex(context.request.requestFingerprint);
     const client = this.createReplayClient();
     const selected = client.selectPaymentRequirement(
       encodePaymentRequiredHeader(requiredValidation.value)
@@ -729,6 +730,7 @@ export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
         "durable exact envelope is bound to different payment requirements"
       );
     }
+    const requestHash = x402HttpRequestHash(context.request, payloadValidation.value.accepted);
     const payment: CreatePaymentResult = {
       paymentRequired: requiredValidation.value,
       accepted: selected.accepted,
@@ -1271,7 +1273,7 @@ function assertSettlementWireFacts(
     (response.payer !== undefined && response.payer !== payload.payerAddress) ||
     !extra ||
     extra.paymentOutputIndex !== payload.paymentOutputIndex ||
-    extra.requestHash?.toLowerCase() !== requestHashHex(context.request.requestFingerprint) ||
+    extra.requestHash?.toLowerCase() !== x402HttpRequestHash(context.request, payment.accepted) ||
     extra.transactionEncoding !== EXACT_ENCODING ||
     extra.exactProfile !== (payment.accepted as ExactPaymentRequirements).extra.profile ||
     (extra.exactProfile === "additive" &&
@@ -1659,15 +1661,6 @@ function requireHash32(value: unknown, label: string): Hash32Hex {
     throw adapterError("artifact_mismatch", `${label} must be canonical lowercase 32-byte hex`);
   }
   return value;
-}
-
-function requestHashHex(value: Sha256Digest): Hash32Hex {
-  assertDigest(value, "request fingerprint");
-  const bytes = Buffer.from(value.slice("sha256:".length), "base64url");
-  if (bytes.byteLength !== 32 || bytes.toString("base64url") !== value.slice("sha256:".length)) {
-    throw adapterError("profile_mismatch", "request fingerprint encoding is not canonical");
-  }
-  return bytes.toString("hex");
 }
 
 function digestBytes(value: Uint8Array): Sha256Digest {

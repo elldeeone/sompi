@@ -27,7 +27,7 @@ const ADDITIONAL_COST = "2001000";
 const STAGING_TX = "11".repeat(32);
 const EXACT_TX = "22".repeat(32);
 const CHECKOUT_DIGEST = digest("checkout");
-const REQUEST_BODY = Buffer.from("request-body", "utf8");
+const REQUEST_BODY = Buffer.from('{"query":"request-body"}', "utf8");
 const REQUEST_FINGERPRINT = requestFingerprint({
   url: RESOURCE_URL,
   method: "POST",
@@ -472,7 +472,15 @@ function makeFixture(
     core.encodePaymentRequiredHeader(paymentRequired as any),
     "ascii"
   );
-  const requestHash = requestHashHex(REQUEST_FINGERPRINT);
+  const accepted = (paymentRequired as any).accepts[0];
+  const requestHash = core.sha256Hex(
+    core.stableStringify({
+      method: "POST",
+      url: RESOURCE_URL,
+      body: JSON.parse(REQUEST_BODY.toString("utf8")),
+      paymentRequirementsHash: core.sha256Hex(core.stableStringify(accepted)),
+    })
+  );
   const settlementResponse = {
     success: true,
     transaction: EXACT_TX,
@@ -951,8 +959,4 @@ function verifiedArtifact(value: string, profile: string, issuer: string) {
 
 function digest(value: string | Uint8Array): string {
   return `sha256:${createHash("sha256").update(value).digest("base64url")}`;
-}
-
-function requestHashHex(value: string): string {
-  return Buffer.from(value.slice("sha256:".length), "base64url").toString("hex");
 }

@@ -167,7 +167,7 @@ test("outpoint, script, key, DAA, fee, and ceiling substitutions fail closed", a
 
 test("ExactPaymentModule prepares through the concrete provider and KIP-10 builder", async () => {
   await withBridgeFixture(async (fixture) => {
-    const body = Buffer.from("request-body", "utf8");
+    const body = Buffer.from('{"query":"request-body"}', "utf8");
     const resourceUrl = "https://merchant.example/resource";
     const fingerprint = requestFingerprint({
       url: resourceUrl,
@@ -175,10 +175,6 @@ test("ExactPaymentModule prepares through the concrete provider and KIP-10 build
       mediaType: "application/json",
       body,
     });
-    const requestHash = Buffer.from(
-      fingerprint.slice("sha256:".length),
-      "base64url"
-    ).toString("hex");
     const checkoutDigest = digest("checkout");
     const authorizationEvidenceDigest = digest("authorization");
     const requestDigest = digest("authority-request");
@@ -250,6 +246,16 @@ test("ExactPaymentModule prepares through the concrete provider and KIP-10 build
       requestFingerprint: fingerprint,
     };
     const paymentRequired = paymentRequiredWire(fixture.request, resourceUrl);
+    const requestHash = core.sha256Hex(
+      core.stableStringify({
+        method: "POST",
+        url: resourceUrl,
+        body: JSON.parse(body.toString("utf8")),
+        paymentRequirementsHash: core.sha256Hex(
+          core.stableStringify((paymentRequired as any).accepts[0])
+        ),
+      })
+    );
     const paymentRequirements = Buffer.from(
       core.encodePaymentRequiredHeader(paymentRequired as any),
       "ascii"

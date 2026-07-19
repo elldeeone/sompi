@@ -51,7 +51,7 @@ const BORROW_AMOUNT = "100000000";
 const THRESHOLD = "10000000";
 const STAGING_FEE = "50000";
 const ADDITIONAL_COST = "2050000";
-const REQUEST_BODY = Buffer.from("request-body", "utf8");
+const REQUEST_BODY = Buffer.from('{"query":"transaction profile"}', "utf8");
 
 test("Settlement verifier binds alpha.8 additive safe JSON, successor output, and Treasury cost", async () => {
   const fixture = await makeFixture();
@@ -144,7 +144,11 @@ test("verifier fails closed on transaction, request, head, chain, cost, and fina
   changedReservation.paymentPayload = structuredClone(changedReservation.paymentPayload);
   (changedReservation.paymentRequired.accepts[0] as any).extra.headId = "66".repeat(32);
   (changedReservation.paymentPayload.accepted as any).extra.headId = "66".repeat(32);
-  cases.push({ name: "head", input: changedReservation, pattern: /head|artifact|retry|authorization/i });
+  cases.push({
+    name: "head",
+    input: changedReservation,
+    pattern: /head|artifact|retry|authorization|transaction profile/i,
+  });
 
   const unknownFinality = fixture.verificationInput();
   unknownFinality.response = structuredClone(unknownFinality.response);
@@ -421,7 +425,6 @@ async function makeFixture(options: FixtureOptions = {}): Promise<Fixture> {
       mediaType: "application/json",
       body,
     });
-    const requestHash = Buffer.from(fingerprint.slice("sha256:".length), "base64url").toString("hex");
     const accepted = {
       scheme: "exact" as const,
       network: "kaspa:testnet-10" as const,
@@ -450,6 +453,14 @@ async function makeFixture(options: FixtureOptions = {}): Promise<Fixture> {
         assetDecimals: 8 as const,
       },
     };
+    const requestHash = sha256Hex(
+      stableStringify({
+        method: "POST",
+        url: RESOURCE_URL,
+        body: JSON.parse(Buffer.from(body).toString("utf8")),
+        paymentRequirementsHash: sha256Hex(stableStringify(accepted)),
+      })
+    );
     const builder = new ExactTransactionBuilder({ keyStore, now: () => NOW });
     const built = await builder.build({
       purchaseId: PURCHASE_ID,

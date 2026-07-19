@@ -48,6 +48,7 @@ import {
   sendBoundedPaidRequest,
   type BoundedPaidHttpResponse,
 } from "./paid-http-transport.js";
+import { x402HttpRequestHash } from "./request-hash.js";
 
 const NETWORK = "kaspa:testnet-10" as const;
 const SOURCE = "vault-treasury" as const;
@@ -67,7 +68,7 @@ export interface PrepareBatchPaymentInput {
   readonly resourceUrl: string;
   readonly method: string;
   readonly body: Uint8Array;
-  readonly requestHash: Hash32Hex;
+  readonly mediaType?: string;
   readonly merchantOrigin: string;
   readonly merchantId: string;
   readonly amountAtomic: string;
@@ -81,6 +82,11 @@ export interface PrepareBatchPaymentInput {
   readonly authorizedChannelId: Hash32Hex;
   readonly authorizedChannelEpochDigest: Sha256Digest;
 }
+
+type BoundPrepareBatchPaymentInput = PrepareBatchPaymentInput &
+  Readonly<{
+    requestHash: Hash32Hex;
+  }>;
 
 export interface PreparedBatchPayment {
   readonly purchaseId: PurchaseId;
@@ -260,7 +266,7 @@ export class KaspaX402BatchPaymentModule implements KaspaPaymentModule {
       resourceUrl: input.request.url,
       method: input.request.method,
       body: Uint8Array.from(input.request.body),
-      requestHash: requestHashHex(input.request.requestFingerprint),
+      ...(input.request.mediaType === undefined ? {} : { mediaType: input.request.mediaType }),
       merchantOrigin: input.execution.terms.merchant.origin,
       merchantId: input.execution.terms.merchant.id,
       amountAtomic: input.execution.terms.amountAtomic,
@@ -307,12 +313,28 @@ export class KaspaX402BatchPaymentModule implements KaspaPaymentModule {
       supportedNetworks: [NETWORK],
       supportedSchemes: ["batch-settlement"],
     });
-    assertBatchRequirement(selected.accepted as BatchPaymentRequirements, selected.paymentRequired, input);
+    const boundInput: BoundPrepareBatchPaymentInput = Object.freeze({
+      ...input,
+      requestHash: x402HttpRequestHash(
+        {
+          url: input.resourceUrl,
+          method: input.method,
+          body: input.body,
+          ...(input.mediaType === undefined ? {} : { mediaType: input.mediaType }),
+        },
+        selected.accepted
+      ),
+    });
+    assertBatchRequirement(
+      selected.accepted as BatchPaymentRequirements,
+      selected.paymentRequired,
+      boundInput
+    );
     const requirementsDigest = evidenceDigest(input.paymentRequirements);
     const boundedSigner = new AuthorizedVoucherSigner(
       this.options.signer,
       this.options.authorizer,
-      input,
+      boundInput,
       requirementsDigest
     );
     const client = new DirectModeClient({
@@ -324,17 +346,17 @@ export class KaspaX402BatchPaymentModule implements KaspaPaymentModule {
       supportedSchemes: ["batch-settlement"],
       fundingPolicy: {
         requiredSource: SOURCE,
-        allowedOrigins: [input.merchantOrigin],
-        allowedPayTo: [input.payTo],
+        allowedOrigins: [boundInput.merchantOrigin],
+        allowedPayTo: [boundInput.payTo],
       },
     });
     const payment = await client.createPayment(header, {
-      url: input.resourceUrl,
-      method: input.method,
-      body: Uint8Array.from(input.body),
-      origin: input.merchantOrigin,
-      paymentIdentifier: input.paymentIdentifier,
-      requestHash: input.requestHash,
+      url: boundInput.resourceUrl,
+      method: boundInput.method,
+      body: Uint8Array.from(boundInput.body),
+      origin: boundInput.merchantOrigin,
+      paymentIdentifier: boundInput.paymentIdentifier,
+      requestHash: boundInput.requestHash,
     });
     if (payment.scheme !== "batch-settlement" || payment.openedChannel || !payment.channel || payment.paymentPayload.payload.type !== "voucher") {
       throw new Error("batch Purchase must use an already accepted channel epoch");
@@ -643,7 +665,7 @@ class AuthorizedVoucherSigner implements ChannelSigner {
   constructor(
     private readonly signer: ChannelSigner,
     private readonly authorizer: JournalBatchVoucherAuthorizer,
-    private readonly input: Readonly<PrepareBatchPaymentInput>,
+    private readonly input: Readonly<BoundPrepareBatchPaymentInput>,
     private readonly requirementsDigest: Sha256Digest
   ) {}
 
@@ -713,7 +735,6 @@ function validateInput(input: Readonly<PrepareBatchPaymentInput>): void {
   if (input.network !== NETWORK || input.asset !== "KAS") throw new Error("batch Purchase profile is unsupported");
   atomic(input.amountAtomic, "batch maximum charge", true);
   atomic(input.claimFeeReserveAtomic, "batch claim-fee reserve");
-  if (!/^[a-f0-9]{64}$/.test(input.requestHash)) throw new Error("batch request hash is invalid");
   requireHash32(input.authorizedChannelId, "authorized batch channel ID");
   requireDigest(input.authorizedChannelEpochDigest, "authorized batch channel epoch");
   if (!(input.paymentRequirements instanceof Uint8Array) || input.paymentRequirements.byteLength === 0 || input.paymentRequirements.byteLength > 32 * 1024) {
@@ -810,13 +831,6 @@ function checkedSubtract(left: bigint, right: bigint, label: string): bigint {
 }
 
 function max(left: bigint, right: bigint): bigint { return left > right ? left : right; }
-
-function requestHashHex(fingerprint: Sha256Digest): Hash32Hex {
-  if (!/^sha256:[A-Za-z0-9_-]{43}$/.test(fingerprint)) {
-    throw new Error("batch request fingerprint is invalid");
-  }
-  return Buffer.from(fingerprint.slice("sha256:".length), "base64url").toString("hex") as Hash32Hex;
-}
 
 function assertEffect(
   effect: Parameters<KaspaPaymentModule["submit"]>[0]["effect"],

@@ -34,6 +34,7 @@ import { requestFingerprint } from "../../purchase/identity.js";
 import type { Sha256Digest } from "../../purchase/types.js";
 import { KaspaTestnet10AddressCodec } from "./address-codec.js";
 import { SOMPI_EXACT_FEE_POLICY } from "./exact-transaction-builder.js";
+import { x402HttpRequestHash } from "./request-hash.js";
 import type {
   ExactSettlementVerificationInput,
   ExactSettlementVerificationResult,
@@ -607,7 +608,6 @@ function parseExactPayment(
   ) {
     throw error("artifact_mismatch", "exact request hash is not derived from the authorised HTTP request");
   }
-  const requestHash = digestToHash32(recomputedFingerprint, "exact request fingerprint");
   const checkoutExpiry = canonicalTime(context.execution.terms.expiresAt, "Checkout expiry");
   if (!options.allowExpired && checkoutExpiry <= options.nowMs) {
     throw error("artifact_mismatch", "Checkout Terms expired before Settlement verification");
@@ -642,6 +642,7 @@ function parseExactPayment(
     throw error("artifact_mismatch", "alpha.8 payment artifacts changed the exact resource or requirement");
   }
   const accepted = paymentPayload.accepted;
+  const requestHash = x402HttpRequestHash(context.request, accepted);
   const extra = accepted.extra;
   if (
     accepted.scheme !== EXACT_SCHEME ||
@@ -1431,13 +1432,6 @@ function canonicalTime(value: unknown, label: string): number {
     throw error("artifact_mismatch", `${label} is not canonical`);
   }
   return parsed;
-}
-
-function digestToHash32(value: string, label: string): Hash32Hex {
-  requireDigest(value, label);
-  const bytes = Buffer.from(value.slice("sha256:".length), "base64url");
-  if (bytes.byteLength !== 32) throw error("artifact_mismatch", `${label} is not 32 bytes`);
-  return bytes.toString("hex");
 }
 
 function digestBytes(value: Uint8Array): Sha256Digest {

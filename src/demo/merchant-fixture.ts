@@ -41,6 +41,7 @@ import {
 } from "../purchase/identity.js";
 import type { PurchaseId, Sha256Digest } from "../purchase/types.js";
 import { SUPPORTED_PROTOCOL_PROFILES } from "../protocols/profiles.js";
+import { x402HttpRequestHash } from "../adapters/kaspa-x402/request-hash.js";
 export const DEMO_NETWORK = "kaspa:testnet-10" as const;
 const KAS_ASSET = "KAS" as const;
 
@@ -242,9 +243,8 @@ export class DemoMerchantFixture {
 
   async offer(purchaseIdValue: PurchaseId): Promise<DemoMerchantOffer> {
     const purchaseId = exactPurchaseId(purchaseIdValue, "invalid_checkout");
-    const requestHash = requestHashHex(this.resourceFingerprint);
     const paymentRequired = await this.server.handlePaidRequest(
-      this.serverRequest({}, requestHash),
+      this.serverRequest({}),
       () => {
         throw new DemoMerchantError("payment_mismatch");
       }
@@ -340,7 +340,14 @@ export class DemoMerchantFixture {
       PAYMENT_SIGNATURE_HEADER,
       "payment_mismatch"
     );
-    const requestHash = requestHashHex(this.resourceFingerprint);
+    const requestHash = x402HttpRequestHash(
+      {
+        url: this.config.resource.url,
+        method: this.config.resource.method,
+        body: new Uint8Array(),
+      },
+      paymentRequired.accepts[0]
+    );
     const paymentPayload = assertPaymentSignatureJoins(
       request?.headers,
       paymentRequired.accepts[0],
@@ -348,7 +355,7 @@ export class DemoMerchantFixture {
       paymentIdentifier
     );
     const response = await this.server.handlePaidRequest(
-        this.serverRequest(request.headers, requestHash),
+        this.serverRequest(request.headers),
         async ({ payment, requestFingerprint: paidFingerprint, paymentIdentifier: paidId }) => {
           if (
             payment.scheme !== this.config.paymentScheme ||
@@ -499,7 +506,7 @@ export class DemoMerchantFixture {
     });
   }
 
-  private serverRequest(headers: Record<string, string>, requestHash: Hash32Hex) {
+  private serverRequest(headers: Record<string, string>) {
     return {
       method: this.config.resource.method,
       url: this.config.resource.url,
@@ -512,7 +519,6 @@ export class DemoMerchantFixture {
       paymentAmount: this.config.amountAtomic,
       paymentScheme: this.config.paymentScheme,
       paymentSchemes: [this.config.paymentScheme],
-      requestHash,
     };
   }
 }
@@ -534,7 +540,7 @@ function assertPaymentRequired(
     accepted.payTo !== config.payTo ||
     required.resource.url !== config.resource.url ||
     (required.resource.mimeType !== undefined && required.resource.mimeType !== config.resource.mediaType) ||
-    requestHashHex(fingerprint).length !== 64
+    !/^sha256:[A-Za-z0-9_-]{43}$/.test(fingerprint)
   ) {
     throw new DemoMerchantError("invalid_checkout");
   }
@@ -775,17 +781,6 @@ function optionalHeader(
     throw new DemoMerchantError(code);
   }
   return value;
-}
-
-function requestHashHex(value: Sha256Digest): Hash32Hex {
-  if (!/^sha256:[A-Za-z0-9_-]{43}$/.test(value)) {
-    throw new DemoMerchantError("invalid_configuration");
-  }
-  const bytes = Buffer.from(value.slice("sha256:".length), "base64url");
-  if (bytes.byteLength !== 32 || bytes.toString("base64url") !== value.slice("sha256:".length)) {
-    throw new DemoMerchantError("invalid_configuration");
-  }
-  return bytes.toString("hex");
 }
 
 function validateConfiguration(config: DemoMerchantFixtureConfig): void {
