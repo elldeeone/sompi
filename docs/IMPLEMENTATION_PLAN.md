@@ -679,7 +679,7 @@ Authority, policy, vault, Journal, or Chain Evidence model.
   Sompi-recorded activity.
 - [x] Add canonical local interface, CLI, MCP compatibility, OpenAPI, Arazzo,
   and agent-skill support for wallet and Transfer operations.
-- [ ] Prove substitution, malformed address, fee spike, insufficient funds,
+- [x] Prove substitution, malformed address, fee spike, insufficient funds,
   policy denial, replay, duplicate approval, crash, restart, ambiguous
   broadcast, finality, and secret-isolation behavior.
 - [ ] Run a funded Testnet-10 Terah canary, cut the next release, publish it,

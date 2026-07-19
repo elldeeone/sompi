@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const historicalEvidence = path.join(root, "evidence", "live-testnet10");
 const currentEvidence = path.join(root, "evidence", "generic-x402-cutover");
+const walletTransferEvidence = path.join(root, "evidence", "wallet-transfer");
 const historicalExpected = Object.freeze({
   "standard-native.json": Object.freeze({
     digest: "b17898cc726f46e8ee35bbad07c800e19117536350996f7600b0006bb688e1a8",
@@ -160,7 +161,50 @@ if (
   terahRecovery.receiptRecorded !== true
 ) throw new Error("generic x402 cutover evidence invariants changed");
 
-process.stdout.write("Generic x402 cutover and historical TN10 evidence passed.\n");
+const walletTransfer = JSON.parse(
+  fs.readFileSync(path.join(walletTransferEvidence, "terah-wallet-transfer.json"), "utf8")
+);
+const walletTransferEncoded = JSON.stringify(walletTransfer);
+if (
+  createHash("sha256").update(walletTransferEncoded).digest("hex") !==
+    "edf97e8d0a880a40e4411df71a89b438c5eb233341a2f3880e9fd2c44534f7d1" ||
+  walletTransfer.profile !== "urn:sompi:evidence:terah-wallet-transfer:1" ||
+  walletTransfer.network !== "kaspa:testnet-10" ||
+  walletTransfer.packageVersion !== "0.9.0" ||
+  walletTransfer.journalEpoch !== 16 ||
+  walletTransfer.cleanCutover?.oldRuntimeReused !== false ||
+  walletTransfer.runtime?.authorityMode !== "separate-process-human-present-telegram" ||
+  walletTransfer.runtime?.privateMaterialIncluded !== false ||
+  walletTransfer.wallet?.chainStatus !== "observed" ||
+  walletTransfer.wallet?.unboundAtomic !== "0" ||
+  walletTransfer.wallet?.reservedAtomic !== "0" ||
+  walletTransfer.wallet?.availableAtomic !== walletTransfer.wallet?.observedAtomic ||
+  walletTransfer.directTransfer?.state !== "receipted" ||
+  walletTransfer.directTransfer?.amountAtomic !== walletTransfer.directTransfer?.destinationOutputAtomic ||
+  walletTransfer.directTransfer?.paymentTransactionCount !== 1 ||
+  walletTransfer.directTransfer?.receiptRecorded !== true ||
+  walletTransfer.agentTransfer?.ingress !== "hermes-skill-natural-language" ||
+  walletTransfer.agentTransfer?.state !== "receipted" ||
+  walletTransfer.agentTransfer?.amountAtomic !== walletTransfer.agentTransfer?.destinationOutputAtomic ||
+  walletTransfer.agentTransfer?.paymentTransactionCount !== 1 ||
+  walletTransfer.agentTransfer?.receiptRecorded !== true ||
+  walletTransfer.x402Regression?.binding !== "kaspa-exact-v2" ||
+  walletTransfer.x402Regression?.exactProfile !== "standard-native" ||
+  walletTransfer.x402Regression?.state !== "receipted" ||
+  walletTransfer.x402Regression?.amountAtomic !== walletTransfer.x402Regression?.merchantOutputAtomic ||
+  walletTransfer.x402Regression?.paymentTransactionCount !== 1 ||
+  walletTransfer.x402Regression?.receiptRecorded !== true ||
+  walletTransfer.failClosedProbe?.state !== "failed_terminal" ||
+  walletTransfer.failClosedProbe?.transactionBroadcast !== false ||
+  walletTransfer.node?.networkId !== "testnet-10" ||
+  walletTransfer.node?.isSynced !== true ||
+  walletTransfer.node?.hasUtxoIndex !== true ||
+  /(?:privateKey|wallet-key|owner\.key|ipc-mac\.key|sourceWalletDirectory|nodeUrl|telegramBotToken|apiCredential)/i.test(
+    walletTransferEncoded
+  )
+) throw new Error("wallet and Transfer live evidence invariants changed");
+
+process.stdout.write("Generic x402, wallet/Transfer, and historical TN10 evidence passed.\n");
 
 function readHistorical(filename) {
   return JSON.parse(fs.readFileSync(path.join(historicalEvidence, filename), "utf8"));

@@ -83,7 +83,7 @@ sompi-agent transfer --request-key TASK_KEY --to KASPATEST_ADDRESS --amount-kas 
 
 Sompi sends a separate exact approval prompt to the trusted human surface. Wait for the command. Do not treat the user's original chat instruction, an MCP call, or a shell-command approval as the cryptographic approval. Report success only when the returned Transfer is `receipted`, including its amount, recipient, fee, and transaction ID.
 
-If `userAction` says `recover`, use `sompi-agent transfer-recover TRANSFER_ID`. Reuse the same Transfer and request key; never create a replacement send.
+If the Transfer is `funds_reserved`, `prepared`, `submitted`, or `settled`, keep the same Transfer ID and use `sompi-agent transfer-recover TRANSFER_ID` to observe and finish it. If `userAction` says `recover`, do the same. Bound the polling time, report an unresolved status honestly, and never create a replacement send.
 
 ## Procedure
 

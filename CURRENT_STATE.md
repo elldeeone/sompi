@@ -5,8 +5,9 @@ Last updated: **2026-07-19**
 ## Status
 
 The generic x402 Merchant cutover and near-automatic Hermes onboarding are
-complete on `main`. Wallet visibility and direct native-KAS Transfers are in
-verified local integration on `feat/wallet-direct-transfers`.
+complete on `main`. Wallet visibility and direct native-KAS Transfers are
+implemented, locally verified, and live-canary proven on
+`feat/wallet-direct-transfers`.
 
 Sompi is an API-first local agent wallet and purchasing runtime:
 
@@ -32,11 +33,11 @@ clean cutover with no epoch-15 reader.
   per-transfer, rolling-hour, or fee ceilings.
 - API, CLI, MCP compatibility, OpenAPI, Arazzo, and the Hermes skill use the
   same Transfer and Wallet View interfaces.
-- The complete local suite passes 472 tests (471 pass, one privileged-only
+- The complete local suite passes 473 tests (472 pass, one privileged-only
   ownership test skipped) plus the offline smoke.
 
-Release versioning, funded TN10 evidence, publication, and Terah deployment
-remain outstanding for this branch.
+Version `0.9.0` is cut and deployed on Terah from the locally verified package.
+Registry publication and the final published-package readback remain.
 
 ## Protocols
 
@@ -98,46 +99,61 @@ The first paid HTTP result was ambiguous. Sompi proved the same transaction won
 the staging race, replayed the same signed payment after Checkout expiry, and
 recorded fulfilment and a receipt without another payment.
 
+[`evidence/wallet-transfer/`](evidence/wallet-transfer/README.md) records the
+fresh `0.9.0` wallet cutover:
+
+- the prior vault was owner-recovered and epoch-15 state was archived rather
+  than reused;
+- a clean epoch-16 runtime activated a `277,229,550`-sompi vault;
+- direct Transfer `trf_ZyrErQxp0ppYJVB383yy3Q` paid exactly `20,000,000`
+  sompi in transaction
+  `2367381deb425d4ec5c0b2599ea8bae952ea5a3ca2584d3fef275780680dae22`;
+- Hermes converted a natural-language send into Transfer
+  `trf_L4ExGmvaEcPhzfgajOnRLQ`, paid exactly `20,000,000` sompi in transaction
+  `5b6bf2c4652646998c5f8d6224f3e04bb40f8e46f977070122f8c9c7dff3332b`,
+  and recorded its receipt; and
+- x402 regression Purchase `pur_OzXALTLYImDL-KH5wtsetw` paid the demo Merchant
+  once in transaction
+  `633fbf7e7540d6de9bf422c0abf43a9f476d13d622b656f7c482070bfd60e4eb`
+  and returned the report.
+
 ## Terah
 
 Terah remains the private operator-controlled Hermes deployment.
 
 - Hermes is active.
-- Sompi was removed to a plain-Hermes baseline, then installed from the packed
-  `0.8.2` release candidate through the public bootstrap workflow.
+- Sompi `0.8.2` was quiesced, backed up, and owner-recovered. The old runtime
+  was removed to a plain-Hermes baseline, then `0.9.0` was installed from the
+  verified release candidate through the public bootstrap workflow.
 - The installed Sompi skill, callback plugin, isolated compatibility overlay,
   systemd units, and package match this repository.
 - Authority, API, Hermes gateway, and all local sockets are healthy.
-- Bootstrap created a normal TN10 funding wallet without exposing its key. The
-  trusted activation command deposited `73,569,300` sompi into the new
-  SilverScript vault in transaction
-  `e8dc10f8aeaa267a75f2a106bf2ce3a64db6a21441a5f5faf74376402a170f69`.
-- Human approval in Telegram completed Purchase
-  `pur_bR9Get_H0IHPmLoEfGItpQ` against `demo.kaspa-x402.org`.
-- Vault staging transaction
-  `ff0f448336879f2ce2dfb03e689ab125577c661508abff8f9c3c71a7e815e788`
-  advanced the covenant exactly once. Standard-native payment transaction
-  `522e8ded26d9378406d85b610660be189f82c74f3152fe2a2f98f591f372e17a`
-  paid `20,000,000` sompi and the Purchase is `receipted`.
-- The live continuation UTXO matches the journaled vault outpoint. Recovery
-  reconciled the accepted staging effect before settlement and did not submit
-  a duplicate transaction.
+- Bootstrap request `sha256:RhCKbVuaN0l8AsQs-izM4rbj_wwstSYybmxBPWvz_RY`
+  created fresh keys and Journal epoch 16. Activation transaction
+  `a8b2082a59b147dc223a26c112468e63d5f793727665b26bc2ffdb4796ae78ae`
+  deposited `277,229,550` sompi into the new SilverScript vault.
+- Natural wallet questions return the observed balance, current address,
+  limits, and chain status through the Sompi API.
+- Human-approved direct Transfers and the standard-native x402 regression are
+  receipted. The current vault outpoint is
+  `5b6bf2c4652646998c5f8d6224f3e04bb40f8e46f977070122f8c9c7dff3332b:1`
+  with `192,878,980` sompi and no reservation.
+- Authority, API, Hermes gateway, and all local sockets remain healthy.
 
-The earlier Phase 11 evidence remains historical. The evidence above is a new
-clean-install, human-present onboarding canary.
+The earlier Phase 11 and `0.8.2` evidence remains historical.
 
 ## Verification
 
-At the last published release state:
+At the `0.9.0` release-candidate state:
 
-- 461 unit tests run: 460 pass and one root-only ownership test is skipped;
+- 473 unit tests run: 472 pass and one root-only ownership test is skipped;
 - the three Hermes plugin tests pass;
 - local generic-Merchant E2E and crash recovery pass;
 - x402 package/source/vector conformance passes;
 - current and historical funded evidence locks pass;
 - OpenAPI and Arazzo checks pass;
 - production dependency audit reports zero vulnerabilities;
-- the 199-file package policy, clean install, licence audit, and consumer smoke
+- the 205-file package policy, clean install, licence audit, and consumer smoke
   pass.
 
 The complete release verifier passes, including its final clean-tree assertion.
@@ -148,8 +164,8 @@ The existing audit record remains under [`security/audits/`](security/audits/).
 ## Release
 
 The last published release is `@elldeeone/sompi@0.8.2`, tagged `v0.8.2`.
-Version `0.9.0` is the local Wallet/Transfer release candidate. It is not yet
-published or deployed; Terah still runs the verified `0.8.2` build.
+Version `0.9.0` is the Wallet/Transfer release candidate and is live-canary
+proven on Terah. It is not yet published or tagged.
 
 Mainnet, autonomous authorization, passkeys, UCP, and official AP2/x402
 interoperability remain out of scope. See
