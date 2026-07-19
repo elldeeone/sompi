@@ -97,16 +97,29 @@ if (
 ) throw new Error("human-present standard-native live evidence invariants changed");
 
 const currentExpected = Object.freeze({
-  "standard-native.json": "219511a816da502555b52d02189c243ef48329637ac29178a308a364a0afa377",
-  "additive.json": "54409a9bb062ddbc234bf6efe38a3afbbb883f47c8c88bb97a070f4c9f33b3e3",
-  "batch.json": "238a21c0543278835145a782637a56834d4b1d82ff6097d4da2703244943ad68",
+  "standard-native.json": Object.freeze({
+    digest: "219511a816da502555b52d02189c243ef48329637ac29178a308a364a0afa377",
+    profile: "urn:sompi:evidence:generic-x402-cutover:1",
+  }),
+  "additive.json": Object.freeze({
+    digest: "54409a9bb062ddbc234bf6efe38a3afbbb883f47c8c88bb97a070f4c9f33b3e3",
+    profile: "urn:sompi:evidence:generic-x402-cutover:1",
+  }),
+  "batch.json": Object.freeze({
+    digest: "238a21c0543278835145a782637a56834d4b1d82ff6097d4da2703244943ad68",
+    profile: "urn:sompi:evidence:generic-x402-cutover:1",
+  }),
+  "terah-standard-native-recovery.json": Object.freeze({
+    digest: "fdecaed6effa12495f2e8ec5efba1ae7423b959a56b7d4cac70b294e7991ec5b",
+    profile: "urn:sompi:evidence:terah-alpha8-canary:1",
+  }),
 });
-for (const [filename, expectedDigest] of Object.entries(currentExpected)) {
+for (const [filename, contract] of Object.entries(currentExpected)) {
   const report = readCurrent(filename);
   const encoded = JSON.stringify(report);
   if (
-    createHash("sha256").update(encoded).digest("hex") !== expectedDigest ||
-    report.profile !== "urn:sompi:evidence:generic-x402-cutover:1" ||
+    createHash("sha256").update(encoded).digest("hex") !== contract.digest ||
+    report.profile !== contract.profile ||
     report.network !== "kaspa:testnet-10" ||
     report.merchantProfile !== "generic-x402" ||
     report.privateMaterialIncluded !== false ||
@@ -116,6 +129,7 @@ for (const [filename, expectedDigest] of Object.entries(currentExpected)) {
 const currentStandard = readCurrent("standard-native.json");
 const currentAdditive = readCurrent("additive.json");
 const currentBatch = readCurrent("batch.json");
+const terahRecovery = readCurrent("terah-standard-native-recovery.json");
 if (
   currentStandard.exactProfile !== "standard-native" ||
   currentStandard.purchaseIngress !== "http-api" ||
@@ -130,7 +144,20 @@ if (
   currentBatch.paymentScheme !== "batch-settlement" ||
   currentBatch.authorizedCharges !== 2 ||
   currentBatch.strictBoundarySatisfied !== true ||
-  BigInt(currentBatch.observedAfterBoundaryDaa ?? 0) <= BigInt(currentBatch.refundTimeoutDaa ?? 0)
+  BigInt(currentBatch.observedAfterBoundaryDaa ?? 0) <= BigInt(currentBatch.refundTimeoutDaa ?? 0) ||
+  terahRecovery.profile !== "urn:sompi:evidence:terah-alpha8-canary:1" ||
+  terahRecovery.exactProfile !== "standard-native" ||
+  terahRecovery.purchaseIngress !== "hermes-telegram-skill" ||
+  terahRecovery.authorityMode !== "separate-process-human-present-telegram" ||
+  terahRecovery.purchaseState !== "receipted" ||
+  terahRecovery.initialSubmissionOutcome !== "ambiguous" ||
+  terahRecovery.recoveryOutcome !== "exact-payment-won" ||
+  terahRecovery.checkoutExpiredBeforeRecovery !== true ||
+  terahRecovery.sameSignedPaymentReplayed !== true ||
+  terahRecovery.paymentTransactionCount !== 1 ||
+  terahRecovery.stagingRecoveryBroadcast !== false ||
+  terahRecovery.fulfilmentRecovered !== true ||
+  terahRecovery.receiptRecorded !== true
 ) throw new Error("generic x402 cutover evidence invariants changed");
 
 process.stdout.write("Generic x402 cutover and historical TN10 evidence passed.\n");

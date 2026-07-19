@@ -534,8 +534,8 @@ authorization, policy, or keys into the agent process.
   service restart, ambiguous settlement, status, and recovery.
 - [x] Preserve public evidence without secrets, update current documentation,
   and pass the complete release verifier from packed artifacts.
-- [x] Prepare publish and deployment handoff. Publishing remains blocked until
-  npm authentication is explicitly restored.
+- [x] Deploy the verified `0.8.1` package to Terah without replacing Journal
+  epoch 15, then publish the same release after npm authentication is restored.
 
 Gate:
 
@@ -548,6 +548,13 @@ Gate:
 - Exact and batch paid canaries reconcile after restart without duplicate
   payment or fulfilment.
 - The live Hermes gateway has a tested rollback and no unpreserved local state.
+
+Fresh closure evidence (2026-07-19): human approval in the Terah Telegram flow
+created Purchase `pur_O7vKtVeIrWEJHErXjAPXdQ`. Standard-native transaction
+`e90e3dc0579340dcdbe9c79aec356852dda2f375ff8d358b1cda543027cffd25`
+was accepted once. Recovery proved the exact-payment winner at confirmed
+finality and replayed the same signed payment after Checkout expiry, producing
+the paid report and canonical receipt without another transaction.
 
 ## Phase 12: Generic x402 Merchant and AP2 readiness cutover
 

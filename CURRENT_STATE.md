@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: **2026-07-18**
+Last updated: **2026-07-19**
 
 ## Status
 
@@ -69,16 +69,24 @@ not a universal fee claim.
 The public `demo.kaspa-x402.org` gateway was checked read-only and advertised
 x402 v2 standard-native exact and batch settlement on a healthy TN10 chain.
 
+A fresh human-approved Terah canary paid the public demo Merchant with
+standard-native transaction
+`e90e3dc0579340dcdbe9c79aec356852dda2f375ff8d358b1cda543027cffd25`.
+The first paid HTTP result was ambiguous. Sompi proved the same transaction won
+the staging race, replayed the same signed payment after Checkout expiry, and
+recorded fulfilment and a receipt without another payment.
+
 ## Terah
 
 Terah remains the private operator-controlled Hermes deployment.
 
 - Hermes is active.
 - The installed Sompi skill and callback plugin match this repository.
-- The current tarball installs and passes offline smoke on Terah's Node 24
-  runtime without changing live services.
-- The live services still run the earlier `0.8.0-69c8a64` build. This cutover
-  has not been deployed there.
+- The live services run the immutable `0.8.1-62f6ee2` build with Journal epoch
+  15 preserved.
+- Authority, API, Hermes gateway, and all local sockets are healthy.
+- The Telegram purchase flow completed against `demo.kaspa-x402.org` and the
+  recovered Purchase is `receipted`.
 
 The earlier Phase 11 Telegram human-present and funded service evidence remains
 valid for the unchanged Authority boundary. Fresh cutover exact proofs use the
@@ -88,7 +96,7 @@ isolated auto-approval fixture and do not claim a new human-present ceremony.
 
 At this state:
 
-- 445 unit tests run: 444 pass and one root-only ownership test is skipped;
+- 454 unit tests run: 453 pass and one root-only ownership test is skipped;
 - the three Hermes plugin tests pass;
 - local generic-Merchant E2E and crash recovery pass;
 - x402 package/source/vector conformance passes;
@@ -101,10 +109,10 @@ At this state:
 The project owner previously closed further formal security-scan iteration.
 The existing audit record remains under [`security/audits/`](security/audits/).
 
-## Remaining external actions
+## Release
 
-No push, npm publish, or Terah deployment was performed as part of this cutover.
-Those are operator release actions.
+The release version is `@elldeeone/sompi@0.8.1`. Main and the npm package are
+the release surfaces; Terah runs the same verified package build.
 
 Mainnet, autonomous authorization, passkeys, UCP, and official AP2/x402
 interoperability remain out of scope. See

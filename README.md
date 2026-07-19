@@ -23,6 +23,12 @@ send AP2 artifacts to ordinary x402 Merchants.
 
 ## Agent flow
 
+Install the CLI on the agent host:
+
+```sh
+npm install -g @elldeeone/sompi@0.8.1
+```
+
 Install the packaged skill for the agent, then the agent uses:
 
 ```sh
@@ -127,9 +133,9 @@ Fresh generic-Merchant TN10 evidence is in
 
 ## Boundaries
 
-Sompi is still a testnet alpha. It is not published to npm, is not a hosted
-wallet service, does not enable mainnet, and does not support autonomous/open
-authorization, passkeys, UCP, or general AP2/x402 interoperability.
+Sompi is still a testnet alpha. It is not a hosted wallet service, does not
+enable mainnet, and does not support autonomous/open authorization, passkeys,
+UCP, or general AP2/x402 interoperability.
 
 Operator provisioning starts with
 [`docs/runbooks/OPERATOR_PROVISIONING.md`](docs/runbooks/OPERATOR_PROVISIONING.md).
