@@ -21,10 +21,6 @@ reach the chain or a merchant.
 - Local authenticated API and CLI.
 - Optional MCP compatibility wrapper.
 
-The automatic funding-intake and unified wallet view described below are
-implemented but not yet included in the published `0.9.1` package or Terah
-deployment.
-
 Sompi uses AP2-derived internal authorization evidence. It does not claim AP2
 interoperability or send AP2 artifacts to ordinary x402 merchants.
 
@@ -33,7 +29,7 @@ interoperability or send AP2 artifacts to ordinary x402 merchants.
 Tell Hermes:
 
 > Install the Sompi skill from
-> https://raw.githubusercontent.com/elldeeone/sompi/v0.9.1/integrations/hermes/sompi/SKILL.md
+> https://raw.githubusercontent.com/elldeeone/sompi/v0.10.0/integrations/hermes/sompi/SKILL.md
 > and set up Sompi for this host.
 
 Hermes gathers non-secret setup facts and gives you one command to run locally.

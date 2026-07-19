@@ -1,5 +1,5 @@
 name: sompi-approval
-version: 0.9.1
+version: 0.10.0
 description: "Forwards authorized Telegram callback controls to the local Sompi Authority. It has no wallet, signing key, or authority credential."
 author: "Sompi contributors"
 hooks:
