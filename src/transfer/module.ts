@@ -171,7 +171,24 @@ export class TransferModule {
       }, signal);
       this.options.journal.syncTransferTreasuryOperation(id, operation);
     } catch (error) {
-      const latest = this.options.treasury.status(transfer.treasuryOperationKey);
+      let latest: TreasuryOperationView;
+      try {
+        latest = this.options.treasury.status(transfer.treasuryOperationKey);
+      } catch {
+        const current = this.requireTransfer(id);
+        if (current.state === "funds_reserved") {
+          this.options.journal.transitionTransfer(
+            id,
+            "failed_terminal",
+            "treasury_intent_rejected"
+          );
+        }
+        throw new TransferModuleError(
+          "TRANSFER_FAILED",
+          "Transfer was rejected before Treasury execution",
+          { cause: error },
+        );
+      }
       this.options.journal.syncTransferTreasuryOperation(id, latest);
       if (latest.state !== "failed_terminal") this.markRecoverable(id, "treasury_recovery_required");
       throw new TransferModuleError("TRANSFER_FAILED", "Transfer requires recovery", { cause: error });

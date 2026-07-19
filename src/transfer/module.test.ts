@@ -101,6 +101,42 @@ test("denial is durable and cannot reach Treasury", async (t) => {
   assert.equal(fixture.treasury.calls, 0);
 });
 
+test("invalid recipients and pre-effect Treasury rejection fail without a retry capability", async (t) => {
+  const fixture = setup(t);
+  await assert.rejects(
+    fixture.module.transfer({
+      requestKey: "telegram:send:mainnet",
+      destination: ADDRESS.replace("kaspatest:", "kaspa:"),
+      amountAtomic: "5000",
+    }),
+    (error: unknown) => error instanceof TransferModuleError && error.code === "INVALID_TRANSFER",
+  );
+  assert.equal(fixture.authority.calls, 0);
+
+  const rejectingTreasury = new FakeTreasury(fixture.policyDigest, false);
+  rejectingTreasury.rejectBeforeIntent = true;
+  const module = new TransferModule({
+    journal: fixture.journal,
+    authority: fixture.authority,
+    treasury: rejectingTreasury,
+    source: () => ({ vaultAddress: ADDRESS, vaultDigest: digest("vault") }),
+    manifest: () => MANIFEST,
+    finalityFloor: "depth-confirmed",
+  });
+  await assert.rejects(
+    module.transfer({
+      requestKey: "telegram:send:policy-rejected",
+      destination: ADDRESS,
+      amountAtomic: "5000",
+    }),
+    /rejected before Treasury execution/,
+  );
+  const record = fixture.journal.findTransferByRequestKey("telegram:send:policy-rejected");
+  assert.equal(record?.state, "failed_terminal");
+  assert.equal(rejectingTreasury.calls, 1);
+  assert.equal(fixture.authority.calls, 1);
+});
+
 test("request keys, Authority facts, policy snapshots, and restart recovery stay exact", async (t) => {
   const fixture = setup(t, "approved", true);
   await assert.rejects(
@@ -192,6 +228,7 @@ class FakeAuthority implements TransferAuthorityModule {
 
 class FakeTreasury {
   calls = 0;
+  rejectBeforeIntent = false;
   lastAuthorization?: Readonly<{
     expectedPolicyDigest?: string;
     authorizationEvidenceDigest?: string;
@@ -208,6 +245,7 @@ class FakeTreasury {
   ) {
     this.calls += 1;
     this.lastAuthorization = authorization;
+    if (this.rejectBeforeIntent) throw new Error("policy rejected before intent");
     if (this.failFirst && !this.failed) {
       this.failed = true;
       throw new Error("ambiguous RPC");
@@ -215,6 +253,7 @@ class FakeTreasury {
     return operation(request, "completed");
   }
   status(operationKey: string) {
+    if (this.rejectBeforeIntent) throw new Error("Treasury operation does not exist");
     return operation({ operationKey, destination: ADDRESS, amountAtomic: "5000" }, this.failed ? "submitted" : "completed");
   }
   async recover(operationKey: string) {
