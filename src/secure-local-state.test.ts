@@ -158,11 +158,12 @@ test("atomic local-state replacement remains parseable across an abrupt process 
     );
     await waitForReady(child);
     await new Promise((resolve) => setTimeout(resolve, 20));
-    child.kill("SIGKILL");
-    await new Promise<void>((resolve, reject) => {
+    const exited = new Promise<void>((resolve, reject) => {
       child.once("exit", () => resolve());
       child.once("error", reject);
     });
+    child.kill("SIGKILL");
+    await exited;
 
     const restarted = new SecureLocalStateDirectory(directory, "crash state");
     const bytes = restarted.readFile("config.json", 8192);
