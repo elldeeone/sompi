@@ -76,14 +76,15 @@ import {
   type DemoMerchantPaidResult,
 } from "../demo/merchant-fixture.js";
 import { SompiCheckoutTermsModule } from "../purchase/checkout-terms-module.js";
-import { PurchaseApiClient } from "../api/client.js";
+import { SompiApiClient } from "../api/client.js";
 import {
   createPurchaseApplication,
   type PurchaseApplication,
   type PurchaseCreateRequest,
+  type SompiApplication,
 } from "../api/contracts.js";
 import { generateAgentApiCredential } from "../api/credential.js";
-import { startPurchaseApiServer } from "../api/server.js";
+import { startSompiApiServer } from "../api/server.js";
 import type {
   PinnedHttpTransport,
   PinnedHttpTransportRequest,
@@ -1264,16 +1265,16 @@ export async function createLivePurchaseIngress(
   };
   fs.chownSync(apiDirectory, access.expectedServerUserId, access.runtimeGroupId);
   fs.chmodSync(apiDirectory, 0o710);
-  const api = await startPurchaseApiServer({
-    application: createPurchaseApplication(coordinator),
+  const api = await startSompiApiServer({
+    application: purchaseProofApplication(createPurchaseApplication(coordinator)),
     credential,
     socketPath,
     ...access,
     deadlineMs: PROOF_TIMEOUT_MS,
-    maxPurchaseConcurrency: 4,
+    maxMutationConcurrency: 4,
     onRequestError,
   });
-  const apiClient = new PurchaseApiClient({
+  const apiClient = new SompiApiClient({
     socketPath,
     ...access,
     credential,
@@ -1315,6 +1316,18 @@ export async function createLivePurchaseIngress(
       await server.close();
       await closeApi();
     },
+  });
+}
+
+function purchaseProofApplication(application: PurchaseApplication): SompiApplication {
+  const unavailable = async (): Promise<never> => { throw new Error("wallet and Transfer surfaces are outside this Purchase proof"); };
+  return Object.freeze({
+    ...application,
+    wallet: unavailable,
+    activity: async () => [],
+    transfer: unavailable,
+    transferStatus: unavailable,
+    transferRecover: unavailable,
   });
 }
 

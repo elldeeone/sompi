@@ -1125,6 +1125,10 @@ export const JOURNAL_SCHEMA_V16_MIGRATION_SQL = `
     created_at_ms INTEGER NOT NULL
   ) STRICT;
 
+  ALTER TABLE treasury_operations
+    ADD COLUMN authorization_evidence_digest TEXT
+      REFERENCES transfer_authorizations(evidence_digest) ON DELETE RESTRICT;
+
   CREATE INDEX transfer_activity ON transfers(created_at_ms DESC, id);
   CREATE INDEX transfer_recovery ON transfers(state, updated_at_ms);
 
@@ -1149,6 +1153,9 @@ export const JOURNAL_SCHEMA_V16_MIGRATION_SQL = `
     BEGIN SELECT RAISE(ABORT, 'Transfer receipts are immutable'); END;
   CREATE TRIGGER immutable_transfer_receipts_delete BEFORE DELETE ON transfer_receipts
     BEGIN SELECT RAISE(ABORT, 'Transfer receipts are immutable'); END;
+  CREATE TRIGGER immutable_treasury_transfer_authorization
+    BEFORE UPDATE OF authorization_evidence_digest ON treasury_operations
+    BEGIN SELECT RAISE(ABORT, 'Treasury Transfer authorization is immutable'); END;
 `;
 
 export const JOURNAL_SCHEMA_V2_SQL = `${JOURNAL_SCHEMA_V1_SQL}\n${JOURNAL_SCHEMA_V2_MIGRATION_SQL}`;

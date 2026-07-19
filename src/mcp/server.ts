@@ -1,16 +1,23 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
-import { PurchaseApiClientError } from "../api/client.js";
+import { SompiApiClientError } from "../api/client.js";
 import {
-  PurchaseApiContractError,
+  SompiApiContractError,
+  assertTransferView,
+  assertWalletActivity,
+  assertWalletView,
   assertPurchaseView,
-  type PurchaseApplication,
+  type SompiApplication,
   type PurchaseCreateRequest,
+  type TransferCreateRequest,
 } from "../api/contracts.js";
 
 const PURCHASE_ID = z.string().regex(/^pur_[A-Za-z0-9_-]{22}$/);
 const PURCHASE_REQUEST_KEY = z.string().regex(/^[A-Za-z0-9._:-]{1,160}$/);
+const TRANSFER_ID = z.string().regex(/^trf_[A-Za-z0-9_-]{22}$/);
+const KASPA_TESTNET_ADDRESS = z.string().regex(/^kaspatest:[a-z0-9]{20,256}$/);
+const POSITIVE_ATOMIC = z.string().regex(/^[1-9][0-9]{0,19}$/);
 const HTTP_METHOD = z.string().regex(/^[A-Z][A-Z0-9!#$%&'*+.^_`|~-]{0,31}$/).default("GET");
 const MAX_MCP_RESULT_BYTES = 64 * 1024;
 
@@ -34,8 +41,8 @@ export interface McpToolRegistrar {
   ): unknown;
 }
 
-/** MCP is a stateless compatibility adapter over the canonical Purchase API. */
-export function createSompiMcpServer(application: PurchaseApplication, version: string): McpServer {
+/** MCP is a stateless compatibility adapter over the canonical Sompi API. */
+export function createSompiMcpServer(application: SompiApplication, version: string): McpServer {
   if (!version || version.length > 100) throw new Error("Sompi MCP version is invalid");
   const server = new McpServer({ name: "sompi", version });
   registerSompiTools({
@@ -46,7 +53,7 @@ export function createSompiMcpServer(application: PurchaseApplication, version: 
   return server;
 }
 
-export function registerSompiTools(registrar: McpToolRegistrar, application: PurchaseApplication): void {
+export function registerSompiTools(registrar: McpToolRegistrar, application: SompiApplication): void {
   if (!registrar || typeof registrar.registerTool !== "function" || !application) {
     throw new Error("Sompi MCP dependencies are unavailable");
   }
@@ -54,12 +61,13 @@ export function registerSompiTools(registrar: McpToolRegistrar, application: Pur
     name: string,
     description: string,
     inputSchema: Readonly<Record<string, z.ZodTypeAny>>,
-    operation: (args: any, signal: AbortSignal) => Promise<unknown>
+    operation: (args: any, signal: AbortSignal) => Promise<unknown>,
+    validate: (value: unknown) => unknown,
   ): void => {
     registrar.registerTool(name, { description, inputSchema }, async (args, extra) => {
       const signal = extra?.signal ?? new AbortController().signal;
       try {
-        return success(assertPurchaseView(await operation(args, signal)));
+        return success(validate(await operation(args, signal)));
       } catch (error) {
         return safeFailure(error);
       }
@@ -68,7 +76,7 @@ export function registerSompiTools(registrar: McpToolRegistrar, application: Pur
 
   register(
     "purchase",
-    "Create or idempotently resume a Sompi Purchase through the local Purchase API.",
+    "Create or idempotently resume a Sompi Purchase through the local Sompi API.",
     {
       requestKey: PURCHASE_REQUEST_KEY,
       url: z.string().url().max(2_048),
@@ -80,19 +88,61 @@ export function registerSompiTools(registrar: McpToolRegistrar, application: Pur
         origin: z.string().url().max(2_048).optional(),
       }).strict().optional(),
     },
-    (args: PurchaseCreateRequest, signal) => application.purchase(args, signal)
+    (args: PurchaseCreateRequest, signal) => application.purchase(args, signal),
+    assertPurchaseView,
   );
   register(
     "purchase_status",
     "Read one durable Sompi Purchase without performing an external side effect.",
     { purchaseId: PURCHASE_ID },
-    ({ purchaseId }: { purchaseId: string }, signal) => application.status(purchaseId, signal)
+    ({ purchaseId }: { purchaseId: string }, signal) => application.status(purchaseId, signal),
+    assertPurchaseView,
   );
   register(
     "purchase_recover",
     "Reconcile one interrupted Purchase without blindly repeating payment.",
     { purchaseId: PURCHASE_ID },
-    ({ purchaseId }: { purchaseId: string }, signal) => application.recover(purchaseId, signal)
+    ({ purchaseId }: { purchaseId: string }, signal) => application.recover(purchaseId, signal),
+    assertPurchaseView,
+  );
+  register(
+    "wallet",
+    "Read the agent wallet balance, vault identity, and current spending limits.",
+    {},
+    (_args, signal) => application.wallet(signal),
+    assertWalletView,
+  );
+  register(
+    "wallet_activity",
+    "Read recent Sompi purchases and direct KAS transfers without performing a side effect.",
+    { limit: z.number().int().min(1).max(100).default(20) },
+    ({ limit }: { limit: number }, signal) => application.activity(limit, signal),
+    assertWalletActivity,
+  );
+  register(
+    "transfer",
+    "Request a human-approved direct Testnet-10 KAS transfer from the Sompi vault.",
+    {
+      requestKey: PURCHASE_REQUEST_KEY,
+      destination: KASPA_TESTNET_ADDRESS,
+      amountAtomic: POSITIVE_ATOMIC,
+    },
+    (args: TransferCreateRequest, signal) => application.transfer(args, signal),
+    assertTransferView,
+  );
+  register(
+    "transfer_status",
+    "Read one durable direct KAS transfer without performing an external side effect.",
+    { transferId: TRANSFER_ID },
+    ({ transferId }: { transferId: string }, signal) => application.transferStatus(transferId, signal),
+    assertTransferView,
+  );
+  register(
+    "transfer_recover",
+    "Reconcile one interrupted direct KAS transfer without creating a replacement payment.",
+    { transferId: TRANSFER_ID },
+    ({ transferId }: { transferId: string }, signal) => application.transferRecover(transferId, signal),
+    assertTransferView,
   );
 }
 
@@ -105,16 +155,16 @@ function success(value: unknown): McpToolResult {
 }
 
 function safeFailure(error: unknown): McpToolResult {
-  if (error instanceof PurchaseApiClientError) {
+  if (error instanceof SompiApiClientError) {
     return failure(error.code, boundedMessage(error.message), error.retryable);
   }
-  if (error instanceof PurchaseApiContractError) {
-    return failure("INVALID_REQUEST", "The request does not match the Purchase contract.", false);
+  if (error instanceof SompiApiContractError) {
+    return failure("INVALID_REQUEST", "The request does not match the Sompi API contract.", false);
   }
   if (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError")) {
     return failure("REQUEST_CANCELLED", "The request was cancelled; inspect Purchase status before retrying.", true);
   }
-  return failure("PURCHASE_API_FAILED", "The local Purchase API operation failed safely; ask the operator to inspect it.", false);
+  return failure("SOMPI_API_FAILED", "The local Sompi API operation failed safely; ask the operator to inspect it.", false);
 }
 
 function failure(code: string, message: string, retryable: boolean): McpToolResult {
@@ -126,6 +176,6 @@ function failure(code: string, message: string, retryable: boolean): McpToolResu
 
 function boundedMessage(value: string): string {
   return value.length > 512 || /[\u0000-\u001f\u007f]/.test(value)
-    ? "The local Purchase API operation failed safely."
+    ? "The local Sompi API operation failed safely."
     : value;
 }

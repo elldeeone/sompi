@@ -41,6 +41,8 @@ import {
   type RecordTreasuryStagingRecoveryObservationInput,
 } from "./journal.js";
 import type { PurchaseId, Sha256Digest } from "./types.js";
+import type { TransferAuthorizationFacts, TransferAuthorityDecision, TransferReceipt } from "../transfer/types.js";
+import type { TreasuryOperationView } from "../treasury/operations.js";
 
 interface TestClock {
   value: number;
@@ -87,6 +89,12 @@ const FAULT_BOUNDARY_SCENARIOS = {
   "batch_channel.after_insert": batchChannelInsertScenario,
   "batch_channel.after_update": batchChannelUpdateScenario,
   "batch_movement.after_insert": batchMovementInsertScenario,
+  "transfer.after_insert": transferInsertScenario,
+  "transfer_transition.after_state_update": transferTransitionScenario,
+  "transfer_authorization.after_insert": transferAuthorizationScenario,
+  "transfer_treasury_bind.after_update": transferTreasuryBindScenario,
+  "transfer_treasury_sync.after_update": transferTreasurySyncScenario,
+  "transfer_receipt.after_insert": transferReceiptScenario,
 } satisfies Readonly<Record<JournalFaultPoint, FaultBoundaryScenarioFactory>>;
 
 test("fault-boundary scenario manifest exactly covers every declared Journal fault point", () => {
@@ -94,7 +102,7 @@ test("fault-boundary scenario manifest exactly covers every declared Journal fau
     Object.keys(FAULT_BOUNDARY_SCENARIOS).sort(),
     [...JOURNAL_FAULT_POINTS].sort()
   );
-  assert.equal(JOURNAL_FAULT_POINTS.length, 28);
+  assert.equal(JOURNAL_FAULT_POINTS.length, 34);
 });
 
 test("every Journal fault point rolls back atomically and its exact action recovers after restart", () => {
@@ -217,6 +225,150 @@ function purchaseInsertScenario(): FaultBoundaryScenario {
       assert.deepEqual(journal.transitions(input.id).map((entry) => entry.toState), ["created"]);
     },
   };
+}
+
+const TRANSFER_ID = "trf_0123456789ABCDEFGHIJKL";
+const TRANSFER_ADDRESS = "kaspatest:qq2n2shqkghczyel57af242ffs50x5uj07w7ezg7kwm8frwt5xhljqa3d68et";
+const MANIFEST = Object.freeze({ revision: 1, digest: `sha256:${"M".repeat(43)}` });
+
+function transferInsertScenario(journal: PurchaseJournal, clock: TestClock): FaultBoundaryScenario {
+  const input = transferInput(journal, clock);
+  return {
+    act: (target) => target.claimTransferIntent(input),
+    assertRolledBack(target) { assert.equal(target.findTransfer(input.id), undefined); },
+    assertCommitted(target) { assert.equal(target.requireTransfer(input.id).state, "created"); },
+  };
+}
+
+function transferTransitionScenario(journal: PurchaseJournal, clock: TestClock): FaultBoundaryScenario {
+  journal.claimTransferIntent(transferInput(journal, clock));
+  return {
+    act: (target) => target.transitionTransfer(TRANSFER_ID, "awaiting_authority", "authority_requested"),
+    assertRolledBack(target) { assert.equal(target.requireTransfer(TRANSFER_ID).state, "created"); },
+    assertCommitted(target) { assert.equal(target.requireTransfer(TRANSFER_ID).state, "awaiting_authority"); },
+  };
+}
+
+function transferAuthorizationScenario(journal: PurchaseJournal, clock: TestClock): FaultBoundaryScenario {
+  const setup = awaitingTransfer(journal, clock);
+  return {
+    act: (target) => target.recordTransferAuthorization(TRANSFER_ID, setup.facts, setup.decision),
+    assertRolledBack(target) {
+      assert.equal(target.findTransferAuthorization(TRANSFER_ID), undefined);
+      assert.equal(target.requireTransfer(TRANSFER_ID).state, "awaiting_authority");
+    },
+    assertCommitted(target) {
+      assert.equal(target.requireTransferAuthorization(TRANSFER_ID).decision, "approved");
+      assert.equal(target.requireTransfer(TRANSFER_ID).state, "authorised");
+    },
+  };
+}
+
+function transferTreasuryBindScenario(journal: PurchaseJournal, clock: TestClock): FaultBoundaryScenario {
+  approvedTransfer(journal, clock);
+  return {
+    act: (target) => target.bindTransferTreasuryOperation(TRANSFER_ID, `transfer:${TRANSFER_ID}`),
+    assertRolledBack(target) {
+      assert.equal(target.requireTransfer(TRANSFER_ID).treasuryOperationKey, undefined);
+      assert.equal(target.requireTransfer(TRANSFER_ID).state, "authorised");
+    },
+    assertCommitted(target) {
+      assert.equal(target.requireTransfer(TRANSFER_ID).treasuryOperationKey, `transfer:${TRANSFER_ID}`);
+      assert.equal(target.requireTransfer(TRANSFER_ID).state, "funds_reserved");
+    },
+  };
+}
+
+function transferTreasurySyncScenario(journal: PurchaseJournal, clock: TestClock): FaultBoundaryScenario {
+  boundTransfer(journal, clock);
+  const operation = transferTreasuryView("submitted");
+  return {
+    act: (target) => target.syncTransferTreasuryOperation(TRANSFER_ID, operation),
+    assertRolledBack(target) {
+      const transfer = target.requireTransfer(TRANSFER_ID);
+      assert.equal(transfer.state, "funds_reserved");
+      assert.equal(transfer.transactionId, undefined);
+    },
+    assertCommitted(target) {
+      const transfer = target.requireTransfer(TRANSFER_ID);
+      assert.equal(transfer.state, "submitted");
+      assert.equal(transfer.transactionId, operation.transactionId);
+    },
+  };
+}
+
+function transferReceiptScenario(journal: PurchaseJournal, clock: TestClock): FaultBoundaryScenario {
+  boundTransfer(journal, clock);
+  journal.syncTransferTreasuryOperation(TRANSFER_ID, transferTreasuryView("completed"));
+  const receipt: TransferReceipt = Object.freeze({
+    profile: "urn:sompi:receipt:transfer:1", transferId: TRANSFER_ID, requestKey: "fault:transfer:one",
+    destination: TRANSFER_ADDRESS, amountAtomic: "100", feeAtomic: "10", network: "kaspa:testnet-10",
+    fundingSource: "vault-treasury", transactionId: "ab".repeat(32), finality: "accepted",
+    settledAt: new Date(clock.value).toISOString(),
+  });
+  return {
+    act: (target) => target.recordTransferReceipt(TRANSFER_ID, receipt),
+    assertRolledBack(target) {
+      assert.equal(target.findTransferReceipt(TRANSFER_ID), undefined);
+      assert.equal(target.requireTransfer(TRANSFER_ID).state, "settled");
+    },
+    assertCommitted(target) {
+      assert.equal(target.findTransferReceipt(TRANSFER_ID)?.transactionId, receipt.transactionId);
+      assert.equal(target.requireTransfer(TRANSFER_ID).state, "receipted");
+    },
+  };
+}
+
+function transferInput(journal: PurchaseJournal, clock: TestClock) {
+  const policy = ensurePolicy(journal);
+  return {
+    id: TRANSFER_ID, requestKey: "fault:transfer:one", requestDigest: evidenceDigest("transfer-intent"),
+    destination: TRANSFER_ADDRESS, amountAtomic: "100", sourceVaultAddress: TRANSFER_ADDRESS,
+    sourceVaultDigest: evidenceDigest("vault"), feeCeilingAtomic: "10", maximumTotalAtomic: "110",
+    expiresAtMs: clock.value + 60_000, policyDigest: policy.digest,
+    manifestRevision: MANIFEST.revision, manifestDigest: MANIFEST.digest, finalityFloor: "accepted" as const,
+  };
+}
+
+function awaitingTransfer(journal: PurchaseJournal, clock: TestClock) {
+  const transfer = journal.claimTransferIntent(transferInput(journal, clock));
+  journal.transitionTransfer(transfer.id, "awaiting_authority", "authority_requested");
+  const facts: TransferAuthorizationFacts = Object.freeze({
+    profile: "sompi.transfer.1", transferId: transfer.id, requestKey: transfer.requestKey,
+    sourceVaultAddress: transfer.sourceVaultAddress, sourceVaultDigest: transfer.sourceVaultDigest,
+    destination: transfer.destination, amountAtomic: transfer.amountAtomic, asset: "KAS", network: "kaspa:testnet-10",
+    feeCeilingAtomic: transfer.feeCeilingAtomic, maximumTotalAtomic: transfer.maximumTotalAtomic,
+    expiresAt: new Date(transfer.expiresAtMs).toISOString(), policyDigest: transfer.policyDigest,
+    operatorManifestRevision: transfer.manifestRevision, operatorManifestDigest: transfer.manifestDigest,
+    finalityFloor: transfer.finalityFloor,
+  });
+  const evidence = Uint8Array.from(Buffer.from("transfer-authority-evidence", "utf8"));
+  const decision: TransferAuthorityDecision = Object.freeze({
+    decision: "approved", authorityId: "fault-authority", evidence,
+    evidenceDigest: evidenceDigest(evidence), factsDigest: evidenceDigest(JSON.stringify(facts)),
+    verificationProfile: "urn:sompi:authority-decision:transfer:1", verifierId: "fault-verifier",
+    decidedAtMs: clock.value,
+  });
+  return { facts, decision };
+}
+
+function approvedTransfer(journal: PurchaseJournal, clock: TestClock): void {
+  const setup = awaitingTransfer(journal, clock);
+  journal.recordTransferAuthorization(TRANSFER_ID, setup.facts, setup.decision);
+}
+
+function boundTransfer(journal: PurchaseJournal, clock: TestClock): void {
+  approvedTransfer(journal, clock);
+  journal.bindTransferTreasuryOperation(TRANSFER_ID, `transfer:${TRANSFER_ID}`);
+}
+
+function transferTreasuryView(state: "submitted" | "completed"): TreasuryOperationView {
+  return Object.freeze({
+    operationKey: `transfer:${TRANSFER_ID}`, kind: "vault_send", state,
+    summary: state, destination: TRANSFER_ADDRESS, requestedAmountAtomic: "100", feeCeilingAtomic: "10",
+    amountAtomic: "100", feeAtomic: "10", transactionId: "ab".repeat(32), retryCount: 0,
+    recoveryRequired: false, safeToRetry: false, cancellationRequested: false, preparationFenced: true,
+  });
 }
 
 function purchaseTransitionScenario(journal: PurchaseJournal): FaultBoundaryScenario {
@@ -1586,6 +1738,14 @@ function openJournal(
   return new PurchaseJournal(filename, {
     now: clock.now.bind(clock),
     evidenceDirectory,
+    operatorManifestIdentity: MANIFEST,
+    admission: {
+      authorityPreauthSockets: 32,
+      authorityPrompts: 32,
+      prevalidationPurchases: 100,
+      evidenceBytes: 10 * 1024 * 1024,
+      directTreasuryRetries: 3,
+    },
     ...(faultInjector ? { faultInjector } : {}),
   });
 }

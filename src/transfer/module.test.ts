@@ -35,6 +35,10 @@ test("Transfer records approval before one exact vault Treasury movement and rec
   assert.equal(first.receipt?.transactionId, "ab".repeat(32));
   assert.equal(fixture.authority.calls, 1);
   assert.equal(fixture.treasury.calls, 1);
+  assert.equal(
+    fixture.treasury.lastAuthorization?.authorizationEvidenceDigest,
+    first.authorization?.evidenceDigest,
+  );
 
   const retry = await fixture.module.transfer({
     requestKey: "telegram:send:1",
@@ -47,6 +51,42 @@ test("Transfer records approval before one exact vault Treasury movement and rec
   assert.throws(
     () => fixture.module.status("trf_invalid"),
     (error: unknown) => error instanceof TransferModuleError && error.code === "TRANSFER_NOT_FOUND",
+  );
+});
+
+test("approved Transfer evidence satisfies only the approval threshold", async (t) => {
+  const fixture = setup(t, "approved", false, "1");
+  const transfer = await fixture.module.transfer({
+    requestKey: "telegram:send:threshold",
+    destination: ADDRESS,
+    amountAtomic: "5000",
+  });
+  const operationKey = `transfer:${transfer.id}`;
+  const accepted = fixture.journal.claimTreasuryOperationIntent({
+    operationKey,
+    requestDigest: digest("approved-transfer-operation"),
+    kind: "vault_send",
+    destination: ADDRESS,
+    requestedAmountAtomic: "5000",
+    feeCeilingAtomic: "200000",
+    retryLimit: 3,
+    policyDigest: fixture.policyDigest,
+    authorizationEvidenceDigest: transfer.authorization!.evidenceDigest,
+  });
+  assert.equal(accepted.authorizationEvidenceDigest, transfer.authorization?.evidenceDigest);
+  assert.throws(
+    () => fixture.journal.claimTreasuryOperationIntent({
+      operationKey: "transfer:unbound",
+      requestDigest: digest("forged-transfer-operation"),
+      kind: "vault_send",
+      destination: ADDRESS,
+      requestedAmountAtomic: "5000",
+      feeCeilingAtomic: "200000",
+      retryLimit: 3,
+      policyDigest: fixture.policyDigest,
+      authorizationEvidenceDigest: digest("forged-approval"),
+    }),
+    /no matching approved Transfer authorization/,
   );
 });
 
@@ -99,6 +139,7 @@ function setup(
   t: TestContext,
   decision: "approved" | "denied" = "approved",
   failFirst = false,
+  approvalAboveAtomic = "0",
 ) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-transfer-"));
   fs.chmodSync(directory, 0o700);
@@ -112,7 +153,7 @@ function setup(
   const policyDigest = journal.installPolicy({
     maxPerPaymentAtomic: "1000000000",
     maxPerHourAtomic: "5000000000",
-    approvalAboveAtomic: "0",
+    approvalAboveAtomic,
     allowlist: [],
   }).digest;
   const authority = new FakeAuthority(decision);
@@ -151,11 +192,22 @@ class FakeAuthority implements TransferAuthorityModule {
 
 class FakeTreasury {
   calls = 0;
+  lastAuthorization?: Readonly<{
+    expectedPolicyDigest?: string;
+    authorizationEvidenceDigest?: string;
+  }>;
   private failed = false;
   constructor(readonly policyDigest: string, private readonly failFirst: boolean) {}
   authorizationContext() { return { policyDigest: this.policyDigest, feeCeilingAtomic: "200000" }; }
-  async executeUnderPolicy(request: { operationKey: string; destination: string; amountAtomic: string }) {
+  async executeUnderPolicy(
+    request: { operationKey: string; destination: string; amountAtomic: string },
+    authorization: Readonly<{
+      expectedPolicyDigest?: string;
+      authorizationEvidenceDigest?: string;
+    }>,
+  ) {
     this.calls += 1;
+    this.lastAuthorization = authorization;
     if (this.failFirst && !this.failed) {
       this.failed = true;
       throw new Error("ambiguous RPC");

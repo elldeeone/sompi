@@ -1,43 +1,51 @@
 import * as http from "node:http";
 
 import {
-  MAX_PURCHASE_API_RESPONSE_BYTES,
-  PurchaseApiContractError,
-  assertPurchaseApiError,
+  MAX_SOMPI_API_RESPONSE_BYTES,
+  SompiApiContractError,
+  assertSompiApiError,
   assertPurchaseView,
+  assertTransferId,
+  assertTransferView,
+  assertWalletActivity,
+  assertWalletView,
   parsePurchaseCreateRequest,
-  type PurchaseApplication,
+  parseTransferCreateRequest,
+  type SompiApplication,
   type PurchaseCreateRequest,
+  type TransferCreateRequest,
 } from "./contracts.js";
 import type { AgentApiCredential } from "./credential.js";
 import {
-  verifyPurchaseApiSocketForClient,
-  type PurchaseApiSocketAccess,
+  verifySompiApiSocketForClient,
+  type SompiApiSocketAccess,
 } from "./socket.js";
 import type { PurchaseView } from "../purchase/types.js";
+import type { TransferView } from "../transfer/types.js";
+import type { WalletActivityItem, WalletView } from "../wallet-view/module.js";
 import { assertPurchaseId } from "../purchase/identity.js";
 
-export interface PurchaseApiClientOptions extends PurchaseApiSocketAccess {
+export interface SompiApiClientOptions extends SompiApiSocketAccess {
   readonly socketPath: string;
   readonly credential: AgentApiCredential;
   readonly timeoutMs?: number;
 }
 
-export class PurchaseApiClientError extends Error {
+export class SompiApiClientError extends Error {
   constructor(readonly code: string, message: string, readonly retryable: boolean, options?: { cause?: unknown }) {
     super(message, options);
-    this.name = "PurchaseApiClientError";
+    this.name = "SompiApiClientError";
   }
 }
 
 /** Thin client used by MCP; it has no wallet, Journal, Authority, or protocol capability. */
-export class PurchaseApiClient implements PurchaseApplication {
+export class SompiApiClient implements SompiApplication {
   private readonly socketPath: string;
-  private readonly socketAccess: PurchaseApiSocketAccess;
+  private readonly socketAccess: SompiApiSocketAccess;
   private readonly credential: AgentApiCredential;
   private readonly timeoutMs: number;
 
-  constructor(options: PurchaseApiClientOptions) {
+  constructor(options: SompiApiClientOptions) {
     this.socketPath = options.socketPath;
     this.socketAccess = Object.freeze({
       expectedServerUserId: options.expectedServerUserId,
@@ -48,24 +56,53 @@ export class PurchaseApiClient implements PurchaseApplication {
   }
 
   purchase(input: PurchaseCreateRequest, signal?: AbortSignal): Promise<PurchaseView> {
-    return this.request("POST", "/purchases", parsePurchaseCreateRequest(input), signal);
+    return this.request("POST", "/purchases", parsePurchaseCreateRequest(input), assertPurchaseView, signal);
   }
 
   status(purchaseId: string, signal?: AbortSignal): Promise<PurchaseView> {
-    return this.request("GET", `/purchases/${assertPurchaseId(purchaseId)}`, undefined, signal);
+    return this.request("GET", `/purchases/${assertPurchaseId(purchaseId)}`, undefined, assertPurchaseView, signal);
   }
 
   recover(purchaseId: string, signal?: AbortSignal): Promise<PurchaseView> {
-    return this.request("POST", `/purchases/${assertPurchaseId(purchaseId)}/recover`, undefined, signal);
+    return this.request("POST", `/purchases/${assertPurchaseId(purchaseId)}/recover`, undefined, assertPurchaseView, signal);
   }
 
-  private async request(method: string, pathname: string, body: unknown, signal?: AbortSignal): Promise<PurchaseView> {
+  wallet(signal?: AbortSignal): Promise<WalletView> {
+    return this.request("GET", "/wallet", undefined, assertWalletView, signal);
+  }
+
+  activity(limit = 20, signal?: AbortSignal): Promise<readonly WalletActivityItem[]> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+      throw new SompiApiClientError("INVALID_REQUEST", "Wallet activity limit must be between 1 and 100.", false);
+    }
+    return this.request("GET", `/wallet/activity?limit=${limit}`, undefined, assertWalletActivity, signal);
+  }
+
+  transfer(input: TransferCreateRequest, signal?: AbortSignal): Promise<TransferView> {
+    return this.request("POST", "/transfers", parseTransferCreateRequest(input), assertTransferView, signal);
+  }
+
+  transferStatus(transferId: string, signal?: AbortSignal): Promise<TransferView> {
+    return this.request("GET", `/transfers/${assertTransferId(transferId)}`, undefined, assertTransferView, signal);
+  }
+
+  transferRecover(transferId: string, signal?: AbortSignal): Promise<TransferView> {
+    return this.request("POST", `/transfers/${assertTransferId(transferId)}/recover`, undefined, assertTransferView, signal);
+  }
+
+  private async request<T>(
+    method: string,
+    pathname: string,
+    body: unknown,
+    validate: (value: unknown) => T,
+    signal?: AbortSignal,
+  ): Promise<T> {
     try {
-      verifyPurchaseApiSocketForClient(this.socketPath, this.socketAccess);
+      verifySompiApiSocketForClient(this.socketPath, this.socketAccess);
     } catch (cause) {
-      throw new PurchaseApiClientError(
+      throw new SompiApiClientError(
         "API_UNAVAILABLE",
-        "The local Purchase API socket is unavailable or has an invalid identity.",
+        "The local Sompi API socket is unavailable or has an invalid identity.",
         true,
         { cause }
       );
@@ -84,9 +121,9 @@ export class PurchaseApiClient implements PurchaseApplication {
         signal: combined,
       });
     } catch (cause) {
-      throw new PurchaseApiClientError(
+      throw new SompiApiClientError(
         timeout.aborted ? "DEADLINE_EXCEEDED" : "API_UNAVAILABLE",
-        timeout.aborted ? "The local Purchase API deadline elapsed." : "The local Purchase API is unavailable.",
+        timeout.aborted ? "The local Sompi API deadline elapsed." : "The local Sompi API is unavailable.",
         true,
         { cause }
       );
@@ -96,34 +133,34 @@ export class PurchaseApiClient implements PurchaseApplication {
     const contentType = firstHeader(response.headers["content-type"])?.split(";", 1)[0]?.trim().toLowerCase();
     if (contentType !== "application/json") {
       response.destroy();
-      throw new PurchaseApiClientError("INVALID_API_RESPONSE", "The local Purchase API returned an invalid content type.", false);
+      throw new SompiApiClientError("INVALID_API_RESPONSE", "The local Sompi API returned an invalid content type.", false);
     }
     const declared = firstHeader(response.headers["content-length"]);
-    if (declared !== undefined && (!/^(?:0|[1-9][0-9]*)$/.test(declared) || Number(declared) > MAX_PURCHASE_API_RESPONSE_BYTES)) {
+    if (declared !== undefined && (!/^(?:0|[1-9][0-9]*)$/.test(declared) || Number(declared) > MAX_SOMPI_API_RESPONSE_BYTES)) {
       response.destroy();
-      throw new PurchaseApiClientError("INVALID_API_RESPONSE", "The local Purchase API response exceeds the size limit.", false);
+      throw new SompiApiClientError("INVALID_API_RESPONSE", "The local Sompi API response exceeds the size limit.", false);
     }
-    const bytes = await readBoundedResponse(response, MAX_PURCHASE_API_RESPONSE_BYTES);
+    const bytes = await readBoundedResponse(response, MAX_SOMPI_API_RESPONSE_BYTES);
     if (bytes.byteLength === 0) {
-      throw new PurchaseApiClientError("INVALID_API_RESPONSE", "The local Purchase API response size is invalid.", false);
+      throw new SompiApiClientError("INVALID_API_RESPONSE", "The local Sompi API response size is invalid.", false);
     }
     let value: unknown;
     try {
       value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
     } catch (cause) {
-      throw new PurchaseApiClientError("INVALID_API_RESPONSE", "The local Purchase API returned invalid JSON.", false, { cause });
+      throw new SompiApiClientError("INVALID_API_RESPONSE", "The local Sompi API returned invalid JSON.", false, { cause });
     } finally {
       bytes.fill(0);
     }
     try {
       const status = response.statusCode ?? 0;
-      if (status >= 200 && status < 300) return assertPurchaseView(value);
-      const error = assertPurchaseApiError(value).error;
-      throw new PurchaseApiClientError(error.code, error.message, error.retryable);
+      if (status >= 200 && status < 300) return validate(value);
+      const error = assertSompiApiError(value).error;
+      throw new SompiApiClientError(error.code, error.message, error.retryable);
     } catch (cause) {
-      if (cause instanceof PurchaseApiClientError) throw cause;
-      if (cause instanceof PurchaseApiContractError) {
-        throw new PurchaseApiClientError("INVALID_API_RESPONSE", "The local Purchase API response violates its contract.", false, { cause });
+      if (cause instanceof SompiApiClientError) throw cause;
+      if (cause instanceof SompiApiContractError) {
+        throw new SompiApiClientError("INVALID_API_RESPONSE", "The local Sompi API response violates its contract.", false, { cause });
       }
       throw cause;
     }
@@ -169,9 +206,9 @@ async function readBoundedResponse(response: http.IncomingMessage, limit: number
       total += chunk.byteLength;
       if (total > limit) {
         response.destroy();
-        throw new PurchaseApiClientError(
+        throw new SompiApiClientError(
           "INVALID_API_RESPONSE",
-          "The local Purchase API response exceeds the size limit.",
+          "The local Sompi API response exceeds the size limit.",
           false
         );
       }
@@ -188,6 +225,6 @@ function firstHeader(value: string | string[] | undefined): string | undefined {
 }
 
 function positiveInteger(value: number): number {
-  if (!Number.isSafeInteger(value) || value <= 0) throw new PurchaseApiClientError("INVALID_CONFIGURATION", "Purchase API timeout is invalid.", false);
+  if (!Number.isSafeInteger(value) || value <= 0) throw new SompiApiClientError("INVALID_CONFIGURATION", "Sompi API timeout is invalid.", false);
   return value;
 }

@@ -42,7 +42,7 @@ function fixture(input: { unavailable?: boolean } = {}): WalletViewModule {
         return { spendableSompi: 5000n, unboundSompi: 300n };
       },
     } as any,
-    treasury: { effectiveCapacityUsed: () => 1200n } as any,
+    treasury: { pendingCapacityUsed: () => 1200n } as any,
     policy: { policy: { maxSompiPerTx: 2000n, maxSompiPerHour: 8000n, requireApprovalAboveSompi: 1n, allowlist: [ADDRESS] } } as any,
     journal: {
       listTransfers: () => [{
@@ -55,6 +55,7 @@ function fixture(input: { unavailable?: boolean } = {}): WalletViewModule {
         createdAtMs: 1_900_000_000_100, updatedAtMs: 1_900_000_000_400,
       }],
       findCheckoutTerms: () => ({ amountAtomic: "2000", payTo: ADDRESS }),
+      findSettlementForPurchase: () => ({ transactionId: "33".repeat(32) }),
     } as any,
     now: () => 1_900_000_000_500,
   });

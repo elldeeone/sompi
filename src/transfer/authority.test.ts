@@ -1,6 +1,10 @@
 import * as assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import test from "node:test";
+import Database from "better-sqlite3";
 
 import { exportJWK, generateKeyPair } from "jose";
 
@@ -77,6 +81,24 @@ test("Transfer Authority denial stays exact and evidence substitution fails", as
     expectedAuthorityIssuer: signer.issuer,
   });
   await assert.rejects(client.request(transferFacts()), /evidence|bound/);
+});
+
+test("Transfer Authority decision store rejects schema tampering and symlink paths", (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-transfer-authority-store-"));
+  fs.chmodSync(directory, 0o700);
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const filename = path.join(directory, "decisions.sqlite");
+  new TransferAuthorityDecisionStore(filename).close();
+  const database = new Database(filename);
+  database.exec("ALTER TABLE transfer_authority_decisions ADD COLUMN injected TEXT");
+  database.close();
+  assert.throws(() => new TransferAuthorityDecisionStore(filename), /startup checks/);
+
+  const target = path.join(directory, "target.sqlite");
+  fs.writeFileSync(target, "not sqlite", { mode: 0o600 });
+  const linked = path.join(directory, "linked.sqlite");
+  fs.symlinkSync(target, linked);
+  assert.throws(() => new TransferAuthorityDecisionStore(linked), /unsafe/);
 });
 
 class MemoryAuthentication implements AuthorityAuthenticationProvider {

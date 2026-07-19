@@ -1,6 +1,6 @@
 ---
 name: sompi
-description: Install Sompi on a Hermes host and buy paid API resources through its local API.
+description: Install Sompi, inspect its agent wallet, send human-approved Testnet-10 KAS, and buy paid API resources.
 version: 0.8.2
 author: Sompi contributors
 license: MIT
@@ -41,11 +41,11 @@ When the user asks to install Sompi:
 5. Show the complete preview and its exact `nextCommand`. The user must run that command in a local terminal. Do not run it, submit sudo approval, or ask the user to paste the Telegram token into chat. The local command prompts for the token with input hidden and writes the owner recovery record under `/root`.
 6. Report the returned Testnet-10 `fundingAddress`, `minimumFundingSompi`, and `activateCommand`. Never tell the user to fund the vault address directly.
 7. After the user sends at least the minimum to the funding address, show the exact `activateCommand`. The user runs it locally; the agent must not run it or receive sudo. It moves the funds into the spending-limited SilverScript vault through Sompi's durable Treasury journal.
-8. Continue only after activation returns `ready`. Then use `sompi-agent` to make purchases.
+8. Continue only after activation returns `ready`. Then use `sompi-agent` for wallet reads, Transfers, and Purchases.
 
 ## When to Use
 
-Use this skill when a task reaches a paid HTTP resource, the user asks to buy API access with KAS, or an existing Sompi Purchase needs inspection or recovery.
+Use this skill when the user asks about the agent wallet, asks to send KAS, reaches a paid HTTP resource, or needs an existing Sompi operation inspected or recovered.
 
 ## Prerequisites
 
@@ -62,7 +62,28 @@ Use the `terminal` tool to run `sompi-agent`. Do not inspect its credential file
 sompi-agent purchase --request-key TASK_KEY --url HTTPS_URL --method GET
 sompi-agent status PURCHASE_ID
 sompi-agent recover PURCHASE_ID
+sompi-agent wallet
+sompi-agent activity --limit 20
+sompi-agent transfer --request-key TASK_KEY --to KASPATEST_ADDRESS --amount-kas KAS
+sompi-agent transfer-status TRANSFER_ID
+sompi-agent transfer-recover TRANSFER_ID
 ```
+
+## Wallet
+
+For balance, address, limits, or recent-activity questions, use `sompi-agent wallet` or `sompi-agent activity --limit 20`. Report the returned facts and chain status. Do not inspect keys, credential files, the Journal, or the node directly.
+
+## Direct KAS Transfer
+
+When the user explicitly asks to send an exact amount of KAS to an exact Testnet-10 address, choose one stable request key and run:
+
+```sh
+sompi-agent transfer --request-key TASK_KEY --to KASPATEST_ADDRESS --amount-kas KAS
+```
+
+Sompi sends a separate exact approval prompt to the trusted human surface. Wait for the command. Do not treat the user's original chat instruction, an MCP call, or a shell-command approval as the cryptographic approval. Report success only when the returned Transfer is `receipted`, including its amount, recipient, fee, and transaction ID.
+
+If `userAction` says `recover`, use `sompi-agent transfer-recover TRANSFER_ID`. Reuse the same Transfer and request key; never create a replacement send.
 
 ## Procedure
 
@@ -90,10 +111,11 @@ Use `recover` only when Sompi marks the Purchase recoverable. It is idempotent; 
 ## Pitfalls
 
 - Never expose or read Sompi's wallet keys, Authority keys, recovery credential, API bearer token, Telegram bot token, or Journal.
-- Never approve a Purchase through chat text, MCP, a shell command, or a Hermes command-approval button.
+- Never approve a Purchase or Transfer through ordinary chat text, MCP, a shell command, or a Hermes command-approval button.
 - Never change the requested URL, method, body, merchant, amount, payee, network, or request key after the user sees the approval prompt.
 - Never call the recovery API socket or operator tools.
 - Never claim success unless the returned Purchase view says the resource was fulfilled.
+- Never claim a direct send succeeded unless its Transfer view is `receipted` and includes a transaction ID.
 
 ## Verification
 

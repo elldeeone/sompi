@@ -4,12 +4,12 @@ import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  purchaseApiListenerConfigFromEnv,
-  purchaseRecoveryApiListenerConfigFromEnv,
-  PurchaseApiConfigError,
+  sompiApiListenerConfigFromEnv,
+  sompiRecoveryApiListenerConfigFromEnv,
+  SompiApiConfigError,
 } from "./api/config.js";
-import { createPurchaseApplication } from "./api/contracts.js";
-import { startPurchaseApiServer, startPurchaseRecoveryApiServer } from "./api/server.js";
+import { createSompiApplication } from "./api/contracts.js";
+import { startSompiApiServer, startSompiRecoveryApiServer } from "./api/server.js";
 import { SompiRuntimeConfigError, purchaseRuntimeConfigFromEnv } from "./runtime/config.js";
 import { createSompiPurchaseRuntime } from "./runtime/purchase-runtime.js";
 
@@ -24,14 +24,14 @@ if (process.argv[2] === "help" || process.argv[2] === "--help") {
 
 async function main(): Promise<void> {
   let runtime: ReturnType<typeof createSompiPurchaseRuntime> | undefined;
-  let api: Awaited<ReturnType<typeof startPurchaseApiServer>> | undefined;
-  let recoveryApi: Awaited<ReturnType<typeof startPurchaseRecoveryApiServer>> | undefined;
+  let api: Awaited<ReturnType<typeof startSompiApiServer>> | undefined;
+  let recoveryApi: Awaited<ReturnType<typeof startSompiRecoveryApiServer>> | undefined;
   try {
-    const listener = purchaseApiListenerConfigFromEnv();
-    const recoveryListener = purchaseRecoveryApiListenerConfigFromEnv();
+    const listener = sompiApiListenerConfigFromEnv();
+    const recoveryListener = sompiRecoveryApiListenerConfigFromEnv();
     runtime = createSompiPurchaseRuntime(purchaseRuntimeConfigFromEnv());
-    const application = createPurchaseApplication(runtime.purchase);
-    recoveryApi = await startPurchaseRecoveryApiServer({
+    const application = createSompiApplication(runtime.purchase, runtime.transfer, runtime.walletView);
+    recoveryApi = await startSompiRecoveryApiServer({
       application,
       credential: recoveryListener.credential,
       socketPath: recoveryListener.socketPath,
@@ -41,14 +41,14 @@ async function main(): Promise<void> {
       maxControlConcurrency: recoveryListener.maxControlConcurrency,
       maxConnections: recoveryListener.maxConnections,
     });
-    api = await startPurchaseApiServer({
+    api = await startSompiApiServer({
       application,
       credential: listener.credential,
       socketPath: listener.socketPath,
       expectedServerUserId: listener.expectedServerUserId,
       runtimeGroupId: listener.runtimeGroupId,
       deadlineMs: listener.deadlineMs,
-      maxPurchaseConcurrency: listener.maxPurchaseConcurrency,
+      maxMutationConcurrency: listener.maxMutationConcurrency,
       maxControlConcurrency: listener.maxControlConcurrency,
     });
     let closing = false;
@@ -67,7 +67,7 @@ async function main(): Promise<void> {
     await api?.close().catch(() => undefined);
     await recoveryApi?.close().catch(() => undefined);
     await runtime?.close().catch(() => undefined);
-    if (error instanceof PurchaseApiConfigError || error instanceof SompiRuntimeConfigError) fatal(error.message);
+    if (error instanceof SompiApiConfigError || error instanceof SompiRuntimeConfigError) fatal(error.message);
     fatal("Sompi API could not start. Inspect the local operator configuration.");
   }
 }

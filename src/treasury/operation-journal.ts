@@ -37,6 +37,8 @@ export interface TreasuryOperationRecord {
   readonly preparedDigest?: string;
   readonly preparedByteLength?: number;
   readonly policyDigest?: string;
+  /** Present only when an approved Transfer authorization was durably linked. */
+  readonly authorizationEvidenceDigest?: string;
   readonly state: TreasuryOperationState;
   readonly retryCount: number;
   readonly createdAtMs: number;
@@ -66,6 +68,7 @@ export interface TreasuryOperationIntent {
   readonly feeCeilingAtomic: string;
   readonly retryLimit: number;
   readonly policyDigest: string;
+  readonly authorizationEvidenceDigest?: string;
 }
 
 export interface TreasuryOperationValidationInput {
@@ -168,6 +171,7 @@ export interface TreasuryOperationJournal {
   requireTreasuryOperation(operationKey: string): TreasuryOperationRecord;
   treasuryOperationSpentLastHour(): bigint;
   treasuryPolicyCapacityUsed(): bigint;
+  treasuryPendingCapacityUsed(): bigint;
   unresolvedTreasuryOperationCount(): number;
   integrityCheck(): true;
 }

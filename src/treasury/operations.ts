@@ -56,6 +56,11 @@ export interface TreasuryOperationModuleOptions {
   readonly directTreasuryRetries?: number;
 }
 
+export interface TreasuryAuthorizedExecution {
+  readonly expectedPolicyDigest?: string;
+  readonly authorizationEvidenceDigest?: string;
+}
+
 export class TreasuryOperationError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
     super(message, options);
@@ -114,12 +119,12 @@ export class TreasuryOperationModule {
     request: Readonly<TreasuryOperationRequest>,
     signal?: AbortSignal,
   ): Promise<TreasuryOperationView> {
-    return this.executeUnderPolicy(request, undefined, signal);
+    return this.executeUnderPolicy(request, {}, signal);
   }
 
   async executeUnderPolicy(
     request: Readonly<TreasuryOperationRequest>,
-    expectedPolicyDigest: string | undefined,
+    authorization: Readonly<TreasuryAuthorizedExecution>,
     signal?: AbortSignal,
   ): Promise<TreasuryOperationView> {
     throwIfAborted(signal);
@@ -130,7 +135,10 @@ export class TreasuryOperationModule {
       requestedAmountAtomic: normalized.amountAtomic,
     });
     const policy = this.installCurrentPolicy();
-    if (expectedPolicyDigest !== undefined && policy.digest !== expectedPolicyDigest) {
+    if (
+      authorization.expectedPolicyDigest !== undefined &&
+      policy.digest !== authorization.expectedPolicyDigest
+    ) {
       throw new TreasuryOperationError("Treasury policy changed after human authorization");
     }
     const record = this.journal.claimTreasuryOperationIntent({
@@ -141,6 +149,7 @@ export class TreasuryOperationModule {
       feeCeilingAtomic: this.feeCeilingAtomic,
       retryLimit: this.directTreasuryRetries,
       policyDigest: policy.digest,
+      authorizationEvidenceDigest: authorization.authorizationEvidenceDigest,
     });
     return this.drive(record.operationKey, signal);
   }
@@ -179,6 +188,10 @@ export class TreasuryOperationModule {
 
   effectiveCapacityUsed(): bigint {
     return this.journal.treasuryPolicyCapacityUsed();
+  }
+
+  pendingCapacityUsed(): bigint {
+    return this.journal.treasuryPendingCapacityUsed();
   }
 
   integrityCheck(): true {
@@ -482,7 +495,9 @@ export class TreasuryOperationModule {
     if (ownCapacity > total) {
       throw new TreasuryOperationError("Treasury capacity accounting is inconsistent");
     }
-    this.policy.authorize(destination, amount, total - ownCapacity);
+    this.policy.authorize(destination, amount, total - ownCapacity, {
+      humanApproved: operation.authorizationEvidenceDigest !== undefined,
+    });
   }
 
   private installCurrentPolicy(): { readonly digest: string } {

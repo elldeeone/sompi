@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import * as fs from "node:fs";
 
-import { PurchaseApiClient, PurchaseApiClientError } from "./api/client.js";
+import { SompiApiClient, SompiApiClientError } from "./api/client.js";
 import { MAX_PURCHASE_BODY_BYTES, type PurchaseCreateRequest } from "./api/contracts.js";
-import { PurchaseApiConfigError, purchaseApiConnectionConfigFromEnv } from "./api/config.js";
+import { SompiApiConfigError, sompiApiConnectionConfigFromEnv } from "./api/config.js";
 import {
   AGENT_USAGE,
   AgentCliArgumentError,
@@ -11,13 +11,13 @@ import {
 } from "./cli/agent-arguments.js";
 
 void main().catch((error: unknown) => {
-  if (error instanceof AgentCliArgumentError || error instanceof PurchaseApiConfigError) {
+  if (error instanceof AgentCliArgumentError || error instanceof SompiApiConfigError) {
     fatal(error.message, error instanceof AgentCliArgumentError ? 2 : 1);
   }
-  if (error instanceof PurchaseApiClientError) {
+  if (error instanceof SompiApiClientError) {
     fatal(`${error.code}: ${error.message}`, error.retryable ? 75 : 1);
   }
-  fatal("Sompi could not complete the local Purchase API request.");
+  fatal("Sompi could not complete the local Sompi API request.");
 });
 
 async function main(): Promise<void> {
@@ -26,13 +26,50 @@ async function main(): Promise<void> {
     process.stdout.write(`${AGENT_USAGE}\n`);
     return;
   }
-  const client = new PurchaseApiClient(purchaseApiConnectionConfigFromEnv());
+  const client = new SompiApiClient(sompiApiConnectionConfigFromEnv());
   const view = command.kind === "purchase"
     ? await client.purchase(purchaseRequest(command))
     : command.kind === "status"
       ? await client.status(command.purchaseId)
-      : await client.recover(command.purchaseId);
+      : command.kind === "recover"
+        ? await client.recover(command.purchaseId)
+        : command.kind === "wallet"
+          ? await client.wallet()
+          : command.kind === "activity"
+            ? await client.activity(command.limit)
+            : command.kind === "transfer"
+              ? await client.transfer({
+                  requestKey: command.requestKey,
+                  destination: command.destination,
+                  amountAtomic: transferAmountAtomic(command),
+                })
+              : command.kind === "transfer-status"
+                ? await client.transferStatus(command.transferId)
+                : command.kind === "transfer-recover"
+                  ? await client.transferRecover(command.transferId)
+                  : unreachable(command);
   process.stdout.write(`${JSON.stringify(view, null, 2)}\n`);
+}
+
+function unreachable(value: never): never {
+  throw new AgentCliArgumentError(`unsupported command: ${JSON.stringify(value)}`);
+}
+
+function transferAmountAtomic(command: Extract<ReturnType<typeof parseAgentArguments>, { kind: "transfer" }>): string {
+  if (command.amountSompi !== undefined) {
+    if (!/^[1-9][0-9]{0,19}$/.test(command.amountSompi)) {
+      throw new AgentCliArgumentError("--amount-sompi must be a positive canonical integer");
+    }
+    const amount = BigInt(command.amountSompi);
+    if (amount > (1n << 64n) - 1n) throw new AgentCliArgumentError("transfer amount exceeds uint64");
+    return amount.toString();
+  }
+  const value = command.amountKas ?? "";
+  const match = /^(0|[1-9][0-9]*)(?:\.([0-9]{1,8}))?$/.exec(value);
+  if (!match) throw new AgentCliArgumentError("--amount-kas must be a positive decimal with at most 8 places");
+  const amount = BigInt(match[1]) * 100_000_000n + BigInt((match[2] ?? "").padEnd(8, "0") || "0");
+  if (amount <= 0n || amount > (1n << 64n) - 1n) throw new AgentCliArgumentError("transfer amount is outside the supported range");
+  return amount.toString();
 }
 
 function purchaseRequest(command: Extract<ReturnType<typeof parseAgentArguments>, { kind: "purchase" }>): PurchaseCreateRequest {

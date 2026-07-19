@@ -5,8 +5,8 @@ import { fileURLToPath } from "node:url";
 
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 
-import { PurchaseApiClient } from "./api/client.js";
-import { PurchaseApiConfigError, purchaseApiConnectionConfigFromEnv } from "./api/config.js";
+import { SompiApiClient } from "./api/client.js";
+import { SompiApiConfigError, sompiApiConnectionConfigFromEnv } from "./api/config.js";
 import { CliArgumentError, MCP_USAGE, parseMcpArguments } from "./cli/arguments.js";
 import { createSompiMcpServer } from "./mcp/server.js";
 
@@ -30,8 +30,8 @@ if (command.kind === "help") {
 
 async function main(): Promise<void> {
   try {
-    const config = purchaseApiConnectionConfigFromEnv();
-    const server = createSompiMcpServer(new PurchaseApiClient(config), packageVersion());
+    const config = sompiApiConnectionConfigFromEnv();
+    const server = createSompiMcpServer(new SompiApiClient(config), packageVersion());
     const transport = new StdioServerTransport();
     let closing = false;
     const close = async () => { if (!closing) { closing = true; await server.close(); } };
@@ -41,7 +41,7 @@ async function main(): Promise<void> {
     await server.connect(transport);
     console.error("sompi MCP compatibility adapter ready on the configured local API socket");
   } catch (error) {
-    if (error instanceof PurchaseApiConfigError) fatal(error.message);
+    if (error instanceof SompiApiConfigError) fatal(error.message);
     fatal("Sompi MCP could not start. Inspect the local API configuration.");
   }
 }

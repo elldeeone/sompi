@@ -410,7 +410,7 @@ export async function runLiveBatchProof(
         coordinator,
         index === 1 ? "http-api" : "mcp-api-compatibility",
         (error) => options.onProgress?.(
-          `Purchase API internal diagnostic: ${error instanceof Error ? `${error.name}: ${error.message}` : "unknown error"}`
+          `Sompi API internal diagnostic: ${error instanceof Error ? `${error.name}: ${error.message}` : "unknown error"}`
         )
       );
       resources.push(() => ingress.close());

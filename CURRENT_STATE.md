@@ -5,9 +5,10 @@ Last updated: **2026-07-19**
 ## Status
 
 The generic x402 Merchant cutover and near-automatic Hermes onboarding are
-complete on `main`.
+complete on `main`. Wallet visibility and direct native-KAS Transfers are in
+verified local integration on `feat/wallet-direct-transfers`.
 
-Sompi is an API-first local purchasing runtime:
+Sompi is an API-first local agent wallet and purchasing runtime:
 
 - `sompi-api` is the canonical Purchase interface;
 - `sompi-agent` is the agent-facing CLI;
@@ -15,7 +16,27 @@ Sompi is an API-first local purchasing runtime:
 - `sompi-authority` is the isolated human-present Authority;
 - `sompi-operator` provisions policy, vault, chain evidence, and credentials.
 
-Journal epoch 15 is the only active schema.
+Journal epoch 16 is the only active schema on the Transfer branch. It is a
+clean cutover with no epoch-15 reader.
+
+## Wallet and Transfer integration
+
+- `wallet` reports the TN10 funding and vault identities, observed vault
+  balance, pending reservations, conservative available balance, policy limits,
+  chain status, and bounded Sompi activity without exposing keys.
+- `transfer` creates one durable, human-present, vault-backed native KAS send.
+- The signed `sompi.transfer.1` decision binds the recipient, amount, source,
+  fee and total ceilings, policy, manifest, expiry, finality, and Transfer ID.
+- The Journal links approved Transfer evidence to the exact Treasury Movement.
+  Approval may satisfy the approval threshold but cannot bypass the allowlist,
+  per-transfer, rolling-hour, or fee ceilings.
+- API, CLI, MCP compatibility, OpenAPI, Arazzo, and the Hermes skill use the
+  same Transfer and Wallet View interfaces.
+- The complete local suite passes 472 tests (471 pass, one privileged-only
+  ownership test skipped) plus the offline smoke.
+
+Release versioning, funded TN10 evidence, publication, and Terah deployment
+remain outstanding for this branch.
 
 ## Protocols
 

@@ -4,9 +4,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 
-import { PurchaseApiClient } from "./client.js";
+import { SompiApiClient } from "./client.js";
 import { generateAgentApiCredential } from "./credential.js";
-import type { PurchaseApplication, PurchaseCreateRequest } from "./contracts.js";
+import type { SompiApplication, PurchaseCreateRequest } from "./contracts.js";
 import {
   SOMPI_ARAZZO_SCHEMA_SHA256,
   canonicalArazzoBytes,
@@ -14,7 +14,7 @@ import {
   validateSompiArazzoDocument,
 } from "./arazzo.js";
 import { sompiOpenApiDocument } from "./openapi.js";
-import { startPurchaseApiServer } from "./server.js";
+import { startSompiApiServer } from "./server.js";
 import type { PurchaseView } from "../purchase/types.js";
 
 const PURCHASE_ID = "pur_0123456789ABCDEFGHIJKL" as PurchaseView["id"];
@@ -52,7 +52,7 @@ test("Arazzo 1.1 workflow validates against the pinned schema and canonical Open
 
 test("Arazzo recovery scenario runs create, status, recover, and terminal receipt over HTTP", async () => {
   const calls: string[] = [];
-  const application: PurchaseApplication = {
+  const application: SompiApplication = {
     async purchase() {
       calls.push("createPurchase");
       return view("failed_recoverable", []);
@@ -67,6 +67,11 @@ test("Arazzo recovery scenario runs create, status, recover, and terminal receip
       calls.push("recoverPurchase");
       return view("receipted", [RECEIPT_DIGEST]);
     },
+    async wallet() { throw new Error("unused"); },
+    async activity() { return []; },
+    async transfer() { throw new Error("unused"); },
+    async transferStatus() { throw new Error("unused"); },
+    async transferRecover() { throw new Error("unused"); },
   };
   const credential = generateAgentApiCredential();
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-arazzo-api-"));
@@ -77,9 +82,9 @@ test("Arazzo recovery scenario runs create, status, recover, and terminal receip
   fs.chownSync(directory, access.expectedServerUserId, access.runtimeGroupId);
   fs.chmodSync(directory, 0o710);
   const socketPath = path.join(directory, "api.sock");
-  const running = await startPurchaseApiServer({ application, credential, socketPath, ...access });
+  const running = await startSompiApiServer({ application, credential, socketPath, ...access });
   try {
-    const client = new PurchaseApiClient({ socketPath, credential, ...access });
+    const client = new SompiApiClient({ socketPath, credential, ...access });
     const inputs: PurchaseCreateRequest = {
       requestKey: "workflow:recoverable",
       url: "https://merchant.example/paid-resource",

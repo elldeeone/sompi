@@ -11,14 +11,16 @@ import {
   generateRecoveryApiCredential,
   type AgentApiCredential,
 } from "./credential.js";
-import type { PurchaseApplication } from "./contracts.js";
+import type { SompiApplication } from "./contracts.js";
 import {
-  startPurchaseApiServer,
-  startPurchaseRecoveryApiServer,
-  type PurchaseApiServerOptions,
-  type RunningPurchaseApiServer,
+  startSompiApiServer,
+  startSompiRecoveryApiServer,
+  type SompiApiServerOptions,
+  type RunningSompiApiServer,
 } from "./server.js";
 import type { PurchaseView } from "../purchase/types.js";
+import type { TransferView } from "../transfer/types.js";
+import type { WalletView } from "../wallet-view/module.js";
 
 test("authenticated HTTP routes call one canonical Purchase application over the permissioned socket", async () => {
   const credential = generateAgentApiCredential();
@@ -49,13 +51,40 @@ test("authenticated HTTP routes call one canonical Purchase application over the
   }
 });
 
+test("canonical wallet and Transfer routes stay authenticated and recovery-scoped", async () => {
+  const credential = generateAgentApiCredential();
+  const calls: string[] = [];
+  const application = fakeApplication({
+    async wallet() { calls.push("wallet"); return fakeWallet(); },
+    async activity(limit) { calls.push(`activity:${limit}`); return []; },
+    async transfer() { calls.push("transfer"); return fakeTransfer(); },
+    async transferStatus() { calls.push("transferStatus"); return fakeTransfer(); },
+    async transferRecover() { calls.push("transferRecover"); return fakeTransfer(); },
+  });
+  const running = await startTestServer({ application, credential });
+  try {
+    const auth = { authorization: `Bearer ${credential.token}` };
+    assert.equal((await apiRequest(running.socketPath, "GET", "/wallet", auth)).status, 200);
+    assert.equal((await apiRequest(running.socketPath, "GET", "/wallet/activity?limit=7", auth)).status, 200);
+    assert.equal((await apiRequest(running.socketPath, "POST", "/transfers", {
+      ...auth, "content-type": "application/json",
+    }, JSON.stringify({ requestKey: "api:transfer:one", destination: ADDRESS, amountAtomic: "1000" }))).status, 200);
+    assert.equal((await apiRequest(running.socketPath, "GET", `/transfers/${fakeTransfer().id}`, auth)).status, 200);
+    assert.equal((await apiRequest(running.socketPath, "POST", `/transfers/${fakeTransfer().id}/recover`, auth)).status, 200);
+    assert.equal((await apiRequest(running.socketPath, "GET", "/wallet/activity?limit=101", auth)).status, 400);
+    assert.deepEqual(calls, ["wallet", "activity:7", "transfer", "transferStatus", "transferRecover"]);
+  } finally {
+    await running.close();
+  }
+});
+
 test("API startup refuses an unprovisioned socket directory without changing its permissions", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-api-unprovisioned-"));
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
   const gid = typeof process.getgid === "function" ? process.getgid() : 0;
   try {
     assert.equal(fs.statSync(directory).mode & 0o777, 0o700);
-    await assert.rejects(() => startPurchaseApiServer({
+    await assert.rejects(() => startSompiApiServer({
       application: fakeApplication(),
       credential: generateAgentApiCredential(),
       socketPath: path.join(directory, "api.sock"),
@@ -78,7 +107,7 @@ test("HTTP seam fails closed on bad content, oversized bodies, concurrency, and 
       return fakeView();
     },
   });
-  const running = await startTestServer({ application, credential, maxPurchaseConcurrency: 1, deadlineMs: 30 });
+  const running = await startTestServer({ application, credential, maxMutationConcurrency: 1, deadlineMs: 30 });
   const auth = { authorization: `Bearer ${credential.token}` };
   try {
     const bad = await apiRequest(running.socketPath, "POST", "/purchases", auth, "{}");
@@ -101,7 +130,7 @@ test("HTTP seam fails closed on bad content, oversized bodies, concurrency, and 
 test("deadline forcibly ends a partial authenticated body and restores Purchase admission", async () => {
   const credential = generateAgentApiCredential();
   const running = await startTestServer({
-    application: fakeApplication(), credential, maxPurchaseConcurrency: 1, maxControlConcurrency: 1, deadlineMs: 40,
+    application: fakeApplication(), credential, maxMutationConcurrency: 1, maxControlConcurrency: 1, deadlineMs: 40,
   });
   const socket = net.createConnection(running.socketPath);
   socket.on("error", () => {});
@@ -130,7 +159,7 @@ test("non-cooperative Purchase work loses the response lease and remains separat
   const held = new Promise<void>((resolve) => { release = resolve; });
   const running = await startTestServer({
     application: fakeApplication({ async purchase() { await held; return fakeView(); } }),
-    credential, maxPurchaseConcurrency: 1, maxControlConcurrency: 1, deadlineMs: 40,
+    credential, maxMutationConcurrency: 1, maxControlConcurrency: 1, deadlineMs: 40,
   });
   const auth = { authorization: `Bearer ${credential.token}` };
   const post = (requestKey: string) => apiRequest(running.socketPath, "POST", "/purchases", {
@@ -154,7 +183,7 @@ test("non-cooperative Purchase work loses the response lease and remains separat
 test("pre-authentication Unix sockets are bounded separately from request concurrency", async () => {
   const credential = generateAgentApiCredential();
   const running = await startTestServer({
-    application: fakeApplication(), credential, maxPurchaseConcurrency: 1, maxControlConcurrency: 1, maxConnections: 2,
+    application: fakeApplication(), credential, maxMutationConcurrency: 1, maxControlConcurrency: 1, maxConnections: 2,
   });
   const sockets: net.Socket[] = [];
   try {
@@ -185,17 +214,17 @@ test("operator recovery remains available while the lower-trust agent listener i
   const application = fakeApplication();
   const agentCredential = generateAgentApiCredential();
   const recoveryCredential = generateRecoveryApiCredential();
-  const agent = await startPurchaseApiServer({
+  const agent = await startSompiApiServer({
     application,
     credential: agentCredential,
     socketPath: path.join(directory, "agent.sock"),
     expectedServerUserId: uid,
     runtimeGroupId: gid,
-    maxPurchaseConcurrency: 1,
+    maxMutationConcurrency: 1,
     maxControlConcurrency: 1,
     maxConnections: 2,
   });
-  const recovery = await startPurchaseRecoveryApiServer({
+  const recovery = await startSompiRecoveryApiServer({
     application,
     credential: recoveryCredential,
     socketPath: path.join(directory, "recovery.sock"),
@@ -230,17 +259,17 @@ test("operator recovery remains available while the lower-trust agent listener i
   }
 });
 
-type TestServer = RunningPurchaseApiServer & { readonly directory: string };
+type TestServer = RunningSompiApiServer & { readonly directory: string };
 
 async function startTestServer(
-  options: Omit<PurchaseApiServerOptions, "socketPath" | "expectedServerUserId" | "runtimeGroupId">
+  options: Omit<SompiApiServerOptions, "socketPath" | "expectedServerUserId" | "runtimeGroupId">
 ): Promise<TestServer> {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-api-server-"));
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
   const gid = typeof process.getgid === "function" ? process.getgid() : 0;
   fs.chownSync(directory, uid, gid);
   fs.chmodSync(directory, 0o710);
-  const running = await startPurchaseApiServer({
+  const running = await startSompiApiServer({
     ...options, socketPath: path.join(directory, "api.sock"), expectedServerUserId: uid, runtimeGroupId: gid,
   });
   return {
@@ -278,9 +307,15 @@ async function apiRequest(
   });
 }
 
-function fakeApplication(overrides: Partial<PurchaseApplication> = {}): PurchaseApplication {
+function fakeApplication(overrides: Partial<SompiApplication> = {}): SompiApplication {
   return {
-    async purchase() { return fakeView(); }, async status() { return fakeView(); }, async recover() { return fakeView(); }, ...overrides,
+    async purchase() { return fakeView(); }, async status() { return fakeView(); }, async recover() { return fakeView(); },
+    async wallet() { throw new Error("unused"); },
+    async activity() { return []; },
+    async transfer() { throw new Error("unused"); },
+    async transferStatus() { throw new Error("unused"); },
+    async transferRecover() { throw new Error("unused"); },
+    ...overrides,
   };
 }
 
@@ -291,5 +326,29 @@ function fakeView(): PurchaseView {
     resourceFingerprint: `sha256:${"A".repeat(43)}` as PurchaseView["resourceFingerprint"],
     authorization: { status: "not_requested" }, treasury: { status: "unreserved" },
     paymentAttempts: [], receiptEvidence: [],
+  };
+}
+
+const ADDRESS = "kaspatest:qq2n2shqkghczyel57af242ffs50x5uj07w7ezg7kwm8frwt5xhljqa3d68et";
+
+function fakeTransfer(): TransferView {
+  return {
+    id: "trf_0123456789ABCDEFGHIJKL", requestKey: "api:transfer:one",
+    requestDigest: `sha256:${"B".repeat(43)}`, state: "created", destination: ADDRESS,
+    amountAtomic: "1000", asset: "KAS", network: "kaspa:testnet-10", sourceVaultAddress: ADDRESS,
+    sourceVaultDigest: `sha256:${"C".repeat(43)}`, feeCeilingAtomic: "100", maximumTotalAtomic: "1100",
+    expiresAtMs: 2_000_000_000_000, policyDigest: `sha256:${"D".repeat(43)}`, manifestRevision: 1,
+    manifestDigest: `sha256:${"E".repeat(43)}`, finalityFloor: "accepted", version: 0,
+    createdAtMs: 1_900_000_000_000, updatedAtMs: 1_900_000_000_000,
+    recoveryRequired: false, safeToRetry: true, userAction: "none",
+  };
+}
+
+function fakeWallet(): WalletView {
+  return {
+    network: "kaspa:testnet-10", asset: "KAS", fundingAddress: ADDRESS, vaultAddress: ADDRESS,
+    balance: { observedAtomic: "10000", unboundAtomic: "0", reservedAtomic: "0", availableAtomic: "10000", provenance: "operator-node-and-local-vault-lineage", observedAt: "2030-01-01T00:00:00.000Z" },
+    limits: { maxPerTransferAtomic: "1000", maxPerHourAtomic: "5000", approvalThresholdAtomic: "1", allowlist: [], vaultMaxOutflowAtomic: "5000", vaultWindowSizeDaa: "100", vaultSpentInWindowAtomic: "0" },
+    chainStatus: "observed",
   };
 }

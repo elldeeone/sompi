@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 
-import type { AuthorityApprovalDisplay } from "../adapters/ap2/human-authority.js";
+import type { AnyAuthorityApprovalDisplay, AuthorityApprovalDisplay, TransferAuthorityApprovalDisplay } from "../adapters/ap2/human-authority.js";
 import {
   TelegramAuthorityApprovalPrompt,
   TelegramAuthorityPromptStore,
@@ -40,6 +40,7 @@ test("Telegram Authority approves one exact prompt and rejects its replay", asyn
   });
   assert.equal(await pending, true);
   assert.equal(fixture.prompt.resolveCallback(callback).status, "replayed");
+  assert.ok("merchant" in fixture.bot.sent[0]!.text);
   assert.match(fixture.bot.sent[0]!.text.merchant.name, /Merchant/);
 });
 
@@ -52,6 +53,16 @@ test("Telegram Authority denies an exact prompt", async (t) => {
     "denied",
   );
   assert.equal(await pending, false);
+});
+
+test("Telegram Authority shows and resolves exact direct-Transfer facts", async (t) => {
+  const fixture = createFixture(t, TOKEN_A);
+  const pending = fixture.prompt.approve(transferDisplay());
+  await until(() => fixture.bot.sent.length === 1);
+  const sent = fixture.bot.sent[0]!;
+  assert.equal(sent.text.kind, "transfer");
+  assert.equal(fixture.prompt.resolveCallback(envelope(sent.approveData)).message, "Sompi Transfer approved.");
+  assert.equal(await pending, true);
 });
 
 test("Telegram Authority binds callbacks to the configured Telegram user and chat", async (t) => {
@@ -232,13 +243,13 @@ test("Telegram Bot API verifies the pinned bot and sends escaped exact facts", a
 
 class FakeBot implements TelegramBotTransport {
   readonly sent: Array<{
-    text: AuthorityApprovalDisplay;
+    text: AnyAuthorityApprovalDisplay;
     approveData: string;
     denyData: string;
   }> = [];
 
   async sendApproval(
-    text: AuthorityApprovalDisplay,
+    text: AnyAuthorityApprovalDisplay,
     approveData: string,
     denyData: string,
   ): Promise<string> {
@@ -316,6 +327,29 @@ function display(): AuthorityApprovalDisplay {
       channelId: null,
       channelEpochDigest: null,
     }),
+    recoveryRetry: false,
+  });
+}
+
+function transferDisplay(): TransferAuthorityApprovalDisplay {
+  return Object.freeze({
+    kind: "transfer",
+    authorityRequestDigest: "sha256:EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",
+    transferId: "trf_AAAAAAAAAAAAAAAAAAAAAA",
+    requestKey: "send:one",
+    sourceVaultAddress: "kaspatest:qq2n2shqkghczyel57af242ffs50x5uj07w7ezg7kwm8frwt5xhljqa3d68et",
+    sourceVaultDigest: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    destination: "kaspatest:qpumuen7l8wthtz45p3ftn58pvrs9xlumvkuu2xet8egzkcklqtes5z8rkmpd",
+    amountAtomic: "20000000",
+    asset: "KAS",
+    network: "kaspa:testnet-10",
+    feeCeilingAtomic: "2500000",
+    maximumTotalAtomic: "22500000",
+    termsExpiresAt: "2026-07-18T05:01:00.000Z",
+    policyDigest: "sha256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    operatorManifestRevision: 1,
+    operatorManifestDigest: "sha256:CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+    finalityFloor: "accepted",
     recoveryRetry: false,
   });
 }

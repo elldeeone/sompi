@@ -2,9 +2,9 @@
   "openapi": "3.2.0",
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "info": {
-    "title": "Sompi Purchase API",
+    "title": "Sompi API",
     "version": "0.8.2",
-    "description": "Authenticated, protocol-neutral Purchase lifecycle for Sompi."
+    "description": "Authenticated wallet view, direct KAS Transfer, and protocol-neutral Purchase lifecycles for Sompi."
   },
   "security": [
     {
@@ -42,7 +42,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PurchaseApiError"
+                  "$ref": "#/components/schemas/SompiApiError"
                 }
               }
             }
@@ -52,7 +52,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PurchaseApiError"
+                  "$ref": "#/components/schemas/SompiApiError"
                 }
               }
             }
@@ -62,7 +62,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PurchaseApiError"
+                  "$ref": "#/components/schemas/SompiApiError"
                 }
               }
             }
@@ -72,7 +72,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PurchaseApiError"
+                  "$ref": "#/components/schemas/SompiApiError"
                 }
               }
             }
@@ -82,7 +82,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PurchaseApiError"
+                  "$ref": "#/components/schemas/SompiApiError"
                 }
               }
             }
@@ -92,7 +92,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PurchaseApiError"
+                  "$ref": "#/components/schemas/SompiApiError"
                 }
               }
             }
@@ -102,7 +102,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PurchaseApiError"
+                  "$ref": "#/components/schemas/SompiApiError"
                 }
               }
             }
@@ -112,7 +112,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PurchaseApiError"
+                  "$ref": "#/components/schemas/SompiApiError"
                 }
               }
             }
@@ -151,7 +151,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PurchaseApiError"
+                  "$ref": "#/components/schemas/SompiApiError"
                 }
               }
             }
@@ -161,7 +161,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PurchaseApiError"
+                  "$ref": "#/components/schemas/SompiApiError"
                 }
               }
             }
@@ -171,7 +171,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PurchaseApiError"
+                  "$ref": "#/components/schemas/SompiApiError"
                 }
               }
             }
@@ -181,7 +181,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PurchaseApiError"
+                  "$ref": "#/components/schemas/SompiApiError"
                 }
               }
             }
@@ -191,7 +191,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PurchaseApiError"
+                  "$ref": "#/components/schemas/SompiApiError"
                 }
               }
             }
@@ -201,7 +201,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PurchaseApiError"
+                  "$ref": "#/components/schemas/SompiApiError"
                 }
               }
             }
@@ -211,7 +211,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PurchaseApiError"
+                  "$ref": "#/components/schemas/SompiApiError"
                 }
               }
             }
@@ -221,7 +221,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PurchaseApiError"
+                  "$ref": "#/components/schemas/SompiApiError"
                 }
               }
             }
@@ -260,7 +260,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PurchaseApiError"
+                  "$ref": "#/components/schemas/SompiApiError"
                 }
               }
             }
@@ -270,7 +270,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PurchaseApiError"
+                  "$ref": "#/components/schemas/SompiApiError"
                 }
               }
             }
@@ -280,7 +280,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PurchaseApiError"
+                  "$ref": "#/components/schemas/SompiApiError"
                 }
               }
             }
@@ -290,7 +290,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PurchaseApiError"
+                  "$ref": "#/components/schemas/SompiApiError"
                 }
               }
             }
@@ -300,7 +300,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PurchaseApiError"
+                  "$ref": "#/components/schemas/SompiApiError"
                 }
               }
             }
@@ -310,7 +310,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PurchaseApiError"
+                  "$ref": "#/components/schemas/SompiApiError"
                 }
               }
             }
@@ -320,7 +320,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PurchaseApiError"
+                  "$ref": "#/components/schemas/SompiApiError"
                 }
               }
             }
@@ -330,7 +330,542 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/PurchaseApiError"
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/wallet": {
+      "get": {
+        "operationId": "getWallet",
+        "summary": "Read wallet balance, vault identity, and spending limits",
+        "responses": {
+          "200": {
+            "description": "Wallet state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WalletView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/wallet/activity": {
+      "get": {
+        "operationId": "listWalletActivity",
+        "summary": "List recent Purchases and direct Transfers",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Wallet activity",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WalletActivity"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/transfers": {
+      "post": {
+        "operationId": "createTransfer",
+        "summary": "Create or idempotently resume a human-approved direct KAS Transfer",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TransferCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Transfer state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/transfers/{transferId}": {
+      "get": {
+        "operationId": "getTransfer",
+        "summary": "Read a durable Transfer without an external side effect",
+        "parameters": [
+          {
+            "name": "transferId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^trf_[A-Za-z0-9_-]{22}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Transfer state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/transfers/{transferId}/recover": {
+      "post": {
+        "operationId": "recoverTransfer",
+        "summary": "Reconcile a Transfer without replacement authorization or payment",
+        "parameters": [
+          {
+            "name": "transferId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^trf_[A-Za-z0-9_-]{22}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Reconciled Transfer state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TransferView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
                 }
               }
             }
@@ -344,7 +879,7 @@
       "AgentCredential": {
         "type": "http",
         "scheme": "bearer",
-        "bearerFormat": "sompi-purchase-api-v1"
+        "bearerFormat": "sompi-agent-api-v1"
       }
     },
     "schemas": {
@@ -683,7 +1218,7 @@
           }
         }
       },
-      "PurchaseApiError": {
+      "SompiApiError": {
         "type": "object",
         "additionalProperties": false,
         "required": [
@@ -712,6 +1247,641 @@
               "retryable": {
                 "type": "boolean"
               }
+            }
+          }
+        }
+      },
+      "TransferCreateRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requestKey",
+          "destination",
+          "amountAtomic"
+        ],
+        "properties": {
+          "requestKey": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._:-]{1,160}$",
+            "maxLength": 160
+          },
+          "destination": {
+            "type": "string",
+            "pattern": "^kaspatest:[a-z0-9]{20,256}$",
+            "maxLength": 266
+          },
+          "amountAtomic": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]*$",
+            "maxLength": 20
+          }
+        }
+      },
+      "TransferView": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "requestKey",
+          "requestDigest",
+          "state",
+          "destination",
+          "amountAtomic",
+          "asset",
+          "network",
+          "sourceVaultAddress",
+          "sourceVaultDigest",
+          "feeCeilingAtomic",
+          "maximumTotalAtomic",
+          "expiresAtMs",
+          "policyDigest",
+          "manifestRevision",
+          "manifestDigest",
+          "finalityFloor",
+          "version",
+          "createdAtMs",
+          "updatedAtMs",
+          "recoveryRequired",
+          "safeToRetry",
+          "userAction"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^trf_[A-Za-z0-9_-]{22}$"
+          },
+          "requestKey": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._:-]{1,160}$",
+            "maxLength": 160
+          },
+          "requestDigest": {
+            "type": "string",
+            "pattern": "^sha256:[A-Za-z0-9_-]{43}$"
+          },
+          "state": {
+            "enum": [
+              "created",
+              "awaiting_authority",
+              "authorised",
+              "denied",
+              "funds_reserved",
+              "prepared",
+              "submitted",
+              "settled",
+              "receipted",
+              "failed_recoverable",
+              "failed_terminal"
+            ]
+          },
+          "destination": {
+            "type": "string",
+            "pattern": "^kaspatest:[a-z0-9]{20,256}$",
+            "maxLength": 266
+          },
+          "amountAtomic": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]*$",
+            "maxLength": 20
+          },
+          "asset": {
+            "const": "KAS"
+          },
+          "network": {
+            "const": "kaspa:testnet-10"
+          },
+          "sourceVaultAddress": {
+            "type": "string",
+            "pattern": "^kaspatest:[a-z0-9]{20,256}$",
+            "maxLength": 266
+          },
+          "sourceVaultDigest": {
+            "type": "string",
+            "pattern": "^sha256:[A-Za-z0-9_-]{43}$"
+          },
+          "feeCeilingAtomic": {
+            "type": "string",
+            "pattern": "^(?:0|[1-9][0-9]*)$",
+            "maxLength": 20
+          },
+          "maximumTotalAtomic": {
+            "type": "string",
+            "pattern": "^[1-9][0-9]*$",
+            "maxLength": 20
+          },
+          "expiresAtMs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "policyDigest": {
+            "type": "string",
+            "pattern": "^sha256:[A-Za-z0-9_-]{43}$"
+          },
+          "manifestRevision": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "manifestDigest": {
+            "type": "string",
+            "pattern": "^sha256:[A-Za-z0-9_-]{43}$"
+          },
+          "finalityFloor": {
+            "enum": [
+              "accepted",
+              "depth-confirmed"
+            ]
+          },
+          "treasuryOperationKey": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "transactionId": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "actualFeeAtomic": {
+            "type": "string",
+            "pattern": "^(?:0|[1-9][0-9]*)$",
+            "maxLength": 20
+          },
+          "failureCode": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 160
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "createdAtMs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "updatedAtMs": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "authorization": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "transferId",
+              "facts",
+              "factsDigest",
+              "decision",
+              "authorityId",
+              "evidenceDigest",
+              "verificationProfile",
+              "verifierId",
+              "decidedAtMs",
+              "expiresAtMs"
+            ],
+            "properties": {
+              "transferId": {
+                "type": "string",
+                "pattern": "^trf_[A-Za-z0-9_-]{22}$"
+              },
+              "facts": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "profile",
+                  "transferId",
+                  "requestKey",
+                  "sourceVaultAddress",
+                  "sourceVaultDigest",
+                  "destination",
+                  "amountAtomic",
+                  "asset",
+                  "network",
+                  "feeCeilingAtomic",
+                  "maximumTotalAtomic",
+                  "expiresAt",
+                  "policyDigest",
+                  "operatorManifestRevision",
+                  "operatorManifestDigest",
+                  "finalityFloor"
+                ],
+                "properties": {
+                  "profile": {
+                    "const": "sompi.transfer.1"
+                  },
+                  "transferId": {
+                    "type": "string",
+                    "pattern": "^trf_[A-Za-z0-9_-]{22}$"
+                  },
+                  "requestKey": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9._:-]{1,160}$",
+                    "maxLength": 160
+                  },
+                  "sourceVaultAddress": {
+                    "type": "string",
+                    "pattern": "^kaspatest:[a-z0-9]{20,256}$",
+                    "maxLength": 266
+                  },
+                  "sourceVaultDigest": {
+                    "type": "string",
+                    "pattern": "^sha256:[A-Za-z0-9_-]{43}$"
+                  },
+                  "destination": {
+                    "type": "string",
+                    "pattern": "^kaspatest:[a-z0-9]{20,256}$",
+                    "maxLength": 266
+                  },
+                  "amountAtomic": {
+                    "type": "string",
+                    "pattern": "^[1-9][0-9]*$",
+                    "maxLength": 20
+                  },
+                  "asset": {
+                    "const": "KAS"
+                  },
+                  "network": {
+                    "const": "kaspa:testnet-10"
+                  },
+                  "feeCeilingAtomic": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)$",
+                    "maxLength": 20
+                  },
+                  "maximumTotalAtomic": {
+                    "type": "string",
+                    "pattern": "^[1-9][0-9]*$",
+                    "maxLength": 20
+                  },
+                  "expiresAt": {
+                    "type": "string",
+                    "format": "date-time",
+                    "maxLength": 40
+                  },
+                  "policyDigest": {
+                    "type": "string",
+                    "pattern": "^sha256:[A-Za-z0-9_-]{43}$"
+                  },
+                  "operatorManifestRevision": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "operatorManifestDigest": {
+                    "type": "string",
+                    "pattern": "^sha256:[A-Za-z0-9_-]{43}$"
+                  },
+                  "finalityFloor": {
+                    "enum": [
+                      "accepted",
+                      "depth-confirmed"
+                    ]
+                  }
+                }
+              },
+              "factsDigest": {
+                "type": "string",
+                "pattern": "^sha256:[A-Za-z0-9_-]{43}$"
+              },
+              "decision": {
+                "enum": [
+                  "approved",
+                  "denied"
+                ]
+              },
+              "authorityId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "denialCode": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100
+              },
+              "evidenceDigest": {
+                "type": "string",
+                "pattern": "^sha256:[A-Za-z0-9_-]{43}$"
+              },
+              "verificationProfile": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "verifierId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "decidedAtMs": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "expiresAtMs": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              }
+            }
+          },
+          "receipt": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "profile",
+              "transferId",
+              "requestKey",
+              "destination",
+              "amountAtomic",
+              "feeAtomic",
+              "network",
+              "fundingSource",
+              "transactionId",
+              "finality",
+              "settledAt"
+            ],
+            "properties": {
+              "profile": {
+                "const": "urn:sompi:receipt:transfer:1"
+              },
+              "transferId": {
+                "type": "string",
+                "pattern": "^trf_[A-Za-z0-9_-]{22}$"
+              },
+              "requestKey": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._:-]{1,160}$",
+                "maxLength": 160
+              },
+              "destination": {
+                "type": "string",
+                "pattern": "^kaspatest:[a-z0-9]{20,256}$",
+                "maxLength": 266
+              },
+              "amountAtomic": {
+                "type": "string",
+                "pattern": "^[1-9][0-9]*$",
+                "maxLength": 20
+              },
+              "feeAtomic": {
+                "type": "string",
+                "pattern": "^(?:0|[1-9][0-9]*)$",
+                "maxLength": 20
+              },
+              "network": {
+                "const": "kaspa:testnet-10"
+              },
+              "fundingSource": {
+                "const": "vault-treasury"
+              },
+              "transactionId": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "finality": {
+                "enum": [
+                  "accepted",
+                  "depth-confirmed"
+                ]
+              },
+              "settledAt": {
+                "type": "string",
+                "format": "date-time",
+                "maxLength": 40
+              }
+            }
+          },
+          "recoveryRequired": {
+            "type": "boolean"
+          },
+          "safeToRetry": {
+            "type": "boolean"
+          },
+          "userAction": {
+            "enum": [
+              "approve_or_deny",
+              "wait",
+              "recover",
+              "none"
+            ]
+          }
+        }
+      },
+      "WalletView": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "network",
+          "asset",
+          "fundingAddress",
+          "vaultAddress",
+          "balance",
+          "limits",
+          "chainStatus"
+        ],
+        "properties": {
+          "network": {
+            "const": "kaspa:testnet-10"
+          },
+          "asset": {
+            "const": "KAS"
+          },
+          "fundingAddress": {
+            "type": "string",
+            "pattern": "^kaspatest:[a-z0-9]{20,256}$",
+            "maxLength": 266
+          },
+          "vaultAddress": {
+            "type": "string",
+            "pattern": "^kaspatest:[a-z0-9]{20,256}$",
+            "maxLength": 266
+          },
+          "vaultOutpoint": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "txid",
+              "index"
+            ],
+            "properties": {
+              "txid": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "index": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 4294967295
+              }
+            }
+          },
+          "balance": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "observedAtomic",
+              "unboundAtomic",
+              "reservedAtomic",
+              "availableAtomic",
+              "provenance",
+              "observedAt"
+            ],
+            "properties": {
+              "observedAtomic": {
+                "type": "string",
+                "pattern": "^(?:0|[1-9][0-9]*)$",
+                "maxLength": 20
+              },
+              "unboundAtomic": {
+                "type": "string",
+                "pattern": "^(?:0|[1-9][0-9]*)$",
+                "maxLength": 20
+              },
+              "reservedAtomic": {
+                "type": "string",
+                "pattern": "^(?:0|[1-9][0-9]*)$",
+                "maxLength": 20
+              },
+              "availableAtomic": {
+                "type": "string",
+                "pattern": "^(?:0|[1-9][0-9]*)$",
+                "maxLength": 20
+              },
+              "provenance": {
+                "const": "operator-node-and-local-vault-lineage"
+              },
+              "observedAt": {
+                "type": "string",
+                "format": "date-time",
+                "maxLength": 40
+              }
+            }
+          },
+          "limits": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "maxPerTransferAtomic",
+              "maxPerHourAtomic",
+              "approvalThresholdAtomic",
+              "allowlist",
+              "vaultMaxOutflowAtomic",
+              "vaultWindowSizeDaa",
+              "vaultSpentInWindowAtomic"
+            ],
+            "properties": {
+              "maxPerTransferAtomic": {
+                "type": "string",
+                "pattern": "^(?:0|[1-9][0-9]*)$",
+                "maxLength": 20
+              },
+              "maxPerHourAtomic": {
+                "type": "string",
+                "pattern": "^(?:0|[1-9][0-9]*)$",
+                "maxLength": 20
+              },
+              "approvalThresholdAtomic": {
+                "type": "string",
+                "pattern": "^(?:0|[1-9][0-9]*)$",
+                "maxLength": 20
+              },
+              "allowlist": {
+                "type": "array",
+                "maxItems": 1000,
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "maxLength": 266
+                }
+              },
+              "vaultMaxOutflowAtomic": {
+                "type": "string",
+                "pattern": "^(?:0|[1-9][0-9]*)$",
+                "maxLength": 20
+              },
+              "vaultWindowSizeDaa": {
+                "type": "string",
+                "pattern": "^[1-9][0-9]*$",
+                "maxLength": 20
+              },
+              "vaultSpentInWindowAtomic": {
+                "type": "string",
+                "pattern": "^(?:0|[1-9][0-9]*)$",
+                "maxLength": 20
+              }
+            }
+          },
+          "chainStatus": {
+            "enum": [
+              "observed",
+              "unfunded",
+              "unavailable"
+            ]
+          }
+        }
+      },
+      "WalletActivity": {
+        "type": "array",
+        "maxItems": 100,
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "id",
+            "requestKey",
+            "state",
+            "createdAt",
+            "updatedAt"
+          ],
+          "properties": {
+            "kind": {
+              "enum": [
+                "purchase",
+                "transfer"
+              ]
+            },
+            "id": {
+              "type": "string",
+              "pattern": "^(?:pur|trf)_[A-Za-z0-9_-]{22}$"
+            },
+            "requestKey": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9._:-]{1,160}$",
+              "maxLength": 160
+            },
+            "state": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64
+            },
+            "amountAtomic": {
+              "type": "string",
+              "pattern": "^[1-9][0-9]*$",
+              "maxLength": 20
+            },
+            "counterparty": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 2048
+            },
+            "transactionId": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "createdAt": {
+              "type": "string",
+              "format": "date-time",
+              "maxLength": 40
+            },
+            "updatedAt": {
+              "type": "string",
+              "format": "date-time",
+              "maxLength": 40
             }
           }
         }

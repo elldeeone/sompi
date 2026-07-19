@@ -19,10 +19,10 @@ export interface RecoveryApiCredential {
   readonly token: string;
 }
 
-export class PurchaseApiCredentialError extends Error {
+export class SompiApiCredentialError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
     super(message, options);
-    this.name = "PurchaseApiCredentialError";
+    this.name = "SompiApiCredentialError";
   }
 }
 
@@ -54,7 +54,7 @@ export function canonicalRecoveryApiCredentialBytes(credential: RecoveryApiCrede
 
 export function parseAgentApiCredential(value: unknown): AgentApiCredential {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new PurchaseApiCredentialError("agent API credential is invalid");
+    throw new SompiApiCredentialError("agent API credential is invalid");
   }
   const record = value as Record<string, unknown>;
   if (
@@ -63,14 +63,14 @@ export function parseAgentApiCredential(value: unknown): AgentApiCredential {
     typeof record.id !== "string" || !/^agent-[A-Za-z0-9_-]{16}$/.test(record.id) ||
     typeof record.token !== "string" || !TOKEN_PATTERN.test(record.token)
   ) {
-    throw new PurchaseApiCredentialError("agent API credential is invalid");
+    throw new SompiApiCredentialError("agent API credential is invalid");
   }
   return Object.freeze({ schema: AGENT_API_CREDENTIAL_SCHEMA, id: record.id, token: record.token });
 }
 
 export function parseRecoveryApiCredential(value: unknown): RecoveryApiCredential {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new PurchaseApiCredentialError("recovery API credential is invalid");
+    throw new SompiApiCredentialError("recovery API credential is invalid");
   }
   const record = value as Record<string, unknown>;
   if (
@@ -79,7 +79,7 @@ export function parseRecoveryApiCredential(value: unknown): RecoveryApiCredentia
     typeof record.id !== "string" || !/^recovery-[A-Za-z0-9_-]{16}$/.test(record.id) ||
     typeof record.token !== "string" || !TOKEN_PATTERN.test(record.token)
   ) {
-    throw new PurchaseApiCredentialError("recovery API credential is invalid");
+    throw new SompiApiCredentialError("recovery API credential is invalid");
   }
   return Object.freeze({ schema: RECOVERY_API_CREDENTIAL_SCHEMA, id: record.id, token: record.token });
 }
@@ -141,13 +141,13 @@ function loadCredential<T extends AgentApiCredential | RecoveryApiCredential>(
       before.uid !== options.expectedOwnerUserId || before.gid !== options.runtimeGroupId ||
       (before.mode & 0o777) !== expectedMode
     ) {
-      throw new PurchaseApiCredentialError(`${label} API credential file permissions or identity are invalid`);
+      throw new SompiApiCredentialError(`${label} API credential file permissions or identity are invalid`);
     }
     bytes = Buffer.alloc(before.size);
     let offset = 0;
     while (offset < bytes.length) {
       const read = fs.readSync(descriptor, bytes, offset, bytes.length - offset, offset);
-      if (read === 0) throw new PurchaseApiCredentialError(`${label} API credential file was truncated`);
+      if (read === 0) throw new SompiApiCredentialError(`${label} API credential file was truncated`);
       offset += read;
     }
     const after = fs.fstatSync(descriptor);
@@ -158,19 +158,19 @@ function loadCredential<T extends AgentApiCredential | RecoveryApiCredential>(
       after.dev !== pathname.dev || after.ino !== pathname.ino ||
       before.size !== after.size || before.mtimeMs !== after.mtimeMs || before.ctimeMs !== after.ctimeMs
     ) {
-      throw new PurchaseApiCredentialError(`${label} API credential changed during stable read`);
+      throw new SompiApiCredentialError(`${label} API credential changed during stable read`);
     }
     const parsed = parse(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)));
     const canonical = canonicalBytes(parsed);
     try {
-      if (!canonical.equals(bytes)) throw new PurchaseApiCredentialError(`${label} API credential is not canonical`);
+      if (!canonical.equals(bytes)) throw new SompiApiCredentialError(`${label} API credential is not canonical`);
     } finally {
       canonical.fill(0);
     }
     return parsed;
   } catch (cause) {
-    if (cause instanceof PurchaseApiCredentialError) throw cause;
-    throw new PurchaseApiCredentialError(`${label} API credential could not be loaded`, { cause });
+    if (cause instanceof SompiApiCredentialError) throw cause;
+    throw new SompiApiCredentialError(`${label} API credential could not be loaded`, { cause });
   } finally {
     bytes?.fill(0);
     if (descriptor !== undefined) fs.closeSync(descriptor);

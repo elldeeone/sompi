@@ -57,7 +57,7 @@ import type {
   PinnedHttpTransportRequest,
   PinnedHttpTransportResponse,
 } from "../http/pinned-transport.js";
-import { createPurchaseApplication } from "../api/contracts.js";
+import { createPurchaseApplication, type PurchaseApplication, type SompiApplication } from "../api/contracts.js";
 import {
   Keypair,
   PrivateKey,
@@ -638,7 +638,7 @@ async function invokePurchase(input: {
     throw new Error("local proof initiation mode is unsupported");
   }
   const server = createSompiMcpServer(
-    createPurchaseApplication(input.coordinator),
+    purchaseProofApplication(createPurchaseApplication(input.coordinator)),
     "e2e-human-present-proof"
   );
   const client = new Client({ name: "sompi-e2e-agent", version: "1" });
@@ -680,6 +680,18 @@ async function invokePurchase(input: {
     await client.close().catch(() => undefined);
     await server.close().catch(() => undefined);
   }
+}
+
+function purchaseProofApplication(application: PurchaseApplication): SompiApplication {
+  const unavailable = async (): Promise<never> => { throw new Error("wallet and Transfer surfaces are outside this Purchase proof"); };
+  return Object.freeze({
+    ...application,
+    wallet: unavailable,
+    activity: async () => [],
+    transfer: unavailable,
+    transferStatus: unavailable,
+    transferRecover: unavailable,
+  });
 }
 
 function localWalletChainEvidence(wallet: KaspaWallet, now: () => number) {

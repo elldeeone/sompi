@@ -6,12 +6,14 @@ import test from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
-import { PurchaseApiClientError } from "../api/client.js";
-import { PurchaseApiClient } from "../api/client.js";
+import { SompiApiClientError } from "../api/client.js";
+import { SompiApiClient } from "../api/client.js";
 import { generateAgentApiCredential } from "../api/credential.js";
-import { startPurchaseApiServer } from "../api/server.js";
-import type { PurchaseApplication } from "../api/contracts.js";
+import { startSompiApiServer } from "../api/server.js";
+import type { SompiApplication } from "../api/contracts.js";
 import type { PurchaseView } from "../purchase/types.js";
+import type { TransferView } from "../transfer/types.js";
+import type { WalletView } from "../wallet-view/module.js";
 import {
   createSompiMcpServer,
   registerSompiTools,
@@ -20,9 +22,12 @@ import {
   type McpToolResult,
 } from "./server.js";
 
-const EXPECTED_TOOLS = ["purchase", "purchase_recover", "purchase_status"] as const;
+const EXPECTED_TOOLS = [
+  "purchase", "purchase_recover", "purchase_status", "transfer", "transfer_recover",
+  "transfer_status", "wallet", "wallet_activity",
+] as const;
 
-test("MCP exposes exactly three stateless Purchase compatibility tools", () => {
+test("MCP exposes stateless Purchase, wallet, and Transfer compatibility tools", () => {
   const registrar = new CapturingRegistrar();
   registerSompiTools(registrar, fakeApplication());
   assert.deepEqual([...registrar.tools.keys()].sort(), EXPECTED_TOOLS);
@@ -34,6 +39,11 @@ test("real MCP transport delegates all behavior to the Purchase application", as
     async purchase() { calls.push("purchase"); return fakeView(); },
     async status() { calls.push("status"); return fakeView(); },
     async recover() { calls.push("recover"); return fakeView(); },
+    async wallet() { calls.push("wallet"); return fakeWallet(); },
+    async activity() { calls.push("activity"); return []; },
+    async transfer() { calls.push("transfer"); return fakeTransfer(); },
+    async transferStatus() { calls.push("transferStatus"); return fakeTransfer(); },
+    async transferRecover() { calls.push("transferRecover"); return fakeTransfer(); },
   });
   const server = createSompiMcpServer(application, "test");
   const client = new Client({ name: "sompi-mcp-test", version: "test" });
@@ -48,7 +58,12 @@ test("real MCP transport delegates all behavior to the Purchase application", as
     });
     await client.callTool({ name: "purchase_status", arguments: { purchaseId: fakeView().id } });
     await client.callTool({ name: "purchase_recover", arguments: { purchaseId: fakeView().id } });
-    assert.deepEqual(calls, ["purchase", "status", "recover"]);
+    await client.callTool({ name: "wallet", arguments: {} });
+    await client.callTool({ name: "wallet_activity", arguments: { limit: 10 } });
+    await client.callTool({ name: "transfer", arguments: { requestKey: "mcp:transfer:one", destination: ADDRESS, amountAtomic: "1000" } });
+    await client.callTool({ name: "transfer_status", arguments: { transferId: fakeTransfer().id } });
+    await client.callTool({ name: "transfer_recover", arguments: { transferId: fakeTransfer().id } });
+    assert.deepEqual(calls, ["purchase", "status", "recover", "wallet", "activity", "transfer", "transferStatus", "transferRecover"]);
   } finally {
     await client.close();
     await server.close();
@@ -58,7 +73,7 @@ test("real MCP transport delegates all behavior to the Purchase application", as
 test("MCP projects bounded structured API failures without leaking causes", async () => {
   const secret = `private-key=${"a".repeat(5_000)}`;
   const application = fakeApplication({
-    async purchase() { throw new PurchaseApiClientError("API_BUSY", "The API is busy.", true, { cause: new Error(secret) }); },
+    async purchase() { throw new SompiApiClientError("API_BUSY", "The API is busy.", true, { cause: new Error(secret) }); },
     async status() { throw new Error(secret); },
     async recover() { throw new Error(secret); },
   });
@@ -94,9 +109,9 @@ test("HTTP and MCP return the same canonical view through the production API sea
   };
   fs.chownSync(directory, access.expectedServerUserId, access.runtimeGroupId);
   fs.chmodSync(directory, 0o710);
-  const running = await startPurchaseApiServer({ application: fakeApplication(), credential, socketPath, ...access });
+  const running = await startSompiApiServer({ application: fakeApplication(), credential, socketPath, ...access });
   try {
-    const client = new PurchaseApiClient({ socketPath, credential, ...access });
+    const client = new SompiApiClient({ socketPath, credential, ...access });
     const direct = await client.status(fakeView().id);
     const registrar = new CapturingRegistrar();
     registerSompiTools(registrar, client);
@@ -120,12 +135,65 @@ class CapturingRegistrar implements McpToolRegistrar {
   }
 }
 
-function fakeApplication(overrides: Partial<PurchaseApplication> = {}): PurchaseApplication {
+function fakeApplication(overrides: Partial<SompiApplication> = {}): SompiApplication {
   return {
     async purchase() { return fakeView(); },
     async status() { return fakeView(); },
     async recover() { return fakeView(); },
+    async wallet() { return fakeWallet(); },
+    async activity() { return []; },
+    async transfer() { return fakeTransfer(); },
+    async transferStatus() { return fakeTransfer(); },
+    async transferRecover() { return fakeTransfer(); },
     ...overrides,
+  };
+}
+
+const ADDRESS = "kaspatest:qq2n2shqkghczyel57af242ffs50x5uj07w7ezg7kwm8frwt5xhljqa3d68et";
+
+function fakeTransfer(): TransferView {
+  return {
+    id: "trf_0123456789ABCDEFGHIJKL",
+    requestKey: "mcp:transfer:one",
+    requestDigest: `sha256:${"B".repeat(43)}`,
+    state: "created",
+    destination: ADDRESS,
+    amountAtomic: "1000",
+    asset: "KAS",
+    network: "kaspa:testnet-10",
+    sourceVaultAddress: ADDRESS,
+    sourceVaultDigest: `sha256:${"C".repeat(43)}`,
+    feeCeilingAtomic: "100",
+    maximumTotalAtomic: "1100",
+    expiresAtMs: 2_000_000_000_000,
+    policyDigest: `sha256:${"D".repeat(43)}`,
+    manifestRevision: 1,
+    manifestDigest: `sha256:${"E".repeat(43)}`,
+    finalityFloor: "accepted",
+    version: 0,
+    createdAtMs: 1_900_000_000_000,
+    updatedAtMs: 1_900_000_000_000,
+    recoveryRequired: false,
+    safeToRetry: true,
+    userAction: "none",
+  };
+}
+
+function fakeWallet(): WalletView {
+  return {
+    network: "kaspa:testnet-10",
+    asset: "KAS",
+    fundingAddress: ADDRESS,
+    vaultAddress: ADDRESS,
+    balance: {
+      observedAtomic: "10000", unboundAtomic: "0", reservedAtomic: "0", availableAtomic: "10000",
+      provenance: "operator-node-and-local-vault-lineage", observedAt: "2030-01-01T00:00:00.000Z",
+    },
+    limits: {
+      maxPerTransferAtomic: "1000", maxPerHourAtomic: "5000", approvalThresholdAtomic: "1",
+      allowlist: [], vaultMaxOutflowAtomic: "5000", vaultWindowSizeDaa: "100", vaultSpentInWindowAtomic: "0",
+    },
+    chainStatus: "observed",
   };
 }
 

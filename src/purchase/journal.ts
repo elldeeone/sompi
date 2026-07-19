@@ -124,6 +124,12 @@ export const JOURNAL_FAULT_POINTS = Object.freeze([
   "batch_channel.after_insert",
   "batch_channel.after_update",
   "batch_movement.after_insert",
+  "transfer.after_insert",
+  "transfer_transition.after_state_update",
+  "transfer_authorization.after_insert",
+  "transfer_treasury_bind.after_update",
+  "transfer_treasury_sync.after_update",
+  "transfer_receipt.after_insert",
 ] as const);
 
 export type JournalFaultPoint = (typeof JOURNAL_FAULT_POINTS)[number];
@@ -1664,6 +1670,7 @@ export class PurchaseJournal {
            (transfer_id, from_state, to_state, reason_code, created_at_ms)
          VALUES (?, NULL, 'created', 'intent_recorded', ?)`
       ).run(input.id, now);
+      this.inject("transfer.after_insert");
       return this.requireTransfer(input.id);
     });
     return claim.immediate();
@@ -1748,6 +1755,7 @@ export class PurchaseJournal {
         decision.decidedAtMs,
         transfer.expiresAtMs,
       );
+      this.inject("transfer_authorization.after_insert");
       this.transitionTransferInternal(
         id,
         decision.decision === "approved" ? "authorised" : "denied",
@@ -1803,6 +1811,7 @@ export class PurchaseJournal {
       this.db.prepare(
         "UPDATE transfers SET treasury_operation_key = ?, updated_at_ms = ? WHERE id = ?"
       ).run(operationKey, this.timestamp(), id);
+      this.inject("transfer_treasury_bind.after_update");
       return this.transitionTransferInternal(id, "funds_reserved", "treasury_operation_bound");
     });
     return bind.immediate();
@@ -1832,6 +1841,7 @@ export class PurchaseJournal {
                 updated_at_ms = ?
           WHERE id = ?`
       ).run(operation.transactionId ?? null, operation.feeAtomic ?? null, failure, this.timestamp(), id);
+      this.inject("transfer_treasury_sync.after_update");
       transfer = this.requireTransfer(id);
       if (transfer.state !== target) {
         transfer = this.transitionTransferInternal(id, target, `treasury_${operation.state}`);
@@ -1859,6 +1869,7 @@ export class PurchaseJournal {
            (transfer_id, receipt_json, receipt_digest, created_at_ms)
          VALUES (?, ?, ?, ?)`
       ).run(id, json, digest, this.timestamp());
+      this.inject("transfer_receipt.after_insert");
       this.transitionTransferInternal(id, "receipted", "receipt_recorded", digest);
       return receipt;
     });
@@ -1915,6 +1926,7 @@ export class PurchaseJournal {
         WHERE id = ? AND state = ? AND version = ?`
     ).run(to, now, id, current.state, current.version).changes;
     if (changed !== 1) throw new JournalInvariantError("Transfer state changed concurrently");
+    this.inject("transfer_transition.after_state_update");
     this.db.prepare(
       `INSERT INTO transfer_transitions
          (transfer_id, from_state, to_state, reason_code, detail_digest, created_at_ms)
@@ -2834,13 +2846,34 @@ export class PurchaseJournal {
       const resolved = input.requestedAmountAtomic === "max"
         ? undefined
         : input.requestedAmountAtomic;
+      const humanApproved = input.authorizationEvidenceDigest !== undefined;
+      if (humanApproved) {
+        const authorization = this.db.prepare(
+          `SELECT 1 AS approved
+             FROM transfers transfer
+             JOIN transfer_authorizations authorization
+               ON authorization.transfer_id = transfer.id
+            WHERE transfer.treasury_operation_key = ?
+              AND authorization.evidence_digest = ?
+              AND authorization.decision = 'approved'`
+        ).get(input.operationKey, input.authorizationEvidenceDigest) as
+          | { approved: number }
+          | undefined;
+        if (!authorization) {
+          throw new PolicyReservationError(
+            "direct Treasury movement has no matching approved Transfer authorization"
+          );
+        }
+      }
       this.assertDirectTreasuryCapacity(
         policy,
         input.kind,
         input.destination,
         resolved ?? "0",
         input.feeCeilingAtomic,
-        now
+        now,
+        undefined,
+        humanApproved,
       );
       try {
         this.db.prepare(
@@ -2848,8 +2881,9 @@ export class PurchaseJournal {
              operation_key, request_digest, kind, destination,
              requested_amount_atomic, keep_float_atomic, fee_ceiling_atomic,
              resolved_amount_atomic, policy_digest, retry_limit,
+             authorization_evidence_digest,
              state, retry_count, created_at_ms, updated_at_ms
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'intent', 0, ?, ?)`
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'intent', 0, ?, ?)`
         ).run(
           input.operationKey,
           input.requestDigest,
@@ -2861,6 +2895,7 @@ export class PurchaseJournal {
           resolved ?? null,
           input.policyDigest,
           input.retryLimit,
+          input.authorizationEvidenceDigest ?? null,
           now,
           now
         );
@@ -3040,7 +3075,8 @@ export class PurchaseJournal {
           prepared.amountAtomic,
           current.feeCeilingAtomic,
           now,
-          operationKey
+          operationKey,
+          current.authorizationEvidenceDigest !== undefined,
         );
         const stored = this.storePreparedMaterial(prepared.bytes, digest);
         const driverSql = driver
@@ -3342,7 +3378,8 @@ export class PurchaseJournal {
         current.resolvedAmountAtomic,
         current.feeCeilingAtomic,
         now,
-        operationKey
+        operationKey,
+        current.authorizationEvidenceDigest !== undefined,
       );
       const driverSql = driver
         ? " AND driver_owner = ? AND driver_generation = ?"
@@ -3637,6 +3674,36 @@ export class PurchaseJournal {
       const now = this.timestamp();
       this.expireReservationsInternal(now);
       return this.policyCapacityUsedInternal(now);
+    });
+    return read.immediate();
+  }
+
+  treasuryPendingCapacityUsed(): bigint {
+    const read = this.db.transaction(() => {
+      const now = this.timestamp();
+      this.expireReservationsInternal(now);
+      const reservations = this.db.prepare(
+        `SELECT amount_atomic, additional_cost_ceiling_atomic FROM treasury_reservations
+          WHERE (state = 'active' AND expires_at_ms > ?) OR state = 'in_flight'`
+      ).all(now) as Array<{ amount_atomic: string; additional_cost_ceiling_atomic: string }>;
+      const operations = this.db.prepare(
+        `SELECT kind, resolved_amount_atomic, fee_ceiling_atomic, requested_amount_atomic
+           FROM treasury_operations
+          WHERE state IN ('intent', 'prepared', 'submission_planned', 'submitted', 'observed')`
+      ).all() as Array<{
+        kind: TreasuryOperationRecord["kind"];
+        resolved_amount_atomic: string | null;
+        fee_ceiling_atomic: string;
+        requested_amount_atomic: string;
+      }>;
+      return reservations.reduce(
+        (total, row) => total + BigInt(row.amount_atomic) + BigInt(row.additional_cost_ceiling_atomic), 0n,
+      ) + operations.reduce((total, row) => {
+        const amount = row.kind === "vault_deposit" || row.kind === "batch_refund"
+          ? 0n
+          : BigInt(row.resolved_amount_atomic ?? (row.requested_amount_atomic === "max" ? "0" : row.requested_amount_atomic));
+        return total + amount + BigInt(row.fee_ceiling_atomic);
+      }, 0n);
     });
     return read.immediate();
   }
@@ -8489,7 +8556,8 @@ export class PurchaseJournal {
     amountAtomic: string,
     feeAtomic: string,
     now: number,
-    excludeOperationKey?: string
+    excludeOperationKey?: string,
+    humanApproved = false,
   ): void {
     if (
       kind !== "vault_deposit" && kind !== "batch_refund" &&
@@ -8520,9 +8588,9 @@ export class PurchaseJournal {
         `gross direct Treasury movement ${gross} exceeds per-payment limit ${maxPerPayment}`
       );
     }
-    if (approvalThreshold > 0n && policyAmount > approvalThreshold) {
+    if (approvalThreshold > 0n && policyAmount > approvalThreshold && !humanApproved) {
       throw new PolicyReservationError(
-        "direct Treasury movement exceeds the operator approval threshold; use a Purchase authorization or operator-controlled transaction"
+        "direct Treasury movement exceeds the operator approval threshold; use an approved Transfer or operator-controlled transaction"
       );
     }
     const used = this.policyCapacityUsedInternal(now, excludeOperationKey);
@@ -9205,6 +9273,7 @@ interface TreasuryOperationRow {
   prepared_ref: string | null;
   prepared_byte_length: number | null;
   policy_digest: string;
+  authorization_evidence_digest: string | null;
   retry_limit: number;
   cancellation_requested: number;
   preparation_fenced: number;
@@ -9689,6 +9758,9 @@ function treasuryOperationFromRow(row: TreasuryOperationRow): TreasuryOperationR
       ? {}
       : { preparedByteLength: row.prepared_byte_length }),
     policyDigest: row.policy_digest,
+    ...(row.authorization_evidence_digest === null
+      ? {}
+      : { authorizationEvidenceDigest: row.authorization_evidence_digest }),
     state,
     retryCount: row.retry_count,
     createdAtMs: row.created_at_ms,
@@ -9705,6 +9777,7 @@ function treasuryOperationFromRow(row: TreasuryOperationRow): TreasuryOperationR
     feeCeilingAtomic: operation.feeCeilingAtomic,
     retryLimit: operation.retryLimit,
     policyDigest: operation.policyDigest!,
+    authorizationEvidenceDigest: operation.authorizationEvidenceDigest,
   });
   if (operation.resolvedAmountAtomic !== undefined) {
     decimalBigInt(operation.resolvedAmountAtomic, "direct Treasury amount");
@@ -11100,6 +11173,14 @@ function validateTreasuryOperationIntent(input: TreasuryOperationIntent): void {
     throw new JournalInvariantError("direct Treasury retry limit is invalid");
   }
   assertDigest(input.policyDigest, "direct Treasury policy digest");
+  if (input.authorizationEvidenceDigest !== undefined) {
+    assertDigest(input.authorizationEvidenceDigest, "Transfer authorization evidence digest");
+    if (input.kind !== "vault_send") {
+      throw new JournalInvariantError(
+        "human-present Transfer authorization applies only to vault sends"
+      );
+    }
+  }
 }
 
 function validatePreparedTreasuryOperation(input: PreparedTreasuryOperation): void {
@@ -11126,7 +11207,8 @@ function assertSameTreasuryOperationIntent(
     existing.destination !== input.destination ||
     existing.requestedAmountAtomic !== input.requestedAmountAtomic ||
     existing.keepFloatAtomic !== input.keepFloatAtomic ||
-    existing.retryLimit !== input.retryLimit
+    existing.retryLimit !== input.retryLimit ||
+    existing.authorizationEvidenceDigest !== input.authorizationEvidenceDigest
   ) {
     throw new JournalInvariantError(
       "direct Treasury operation key is already bound to different immutable intent"

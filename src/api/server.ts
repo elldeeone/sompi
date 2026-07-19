@@ -7,13 +7,18 @@ import {
   PurchaseAdmissionError,
 } from "../purchase/journal.js";
 import {
-  MAX_PURCHASE_API_BODY_BYTES,
-  PurchaseApiContractError,
-  type PurchaseApiErrorBody,
-  type PurchaseApplication,
+  MAX_SOMPI_API_BODY_BYTES,
+  SompiApiContractError,
+  type SompiApiErrorBody,
+  type SompiApplication,
+  assertTransferView,
+  assertWalletActivity,
+  assertWalletView,
   assertPurchaseView,
   parsePurchaseCreateRequest,
+  parseTransferCreateRequest,
 } from "./contracts.js";
+import { TransferModuleError } from "../transfer/module.js";
 import {
   agentApiCredentialMatches,
   recoveryApiCredentialMatches,
@@ -21,10 +26,10 @@ import {
   type RecoveryApiCredential,
 } from "./credential.js";
 import {
-  installAndVerifyPurchaseApiSocket,
-  preparePurchaseApiSocketDirectory,
-  removeOwnedPurchaseApiSocket,
-  type PurchaseApiSocketAccess,
+  installAndVerifySompiApiSocket,
+  prepareSompiApiSocketDirectory,
+  removeOwnedSompiApiSocket,
+  type SompiApiSocketAccess,
 } from "./socket.js";
 
 const DEFAULT_DEADLINE_MS = 120_000;
@@ -32,14 +37,16 @@ const DEFAULT_MAX_PURCHASE_CONCURRENCY = 8;
 const DEFAULT_MAX_CONTROL_CONCURRENCY = 2;
 const DEFAULT_MAX_CONNECTIONS = 32;
 const PURCHASE_PATH = /^\/purchases\/(pur_[A-Za-z0-9_-]{22})(\/recover)?$/;
+const TRANSFER_PATH = /^\/transfers\/(trf_[A-Za-z0-9_-]{22})(\/recover)?$/;
+const WALLET_ACTIVITY_PATH = /^\/wallet\/activity(?:\?limit=([1-9][0-9]{0,2}))?$/;
 
-export interface PurchaseApiServerOptions extends PurchaseApiSocketAccess {
-  readonly application: PurchaseApplication;
+export interface SompiApiServerOptions extends SompiApiSocketAccess {
+  readonly application: SompiApplication;
   readonly credential: AgentApiCredential;
   readonly socketPath: string;
   readonly deadlineMs?: number;
-  /** Concurrent create-Purchase requests. */
-  readonly maxPurchaseConcurrency?: number;
+  /** Concurrent mutating Purchase or Transfer requests. */
+  readonly maxMutationConcurrency?: number;
   /** Reserved status/recovery requests, independent of create-Purchase work. */
   readonly maxControlConcurrency?: number;
   /** Hard bound on retained pre-authentication local sockets. */
@@ -48,8 +55,8 @@ export interface PurchaseApiServerOptions extends PurchaseApiSocketAccess {
   readonly onRequestError?: (error: unknown) => void;
 }
 
-export interface PurchaseRecoveryApiServerOptions extends PurchaseApiSocketAccess {
-  readonly application: PurchaseApplication;
+export interface SompiRecoveryApiServerOptions extends SompiApiSocketAccess {
+  readonly application: SompiApplication;
   readonly credential: RecoveryApiCredential;
   readonly socketPath: string;
   readonly deadlineMs?: number;
@@ -58,55 +65,55 @@ export interface PurchaseRecoveryApiServerOptions extends PurchaseApiSocketAcces
   readonly onRequestError?: (error: unknown) => void;
 }
 
-export interface RunningPurchaseApiServer {
+export interface RunningSompiApiServer {
   readonly server: http.Server;
   readonly socketPath: string;
   close(): Promise<void>;
 }
 
-export class PurchaseApiServerError extends Error {
+export class SompiApiServerError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = "PurchaseApiServerError";
+    this.name = "SompiApiServerError";
   }
 }
 
-export async function startPurchaseApiServer(options: PurchaseApiServerOptions): Promise<RunningPurchaseApiServer> {
-  return startPurchaseApiListener(options, "agent");
+export async function startSompiApiServer(options: SompiApiServerOptions): Promise<RunningSompiApiServer> {
+  return startSompiApiListener(options, "agent");
 }
 
-export async function startPurchaseRecoveryApiServer(
-  options: PurchaseRecoveryApiServerOptions
-): Promise<RunningPurchaseApiServer> {
-  return startPurchaseApiListener(options, "operator-recovery");
+export async function startSompiRecoveryApiServer(
+  options: SompiRecoveryApiServerOptions
+): Promise<RunningSompiApiServer> {
+  return startSompiApiListener(options, "operator-recovery");
 }
 
-async function startPurchaseApiListener(
-  options: PurchaseApiServerOptions | PurchaseRecoveryApiServerOptions,
+async function startSompiApiListener(
+  options: SompiApiServerOptions | SompiRecoveryApiServerOptions,
   audience: "agent" | "operator-recovery"
-): Promise<RunningPurchaseApiServer> {
+): Promise<RunningSompiApiServer> {
   const deadlineMs = positiveInteger(options.deadlineMs ?? DEFAULT_DEADLINE_MS, "API deadline");
-  const maxPurchaseConcurrency = audience === "agent"
+  const maxMutationConcurrency = audience === "agent"
     ? positiveInteger(
-        (options as PurchaseApiServerOptions).maxPurchaseConcurrency ?? DEFAULT_MAX_PURCHASE_CONCURRENCY,
-        "API Purchase concurrency"
+        (options as SompiApiServerOptions).maxMutationConcurrency ?? DEFAULT_MAX_PURCHASE_CONCURRENCY,
+        "API mutation concurrency"
       )
     : 0;
   const maxControlConcurrency = positiveInteger(
     options.maxControlConcurrency ?? DEFAULT_MAX_CONTROL_CONCURRENCY,
     "API control concurrency"
   );
-  const totalConcurrency = maxPurchaseConcurrency + maxControlConcurrency;
+  const totalConcurrency = maxMutationConcurrency + maxControlConcurrency;
   const maxConnections = positiveInteger(
     options.maxConnections ?? Math.max(DEFAULT_MAX_CONNECTIONS, totalConcurrency * 4),
     "API connection limit"
   );
   if (maxConnections < totalConcurrency) {
-    throw new PurchaseApiServerError("Purchase API connection limit cannot be below total request concurrency");
+    throw new SompiApiServerError("Sompi API connection limit cannot be below total request concurrency");
   }
-  if (!options.application || !options.credential) throw new PurchaseApiServerError("Purchase API dependencies are unavailable");
+  if (!options.application || !options.credential) throw new SompiApiServerError("Sompi API dependencies are unavailable");
 
-  const purchaseLane = apiLane(maxPurchaseConcurrency);
+  const purchaseLane = apiLane(maxMutationConcurrency);
   const controlLane = apiLane(maxControlConcurrency);
   const requestTimeout = deadlineMs + 5_000;
   const server = http.createServer({ requestTimeout, headersTimeout: Math.min(10_000, requestTimeout) }, (request, response) => {
@@ -126,9 +133,9 @@ async function startPurchaseApiListener(
         );
         return;
       }
-      const lane = audience === "agent" && isPurchaseCreation(request) ? purchaseLane : controlLane;
+      const lane = audience === "agent" && isMutation(request) ? purchaseLane : controlLane;
       if (lane.active >= lane.maximum) {
-        writeError(response, 429, "API_BUSY", "The Purchase API is at its concurrency limit.", true);
+        writeError(response, 429, "API_BUSY", "The Sompi API is at its concurrency limit.", true);
         return;
       }
       if (lane.overdue.size >= lane.maximum) {
@@ -138,7 +145,7 @@ async function startPurchaseApiListener(
       lane.active += 1;
       const timeout = AbortSignal.timeout(deadlineMs);
       const disconnected = new AbortController();
-      const abort = () => disconnected.abort(new Error("Purchase API client disconnected"));
+      const abort = () => disconnected.abort(new Error("Sompi API client disconnected"));
       request.once("aborted", abort);
       const responseClosed = () => { if (!response.writableEnded) abort(); };
       response.once("close", responseClosed);
@@ -185,9 +192,9 @@ async function startPurchaseApiListener(
   server.maxHeadersCount = 32;
   let socketIdentity: { dev: bigint; ino: bigint } | undefined;
   try {
-    preparePurchaseApiSocketDirectory(options.socketPath, options);
+    prepareSompiApiSocketDirectory(options.socketPath, options);
     if (fs.existsSync(options.socketPath)) {
-      throw new PurchaseApiServerError("Purchase API socket path already exists");
+      throw new SompiApiServerError("Sompi API socket path already exists");
     }
     await new Promise<void>((resolve, reject) => {
       server.once("error", reject);
@@ -198,12 +205,12 @@ async function startPurchaseApiListener(
     });
     const created = fs.lstatSync(options.socketPath, { bigint: true });
     socketIdentity = { dev: created.dev, ino: created.ino };
-    installAndVerifyPurchaseApiSocket(options.socketPath, options, socketIdentity);
+    installAndVerifySompiApiSocket(options.socketPath, options, socketIdentity);
   } catch (cause) {
     if (server.listening) await new Promise<void>((resolve) => server.close(() => resolve()));
-    removeOwnedPurchaseApiSocket(options.socketPath, socketIdentity);
-    if (cause instanceof PurchaseApiServerError) throw cause;
-    throw new PurchaseApiServerError("Purchase API could not establish its secure local socket");
+    removeOwnedSompiApiSocket(options.socketPath, socketIdentity);
+    if (cause instanceof SompiApiServerError) throw cause;
+    throw new SompiApiServerError("Sompi API could not establish its secure local socket");
   }
   let closePromise: Promise<void> | undefined;
   return Object.freeze({
@@ -212,7 +219,7 @@ async function startPurchaseApiListener(
     close() {
       closePromise ??= new Promise<void>((resolve, reject) => {
         server.close((error) => {
-          removeOwnedPurchaseApiSocket(options.socketPath, socketIdentity);
+          removeOwnedSompiApiSocket(options.socketPath, socketIdentity);
           error ? reject(error) : resolve();
         });
         server.closeIdleConnections();
@@ -223,14 +230,14 @@ async function startPurchaseApiListener(
 }
 
 async function routeRequest(
-  application: PurchaseApplication,
+  application: SompiApplication,
   request: http.IncomingMessage,
   signal: AbortSignal,
   audience: "agent" | "operator-recovery"
 ): Promise<unknown> {
   const method = request.method ?? "";
   const target = request.url ?? "";
-  if (target.includes("?") || target.includes("#") || target.includes("%")) {
+  if (target.includes("#") || target.includes("%") || (target.includes("?") && !WALLET_ACTIVITY_PATH.test(target))) {
     throw new HttpBoundaryError(400, "INVALID_TARGET", "The request target is invalid.", false);
   }
   if (audience === "agent" && method === "POST" && target === "/purchases") {
@@ -239,6 +246,22 @@ async function routeRequest(
     }
     const input = parsePurchaseCreateRequest(await readJsonBody(request, signal));
     return application.purchase(input, signal);
+  }
+  if (audience === "agent" && method === "POST" && target === "/transfers") {
+    requireJson(request);
+    const input = parseTransferCreateRequest(await readJsonBody(request, signal));
+    return application.transfer(input, signal);
+  }
+  if (audience === "agent" && method === "GET" && target === "/wallet") {
+    rejectBody(request);
+    return application.wallet(signal);
+  }
+  const activity = WALLET_ACTIVITY_PATH.exec(target);
+  if (audience === "agent" && method === "GET" && activity) {
+    rejectBody(request);
+    const limit = activity[1] === undefined ? 20 : Number(activity[1]);
+    if (limit < 1 || limit > 100) throw new HttpBoundaryError(400, "INVALID_LIMIT", "Wallet activity limit must be between 1 and 100.", false);
+    return application.activity(limit, signal);
   }
   const match = PURCHASE_PATH.exec(target);
   if (match && method === "GET" && match[2] === undefined) {
@@ -249,10 +272,21 @@ async function routeRequest(
     rejectBody(request);
     return application.recover(match[1], signal);
   }
-  if (audience === "operator-recovery" && target === "/purchases") {
+  const transferMatch = TRANSFER_PATH.exec(target);
+  if (transferMatch && method === "GET" && transferMatch[2] === undefined) {
+    rejectBody(request);
+    return application.transferStatus(transferMatch[1], signal);
+  }
+  if (transferMatch && method === "POST" && transferMatch[2] === "/recover") {
+    rejectBody(request);
+    return application.transferRecover(transferMatch[1], signal);
+  }
+  if (audience === "operator-recovery" && (
+    target === "/purchases" || target === "/transfers" || target === "/wallet" || target.startsWith("/wallet/activity")
+  )) {
     throw new HttpBoundaryError(404, "NOT_FOUND", "The resource does not exist.", false);
   }
-  if (target === "/purchases" || match) {
+  if (["/purchases", "/transfers", "/wallet", "/wallet/activity"].includes(target) || match || transferMatch || activity) {
     throw new HttpBoundaryError(405, "METHOD_NOT_ALLOWED", "The method is not supported for this resource.", false);
   }
   throw new HttpBoundaryError(404, "NOT_FOUND", "The resource does not exist.", false);
@@ -260,14 +294,14 @@ async function routeRequest(
 
 async function readJsonBody(request: http.IncomingMessage, signal: AbortSignal): Promise<unknown> {
   const declared = header(request, "content-length");
-  if (declared !== undefined && (!/^(?:0|[1-9][0-9]*)$/.test(declared) || Number(declared) > MAX_PURCHASE_API_BODY_BYTES)) {
+  if (declared !== undefined && (!/^(?:0|[1-9][0-9]*)$/.test(declared) || Number(declared) > MAX_SOMPI_API_BODY_BYTES)) {
     throw new HttpBoundaryError(413, "REQUEST_TOO_LARGE", "The request body exceeds the limit.", false);
   }
   const chunks: Buffer[] = [];
   let length = 0;
   let bytes = Buffer.alloc(0);
   const abortRead = () => request.destroy(
-    signal.reason instanceof Error ? signal.reason : new Error("Purchase API request aborted")
+    signal.reason instanceof Error ? signal.reason : new Error("Sompi API request aborted")
   );
   signal.addEventListener("abort", abortRead, { once: true });
   try {
@@ -275,7 +309,7 @@ async function readJsonBody(request: http.IncomingMessage, signal: AbortSignal):
       signal.throwIfAborted();
       const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
       length += chunk.byteLength;
-      if (length > MAX_PURCHASE_API_BODY_BYTES) {
+      if (length > MAX_SOMPI_API_BODY_BYTES) {
         throw new HttpBoundaryError(413, "REQUEST_TOO_LARGE", "The request body exceeds the limit.", false);
       }
       chunks.push(chunk);
@@ -300,7 +334,7 @@ async function raceWithSignal<T>(operation: Promise<T>, signal: AbortSignal): Pr
   signal.throwIfAborted();
   let rejectAbort!: (reason: unknown) => void;
   const aborted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
-  const abort = () => rejectAbort(signal.reason ?? new Error("Purchase API request aborted"));
+  const abort = () => rejectAbort(signal.reason ?? new Error("Sompi API request aborted"));
   signal.addEventListener("abort", abort, { once: true });
   try {
     return await Promise.race([operation, aborted]);
@@ -309,8 +343,8 @@ async function raceWithSignal<T>(operation: Promise<T>, signal: AbortSignal): Pr
   }
 }
 
-function isPurchaseCreation(request: http.IncomingMessage): boolean {
-  return request.method === "POST" && request.url === "/purchases";
+function isMutation(request: http.IncomingMessage): boolean {
+  return request.method === "POST" && (request.url === "/purchases" || request.url === "/transfers");
 }
 
 function apiLane(maximum: number): {
@@ -329,7 +363,13 @@ function rejectBody(request: http.IncomingMessage): void {
 }
 
 function writeView(response: http.ServerResponse, value: unknown): void {
-  const view = assertPurchaseView(value);
+  const view = Array.isArray(value)
+    ? assertWalletActivity(value)
+    : isRecord(value) && value.id?.toString().startsWith("trf_")
+      ? assertTransferView(value)
+      : isRecord(value) && value.network === "kaspa:testnet-10" && value.balance !== undefined
+        ? assertWalletView(value)
+        : assertPurchaseView(value);
   writeJson(response, 200, view);
 }
 
@@ -338,8 +378,11 @@ function writeMappedError(response: http.ServerResponse, error: unknown, timedOu
     writeError(response, 504, "DEADLINE_EXCEEDED", "The request deadline elapsed; inspect the durable Purchase before retrying.", true);
   } else if (error instanceof HttpBoundaryError) {
     writeError(response, error.status, error.code, error.message, error.retryable);
-  } else if (error instanceof PurchaseApiContractError) {
-    writeError(response, 400, "INVALID_REQUEST", "The request does not match the Purchase contract.", false);
+  } else if (error instanceof SompiApiContractError) {
+    writeError(response, 400, "INVALID_REQUEST", "The request does not match the Sompi API contract.", false);
+  } else if (error instanceof TransferModuleError) {
+    const status = error.code === "TRANSFER_NOT_FOUND" ? 404 : error.code === "TRANSFER_CONFLICT" ? 409 : error.code === "TRANSFER_DENIED" ? 403 : error.code === "TRANSFER_EXPIRED" ? 410 : error.code === "INVALID_TRANSFER" ? 400 : 500;
+    writeError(response, status, error.code, error.message, error.code === "TRANSFER_FAILED");
   } else if (error instanceof JournalNotFoundError) {
     writeError(response, 404, "PURCHASE_NOT_FOUND", "The Purchase does not exist.", false);
   } else if (error instanceof PurchaseAdmissionError || error instanceof EvidenceAdmissionError) {
@@ -351,8 +394,18 @@ function writeMappedError(response: http.ServerResponse, error: unknown, timedOu
   }
 }
 
+function requireJson(request: http.IncomingMessage): void {
+  if (header(request, "content-type")?.split(";", 1)[0]?.trim().toLowerCase() !== "application/json") {
+    throw new HttpBoundaryError(400, "INVALID_CONTENT_TYPE", "Content-Type must be application/json.", false);
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 function writeError(response: http.ServerResponse, status: number, code: string, message: string, retryable: boolean): void {
-  const body: PurchaseApiErrorBody = { error: { code, message, retryable } };
+  const body: SompiApiErrorBody = { error: { code, message, retryable } };
   writeJson(response, status, body);
 }
 
@@ -376,7 +429,7 @@ function header(request: http.IncomingMessage, name: string): string | undefined
 }
 
 function positiveInteger(value: number, label: string): number {
-  if (!Number.isSafeInteger(value) || value <= 0) throw new PurchaseApiServerError(`${label} is invalid`);
+  if (!Number.isSafeInteger(value) || value <= 0) throw new SompiApiServerError(`${label} is invalid`);
   return value;
 }
 

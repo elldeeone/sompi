@@ -5,7 +5,7 @@ import * as Ajv2020Module from "ajv/dist/2020.js";
 import type { Ajv2020 as Ajv2020Instance, Options as AjvOptions } from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 
-import { PURCHASE_CREATE_REQUEST_SCHEMA } from "./contracts.js";
+import { PURCHASE_CREATE_REQUEST_SCHEMA, TRANSFER_CREATE_REQUEST_SCHEMA } from "./contracts.js";
 import { sompiOpenApiDocument } from "./openapi.js";
 
 export const SOMPI_ARAZZO_VERSION = "1.1.0" as const;
@@ -24,7 +24,7 @@ export function sompiArazzoDocument(version: string): Readonly<JsonObject> {
       title: "Sompi interrupted Purchase recovery",
       summary: "Create, inspect, recover, and verify a terminal Purchase receipt.",
       description:
-        "Uses only the authenticated, protocol-neutral Sompi Purchase API. " +
+        "Uses only the authenticated, protocol-neutral Sompi API. " +
         "The recovery step reconciles durable evidence and never authorizes blind resubmission.",
       version,
     },
@@ -104,6 +104,51 @@ export function sompiArazzoDocument(version: string): Readonly<JsonObject> {
           purchaseId: "$steps.createPurchase.outputs.purchaseId",
           purchase: "$steps.readTerminalReceipt.outputs.purchase",
           receiptEvidence: "$steps.readTerminalReceipt.outputs.receiptEvidence",
+        },
+      },
+      {
+        workflowId: "recoverInterruptedTransfer",
+        summary: "Send KAS with human approval and recover an interrupted Transfer",
+        description:
+          "Creates one durable direct Transfer, reads its status, invokes idempotent recovery when needed, " +
+          "and reads the same Transfer receipt. Recovery cannot create replacement authorization or payment.",
+        inputs: withoutId(TRANSFER_CREATE_REQUEST_SCHEMA),
+        steps: [
+          {
+            stepId: "createTransfer",
+            operationId: "$sourceDescriptions.sompi.createTransfer",
+            requestBody: { contentType: "application/json", payload: "$inputs" },
+            successCriteria: [{ condition: "$statusCode == 200" }],
+            outputs: { transferId: "$response.body#/id" },
+          },
+          {
+            stepId: "inspectTransfer",
+            operationId: "$sourceDescriptions.sompi.getTransfer",
+            parameters: [{ name: "transferId", in: "path", value: "$steps.createTransfer.outputs.transferId" }],
+            successCriteria: [{ condition: "$statusCode == 200" }],
+          },
+          {
+            stepId: "recoverTransfer",
+            operationId: "$sourceDescriptions.sompi.recoverTransfer",
+            parameters: [{ name: "transferId", in: "path", value: "$steps.createTransfer.outputs.transferId" }],
+            successCriteria: [{ condition: "$statusCode == 200" }],
+          },
+          {
+            stepId: "readTransferReceipt",
+            operationId: "$sourceDescriptions.sompi.getTransfer",
+            parameters: [{ name: "transferId", in: "path", value: "$steps.createTransfer.outputs.transferId" }],
+            successCriteria: [
+              { condition: "$statusCode == 200" },
+              { condition: "$response.body#/state == 'receipted'" },
+              { condition: "$response.body#/receipt/transactionId != null" },
+            ],
+            outputs: { transfer: "$response.body", receipt: "$response.body#/receipt" },
+          },
+        ],
+        outputs: {
+          transferId: "$steps.createTransfer.outputs.transferId",
+          transfer: "$steps.readTransferReceipt.outputs.transfer",
+          receipt: "$steps.readTransferReceipt.outputs.receipt",
         },
       },
     ],

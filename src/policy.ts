@@ -10,8 +10,8 @@ export interface Policy {
   maxSompiPerHour: bigint;
   /** If non-empty, only these destination addresses may receive funds. */
   allowlist: string[];
-  /** Sends above this amount are rejected with a message telling the agent
-   *  to ask its human operator to send manually. 0 disables the threshold. */
+  /** Sends above this amount require durable human-present authorization.
+   *  0 disables the threshold. This never weakens the hard limits. */
   requireApprovalAboveSompi: bigint;
 }
 
@@ -50,7 +50,12 @@ export class PolicyEngine {
    * from durable Purchase and Treasury Operation journals; policy no longer
    * maintains a competing JSON spend log.
    */
-  authorize(destination: string, amountSompi: bigint, committedCapacitySompi = 0n): void {
+  authorize(
+    destination: string,
+    amountSompi: bigint,
+    committedCapacitySompi = 0n,
+    options: Readonly<{ humanApproved?: boolean }> = {},
+  ): void {
     const p = this.policy;
     if (amountSompi <= 0n) {
       throw new PolicyViolation("amount must be positive");
@@ -61,11 +66,14 @@ export class PolicyEngine {
           OPERATOR_BOUNDARY
       );
     }
-    if (p.requireApprovalAboveSompi > 0n && amountSompi > p.requireApprovalAboveSompi) {
+    if (
+      p.requireApprovalAboveSompi > 0n &&
+      amountSompi > p.requireApprovalAboveSompi &&
+      options.humanApproved !== true
+    ) {
       throw new PolicyViolation(
         `amount ${displayAmount(amountSompi)} exceeds the approval threshold of ${displayAmount(p.requireApprovalAboveSompi)}. ` +
-          `Relay this to your human operator and wait for them to either perform the payment themselves or ` +
-          `adjust the Operator Manifest — do not work around this tool yourself`
+          `Ask your human operator to approve the exact transfer through the trusted Sompi Authority`
       );
     }
     if (p.allowlist.length > 0 && !p.allowlist.includes(destination)) {

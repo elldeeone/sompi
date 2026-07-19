@@ -4,11 +4,15 @@ import { test } from "node:test";
 import { assertPurchaseId, assertPurchaseRequestKey, evidenceDigest } from "../purchase/identity.js";
 import type { PurchaseModule, PurchaseView } from "../purchase/types.js";
 import {
-  PurchaseApiContractError,
-  assertPurchaseApiError,
+  SompiApiContractError,
+  assertSompiApiError,
   assertPurchaseView,
+  assertTransferView,
+  assertWalletActivity,
+  assertWalletView,
   createPurchaseApplication,
   parsePurchaseCreateRequest,
+  parseTransferCreateRequest,
   purchaseIntent,
 } from "./contracts.js";
 
@@ -47,23 +51,53 @@ test("canonical Purchase contract drives input, module calls, and public result"
   assert.equal(called, 1);
 });
 
+test("wallet and Transfer contracts reject unknown fields, wrong networks, and oversized values", () => {
+  const address = "kaspatest:qq2n2shqkghczyel57af242ffs50x5uj07w7ezg7kwm8frwt5xhljqa3d68et";
+  assert.deepEqual(parseTransferCreateRequest({ requestKey: "send:one", destination: address, amountAtomic: "1" }), {
+    requestKey: "send:one", destination: address, amountAtomic: "1",
+  });
+  assert.throws(() => parseTransferCreateRequest({ requestKey: "send:one", destination: address, amountAtomic: "1", privateKey: "secret" }), SompiApiContractError);
+  assert.throws(() => parseTransferCreateRequest({ requestKey: "send:one", destination: address.replace("kaspatest", "kaspa"), amountAtomic: "1" }), SompiApiContractError);
+  assert.throws(() => parseTransferCreateRequest({ requestKey: "send:one", destination: address, amountAtomic: (1n << 64n).toString() }), SompiApiContractError);
+  const transfer = {
+    id: "trf_0123456789ABCDEFGHIJKL", requestKey: "send:one", requestDigest: `sha256:${"A".repeat(43)}`,
+    state: "created", destination: address, amountAtomic: "1", asset: "KAS", network: "kaspa:testnet-10",
+    sourceVaultAddress: address, sourceVaultDigest: `sha256:${"B".repeat(43)}`, feeCeilingAtomic: "1",
+    maximumTotalAtomic: "2", expiresAtMs: 2_000_000_000_000, policyDigest: `sha256:${"C".repeat(43)}`,
+    manifestRevision: 1, manifestDigest: `sha256:${"D".repeat(43)}`, finalityFloor: "accepted", version: 0,
+    createdAtMs: 1_900_000_000_000, updatedAtMs: 1_900_000_000_000,
+    recoveryRequired: false, safeToRetry: true, userAction: "none",
+  };
+  assert.equal(assertTransferView(transfer).id, transfer.id);
+  assert.throws(() => assertTransferView({ ...transfer, rawTransaction: "secret" }), SompiApiContractError);
+  const wallet = {
+    network: "kaspa:testnet-10", asset: "KAS", fundingAddress: address, vaultAddress: address,
+    balance: { observedAtomic: "1", unboundAtomic: "0", reservedAtomic: "0", availableAtomic: "1", provenance: "operator-node-and-local-vault-lineage", observedAt: "2030-01-01T00:00:00.000Z" },
+    limits: { maxPerTransferAtomic: "1", maxPerHourAtomic: "1", approvalThresholdAtomic: "1", allowlist: [], vaultMaxOutflowAtomic: "1", vaultWindowSizeDaa: "1", vaultSpentInWindowAtomic: "0" },
+    chainStatus: "observed",
+  };
+  assert.equal(assertWalletView(wallet).balance.availableAtomic, "1");
+  assert.throws(() => assertWalletView({ ...wallet, privateKey: "secret" }), SompiApiContractError);
+  assert.deepEqual(assertWalletActivity([]), []);
+});
+
 test("canonical Purchase contract rejects unknown, ambiguous, oversized, and secret-shaped data", () => {
   assert.throws(
     () => parsePurchaseCreateRequest({ requestKey: "agent:request:1", url: "https://merchant.example/", unknown: true }),
-    PurchaseApiContractError
+    SompiApiContractError
   );
   assert.throws(
     () => parsePurchaseCreateRequest({ requestKey: "agent:request:1", url: "https://user:secret@merchant.example/" }),
-    PurchaseApiContractError
+    SompiApiContractError
   );
   assert.throws(
     () => parsePurchaseCreateRequest({ requestKey: "agent:request:1", url: "https://merchant.example/", bodyBase64: "AQI" }),
-    PurchaseApiContractError
+    SompiApiContractError
   );
-  assert.throws(() => assertPurchaseView({ ...fakeView(), authorityPrivateKey: "secret" }), PurchaseApiContractError);
+  assert.throws(() => assertPurchaseView({ ...fakeView(), authorityPrivateKey: "secret" }), SompiApiContractError);
   assert.throws(
-    () => assertPurchaseApiError({ error: { code: "BAD", message: "safe", retryable: false }, raw: "secret" }),
-    PurchaseApiContractError
+    () => assertSompiApiError({ error: { code: "BAD", message: "safe", retryable: false }, raw: "secret" }),
+    SompiApiContractError
   );
 });
 

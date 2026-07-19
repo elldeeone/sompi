@@ -25,6 +25,25 @@ const DIGEST = /^sha256:[A-Za-z0-9_-]{43}$/;
 const BASE64URL = /^[A-Za-z0-9_-]+$/;
 const SCHEMA_VERSION = 1;
 const APPLICATION_ID = 0x53544144;
+const SCHEMA_SQL = `
+CREATE TABLE transfer_authority_meta (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  schema_checksum TEXT NOT NULL
+) STRICT;
+CREATE TABLE transfer_authority_decisions (
+  request_digest TEXT PRIMARY KEY,
+  facts_digest TEXT NOT NULL,
+  decision TEXT NOT NULL CHECK (decision IN ('approved', 'denied')),
+  authority_id TEXT NOT NULL,
+  denial_code TEXT,
+  evidence_digest TEXT NOT NULL UNIQUE,
+  evidence BLOB NOT NULL,
+  decided_at_ms INTEGER NOT NULL CHECK (decided_at_ms > 0),
+  CHECK ((decision = 'approved' AND denial_code IS NULL) OR
+         (decision = 'denied' AND denial_code = 'user_denied'))
+) STRICT;
+`;
+const SCHEMA_CHECKSUM = digestText(SCHEMA_SQL);
 
 interface TransferAuthorityRequestMessage {
   readonly requestId: string;
@@ -251,11 +270,18 @@ export class TransferAuthorityDecisionStore {
   constructor(readonly filename: string) {
     prepareStore(filename);
     this.db = new Database(filename);
-    if (filename !== ":memory:") fs.chmodSync(filename, 0o600);
-    this.db.pragma("trusted_schema = OFF");
-    this.db.pragma("synchronous = FULL");
-    if (filename !== ":memory:") this.db.pragma("journal_mode = WAL");
-    this.initialize();
+    try {
+      if (filename !== ":memory:") fs.chmodSync(filename, 0o600);
+      this.db.pragma("trusted_schema = OFF");
+      this.db.pragma("busy_timeout = 5000");
+      this.db.pragma("synchronous = FULL");
+      if (filename !== ":memory:") this.db.pragma("journal_mode = WAL");
+      this.initialize();
+      this.verifyStartup();
+    } catch (error) {
+      if (this.db.open) this.db.close();
+      throw new Error("Transfer Authority decision store failed its startup checks", { cause: error });
+    }
   }
   find(requestDigest: string): StoredDecision | undefined {
     requireDigest(requestDigest, "Transfer Authority request digest");
@@ -284,7 +310,16 @@ export class TransferAuthorityDecisionStore {
     });
     return save.immediate();
   }
-  close(): void { if (this.db.open) this.db.close(); }
+  close(): void {
+    if (!this.db.open) return;
+    if (this.filename !== ":memory:") this.db.pragma("wal_checkpoint(TRUNCATE)");
+    this.db.close();
+  }
+  integrityCheck(): true {
+    const result = this.db.pragma("integrity_check") as Array<{ integrity_check: string }>;
+    if (result.length !== 1 || result[0]?.integrity_check !== "ok") throw new Error("Transfer Authority decision store integrity check failed");
+    return true;
+  }
   private initialize(): void {
     const version = this.db.pragma("user_version", { simple: true }) as number;
     const applicationId = this.db.pragma("application_id", { simple: true }) as number;
@@ -292,22 +327,23 @@ export class TransferAuthorityDecisionStore {
     if (version !== 0 || applicationId !== 0) throw new Error("Transfer Authority decision schema is unsupported");
     const count = this.db.prepare("SELECT COUNT(*) AS count FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'").get() as { count: number };
     if (count.count !== 0) throw new Error("refusing unversioned Transfer Authority state");
-    this.db.exec(`
-      CREATE TABLE transfer_authority_decisions (
-        request_digest TEXT PRIMARY KEY,
-        facts_digest TEXT NOT NULL,
-        decision TEXT NOT NULL CHECK (decision IN ('approved', 'denied')),
-        authority_id TEXT NOT NULL,
-        denial_code TEXT,
-        evidence_digest TEXT NOT NULL UNIQUE,
-        evidence BLOB NOT NULL,
-        decided_at_ms INTEGER NOT NULL,
-        CHECK ((decision = 'approved' AND denial_code IS NULL) OR
-               (decision = 'denied' AND denial_code = 'user_denied'))
-      ) STRICT;
-    `);
-    this.db.pragma(`application_id = ${APPLICATION_ID}`);
-    this.db.pragma(`user_version = ${SCHEMA_VERSION}`);
+    const initialize = this.db.transaction(() => {
+      this.db.exec(SCHEMA_SQL);
+      this.db.prepare("INSERT INTO transfer_authority_meta (singleton, schema_checksum) VALUES (1, ?)").run(SCHEMA_CHECKSUM);
+      this.db.pragma(`application_id = ${APPLICATION_ID}`);
+      this.db.pragma(`user_version = ${SCHEMA_VERSION}`);
+    });
+    initialize.immediate();
+  }
+  private verifyStartup(): void {
+    if ((this.db.pragma("user_version", { simple: true }) as number) !== SCHEMA_VERSION || (this.db.pragma("application_id", { simple: true }) as number) !== APPLICATION_ID) {
+      throw new Error("Transfer Authority decision schema identity is invalid");
+    }
+    const meta = this.db.prepare("SELECT schema_checksum FROM transfer_authority_meta WHERE singleton = 1").get() as { schema_checksum: string } | undefined;
+    if (meta?.schema_checksum !== SCHEMA_CHECKSUM || schemaFingerprint(this.db) !== expectedSchemaFingerprint()) {
+      throw new Error("Transfer Authority decision schema is invalid");
+    }
+    this.integrityCheck();
   }
 }
 
@@ -404,9 +440,15 @@ async function verifyDecisionEvidence(bytes: Uint8Array, response: TransferAutho
 }
 
 interface DecisionRow { request_digest: string; facts_digest: string; decision: "approved" | "denied"; authority_id: string; denial_code: "user_denied" | null; evidence_digest: string; evidence: Buffer; decided_at_ms: number; }
-function decisionFromRow(row: DecisionRow): StoredDecision { return Object.freeze({ requestDigest: row.request_digest, factsDigest: row.facts_digest, decision: row.decision, authorityId: row.authority_id, ...(row.denial_code ? { denialCode: row.denial_code } : {}), evidenceDigest: row.evidence_digest, evidence: Uint8Array.from(row.evidence), decidedAtMs: row.decided_at_ms }); }
-function validateStoredDecision(value: StoredDecision): void { if (!requireDigest(value.requestDigest, "request") || !requireDigest(value.factsDigest, "facts") || !identity(value.authorityId) || !requireDigest(value.evidenceDigest, "evidence") || digestBytes(value.evidence) !== value.evidenceDigest || !Number.isSafeInteger(value.decidedAtMs)) throw new Error("Transfer Authority stored decision is invalid"); }
-function sameDecision(a: StoredDecision, b: StoredDecision): boolean { return a.requestDigest === b.requestDigest && a.factsDigest === b.factsDigest && a.decision === b.decision && a.authorityId === b.authorityId && a.denialCode === b.denialCode && a.evidenceDigest === b.evidenceDigest; }
+function decisionFromRow(row: DecisionRow): StoredDecision {
+  const decision = Object.freeze({ requestDigest: row.request_digest, factsDigest: row.facts_digest, decision: row.decision, authorityId: row.authority_id, ...(row.denial_code ? { denialCode: row.denial_code } : {}), evidenceDigest: row.evidence_digest, evidence: Uint8Array.from(row.evidence), decidedAtMs: row.decided_at_ms });
+  validateStoredDecision(decision);
+  return decision;
+}
+function validateStoredDecision(value: StoredDecision): void {
+  if (!requireDigest(value.requestDigest, "request") || !requireDigest(value.factsDigest, "facts") || !identity(value.authorityId) || !requireDigest(value.evidenceDigest, "evidence") || !(value.evidence instanceof Uint8Array) || value.evidence.byteLength < 1 || value.evidence.byteLength > MAX_EVIDENCE_BYTES || digestBytes(value.evidence) !== value.evidenceDigest || !Number.isSafeInteger(value.decidedAtMs) || value.decidedAtMs <= 0 || (value.decision === "approved" ? value.denialCode !== undefined : value.denialCode !== "user_denied")) throw new Error("Transfer Authority stored decision is invalid");
+}
+function sameDecision(a: StoredDecision, b: StoredDecision): boolean { return a.requestDigest === b.requestDigest && a.factsDigest === b.factsDigest && a.decision === b.decision && a.authorityId === b.authorityId && a.denialCode === b.denialCode && a.evidenceDigest === b.evidenceDigest && a.decidedAtMs === b.decidedAtMs && Buffer.from(a.evidence).equals(Buffer.from(b.evidence)); }
 function parseEnvelope(wire: string): Record<string, unknown> { if (typeof wire !== "string" || wire.length < 1 || Buffer.byteLength(wire, "utf8") > MAX_WIRE_BYTES) throw new Error("Transfer Authority wire is invalid"); let value: unknown; try { value = JSON.parse(wire); } catch { throw new Error("Transfer Authority wire is invalid"); } if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Transfer Authority wire is invalid"); return value as Record<string, unknown>; }
 function boundedJson(value: unknown): string { const text = JSON.stringify(value); if (Buffer.byteLength(text, "utf8") > MAX_WIRE_BYTES) throw new Error("Transfer Authority wire exceeds its bound"); return text; }
 function mac(value: unknown, key: Uint8Array): string { return createHmac("sha256", key).update(JSON.stringify(value), "utf8").digest("base64url"); }
@@ -418,4 +460,24 @@ function requireDigest(value: string, _label: string): boolean { if (!DIGEST.tes
 function atomic(value: string, zero: boolean): boolean { return typeof value === "string" && /^(?:0|[1-9][0-9]*)$/.test(value) && BigInt(value) <= (1n << 64n) - 1n && (zero || value !== "0"); }
 function identity(value: string): boolean { return typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(value); }
 function timestamp(now: () => number): number { const value = now(); if (!Number.isSafeInteger(value) || value <= 0) throw new Error("Transfer Authority clock is invalid"); return value; }
-function prepareStore(filename: string): void { if (filename === ":memory:") return; if (!path.isAbsolute(filename) || path.resolve(filename) !== filename) throw new Error("Transfer Authority store path is invalid"); fs.mkdirSync(path.dirname(filename), { recursive: true, mode: 0o700 }); const stat = fs.lstatSync(path.dirname(filename)); if (!stat.isDirectory() || stat.isSymbolicLink() || (stat.mode & 0o077) !== 0) throw new Error("Transfer Authority store directory is unsafe"); }
+function schemaFingerprint(db: Database.Database): string {
+  const rows = db.prepare("SELECT type, name, tbl_name, sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name").all();
+  return digestText(JSON.stringify(rows));
+}
+function expectedSchemaFingerprint(): string {
+  const expected = new Database(":memory:");
+  try { expected.exec(SCHEMA_SQL); return schemaFingerprint(expected); }
+  finally { expected.close(); }
+}
+function prepareStore(filename: string): void {
+  if (filename === ":memory:") return;
+  if (!path.isAbsolute(filename) || path.resolve(filename) !== filename) throw new Error("Transfer Authority store path is invalid");
+  fs.mkdirSync(path.dirname(filename), { recursive: true, mode: 0o700 });
+  const stat = fs.lstatSync(path.dirname(filename));
+  const uid = typeof process.getuid === "function" ? process.getuid() : stat.uid;
+  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== uid || (stat.mode & 0o077) !== 0) throw new Error("Transfer Authority store directory is unsafe");
+  if (fs.existsSync(filename)) {
+    const file = fs.lstatSync(filename);
+    if (!file.isFile() || file.isSymbolicLink() || file.nlink !== 1 || file.uid !== uid || (file.mode & 0o077) !== 0) throw new Error("Transfer Authority store file is unsafe");
+  }
+}

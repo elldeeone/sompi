@@ -5,19 +5,19 @@ const SOCKET_MODE = 0o660;
 const DIRECTORY_MODE = 0o710;
 const MAX_UNIX_SOCKET_PATH_BYTES = 100;
 
-export interface PurchaseApiSocketAccess {
+export interface SompiApiSocketAccess {
   readonly expectedServerUserId: number;
   readonly runtimeGroupId: number;
 }
 
-export class PurchaseApiSocketError extends Error {
+export class SompiApiSocketError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = "PurchaseApiSocketError";
+    this.name = "SompiApiSocketError";
   }
 }
 
-export function validatePurchaseApiSocketPath(socketPath: string): void {
+export function validateSompiApiSocketPath(socketPath: string): void {
   if (
     process.platform === "win32" ||
     typeof socketPath !== "string" ||
@@ -26,43 +26,43 @@ export function validatePurchaseApiSocketPath(socketPath: string): void {
     path.resolve(socketPath) !== socketPath ||
     Buffer.byteLength(socketPath, "utf8") > MAX_UNIX_SOCKET_PATH_BYTES
   ) {
-    throw new PurchaseApiSocketError("Purchase API socket path is invalid");
+    throw new SompiApiSocketError("Sompi API socket path is invalid");
   }
 }
 
-export function preparePurchaseApiSocketDirectory(
+export function prepareSompiApiSocketDirectory(
   socketPath: string,
-  access: PurchaseApiSocketAccess
+  access: SompiApiSocketAccess
 ): void {
   validateAccess(access);
-  validatePurchaseApiSocketPath(socketPath);
+  validateSompiApiSocketPath(socketPath);
   if (currentUserId() !== access.expectedServerUserId) {
-    throw new PurchaseApiSocketError("Purchase API server must run as the configured socket owner");
+    throw new SompiApiSocketError("Sompi API server must run as the configured socket owner");
   }
   const directory = path.dirname(socketPath);
   const stat = fs.lstatSync(directory);
   assertSecureDirectory(directory, stat, access);
 }
 
-export function installAndVerifyPurchaseApiSocket(
+export function installAndVerifySompiApiSocket(
   socketPath: string,
-  access: PurchaseApiSocketAccess,
+  access: SompiApiSocketAccess,
   expectedIdentity: Readonly<{ dev: bigint; ino: bigint }>
 ): void {
   fs.chownSync(socketPath, access.expectedServerUserId, access.runtimeGroupId);
   fs.chmodSync(socketPath, SOCKET_MODE);
-  const stat = verifyPurchaseApiSocketForClient(socketPath, access);
+  const stat = verifySompiApiSocketForClient(socketPath, access);
   if (BigInt(stat.dev) !== expectedIdentity.dev || BigInt(stat.ino) !== expectedIdentity.ino) {
-    throw new PurchaseApiSocketError("Purchase API socket identity changed during startup");
+    throw new SompiApiSocketError("Sompi API socket identity changed during startup");
   }
 }
 
-export function verifyPurchaseApiSocketForClient(
+export function verifySompiApiSocketForClient(
   socketPath: string,
-  access: PurchaseApiSocketAccess
+  access: SompiApiSocketAccess
 ): fs.Stats {
   validateAccess(access);
-  validatePurchaseApiSocketPath(socketPath);
+  validateSompiApiSocketPath(socketPath);
   const directory = path.dirname(socketPath);
   const directoryStat = fs.lstatSync(directory);
   assertSecureDirectory(directory, directoryStat, access);
@@ -74,12 +74,12 @@ export function verifyPurchaseApiSocketForClient(
     stat.gid !== access.runtimeGroupId ||
     (stat.mode & 0o777) !== SOCKET_MODE
   ) {
-    throw new PurchaseApiSocketError("Purchase API socket is not securely installed");
+    throw new SompiApiSocketError("Sompi API socket is not securely installed");
   }
   return stat;
 }
 
-export function removeOwnedPurchaseApiSocket(
+export function removeOwnedSompiApiSocket(
   socketPath: string,
   identity: Readonly<{ dev: bigint; ino: bigint }> | undefined
 ): void {
@@ -97,13 +97,13 @@ export function removeOwnedPurchaseApiSocket(
 function assertSecureDirectory(
   directory: string,
   stat: fs.Stats,
-  access: PurchaseApiSocketAccess
+  access: SompiApiSocketAccess
 ): void {
   let realDirectory: string;
   try {
     realDirectory = fs.realpathSync(directory);
   } catch {
-    throw new PurchaseApiSocketError("Purchase API socket directory is unavailable");
+    throw new SompiApiSocketError("Sompi API socket directory is unavailable");
   }
   if (
     realDirectory !== directory ||
@@ -114,14 +114,14 @@ function assertSecureDirectory(
     (stat.mode & 0o777) !== DIRECTORY_MODE ||
     !currentGroupIds().includes(access.runtimeGroupId)
   ) {
-    throw new PurchaseApiSocketError("Purchase API socket directory is not securely installed");
+    throw new SompiApiSocketError("Sompi API socket directory is not securely installed");
   }
 }
 
-function validateAccess(access: PurchaseApiSocketAccess): void {
+function validateAccess(access: SompiApiSocketAccess): void {
   for (const value of [access.expectedServerUserId, access.runtimeGroupId]) {
     if (!Number.isSafeInteger(value) || value < 0 || value > 0x7fffffff) {
-      throw new PurchaseApiSocketError("Purchase API socket access configuration is invalid");
+      throw new SompiApiSocketError("Sompi API socket access configuration is invalid");
     }
   }
 }

@@ -152,13 +152,23 @@ export class TransferModule {
     if (!transfer.treasuryOperationKey) {
       throw new TransferModuleError("TRANSFER_FAILED", "Transfer has no durable Treasury operation");
     }
+    const authorization = this.options.journal.findTransferAuthorization(id);
+    if (!authorization || authorization.decision !== "approved") {
+      throw new TransferModuleError(
+        "TRANSFER_FAILED",
+        "Transfer has no durable approved Authority evidence"
+      );
+    }
     try {
       const operation = await this.options.treasury.executeUnderPolicy({
         operationKey: transfer.treasuryOperationKey,
         kind: "vault_send",
         destination: transfer.destination,
         amountAtomic: transfer.amountAtomic,
-      }, transfer.policyDigest, signal);
+      }, {
+        expectedPolicyDigest: transfer.policyDigest,
+        authorizationEvidenceDigest: authorization.evidenceDigest,
+      }, signal);
       this.options.journal.syncTransferTreasuryOperation(id, operation);
     } catch (error) {
       const latest = this.options.treasury.status(transfer.treasuryOperationKey);

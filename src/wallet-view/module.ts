@@ -47,8 +47,8 @@ export class WalletViewModule {
   constructor(private readonly options: Readonly<{
     wallet: KaspaWallet;
     vault: Pick<VaultManager, "config" | "balanceBreakdown">;
-    journal: Pick<PurchaseJournal, "listTransfers" | "listPurchases" | "findCheckoutTerms">;
-    treasury: Pick<TreasuryOperationModule, "effectiveCapacityUsed">;
+    journal: Pick<PurchaseJournal, "listTransfers" | "listPurchases" | "findCheckoutTerms" | "findSettlementForPurchase">;
+    treasury: Pick<TreasuryOperationModule, "pendingCapacityUsed">;
     policy: Pick<PolicyEngine, "policy">;
     now?: () => number;
   }>) {
@@ -61,7 +61,7 @@ export class WalletViewModule {
   async wallet(): Promise<WalletView> {
     const config = this.options.vault.config();
     const policy = this.options.policy.policy;
-    const reserved = this.options.treasury.effectiveCapacityUsed();
+    const reserved = this.options.treasury.pendingCapacityUsed();
     let observed = 0n;
     let unbound = 0n;
     let chainStatus: WalletView["chainStatus"] = config.covenantId ? "unavailable" : "unfunded";
@@ -118,12 +118,14 @@ export class WalletViewModule {
     }));
     const purchases: WalletActivityItem[] = this.options.journal.listPurchases(limit).map((purchase) => {
       const terms = this.options.journal.findCheckoutTerms(purchase.id);
+      const transactionId = this.options.journal.findSettlementForPurchase(purchase.id)?.transactionId;
       return Object.freeze({
         kind: "purchase" as const,
         id: purchase.id,
         requestKey: purchase.requestKey,
         state: purchase.state,
         ...(terms ? { amountAtomic: terms.amountAtomic, counterparty: terms.payTo } : {}),
+        ...(transactionId ? { transactionId } : {}),
         createdAt: new Date(purchase.createdAtMs).toISOString(),
         updatedAt: new Date(purchase.updatedAtMs).toISOString(),
       });
