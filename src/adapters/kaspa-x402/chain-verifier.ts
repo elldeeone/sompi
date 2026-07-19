@@ -1210,10 +1210,10 @@ function assertPaymentIdentifierExtensions(
   const offered = required.extensions?.["payment-identifier"];
   const supplied = payload.extensions?.["payment-identifier"];
   if (
-    !isRecord(offered) ||
-    !isRecord(offered.info) ||
-    offered.info.required !== true ||
-    (offered.info.id !== undefined && offered.info.id !== expected) ||
+    (offered !== undefined &&
+      (!isRecord(offered) ||
+        !isRecord(offered.info) ||
+        (offered.info.id !== undefined && offered.info.id !== expected))) ||
     !isRecord(supplied) ||
     !isRecord(supplied.info) ||
     supplied.info.id !== expected

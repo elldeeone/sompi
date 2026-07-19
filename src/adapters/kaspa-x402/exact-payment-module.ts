@@ -1178,7 +1178,7 @@ function assertExactRequirement(
   ) {
     throw adapterError("profile_mismatch", "standard-native terms contain additive head facts");
   }
-  assertRequiredPaymentIdentifier(parsed.paymentRequired, execution.paymentIdentifier);
+  assertPaymentIdentifierOffer(parsed.paymentRequired, execution.paymentIdentifier);
 }
 
 function assertCreatedPayment(
@@ -1285,12 +1285,13 @@ function assertSettlementWireFacts(
   }
 }
 
-function assertRequiredPaymentIdentifier(required: PaymentRequired, expected: string): void {
+function assertPaymentIdentifierOffer(required: PaymentRequired, expected: string): void {
   const extension = required.extensions?.["payment-identifier"];
-  if (!isRecord(extension) || !isRecord(extension.info) || extension.info.required !== true) {
+  if (extension === undefined) return;
+  if (!isRecord(extension) || !isRecord(extension.info)) {
     throw adapterError(
       "profile_mismatch",
-      "initial exact profile requires the official payment-identifier extension"
+      "Merchant payment-identifier policy is malformed"
     );
   }
   if (extension.info.id !== undefined && extension.info.id !== expected) {

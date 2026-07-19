@@ -73,6 +73,20 @@ test("vault staging converges inside the complete cost cap and exposes canonical
   });
 });
 
+test("vault staging accepts an alpha.8 exact offer without an advertised payment identifier", async () => {
+  await withFixture(async (fixture) => {
+    const prepared = await fixture.staging.prepare(
+      fixture.prepareInput("30000000", { advertisePaymentIdentifier: false })
+    );
+    const envelope = decodeVaultTreasuryStagingEnvelope(prepared.preparedBytes, {
+      purchaseId: PURCHASE_ID,
+      paymentIdentifier: PAYMENT_ID,
+    });
+    assert.equal(envelope.binding.paymentIdentifier, PAYMENT_ID);
+    assert.equal(envelope.binding.exactProfile, "standard-native");
+  });
+});
+
 test("actual staging fee and signed transaction cap are fail-closed", async () => {
   await withFixture(async (fixture) => {
     await assert.rejects(
@@ -213,7 +227,10 @@ interface Fixture {
   keyStore: StagingKeyStore;
   chainEvidence: any;
   fundingTxid: string;
-  prepareInput(additionalCostCeilingAtomic: string): any;
+  prepareInput(
+    additionalCostCeilingAtomic: string,
+    options?: { advertisePaymentIdentifier?: boolean }
+  ): any;
   context(input: any, prepared: any): any;
   effect(payloadDigest: string): any;
   makeVisible(): void;
@@ -338,7 +355,10 @@ async function withFixture(action: (fixture: Fixture) => Promise<void>): Promise
     checkoutDigest,
   };
 
-  function prepareInput(additionalCostCeilingAtomic: string) {
+  function prepareInput(
+    additionalCostCeilingAtomic: string,
+    options: { advertisePaymentIdentifier?: boolean } = {}
+  ) {
     const paymentRequired = {
       x402Version: 2,
       resource: { url: "https://merchant.example/resource", mimeType: "application/json" },
@@ -361,9 +381,13 @@ async function withFixture(action: (fixture: Fixture) => Promise<void>): Promise
           },
         },
       ],
-      extensions: {
-        "payment-identifier": paymentIdentifierExtension({ required: true }),
-      },
+      ...(options.advertisePaymentIdentifier === false
+        ? {}
+        : {
+            extensions: {
+              "payment-identifier": paymentIdentifierExtension({ required: true }),
+            },
+          }),
     };
     const facts = {
       purchaseId: PURCHASE_ID,

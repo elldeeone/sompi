@@ -97,6 +97,16 @@ test("Settlement verifier binds alpha.8 additive safe JSON, successor output, an
   assert.deepEqual(calls, ["staging", "chain"]);
 });
 
+test("Settlement verifier accepts Sompi-bound idempotency when the Merchant did not advertise it", async () => {
+  const fixture = await makeFixture({ advertisePaymentIdentifier: false });
+  const result = await fixture.verifier().verify(fixture.verificationInput());
+  assert.equal(result.outpoint, `${fixture.transactionId}:0`);
+  assert.equal(
+    fixture.paymentPayload.extensions?.["payment-identifier"]?.info.id,
+    PAYMENT_IDENTIFIER
+  );
+});
+
 test("exact construction rejects optional staging change", async () => {
   await assert.rejects(
     makeFixture({
@@ -353,6 +363,7 @@ interface FixtureOptions {
   stagingTransactionId?: string;
   stagingAmountAtomic?: string;
   additionalCostCeilingAtomic?: string;
+  advertisePaymentIdentifier?: boolean;
 }
 
 interface Fixture {
@@ -484,9 +495,13 @@ async function makeFixture(options: FixtureOptions = {}): Promise<Fixture> {
       x402Version: 2,
       resource: { url: RESOURCE_URL, mimeType: "application/octet-stream" },
       accepts: [accepted],
-      extensions: {
-        "payment-identifier": paymentIdentifierExtension({ required: true }),
-      },
+      ...(options.advertisePaymentIdentifier === false
+        ? {}
+        : {
+            extensions: {
+              "payment-identifier": paymentIdentifierExtension({ required: true }),
+            },
+          }),
     };
     const paymentPayload: PaymentPayload = {
       x402Version: 2,

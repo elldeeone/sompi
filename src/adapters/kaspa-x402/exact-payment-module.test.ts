@@ -98,6 +98,17 @@ test("alpha.8 standard-native exact module uses official lower-level flow and du
   assert.match(source, /\.applySettlement\s*\(/);
 });
 
+test("standard-native exact keeps Sompi idempotency when the Merchant does not advertise it", async () => {
+  const fixture = makeFixture({ advertisePaymentIdentifier: false });
+  const prepared = await fixture.prepareExact();
+  const envelope = JSON.parse(Buffer.from(prepared.preparedBytes).toString("utf8"));
+  assert.equal(envelope.paymentRequired.extensions, undefined);
+  assert.equal(
+    envelope.paymentPayload.extensions["payment-identifier"].info.id,
+    PAYMENT_ID
+  );
+});
+
 test("paid retry is address-pinned, bounded, settlement-verified, and replay-identical", async () => {
   const fixture = makeFixture();
   const prepared = await fixture.prepareExact();
@@ -436,6 +447,7 @@ function makeFixture(
     settlementOutpoint?: string | null;
     settlementAdditionalCostAtomic?: string;
     mutateRecoveryHeader?: boolean;
+    advertisePaymentIdentifier?: boolean;
     providerFactory?: (context: any) => Promise<any>;
     transportSend?: (request: any) => Promise<any>;
   } = {}
@@ -453,6 +465,9 @@ function makeFixture(
   const paymentSignatures: string[] = [];
   const transportRequests: any[] = [];
   const paymentRequired = paymentRequiredWire();
+  if (options.advertisePaymentIdentifier === false) {
+    delete (paymentRequired as { extensions?: unknown }).extensions;
+  }
   const paymentRequirements = Buffer.from(
     core.encodePaymentRequiredHeader(paymentRequired as any),
     "ascii"

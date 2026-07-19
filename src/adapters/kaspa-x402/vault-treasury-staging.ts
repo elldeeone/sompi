@@ -599,10 +599,10 @@ function parseExactRequirement(
     (accepted.extra.profile === "additive" &&
       accepted.extra.templateId !== "kaspa-x402-kip10-additive-v1") ||
     accepted.extra.transactionEncoding !== "kaspa-sdk-safe-json-v2.0.0" ||
-    !isRecord(extension) ||
-    !isRecord(extension.info) ||
-    extension.info.required !== true ||
-    (extension.info.id !== undefined && extension.info.id !== paymentIdentifier)
+    (extension !== undefined &&
+      (!isRecord(extension) ||
+        !isRecord(extension.info) ||
+        (extension.info.id !== undefined && extension.info.id !== paymentIdentifier)))
   ) {
     throw new VaultTreasuryStagingError(
       "PAYMENT-REQUIRED is outside the pinned exact testnet profile"
