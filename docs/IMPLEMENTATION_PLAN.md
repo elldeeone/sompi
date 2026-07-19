@@ -1,6 +1,6 @@
 # Sompi AP2 + Kaspa-x402 implementation plan
 
-Status: **Phases 0-13 verified; Phase 14 in progress**
+Status: **Phases 0-14 verified**
 
 Architecture: [`docs/architecture/SOMPI_ARCHITECTURE.md`](architecture/SOMPI_ARCHITECTURE.md)
 
@@ -682,7 +682,7 @@ Authority, policy, vault, Journal, or Chain Evidence model.
 - [x] Prove substitution, malformed address, fee spike, insufficient funds,
   policy denial, replay, duplicate approval, crash, restart, ambiguous
   broadcast, finality, and secret-isolation behavior.
-- [ ] Run a funded Testnet-10 Terah canary, cut the next release, publish it,
+- [x] Run a funded Testnet-10 Terah canary, cut the next release, publish it,
   deploy it, and verify natural wallet and Transfer interactions end to end.
 
 Gate:

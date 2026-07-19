@@ -4,10 +4,8 @@ Last updated: **2026-07-19**
 
 ## Status
 
-The generic x402 Merchant cutover and near-automatic Hermes onboarding are
-complete on `main`. Wallet visibility and direct native-KAS Transfers are
-implemented, locally verified, and live-canary proven on
-`feat/wallet-direct-transfers`.
+The generic x402 Merchant cutover, near-automatic Hermes onboarding, wallet
+visibility, and direct native-KAS Transfers are complete on `main`.
 
 Sompi is an API-first local agent wallet and purchasing runtime:
 
@@ -17,8 +15,8 @@ Sompi is an API-first local agent wallet and purchasing runtime:
 - `sompi-authority` is the isolated human-present Authority;
 - `sompi-operator` provisions policy, vault, chain evidence, and credentials.
 
-Journal epoch 16 is the only active schema on the Transfer branch. It is a
-clean cutover with no epoch-15 reader.
+Journal epoch 16 is the only active schema. It is a clean cutover with no
+epoch-15 reader.
 
 ## Wallet and Transfer integration
 
@@ -36,8 +34,8 @@ clean cutover with no epoch-15 reader.
 - The complete local suite passes 473 tests (472 pass, one privileged-only
   ownership test skipped) plus the offline smoke.
 
-Version `0.9.0` is cut and deployed on Terah from the locally verified package.
-Registry publication and the final published-package readback remain.
+Version `0.9.0` is published, tagged `v0.9.0`, and deployed on Terah from the
+byte-verified public registry package.
 
 ## Protocols
 
@@ -123,8 +121,9 @@ Terah remains the private operator-controlled Hermes deployment.
 
 - Hermes is active.
 - Sompi `0.8.2` was quiesced, backed up, and owner-recovered. The old runtime
-  was removed to a plain-Hermes baseline, then `0.9.0` was installed from the
-  verified release candidate through the public bootstrap workflow.
+  was removed to a plain-Hermes baseline, then `0.9.0` was installed through
+  the public bootstrap workflow and replaced in place by the byte-verified npm
+  package without reusing old state.
 - The installed Sompi skill, callback plugin, isolated compatibility overlay,
   systemd units, and package match this repository.
 - Authority, API, Hermes gateway, and all local sockets are healthy.
@@ -144,7 +143,7 @@ The earlier Phase 11 and `0.8.2` evidence remains historical.
 
 ## Verification
 
-At the `0.9.0` release-candidate state:
+For the published `0.9.0` release:
 
 - 473 unit tests run: 472 pass and one root-only ownership test is skipped;
 - the three Hermes plugin tests pass;
@@ -163,9 +162,11 @@ The existing audit record remains under [`security/audits/`](security/audits/).
 
 ## Release
 
-The last published release is `@elldeeone/sompi@0.8.2`, tagged `v0.8.2`.
-Version `0.9.0` is the Wallet/Transfer release candidate and is live-canary
-proven on Terah. It is not yet published or tagged.
+The current release is `@elldeeone/sompi@0.9.0`, tagged `v0.9.0`. The registry
+tarball is byte-identical to the locked 205-file release artifact (SHA-256
+`0c8f7e1a670963460ba601517e6627c14bd50c94998253a96e62c50820630181`).
+The published package is live on Terah and its wallet, Transfer, x402 Purchase,
+recovery, and agent-skill paths are canary proven.
 
 Mainnet, autonomous authorization, passkeys, UCP, and official AP2/x402
 interoperability remain out of scope. See
