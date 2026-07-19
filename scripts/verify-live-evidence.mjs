@@ -167,7 +167,7 @@ const walletTransfer = JSON.parse(
 const walletTransferEncoded = JSON.stringify(walletTransfer);
 if (
   createHash("sha256").update(walletTransferEncoded).digest("hex") !==
-    "edf97e8d0a880a40e4411df71a89b438c5eb233341a2f3880e9fd2c44534f7d1" ||
+    "61a11260e4bfc6177f85af7665e7ffbade1d68ad5f8f22dd3abf272c2d49bc54" ||
   walletTransfer.profile !== "urn:sompi:evidence:terah-wallet-transfer:1" ||
   walletTransfer.network !== "kaspa:testnet-10" ||
   walletTransfer.packageVersion !== "0.9.0" ||

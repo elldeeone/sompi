@@ -4,7 +4,7 @@
   "network": "kaspa:testnet-10",
   "packageVersion": "0.9.0",
   "runtimeCommit": "db2023d38845d0906308b3bf697e7c76815ca559",
-  "packageArchiveSha256": "0225cb4d307bc4f235de83658f52d943c70bfc06379c99ccc49ea0cca1deda23",
+  "packageArchiveSha256": "0c8f7e1a670963460ba601517e6627c14bd50c94998253a96e62c50820630181",
   "journalEpoch": 16,
   "cleanCutover": {
     "priorVersion": "0.8.2",
