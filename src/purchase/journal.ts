@@ -2998,6 +2998,32 @@ export class PurchaseJournal {
     return row ? vaultMigrationFromRow(row) : undefined;
   }
 
+  expireStaleVaultMigration(): VaultMigrationJournalRecord | undefined {
+    const expire = this.db.transaction(() => {
+      const now = this.timestamp();
+      const row = this.db.prepare(
+        `SELECT * FROM vault_migrations
+          WHERE state IN ('awaiting_authority', 'awaiting_owner')
+            AND expires_at_ms <= ?
+          ORDER BY created_at_ms ASC, id ASC
+          LIMIT 1`
+      ).get(now) as VaultMigrationRow | undefined;
+      if (!row) return undefined;
+      const current = vaultMigrationFromRow(row);
+      const reason = current.state === "awaiting_authority" ? "authority_expired" : "owner_execution_expired";
+      const updated = this.db.prepare(
+        `UPDATE vault_migrations SET state = 'expired', updated_at_ms = ?
+          WHERE id = ? AND state = ? AND expires_at_ms <= ?`
+      ).run(now, current.id, current.state, now);
+      if (updated.changes !== 1) {
+        throw new JournalInvariantError(`concurrent Vault Migration expiry for ${current.id}`);
+      }
+      this.insertVaultMigrationTransition(current.id, current.state, "expired", reason, now);
+      return this.vaultMigration(current.id);
+    });
+    return expire.immediate();
+  }
+
   /** Ordered owner-approved vault lineage used only for startup verification. */
   vaultMigrationLineage(): readonly VaultMigrationJournalRecord[] {
     const rows = this.db.prepare(

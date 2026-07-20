@@ -4,13 +4,13 @@ Last updated: **2026-07-20**
 
 ## Status
 
-The published `0.11.3` runtime on Terah is the epoch-18 clean cutover for the
+The published `0.11.4` runtime on Terah is the epoch-18 clean cutover for the
 generic x402 Merchant path, Hermes onboarding, wallet visibility, direct
 native-KAS Transfers, automatic funding intake, owner-managed limits, and the
 one-wallet UX. Its funded direct-Transfer and generic exact-purchase canaries
-are accepted and receipted. The current source tree is the `0.11.4` patch
-candidate. It keeps stale owner-approved Vault Migration plans terminal and
-adds the complete offline-owner identity transition: the short-lived operator
+are accepted and receipted. The current source tree is the `0.11.5` patch
+candidate. It keeps timed-out Authority requests and stale owner-approved Vault
+Migration plans terminal and adds the complete offline-owner identity transition: the short-lived operator
 validates the root-owned manifest and owner key, verifies the API-owned runtime
 directory, then permanently drops to the pinned API UID/GID before opening any
 wallet, Journal, or evidence state.
@@ -45,7 +45,7 @@ reader for earlier epochs.
   clients of the same Policy Change, Vault Migration, Wallet, Transfer, and
   Purchase modules.
 
-Acceptance evidence: 517 tests run, with 516 passing and one root-only
+Acceptance evidence: 518 tests run, with 517 passing and one root-only
 ownership test skipped. Offline smoke, Kaspa-x402 alpha.8 conformance,
 OpenAPI/Arazzo validation, Hermes callback tests, deterministic local E2E,
 package and clean-consumer verification, production dependency audit, retained
@@ -78,6 +78,9 @@ fixtures exactly.
 - Before owner execution begins, expired plans become `expired` and plans whose
   approved vault snapshot no longer matches become `failed`. Both transitions
   are durable, release the live migration slot, and perform no external effect.
+- An expired `awaiting_authority` plan is terminalized before a status read or
+  replacement proposal, so a timed-out Telegram prompt cannot retain the live
+  migration slot.
 - Offline owner execution begins as the declared root operator but opens no
   runtime state as root. It validates the API runtime identity, drops all
   privileges to the pinned API UID/GID, and only then composes the runtime.

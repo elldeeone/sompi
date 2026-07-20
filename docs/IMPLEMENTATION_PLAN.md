@@ -823,6 +823,9 @@ change set without preserving vulnerable compatibility paths.
   any owner-key or chain work so superseded plans cannot block replacement.
 - [x] Validate offline-owner inputs as root, then permanently enter the pinned
   API UID/GID before opening API-owned runtime state.
+- [x] Terminalize an expired `awaiting_authority` Vault Migration before
+  admitting a replacement request, including after an Authority transport
+  timeout.
 
 Gate:
 
@@ -836,12 +839,13 @@ Gate:
 - Crash recovery neither strands admitted work nor activates a replacement
   vault without accepted recovery evidence.
 
-Acceptance evidence (2026-07-20): 509 tests run, with 508 passing and one
+Acceptance evidence (2026-07-20): 518 tests run, with 517 passing and one
 privileged ownership test skipped. The original exploit harnesses are closed;
 offline smoke, Kaspa-x402 alpha.8 conformance, generated OpenAPI/Arazzo checks,
 Hermes compatibility, deterministic local E2E, production dependency audit,
 all 12 SilverScript vault fixtures, and the clean isolated release verifier
-pass.
+pass. Expired Authority requests also release the live Vault Migration slot
+without owner-key access or a chain effect.
 
 ## Deferred tracks (not part of the alpha.8 clean cutover)
 

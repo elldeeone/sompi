@@ -6,7 +6,7 @@ import test from "node:test";
 
 import { PurchaseJournal } from "../purchase/journal.js";
 import { vaultMigrationFactsDigest, VaultMigrationModule } from "./module.js";
-import type { VaultMigrationFacts, VaultMigrationExecutionResult } from "./types.js";
+import type { VaultMigrationDecision, VaultMigrationFacts, VaultMigrationExecutionResult } from "./types.js";
 import { generateOwnerKey, VaultManager } from "../vault.js";
 import type { Sha256Digest } from "../purchase/types.js";
 
@@ -157,7 +157,40 @@ test("changed pre-execution vault snapshots fail terminally and release the migr
   } finally { fixture.close(); }
 });
 
-function createFixture(approve = true, everydayMaximumAtomic = "100000000") {
+test("expired Authority requests terminalize and cannot block a replacement proposal", async () => {
+  let authorityCalls = 0;
+  const fixture = createFixture(true, "100000000", async (facts) => {
+    authorityCalls += 1;
+    if (authorityCalls === 1) throw new Error("Authority transport timed out");
+    return authorityDecision(facts, true);
+  });
+  try {
+    await assert.rejects(
+      () => fixture.module.propose({
+        requestKey: "vault:authority-timeout",
+        newMaximumOutflowAtomic: "200000000",
+      }),
+      /transport timed out/,
+    );
+    const timedOut = fixture.journal.findVaultMigrationByRequestKey("vault:authority-timeout");
+    assert.equal(timedOut?.state, "awaiting_authority");
+    fixture.setNow(timedOut!.expiresAtMs);
+
+    const replacement = await fixture.module.propose({
+      requestKey: "vault:replacement-after-authority-timeout",
+      newMaximumOutflowAtomic: "200000000",
+    });
+    assert.equal(fixture.module.status(timedOut!.id).state, "expired");
+    assert.equal(replacement.state, "awaiting_owner");
+    assert.equal(authorityCalls, 2);
+  } finally { fixture.close(); }
+});
+
+function createFixture(
+  approve = true,
+  everydayMaximumAtomic = "100000000",
+  authorityRequest?: (facts: VaultMigrationFacts) => Promise<VaultMigrationDecision>,
+) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-vault-migration-"));
   let now = 1_800_000_000_000;
   const journal = new PurchaseJournal(path.join(directory, "journal.sqlite"), { now: () => now });
@@ -189,15 +222,7 @@ function createFixture(approve = true, everydayMaximumAtomic = "100000000") {
   const wallet = { address: ADDRESS };
   const module = new VaultMigrationModule({
     journal, vault: vault as unknown as VaultManager, wallet,
-    authority: { async request(facts) {
-      const evidence = Buffer.from(`owner decision:${facts.vaultMigrationId}`);
-      return {
-        decision: approve ? "approved" as const : "denied" as const,
-        authorityId: "owner", evidence,
-        evidenceDigest: `sha256:${await import("node:crypto").then(({ createHash }) => createHash("sha256").update(evidence).digest("base64url"))}` as Sha256Digest,
-        factsDigest: vaultMigrationFactsDigest(facts), decidedAtMs: 1_800_000_000_000,
-      };
-    } },
+    authority: { request: authorityRequest ?? ((facts) => authorityDecision(facts, approve)) },
     everydayMaximumAtomic: () => activeEverydayMaximumAtomic,
     manifest: () => ({ revision: 1, digest: DIGEST }), now: () => now,
   });
@@ -219,5 +244,15 @@ function createFixture(approve = true, everydayMaximumAtomic = "100000000") {
     setNow(value: number) { now = value; },
     get executedFacts() { return executedFacts; },
     close() { journal.close(); fs.rmSync(directory, { recursive: true, force: true }); },
+  };
+}
+
+async function authorityDecision(facts: VaultMigrationFacts, approve: boolean): Promise<VaultMigrationDecision> {
+  const evidence = Buffer.from(`owner decision:${facts.vaultMigrationId}`);
+  return {
+    decision: approve ? "approved" : "denied",
+    authorityId: "owner", evidence,
+    evidenceDigest: `sha256:${await import("node:crypto").then(({ createHash }) => createHash("sha256").update(evidence).digest("base64url"))}` as Sha256Digest,
+    factsDigest: vaultMigrationFactsDigest(facts), decidedAtMs: 1_800_000_000_000,
   };
 }

@@ -46,6 +46,7 @@ export class VaultMigrationModule {
 
   async propose(intent: VaultMigrationIntent, signal?: AbortSignal): Promise<VaultMigrationView> {
     const normalized = normalizeIntent(intent);
+    this.options.journal.expireStaleVaultMigration();
     const existing = this.options.journal.findVaultMigrationByRequestKey(normalized.requestKey);
     if (existing) {
       if (existing.newMaximumOutflowAtomic !== normalized.newMaximumOutflowAtomic) {
@@ -80,6 +81,7 @@ export class VaultMigrationModule {
 
   status(id: string): VaultMigrationView {
     if (!ID.test(id)) throw new Error("Vault Migration identity is invalid");
+    this.options.journal.expireStaleVaultMigration();
     return view(this.options.journal.vaultMigration(id));
   }
 
@@ -129,9 +131,22 @@ export class VaultMigrationModule {
 
   private async resume(record: VaultMigrationJournalRecord, signal?: AbortSignal): Promise<VaultMigrationView> {
     if (record.state !== "awaiting_authority") return view(record);
+    if (timestamp(this.now) >= record.expiresAtMs) {
+      this.options.journal.expireStaleVaultMigration();
+      return view(this.options.journal.vaultMigration(record.id));
+    }
     signal?.throwIfAborted();
     const facts = factsFor(record);
-    const decision = await this.options.authority.request(facts);
+    let decision: VaultMigrationDecision;
+    try {
+      decision = await this.options.authority.request(facts);
+    } catch (error) {
+      if (timestamp(this.now) >= record.expiresAtMs) {
+        this.options.journal.expireStaleVaultMigration();
+        return view(this.options.journal.vaultMigration(record.id));
+      }
+      throw error;
+    }
     validateDecision(decision, facts);
     return view(this.options.journal.decideVaultMigration(record.id, decision));
   }
