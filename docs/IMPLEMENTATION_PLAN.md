@@ -858,6 +858,16 @@ and accepted replacement transaction
 The receive address remained unchanged. A clean temporary consumer fetched
 the public tag and package and produced a valid digest-bound bootstrap preview.
 
+Post-release incident closure (2026-07-20): a 60-second exact offer was approved
+with only about 10 seconds remaining. Sompi staged funds, correctly refused the
+expired Merchant payment, and later returned the staged value through accepted
+recovery transaction
+`64703a37cf9fbe8416798f25bd117eac71fa8609fda8ad6ef227179b03a9aa2d`.
+The `0.11.6` cut reserves 30 seconds for single-transaction execution before
+presenting authority as live, keeps uncorroborated recovery absence pending,
+and projects a proven no-payment recovery as `expired`. The full 522-test suite
+passes with one expected privileged ownership skip.
+
 ## Deferred tracks (not part of the alpha.8 clean cutover)
 
 ### Autonomous AP2

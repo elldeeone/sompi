@@ -29,7 +29,7 @@ interoperability or send AP2 artifacts to ordinary x402 merchants.
 Tell Hermes:
 
 > Install the Sompi skill from
-> https://raw.githubusercontent.com/elldeeone/sompi/v0.11.5/integrations/hermes/sompi/SKILL.md
+> https://raw.githubusercontent.com/elldeeone/sompi/v0.11.6/integrations/hermes/sompi/SKILL.md
 > and set up Sompi for this host.
 
 Hermes gathers non-secret setup facts and gives you one command to run locally.
@@ -87,7 +87,9 @@ sompi-agent recover PURCHASE_ID
 ```
 
 Request keys identify logical actions. Reusing the same key and intent is
-idempotent. A new key does not bypass a denial or spending limit.
+idempotent. An expired offer is finished, so a new user instruction may obtain
+fresh terms with a new key. A new key does not bypass a denial, unresolved
+payment, recovery requirement, or spending limit.
 
 ## Limits
 

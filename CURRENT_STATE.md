@@ -16,6 +16,15 @@ manifest and owner key, verifies the API-owned runtime directory, then
 permanently drops to the pinned API UID/GID before opening wallet, Journal, or
 evidence state.
 
+`0.11.6` is the current release candidate. It closes a live short-offer edge:
+single-transaction approval now expires 30 seconds before Checkout expiry, so
+Sompi cannot start Treasury staging without enough time for the first Merchant
+submission. Temporarily uncorroborated recovery absence stays pending rather
+than becoming a false conflict, and a confirmed recovery with no Merchant
+payment ends as `expired` with capacity released. The triggering Purchase was
+recovered on TN10 with no Merchant payment; evidence is recorded in
+[`evidence/purchase-expiry-recovery-0.11.6/`](evidence/purchase-expiry-recovery-0.11.6/README.md).
+
 Sompi is an API-first local agent wallet and purchasing runtime:
 
 - `sompi-api` is the canonical Purchase interface;
@@ -46,7 +55,7 @@ reader for earlier epochs.
   clients of the same Policy Change, Vault Migration, Wallet, Transfer, and
   Purchase modules.
 
-Acceptance evidence: 518 tests run, with 517 passing and one root-only
+Acceptance evidence: 522 tests run, with 521 passing and one root-only
 ownership test skipped. Offline smoke, Kaspa-x402 alpha.8 conformance,
 OpenAPI/Arazzo validation, Hermes callback tests, deterministic local E2E,
 package and clean-consumer verification, production dependency audit, retained

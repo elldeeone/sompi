@@ -119,6 +119,19 @@ test("authorization decision is bound to the exact Purchase and Checkout digest"
   );
 });
 
+test("authorization may expire before Checkout Terms but never after them", () => {
+  const request = makeAuthorizationRequest();
+  const executionDeadline = Date.parse(request.terms.expiresAt) - 30_000;
+  assert.equal(
+    authorizationFacts({ ...request, expiresAtMs: executionDeadline }).checkoutDigest,
+    request.terms.checkoutDigest
+  );
+  assert.throws(
+    () => authorizationFacts({ ...request, expiresAtMs: Date.parse(request.terms.expiresAt) + 1 }),
+    /outlives Checkout Terms/
+  );
+});
+
 test("prepared payment must exactly match all authorized Checkout Terms", () => {
   const request = makeExecutionRequest();
   const prepared = makePrepared(request);

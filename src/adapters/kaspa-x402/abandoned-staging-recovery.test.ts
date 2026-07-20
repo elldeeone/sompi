@@ -677,6 +677,22 @@ test("unavailable race evidence stays pending and never produces submission read
   });
 });
 
+test("uncorroborated candidate absence stays pending instead of becoming a conflict", async () => {
+  await withFixture(async (fixture) => {
+    const prepared = await fixture.prepare();
+    fixture.observeWith((request) => ({
+      staging: safeEvidence(request).staging,
+      exactPayment: request.exactPayment === null
+        ? null
+        : { status: "unknown", detailDigest: digest("exact-unknown") },
+      recovery: { status: "unknown", detailDigest: digest("recovery-unknown") },
+    }));
+    const pending = await fixture.module.observe(prepared.preparedBytes);
+    assert.equal(pending.status, "pending");
+    assert.equal(fixture.submissionCalls.length, 0);
+  });
+});
+
 test("prepared envelope and observed candidate tampering are rejected before effects", async () => {
   await withFixture(async (fixture) => {
     const prepared = await fixture.prepare();

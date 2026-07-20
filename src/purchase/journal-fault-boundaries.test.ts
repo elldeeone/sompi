@@ -661,7 +661,7 @@ function stagingRecoveryAccountingScenario(
       assert.equal(context.effect.state, "observed");
       assert.equal(context.attempt.state, "failed");
       assert.equal(context.reservation.state, "released");
-      assert.equal(target.requirePurchase(setup.purchaseId).state, "failed_terminal");
+      assert.equal(target.requirePurchase(setup.purchaseId).state, "expired");
     },
   };
 }

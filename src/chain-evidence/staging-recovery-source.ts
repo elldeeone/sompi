@@ -66,7 +66,18 @@ export class ChainEvidenceStagingRecoveryRaceSource implements StagingRecoveryRa
       signal: request.signal,
     });
     if (evidence.status === "absent") return Object.freeze({ status: "absent" as const, detailDigest: evidence.detailDigest as Sha256Digest });
-    if (evidence.status !== "present" || !evidence.level) return Object.freeze({ status: "partial" as const, detailDigest: evidence.detailDigest as Sha256Digest });
+    if (evidence.status === "unknown" || evidence.status === "unavailable") {
+      return Object.freeze({
+        status: "unknown" as const,
+        detailDigest: evidence.detailDigest as Sha256Digest,
+      });
+    }
+    if (evidence.status !== "present" || !evidence.level) {
+      return Object.freeze({
+        status: "partial" as const,
+        detailDigest: evidence.detailDigest as Sha256Digest,
+      });
+    }
     const finality = evidence.level === "provisional" ? "mempool" as const : evidence.level === "accepted" ? "accepted" as const : "confirmed" as const;
     return Object.freeze({
       status: "observed" as const,

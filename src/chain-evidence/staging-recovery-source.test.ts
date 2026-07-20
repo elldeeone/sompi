@@ -59,6 +59,25 @@ test("provisional candidates and unavailable staging state remain non-terminal",
   assert.equal(evidence.staging.status, "unknown");
 });
 
+test("uncorroborated candidate absence remains unknown rather than conflicting", async () => {
+  const chainEvidence = {
+    observe: async (request: { transactionId: string }): Promise<ChainEvidenceRecord> => ({
+      ...absent(request.transactionId),
+      status: "unknown",
+    }),
+  } as unknown as ChainEvidenceModule;
+  const source = new ChainEvidenceStagingRecoveryRaceSource(
+    chainEvidence,
+    { client: async () => ({ getUtxosByAddresses: async () => ({ entries: [] }) }) as never },
+    "accepted"
+  );
+
+  const evidence = await source.observeRace(request());
+  assert.equal(evidence.exactPayment?.status, "unknown");
+  assert.equal(evidence.recovery.status, "unknown");
+  assert.equal(evidence.staging.status, "spent");
+});
+
 function request(): StagingRecoveryRaceRequest {
   return {
     network: "kaspa:testnet-10",

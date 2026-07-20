@@ -17,6 +17,7 @@ const ALLOWED_TRANSITIONS = {
     "execution_prepared",
     "submitted",
     "settled",
+    "expired",
     "failed_terminal",
   ],
   failed_terminal: [],

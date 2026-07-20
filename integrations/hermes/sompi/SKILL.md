@@ -1,7 +1,7 @@
 ---
 name: sompi
 description: Install Sompi, inspect its agent wallet, send human-approved Testnet-10 KAS, and buy paid API resources.
-version: 0.11.5
+version: 0.11.6
 author: Sompi contributors
 license: MIT
 platforms: [linux]
@@ -25,7 +25,7 @@ When the user asks to install Sompi:
    ```sh
    mkdir -p ~/.sompi
    curl --proto '=https' --tlsv1.2 --fail --location --max-time 30 \
-     https://raw.githubusercontent.com/elldeeone/sompi/v0.11.5/host-bootstrap.example.json \
+     https://raw.githubusercontent.com/elldeeone/sompi/v0.11.6/host-bootstrap.example.json \
      -o ~/.sompi/bootstrap-request.json
    chmod 600 ~/.sompi/bootstrap-request.json
    ```
@@ -35,7 +35,7 @@ When the user asks to install Sompi:
 
    ```sh
    npm exec --yes --allow-scripts=better-sqlite3@12.11.1 \
-     --package=@elldeeone/sompi@0.11.5 -- \
+     --package=@elldeeone/sompi@0.11.6 -- \
      sompi-operator bootstrap-preview ~/.sompi/bootstrap-request.json
    ```
 
@@ -130,7 +130,11 @@ If the Transfer is `funds_reserved`, `prepared`, `submitted`, or `settled`, keep
 
 ## Procedure
 
-1. Choose one stable request key for the logical purchase. Reuse that key for retries of the same request; never create a new key just to bypass a denial or failure.
+1. Choose a fresh stable request key for this exact user instruction. Reuse it
+   while that Purchase is pending or recoverable. If Sompi returns `expired`,
+   the old offer is finished; only a new user instruction may start a new
+   Purchase with a fresh key. Never create a new key to bypass a denial,
+   recoverable state, or unresolved payment.
 2. Use `terminal` to run:
 
    ```sh

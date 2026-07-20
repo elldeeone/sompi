@@ -8699,7 +8699,7 @@ export class PurchaseJournal {
       this.transitionPurchase(
         purchase.id,
         "failed_recoverable",
-        "failed_terminal",
+        "expired",
         "staging_recovered_without_payment",
         input.evidenceDigest
       );

@@ -78,7 +78,10 @@ sompi-agent purchase \
 Optional request bodies use `--body-file` and `--media-type`. Known Merchant
 identity can be pinned with `--merchant-id` and `--merchant-origin`.
 
-The request key must be stable for the logical purchase. Retries reuse it.
+Use one request key for one user instruction. Retries and recovery reuse it.
+After Sompi returns `expired`, a new user instruction may use a fresh key to
+obtain new Merchant terms. A denial or recoverable payment must not be bypassed
+with a new key.
 
 ## User decision
 

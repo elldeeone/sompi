@@ -1075,6 +1075,16 @@ function assertExecutionBinding(
   );
   assertDigest(authorizationRequest.requestDigest, "authorization request digest");
   assertDigest(authorizationRequest.nonceDigest, "authorization nonce digest");
+  if (
+    !Number.isSafeInteger(authorizationRequest.expiresAtMs) ||
+    authorizationRequest.expiresAtMs <= authorizationRequest.createdAtMs ||
+    authorizationRequest.expiresAtMs > expiresAt
+  ) {
+    throw adapterError(
+      "profile_mismatch",
+      "authorization lifetime is not bounded by the exact Purchase"
+    );
+  }
   const exact: ReadonlyArray<[string, unknown, unknown]> = [
     ["Purchase", authorizationRequest.purchaseId, execution.purchaseId],
     ["authorization Purchase", authorization.purchaseId, execution.purchaseId],
@@ -1084,7 +1094,6 @@ function assertExecutionBinding(
     ["authorization media type", authorizationRequest.requestMediaType, requestMediaType],
     ["authorization body", authorizationRequest.requestBodyDigest, bodyDigest],
     ["authorization terms", stableStringify(authorizationRequest.terms), stableStringify(execution.terms)],
-    ["authorization expiry", authorizationRequest.expiresAtMs, expiresAt],
     ["request fingerprint", request.requestFingerprint, execution.terms.resourceFingerprint],
     ["fact Purchase", facts.purchaseId, execution.purchaseId],
     ["fact request URL", facts.resourceUrl, request.url],

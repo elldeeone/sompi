@@ -117,6 +117,10 @@ export type StagingRecoveryCandidateObservation =
       readonly detailDigest: Sha256Digest;
     }
   | {
+      readonly status: "unknown";
+      readonly detailDigest: Sha256Digest;
+    }
+  | {
       readonly status: "partial";
       readonly detailDigest: Sha256Digest;
     }
@@ -838,6 +842,9 @@ export class AbandonedStagingRecovery {
 
     if (exact.status === "partial" || recovery.status === "partial" || staging === "partial") {
       return conflict("partial_evidence", evidenceDigest);
+    }
+    if (exact.status === "unknown" || recovery.status === "unknown") {
+      return Object.freeze({ status: "pending" as const, evidenceDigest });
     }
     if (exact.status === "observed" && recovery.status === "observed") {
       return conflict("both_candidates_observed", evidenceDigest);
@@ -1579,7 +1586,7 @@ function candidateMatches(
   candidate: StagingRecoveryCandidateObservation | undefined,
   expected: Readonly<StagingRecoveryExpectedCandidate>
 ):
-  | { readonly status: "absent" | "partial" }
+  | { readonly status: "absent" | "unknown" | "partial" }
   | {
       readonly status: "observed";
       readonly finality: "mempool" | "accepted" | "confirmed";
@@ -1591,6 +1598,7 @@ function candidateMatches(
     return { status: "partial" };
   }
   if (candidate.status === "absent") return { status: "absent" };
+  if (candidate.status === "unknown") return { status: "unknown" };
   if (candidate.status === "partial") return { status: "partial" };
   if (candidate.status !== "observed") return { status: "partial" };
   if (

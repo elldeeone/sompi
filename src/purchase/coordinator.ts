@@ -75,6 +75,7 @@ import type {
 const PAYMENT_EFFECT_KIND = "kaspa-x402-payment";
 const PURCHASE_COORDINATION_TTL_MS = 60_000;
 const RECOVERY_TTL_MS = 30_000;
+const DEFAULT_EXECUTION_RESERVE_MS = 30_000;
 const AUTHORIZATION_REQUEST_PROFILE = "urn:sompi:authorization-request:1";
 const REQUEST_BODY_PROFILE = "urn:sompi:purchase-request-body:1";
 
@@ -508,6 +509,8 @@ export interface PurchaseCoordinatorOptions {
   entropy?: (bytes: number) => Uint8Array;
   workerId?: string;
   effectLeaseTtlMs?: number;
+  /** Time reserved after approval for staging and the first Merchant submission. */
+  executionReserveMs?: number;
   effectiveFinalityFloor?: "accepted" | "depth-confirmed";
 }
 
@@ -527,6 +530,7 @@ export class PurchaseCoordinator implements PurchaseModule {
   private readonly entropy: (bytes: number) => Uint8Array;
   private readonly workerId: string;
   private readonly effectLeaseTtlMs: number;
+  private readonly executionReserveMs: number;
   private readonly effectiveFinalityFloor: "accepted" | "depth-confirmed";
 
   constructor(
@@ -543,9 +547,16 @@ export class PurchaseCoordinator implements PurchaseModule {
     this.entropy = options.entropy ?? randomBytes;
     this.workerId = options.workerId ?? `coordinator-${process.pid}-${randomBytes(8).toString("hex")}`;
     this.effectLeaseTtlMs = options.effectLeaseTtlMs ?? PURCHASE_COORDINATION_TTL_MS;
+    this.executionReserveMs = options.executionReserveMs ?? DEFAULT_EXECUTION_RESERVE_MS;
     this.effectiveFinalityFloor = options.effectiveFinalityFloor ?? "accepted";
     if (!Number.isSafeInteger(this.effectLeaseTtlMs) || this.effectLeaseTtlMs <= 0) {
       throw new PurchaseCoordinatorError("effect lease TTL must be a positive safe integer", "invalid_configuration");
+    }
+    if (!Number.isSafeInteger(this.executionReserveMs) || this.executionReserveMs < 0) {
+      throw new PurchaseCoordinatorError(
+        "execution reserve must be a non-negative safe integer",
+        "invalid_configuration"
+      );
     }
   }
 
@@ -761,8 +772,33 @@ export class PurchaseCoordinator implements PurchaseModule {
       );
       return true;
     }
+    const executionDeadlineMs = terms.expiresAtMs - (
+      executionPlan.mechanism === "single-transaction"
+        ? this.executionReserveMs
+        : 0
+    );
+    if (executionDeadlineMs <= this.now()) {
+      this.journal.transitionPurchase(
+        purchase.id,
+        "terms_bound",
+        "expired",
+        "checkout_execution_window_too_short",
+        terms.checkoutDigest
+      );
+      return true;
+    }
     const quote = await this.executionQuote(purchase.id, terms, executionPlan);
     if (!quote.ready) return false;
+    if (executionDeadlineMs <= this.now()) {
+      this.journal.transitionPurchase(
+        purchase.id,
+        "terms_bound",
+        "expired",
+        "checkout_execution_window_elapsed",
+        terms.checkoutDigest
+      );
+      return true;
+    }
     requireAtomicDecimal(quote.additionalCostCeilingAtomic, true, "Treasury additional-cost ceiling");
     const nonce = Buffer.from(this.entropy(32));
     if (nonce.byteLength !== 32) {
@@ -794,7 +830,7 @@ export class PurchaseCoordinator implements PurchaseModule {
             channelId: executionPlan.channelEpoch.channelId,
             channelEpochDigest: channelEpochDigest(executionPlan),
           }),
-      expiresAtMs: terms.expiresAtMs,
+      expiresAtMs: executionDeadlineMs,
     };
     const bytes = Buffer.from(JSON.stringify(envelopeWithoutDigest), "utf8");
     const artifact = this.journal.storeEvidence(purchase.id, {
@@ -812,7 +848,7 @@ export class PurchaseCoordinator implements PurchaseModule {
       requestBodyDigest,
       additionalCostCeilingAtomic: quote.additionalCostCeilingAtomic,
       effectiveFinalityFloor: this.effectiveFinalityFloor,
-      expiresAtMs: terms.expiresAtMs,
+      expiresAtMs: executionDeadlineMs,
     });
     return true;
   }
@@ -987,7 +1023,11 @@ export class PurchaseCoordinator implements PurchaseModule {
         throw new PurchaseCoordinatorError("Treasury reservation TTL is invalid", "treasury_quote_invalid");
       }
       const policy = this.journal.installPolicy(await this.treasury.currentPolicy());
-      const reservationExpiry = Math.min(terms.expiresAtMs, safeAdd(this.now(), quote.reservationTtlMs));
+      const reservationExpiry = Math.min(
+        terms.expiresAtMs,
+        authorization.expiresAtMs,
+        safeAdd(this.now(), quote.reservationTtlMs)
+      );
       reservation = this.journal.reservePolicy({
         id: reservationId,
         purchaseId: purchase.id,

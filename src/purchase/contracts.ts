@@ -227,8 +227,8 @@ export function authorizationFacts(request: PurchaseAuthorizationRequest): Canon
   ) {
     throw new PurchaseContractError("authorization request creation time is invalid");
   }
-  if (Date.parse(terms.expiresAt) !== request.expiresAtMs) {
-    throw new PurchaseContractError("authorization request expiry does not match Checkout Terms");
+  if (request.expiresAtMs > Date.parse(terms.expiresAt)) {
+    throw new PurchaseContractError("authorization request outlives Checkout Terms");
   }
   const execution = canonicalAuthorizationExecution(request);
   return {

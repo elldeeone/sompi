@@ -154,6 +154,34 @@ test("authority pending and denial stop before treasury or payment execution", a
   });
 });
 
+test("authority expires before the Checkout deadline to preserve the execution window", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-execution-reserve-"));
+  fs.chmodSync(directory, 0o700);
+  let now = NOW;
+  const journal = new PurchaseJournal(path.join(directory, "purchase.sqlite"), { now: () => now });
+  const dependencies = new FakeDependencies();
+  dependencies.termsExpiresAt = new Date(NOW + 60_000).toISOString();
+  dependencies.authorityMode = "pending";
+  const coordinator = makeCoordinator(journal, dependencies, () => now, 30_000);
+  try {
+    const waiting = await coordinator.purchase(makeIntent());
+    assert.equal(waiting.state, "awaiting_authority");
+    assert.equal(journal.requireAuthorizationRequest(waiting.id).expiresAtMs, NOW + 30_000);
+
+    now = NOW + 30_000;
+    dependencies.authorityMode = "approved";
+    const expired = await coordinator.purchase(makeIntent());
+    assert.equal(expired.state, "expired");
+    assert.equal(expired.treasury.status, "unreserved");
+    assert.equal(dependencies.calls.authority, 1);
+    assert.equal(dependencies.calls.prepareStaging, 0);
+    assert.match(expired.userAction ?? "", /fresh merchant terms/i);
+  } finally {
+    journal.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("caller cancellation before an external Treasury effect atomically releases capacity", async () => {
   await withFixture(async ({ coordinator, dependencies, intent, journal }) => {
     const cancellation = new AbortController();
@@ -623,7 +651,7 @@ test("expiry after staging recovers to the Sompi wallet without preparing an exa
     coordinator = makeCoordinator(journal, dependencies, () => nowMs);
     dependencies.stagingRecoveryObserveMode = "recovery_won";
     const recovered = await coordinator.recover(staged.id);
-    assert.equal(recovered.state, "failed_terminal");
+    assert.equal(recovered.state, "expired");
     assert.equal(recovered.treasury.status, "released");
     assert.equal(dependencies.recoveryCalls.prepare, 1);
     assert.equal(dependencies.recoveryCalls.submit, 1);
@@ -835,7 +863,8 @@ async function withFixture(
 function makeCoordinator(
   journal: PurchaseJournal,
   dependencies: FakeDependencies,
-  currentTime: number | (() => number) = NOW
+  currentTime: number | (() => number) = NOW,
+  executionReserveMs = 0
 ): PurchaseCoordinator {
   const now = typeof currentTime === "function" ? currentTime : () => currentTime;
   let entropyCounter = 1;
@@ -857,6 +886,7 @@ function makeCoordinator(
     {
       now,
       workerId: `test-worker-${dependencies.instance}`,
+      executionReserveMs,
       entropy(bytes) {
         return new Uint8Array(bytes).fill(entropyCounter++);
       },
