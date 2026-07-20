@@ -847,6 +847,17 @@ all 12 SilverScript vault fixtures, and the clean isolated release verifier
 pass. Expired Authority requests also release the live Vault Migration slot
 without owner-key access or a chain effect.
 
+Funded closure evidence (2026-07-20): `@elldeeone/sompi@0.11.5` was published
+and deployed to Terah from the verified 218-file tarball. Timed-out migration
+requests terminalized without owner or chain work. Human-approved migration
+`vmg_AEGRM3ZbaAsA-yVJaqIQmw` then lowered vault protection from 5 tKAS to
+4 tKAS through accepted recovery transaction
+`cf08ca5c9aed7a5f4fc89e1a0bfc0029335dd50284fde6bfba86173752bda4c7`
+and accepted replacement transaction
+`7c02e09cfa711f5f398524d3d25b5a2538cc44982cfe57db18b3168659df1310`.
+The receive address remained unchanged. A clean temporary consumer fetched
+the public tag and package and produced a valid digest-bound bootstrap preview.
+
 ## Deferred tracks (not part of the alpha.8 clean cutover)
 
 ### Autonomous AP2

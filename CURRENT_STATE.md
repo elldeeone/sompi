@@ -4,16 +4,17 @@ Last updated: **2026-07-20**
 
 ## Status
 
-The published `0.11.4` runtime on Terah is the epoch-18 clean cutover for the
+The published `0.11.5` runtime on Terah is the epoch-18 clean cutover for the
 generic x402 Merchant path, Hermes onboarding, wallet visibility, direct
 native-KAS Transfers, automatic funding intake, owner-managed limits, and the
 one-wallet UX. Its funded direct-Transfer and generic exact-purchase canaries
-are accepted and receipted. The current source tree is the `0.11.5` patch
-candidate. It keeps timed-out Authority requests and stale owner-approved Vault
-Migration plans terminal and adds the complete offline-owner identity transition: the short-lived operator
-validates the root-owned manifest and owner key, verifies the API-owned runtime
-directory, then permanently drops to the pinned API UID/GID before opening any
-wallet, Journal, or evidence state.
+are accepted and receipted. Its funded Vault Migration canary lowered vault
+protection from 5 tKAS to 4 tKAS while preserving the stable receive address.
+Timed-out Authority requests and stale owner-approved plans terminalize without
+owner-key or chain work. The short-lived operator validates the root-owned
+manifest and owner key, verifies the API-owned runtime directory, then
+permanently drops to the pinned API UID/GID before opening wallet, Journal, or
+evidence state.
 
 Sompi is an API-first local agent wallet and purchasing runtime:
 
@@ -52,6 +53,14 @@ package and clean-consumer verification, production dependency audit, retained
 TN10 evidence, and the complete release verifier pass. Current upstream
 SilverScript `26e3b9f94821b6fe47a2492755252ec4f995abb1` reproduces all 12 vault
 fixtures exactly.
+
+Funded closure evidence is recorded in
+[`evidence/vault-migration-0.11.5/`](evidence/vault-migration-0.11.5/README.md).
+Migration `vmg_AEGRM3ZbaAsA-yVJaqIQmw` applied recovery transaction
+`cf08ca5c9aed7a5f4fc89e1a0bfc0029335dd50284fde6bfba86173752bda4c7`
+and replacement transaction
+`7c02e09cfa711f5f398524d3d25b5a2538cc44982cfe57db18b3168659df1310`.
+Both are accepted on TN10, and the stable receive address is unchanged.
 
 ## Security remediation
 
@@ -207,9 +216,9 @@ Terah remains the private operator-controlled Hermes deployment.
 
 - Hermes is active.
 - Sompi `0.8.2` was quiesced, backed up, and owner-recovered. The old runtime
-  was removed to a plain-Hermes baseline, then `0.9.0` was installed through
-  the public bootstrap workflow. The byte-verified `0.10.0` package now runs
-  without replacing the epoch-16 state.
+  was removed to a plain-Hermes baseline, then the current installation was
+  built through the public bootstrap workflow. The byte-verified `0.11.5`
+  package now runs without replacing epoch-18 state.
 - The installed Sompi skill, callback plugin, isolated compatibility overlay,
   systemd units, and package match this repository.
 - Authority, API, Hermes gateway, and all local sockets are healthy.
@@ -223,24 +232,30 @@ Terah remains the private operator-controlled Hermes deployment.
   receipted. Automatic funding intake secured the existing receive-address
   deposit without an approval prompt in transaction
   `6076b807a4dd9edd7bc9e37a8a5d82c115cccf3ec0aea168c6b923b1c51c29d0`.
-  The current vault outpoint is that transaction's output `0`, with
-  `10000.9490244 tKAS` available and nothing incoming or pending.
+  Before the later migration, that transaction's output `0` held
+  `10000.9490244 tKAS` with nothing incoming or pending.
 - Authority, API, Hermes gateway, and all local sockets remain healthy.
+- The funded 0.11.5 Vault Migration canary changed on-chain protection from
+  5 tKAS to 4 tKAS, retained the public receive address, and activated
+  replacement outpoint
+  `7c02e09cfa711f5f398524d3d25b5a2538cc44982cfe57db18b3168659df1310:0`.
+  The post-migration wallet reports `9999.2554038 tKAS` available, 4 tKAS
+  vault protection, and nothing incoming or pending.
 
 The earlier Phase 11 and `0.8.2` evidence remains historical.
 
 ## Verification
 
-For the published `0.10.0` release:
+For the published `0.11.5` release:
 
-- 486 unit tests run: 485 pass and one root-only ownership test is skipped;
+- 518 unit tests run: 517 pass and one root-only ownership test is skipped;
 - the three Hermes plugin tests pass;
 - local generic-Merchant E2E and crash recovery pass;
 - x402 package/source/vector conformance passes;
 - current and historical funded evidence locks pass;
 - OpenAPI and Arazzo checks pass;
 - production dependency audit reports zero vulnerabilities;
-- the 208-file package policy, clean install, licence audit, and consumer smoke
+- the 218-file package policy, clean install, licence audit, and consumer smoke
   pass.
 
 The complete release verifier passes, including its final clean-tree assertion.
@@ -250,11 +265,11 @@ The existing audit record remains under [`security/audits/`](security/audits/).
 
 ## Release
 
-The current release is `@elldeeone/sompi@0.10.0`, tagged `v0.10.0`. The registry
-tarball is byte-identical to the verified 208-file release artifact (SHA-256
-`fc957b4c912fe178717c62c88ff06429368a758abd9fd47cba4f6b26096e8948`).
-The published package is live on Terah and its wallet, automatic funding,
-Transfer, x402 Purchase, recovery, and agent-skill paths are canary proven.
+The current release is `@elldeeone/sompi@0.11.5`, tagged `v0.11.5`. The registry
+tarball matches the verified 218-file release artifact (npm SHA-1
+`b6884924305ca5e10ee801cda65c712ba2ee7cf7`). The published package is live on
+Terah. Wallet, automatic funding, Transfer, x402 Purchase, recovery,
+agent-skill, Vault Migration, and fresh-agent preview paths are canary proven.
 
 Mainnet, autonomous authorization, passkeys, UCP, and official AP2/x402
 interoperability remain out of scope. See
