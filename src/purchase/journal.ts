@@ -3111,6 +3111,33 @@ export class PurchaseJournal {
     return current;
   }
 
+  expireVaultMigrationBeforeExecution(id: string): VaultMigrationJournalRecord {
+    const current = this.vaultMigration(id);
+    if (current.state === "expired") return current;
+    if (current.state !== "awaiting_owner") {
+      throw new JournalInvariantError(`Vault Migration ${id} cannot expire from ${current.state}`);
+    }
+    if (this.timestamp() < current.expiresAtMs) {
+      throw new JournalInvariantError(`Vault Migration ${id} owner approval has not expired`);
+    }
+    return this.transitionVaultMigration(id, "awaiting_owner", "expired", "owner_execution_expired");
+  }
+
+  failStaleVaultMigrationBeforeExecution(id: string): VaultMigrationJournalRecord {
+    const current = this.vaultMigration(id);
+    if (current.state === "failed") return current;
+    if (current.state !== "awaiting_owner") {
+      throw new JournalInvariantError(`Vault Migration ${id} cannot fail stale from ${current.state}`);
+    }
+    return this.transitionVaultMigration(
+      id,
+      "awaiting_owner",
+      "failed",
+      "plan_stale_before_owner_execution",
+      "plan_stale_before_owner_execution",
+    );
+  }
+
   requireVaultMigrationReconciliation(id: string, failureCode: string): VaultMigrationJournalRecord {
     assertSafeIdentity(failureCode, "Vault Migration failure code", 100);
     const update = this.db.transaction(() => {
@@ -8952,10 +8979,15 @@ export class PurchaseJournal {
     fromState: VaultMigrationJournalState,
     toState: VaultMigrationJournalState,
     reasonCode: string,
+    failureCode?: string,
   ): VaultMigrationJournalRecord {
     assertVaultMigrationId(id);
     assertVaultMigrationTransition(fromState, toState);
     assertCode(reasonCode, "Vault Migration transition reason code");
+    if (failureCode !== undefined) assertSafeIdentity(failureCode, "Vault Migration failure code", 100);
+    if ((toState === "failed") !== (failureCode !== undefined)) {
+      throw new JournalInvariantError("failed Vault Migration transition must carry exactly one failure code");
+    }
     const transition = this.db.transaction(() => {
       const current = this.vaultMigration(id);
       if (current.state === toState) return current;
@@ -8964,8 +8996,8 @@ export class PurchaseJournal {
       }
       const now = this.timestamp();
       const updated = this.db.prepare(
-        "UPDATE vault_migrations SET state = ?, updated_at_ms = ? WHERE id = ? AND state = ?"
-      ).run(toState, now, id, fromState);
+        "UPDATE vault_migrations SET state = ?, failure_code = ?, updated_at_ms = ? WHERE id = ? AND state = ?"
+      ).run(toState, failureCode ?? null, now, id, fromState);
       if (updated.changes !== 1) throw new JournalInvariantError(`concurrent Vault Migration transition for ${id}`);
       this.insertVaultMigrationTransition(id, fromState, toState, reasonCode, now);
       return this.vaultMigration(id);

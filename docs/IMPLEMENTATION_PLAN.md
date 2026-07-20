@@ -819,6 +819,8 @@ change set without preserving vulnerable compatibility paths.
 - [x] Re-run the original exploit harnesses, focused regressions, the complete
   test suite, protocol conformance, deterministic E2E, generated contract
   checks, dependency audit, SilverScript fixtures, and clean release verifier.
+- [x] Terminalize expired and stale owner-approved Vault Migration plans before
+  any owner-key or chain work so superseded plans cannot block replacement.
 
 Gate:
 

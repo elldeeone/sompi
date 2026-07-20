@@ -4,13 +4,15 @@ Last updated: **2026-07-20**
 
 ## Status
 
-The published `0.11.1` runtime on Terah is the epoch-18 clean cutover for the
+The published `0.11.2` runtime on Terah is the epoch-18 clean cutover for the
 generic x402 Merchant path, Hermes onboarding, wallet visibility, direct
 native-KAS Transfers, automatic funding intake, owner-managed limits, and the
 one-wallet UX. Its funded direct-Transfer and generic exact-purchase canaries
-are accepted and receipted. The current source tree is the `0.11.2` patch
-candidate fixing the offline-owner manifest reader role exposed before the
-vault-protection migration could create or broadcast a transaction.
+are accepted and receipted. The current source tree is the `0.11.3` patch
+candidate. It keeps the `0.11.2` offline-owner manifest-role correction and
+terminalizes expired or stale owner-approved Vault Migration plans before any
+owner key, vault fence, transaction construction, or chain work. A replaced
+plan therefore cannot occupy the one live migration slot indefinitely.
 
 Sompi is an API-first local agent wallet and purchasing runtime:
 
@@ -42,7 +44,7 @@ reader for earlier epochs.
   clients of the same Policy Change, Vault Migration, Wallet, Transfer, and
   Purchase modules.
 
-Acceptance evidence: 514 tests run, with 513 passing and one root-only
+Acceptance evidence: 516 tests run, with 515 passing and one root-only
 ownership test skipped. Offline smoke, Kaspa-x402 alpha.8 conformance,
 OpenAPI/Arazzo validation, Hermes callback tests, deterministic local E2E,
 package and clean-consumer verification, production dependency audit, retained
@@ -72,6 +74,9 @@ fixtures exactly.
 - A Vault Migration fence is removed only when the Journal proves owner
   execution never began and the vault still matches the approved old digest;
   expiry-boundary and restart recovery are both covered.
+- Before owner execution begins, expired plans become `expired` and plans whose
+  approved vault snapshot no longer matches become `failed`. Both transitions
+  are durable, release the live migration slot, and perform no external effect.
 
 ## Wallet and Transfer integration
 

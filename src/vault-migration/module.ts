@@ -88,7 +88,12 @@ export class VaultMigrationModule {
     let record = this.options.journal.vaultMigration(id);
     if (record.state === "applied") return view(record);
     if (record.state !== "awaiting_owner") throw new Error("Vault Migration is not ready for offline-owner execution");
-    this.assertCurrentVault(record);
+    if (timestamp(this.now) >= record.expiresAtMs) {
+      return view(this.options.journal.expireVaultMigrationBeforeExecution(record.id));
+    }
+    if (!this.currentVaultMatches(record)) {
+      return view(this.options.journal.failStaleVaultMigrationBeforeExecution(record.id));
+    }
     this.assertEverydayLimitsFit(record.newMaximumOutflowAtomic);
     this.options.journal.assertVaultMigrationExecutionReady(record.id);
     this.options.vault.beginMigration(record.id, record.oldVaultDigest);
@@ -131,15 +136,15 @@ export class VaultMigrationModule {
     return view(this.options.journal.decideVaultMigration(record.id, decision));
   }
 
-  private assertCurrentVault(record: VaultMigrationJournalRecord): void {
+  private currentVaultMatches(record: VaultMigrationJournalRecord): boolean {
     const config = this.options.vault.config();
-    if (
+    return !(
       vaultStaticConfigurationDigest(config) !== record.oldVaultDigest ||
       config.windowSizeDaa !== record.windowSizeDaa ||
       config.windowStartDaa !== record.windowStartDaa ||
       config.spentInWindowSompi !== record.spentInWindowAtomic ||
       this.options.wallet.address !== record.stableReceiveAddress
-    ) throw new Error("Vault Migration plan no longer matches the active wallet");
+    );
   }
 
   private assertEverydayLimitsFit(newMaximumOutflowAtomic: string): void {

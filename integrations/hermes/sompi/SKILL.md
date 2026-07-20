@@ -1,7 +1,7 @@
 ---
 name: sompi
 description: Install Sompi, inspect its agent wallet, send human-approved Testnet-10 KAS, and buy paid API resources.
-version: 0.11.2
+version: 0.11.3
 author: Sompi contributors
 license: MIT
 platforms: [linux]
@@ -25,7 +25,7 @@ When the user asks to install Sompi:
    ```sh
    mkdir -p ~/.sompi
    curl --proto '=https' --tlsv1.2 --fail --location --max-time 30 \
-     https://raw.githubusercontent.com/elldeeone/sompi/v0.11.2/host-bootstrap.example.json \
+     https://raw.githubusercontent.com/elldeeone/sompi/v0.11.3/host-bootstrap.example.json \
      -o ~/.sompi/bootstrap-request.json
    chmod 600 ~/.sompi/bootstrap-request.json
    ```
@@ -35,7 +35,7 @@ When the user asks to install Sompi:
 
    ```sh
    npm exec --yes --allow-scripts=better-sqlite3@12.11.1 \
-     --package=@elldeeone/sompi@0.11.2 -- \
+     --package=@elldeeone/sompi@0.11.3 -- \
      sompi-operator bootstrap-preview ~/.sompi/bootstrap-request.json
    ```
 

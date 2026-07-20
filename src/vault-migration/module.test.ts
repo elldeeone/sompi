@@ -111,6 +111,52 @@ test("expiry between readiness and Journal execution clears the durable vault fe
   } finally { fixture.close(); }
 });
 
+test("expired pre-execution plans terminalize before a changed vault snapshot is inspected", async () => {
+  const fixture = createFixture();
+  try {
+    const proposed = await fixture.module.propose({
+      requestKey: "vault:expired-and-stale",
+      newMaximumOutflowAtomic: "200000000",
+    });
+    fixture.wallet.address = "kaspatest:qp5sl6ftjprrxl7d7vl5qp78rl3a08q06sg3w84wx2w5s39zenxsnfuc970g4";
+    fixture.setNow(Date.parse(proposed.expiresAt));
+
+    const expired = await fixture.module.execute(proposed.id, fixture.executor);
+    assert.equal(expired.state, "expired");
+    assert.deepEqual(fixture.vault.calls, []);
+
+    fixture.wallet.address = ADDRESS;
+    const replacement = await fixture.module.propose({
+      requestKey: "vault:replacement-after-expiry",
+      newMaximumOutflowAtomic: "200000000",
+    });
+    assert.equal(replacement.state, "awaiting_owner");
+  } finally { fixture.close(); }
+});
+
+test("changed pre-execution vault snapshots fail terminally and release the migration slot", async () => {
+  const fixture = createFixture();
+  try {
+    const proposed = await fixture.module.propose({
+      requestKey: "vault:stale-before-owner",
+      newMaximumOutflowAtomic: "200000000",
+    });
+    fixture.wallet.address = "kaspatest:qp5sl6ftjprrxl7d7vl5qp78rl3a08q06sg3w84wx2w5s39zenxsnfuc970g4";
+
+    const failed = await fixture.module.execute(proposed.id, fixture.executor);
+    assert.equal(failed.state, "failed");
+    assert.equal(fixture.journal.vaultMigration(proposed.id).failureCode, "plan_stale_before_owner_execution");
+    assert.deepEqual(fixture.vault.calls, []);
+
+    fixture.wallet.address = ADDRESS;
+    const replacement = await fixture.module.propose({
+      requestKey: "vault:replacement-after-stale",
+      newMaximumOutflowAtomic: "200000000",
+    });
+    assert.equal(replacement.state, "awaiting_owner");
+  } finally { fixture.close(); }
+});
+
 function createFixture(approve = true, everydayMaximumAtomic = "100000000") {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-vault-migration-"));
   let now = 1_800_000_000_000;
@@ -140,10 +186,11 @@ function createFixture(approve = true, everydayMaximumAtomic = "100000000") {
     async reconcile(facts: VaultMigrationFacts) { executedFacts = facts; return result; },
   };
   let activeEverydayMaximumAtomic = everydayMaximumAtomic;
+  const wallet = { address: ADDRESS };
   const module = new VaultMigrationModule({
-    journal, vault: vault as unknown as VaultManager, wallet: { address: ADDRESS },
+    journal, vault: vault as unknown as VaultManager, wallet,
     authority: { async request(facts) {
-      const evidence = Buffer.from("owner decision");
+      const evidence = Buffer.from(`owner decision:${facts.vaultMigrationId}`);
       return {
         decision: approve ? "approved" as const : "denied" as const,
         authorityId: "owner", evidence,
@@ -158,6 +205,7 @@ function createFixture(approve = true, everydayMaximumAtomic = "100000000") {
     module,
     journal,
     vault,
+    wallet,
     realVault,
     executor,
     setEverydayMaximumAtomic(value: string) {
