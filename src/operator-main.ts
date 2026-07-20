@@ -21,6 +21,9 @@ import {
 import { activateHostBootstrap, installHostBootstrap } from "./operator/host-install.js";
 import { activateBootstrapVault } from "./operator/vault-activation.js";
 import { generateOwnerKey } from "./vault.js";
+import { purchaseRuntimeConfigFromEnv } from "./runtime/config.js";
+import { createSompiPurchaseRuntime } from "./runtime/purchase-runtime.js";
+import { OfflineOwnerVaultMigrationExecutor } from "./vault-migration/owner-executor.js";
 import {
   ApiCredentialInstallError,
   installAgentApiCredential,
@@ -54,6 +57,23 @@ try {
     case "owner-key": {
       const key = generateOwnerKey();
       process.stdout.write(`private: ${key.privateKey}\npublic: ${key.publicKey}\n`);
+      break;
+    }
+    case "vault-migrate": {
+      const ownerPrivateKey = readOwnerKey(command.ownerKeyFile);
+      const config = purchaseRuntimeConfigFromEnv();
+      const runtime = createSompiPurchaseRuntime(config);
+      try {
+        const executor = new OfflineOwnerVaultMigrationExecutor({
+          vault: runtime.vault, wallet: runtime.wallet, chainEvidence: runtime.chainEvidence,
+          ownerPrivateKey, finalityFloor: config.finalityFloors.vault,
+          feeCeilingAtomic: config.treasuryOperationFeeCeilingAtomic,
+        });
+        const result = command.action === "execute"
+          ? await runtime.vaultMigration.execute(command.vaultMigrationId, executor)
+          : await runtime.vaultMigration.recover(command.vaultMigrationId, executor);
+        print(result);
+      } finally { await runtime.close(); }
       break;
     }
     case "preview": print(previewOperatorProvisioning(loadOperatorProvisioningSpec(command.spec))); break;
@@ -106,4 +126,17 @@ function packageVersion(): string {
 
 function packageRoot(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+}
+
+function readOwnerKey(filename: string): string {
+  const descriptor = fs.openSync(filename, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
+  try {
+    const stat = fs.fstatSync(descriptor);
+    if (!stat.isFile() || stat.nlink !== 1 || (stat.mode & 0o077) !== 0 || stat.size < 64 || stat.size > 128) {
+      throw new HostBootstrapError("owner key file must be one owner-only regular file");
+    }
+    const value = fs.readFileSync(descriptor, "utf8").trim();
+    if (!/^[a-fA-F0-9]{64}$/.test(value)) throw new HostBootstrapError("owner key file is invalid");
+    return value;
+  } finally { fs.closeSync(descriptor); }
 }

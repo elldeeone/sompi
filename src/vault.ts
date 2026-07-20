@@ -62,17 +62,34 @@ export class VaultPreparationError extends Error {
 /** Stable digest of manifest-owned vault facts; excludes rolling/on-chain state. */
 export function vaultStaticConfigurationDigest(config: VaultConfig): string {
   assertCurrentConfig(config, "testnet-10");
+  return vaultStaticConfigurationDigestFromFacts(config);
+}
+
+/** Static vault identity derived without trusting mutable rolling-window state. */
+export function vaultStaticConfigurationDigestFromFacts(input: Readonly<{
+  template: string;
+  agentPublic: string;
+  ownerPublic: string;
+  maxOutflowSompi: string;
+  windowSizeDaa: string;
+}>): string {
+  if (input.template !== VAULT_TEMPLATE_VERSION) throw new Error("vault template is unsupported");
+  assertXOnlyPublicKey(input.agentPublic, "vault Agent public key");
+  assertXOnlyPublicKey(input.ownerPublic, "vault owner public key");
+  const maximum = canonicalUint64(input.maxOutflowSompi, "maximum outflow");
+  const window = canonicalUint64(input.windowSizeDaa, "window size");
+  if (maximum === 0n || window === 0n) throw new Error("vault static amounts must be positive");
   const bytes = Buffer.from(JSON.stringify({
-    template: config.template,
-    agentPublic: config.agentPublic,
-    ownerPublic: config.ownerPublic,
-    maxOutflowSompi: config.maxOutflowSompi,
-    windowSizeDaa: config.windowSizeDaa,
+    template: input.template,
+    agentPublic: input.agentPublic,
+    ownerPublic: input.ownerPublic,
+    maxOutflowSompi: maximum.toString(),
+    windowSizeDaa: window.toString(),
     initialAddress: deriveVaultAddress(
-      config.agentPublic,
-      config.ownerPublic,
-      BigInt(config.maxOutflowSompi),
-      BigInt(config.windowSizeDaa),
+      input.agentPublic,
+      input.ownerPublic,
+      maximum,
+      window,
       { windowStartDaa: 0n, spentInWindowSompi: 0n },
       "testnet-10"
     ),
@@ -191,6 +208,8 @@ const VAULT_INPUT_COMPUTE_BUDGET = 50;
 const NON_FINAL_SEQUENCE = 0n;
 const MAX_VAULT_AGENT_KEY_BYTES = 256;
 const MAX_VAULT_CONFIG_BYTES = 64 * 1024;
+const MAX_VAULT_MIGRATION_FENCE_BYTES = 4 * 1024;
+const MAX_VAULT_MIGRATION_EXECUTION_BYTES = 4 * 1024 * 1024;
 const UINT64_MAX = (1n << 64n) - 1n;
 
 /**
@@ -264,6 +283,139 @@ export class VaultManager {
       return config as VaultConfig;
     } finally {
       bytes.fill(0);
+    }
+  }
+
+  migrationFence(): Readonly<{ migrationId: string; state: "active" | "applied"; oldVaultDigest: string }> | undefined {
+    if (!this.state.fileExists("migration-fence.json")) return undefined;
+    const bytes = this.state.readFile("migration-fence.json", MAX_VAULT_MIGRATION_FENCE_BYTES);
+    try {
+      const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as Record<string, unknown>;
+      if (
+        !value ||
+        !/^vmg_[A-Za-z0-9_-]{22}$/.test(String(value.migrationId ?? "")) ||
+        (value.state !== "active" && value.state !== "applied") ||
+        !/^sha256:[A-Za-z0-9_-]{43}$/.test(String(value.oldVaultDigest ?? ""))
+      ) throw new Error("vault migration fence is malformed");
+      return Object.freeze({
+        migrationId: String(value.migrationId),
+        state: value.state,
+        oldVaultDigest: String(value.oldVaultDigest),
+      });
+    } finally {
+      bytes.fill(0);
+    }
+  }
+
+  beginMigration(migrationId: string, expectedOldVaultDigest: string): void {
+    if (!/^vmg_[A-Za-z0-9_-]{22}$/.test(migrationId) || !/^sha256:[A-Za-z0-9_-]{43}$/.test(expectedOldVaultDigest)) {
+      throw new Error("vault migration fence identity is invalid");
+    }
+    const current = this.config();
+    if (vaultStaticConfigurationDigest(current) !== expectedOldVaultDigest) {
+      throw new Error("vault changed before migration execution");
+    }
+    const existing = this.migrationFence();
+    if (existing?.state === "active" && existing.migrationId !== migrationId) {
+      throw new Error("another vault migration is already active");
+    }
+    const bytes = Buffer.from(JSON.stringify({ migrationId, state: "active", oldVaultDigest: expectedOldVaultDigest }), "utf8");
+    try {
+      if (this.state.fileExists("migration-fence.json")) {
+        this.state.replaceFileAtomic("migration-fence.json", bytes, MAX_VAULT_MIGRATION_FENCE_BYTES);
+      } else {
+        this.state.createFileExclusive("migration-fence.json", bytes, MAX_VAULT_MIGRATION_FENCE_BYTES);
+      }
+    } finally { bytes.fill(0); }
+  }
+
+  activateReplacement(migrationId: string, expectedOldVaultDigest: string, newMaximumOutflowSompi: bigint): VaultConfig {
+    const fence = this.requireActiveMigration(migrationId, expectedOldVaultDigest);
+    void fence;
+    if (newMaximumOutflowSompi <= 0n) throw new Error("replacement vault protection maximum must be positive");
+    const current = this.config();
+    if (vaultStaticConfigurationDigest(current) !== expectedOldVaultDigest) {
+      throw new Error("vault changed before replacement activation");
+    }
+    const state = {
+      windowStartDaa: BigInt(current.windowStartDaa),
+      spentInWindowSompi: BigInt(current.spentInWindowSompi),
+    };
+    const replacement: VaultConfig = {
+      template: current.template,
+      agentPublic: current.agentPublic,
+      ownerPublic: current.ownerPublic,
+      maxOutflowSompi: newMaximumOutflowSompi.toString(),
+      windowSizeDaa: current.windowSizeDaa,
+      windowStartDaa: current.windowStartDaa,
+      spentInWindowSompi: current.spentInWindowSompi,
+      address: this.deriveAddress(
+        current.agentPublic,
+        current.ownerPublic,
+        newMaximumOutflowSompi,
+        BigInt(current.windowSizeDaa),
+        state,
+      ),
+    };
+    this.saveConfig(replacement);
+    return replacement;
+  }
+
+  finishMigration(migrationId: string, expectedOldVaultDigest: string): void {
+    this.requireActiveMigration(migrationId, expectedOldVaultDigest);
+    const bytes = Buffer.from(JSON.stringify({ migrationId, state: "applied", oldVaultDigest: expectedOldVaultDigest }), "utf8");
+    try { this.state.replaceFileAtomic("migration-fence.json", bytes, MAX_VAULT_MIGRATION_FENCE_BYTES); }
+    finally { bytes.fill(0); }
+  }
+
+  abortMigration(migrationId: string, expectedOldVaultDigest: string): void {
+    this.requireActiveMigration(migrationId, expectedOldVaultDigest);
+    if (vaultStaticConfigurationDigest(this.config()) !== expectedOldVaultDigest) {
+      throw new Error("vault changed before migration cancellation");
+    }
+    this.state.removeFile("migration-fence.json");
+  }
+
+  recordMigrationExecution(
+    migrationId: string,
+    oldVaultDigest: string,
+    value: Readonly<Record<string, unknown>>,
+  ): void {
+    this.requireActiveMigration(migrationId, oldVaultDigest);
+    const bytes = Buffer.from(JSON.stringify({ profile: "sompi.vault-migration-execution.1", migrationId, oldVaultDigest, ...value }), "utf8");
+    try {
+      if (this.state.fileExists("migration-execution.json")) {
+        this.state.replaceFileAtomic("migration-execution.json", bytes, MAX_VAULT_MIGRATION_EXECUTION_BYTES);
+      } else {
+        this.state.createFileExclusive("migration-execution.json", bytes, MAX_VAULT_MIGRATION_EXECUTION_BYTES);
+      }
+    } finally { bytes.fill(0); }
+  }
+
+  migrationExecution(migrationId: string, oldVaultDigest: string): Readonly<Record<string, unknown>> | undefined {
+    this.requireActiveMigration(migrationId, oldVaultDigest);
+    if (!this.state.fileExists("migration-execution.json")) return undefined;
+    const bytes = this.state.readFile("migration-execution.json", MAX_VAULT_MIGRATION_EXECUTION_BYTES);
+    try {
+      const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as Record<string, unknown>;
+      if (value.profile !== "sompi.vault-migration-execution.1" || value.migrationId !== migrationId || value.oldVaultDigest !== oldVaultDigest) {
+        throw new Error("vault migration execution evidence belongs to another plan");
+      }
+      return Object.freeze({ ...value });
+    } finally { bytes.fill(0); }
+  }
+
+  private requireActiveMigration(migrationId: string, oldVaultDigest: string) {
+    const fence = this.migrationFence();
+    if (!fence || fence.state !== "active" || fence.migrationId !== migrationId || fence.oldVaultDigest !== oldVaultDigest) {
+      throw new Error("vault migration is not durably fenced for this plan");
+    }
+    return fence;
+  }
+
+  private assertNotMigrating(): void {
+    if (this.migrationFence()?.state === "active") {
+      throw new VaultPreparationError("invalid_runtime_state", "vault protection update is in progress");
     }
   }
 
@@ -381,6 +533,28 @@ export class VaultManager {
     amountSompi: bigint | "max",
     keepFloatSompi: bigint = 0n,
     feeCeilingSompi?: bigint
+  ): Promise<PreparedVaultDeposit> {
+    this.assertNotMigrating();
+    return this.prepareDepositInternal(wallet, amountSompi, keepFloatSompi, feeCeilingSompi);
+  }
+
+  async prepareMigrationDeposit(
+    migrationId: string,
+    oldVaultDigest: string,
+    wallet: KaspaWallet,
+    amountSompi: bigint | "max",
+    keepFloatSompi: bigint = 0n,
+    feeCeilingSompi?: bigint,
+  ): Promise<PreparedVaultDeposit> {
+    this.requireActiveMigration(migrationId, oldVaultDigest);
+    return this.prepareDepositInternal(wallet, amountSompi, keepFloatSompi, feeCeilingSompi);
+  }
+
+  private async prepareDepositInternal(
+    wallet: KaspaWallet,
+    amountSompi: bigint | "max",
+    keepFloatSompi: bigint,
+    feeCeilingSompi?: bigint,
   ): Promise<PreparedVaultDeposit> {
     if (amountSompi !== "max" && amountSompi <= 0n) throw new VaultPreparationError("invalid_input", "vault deposit amount is invalid");
     if (keepFloatSompi < 0n) throw new VaultPreparationError("invalid_input", "vault deposit keep-float is invalid");
@@ -531,6 +705,7 @@ export class VaultManager {
     authorize?: (amountSompi: bigint) => void,
     feeCeilingSompi?: bigint
   ): Promise<PreparedVaultSpend> {
+    this.assertNotMigrating();
     if (amount !== "max" && amount <= 0n) throw new VaultPreparationError("invalid_input", "vault send amount is invalid");
     if (feeCeilingSompi !== undefined && feeCeilingSompi < 0n) {
       throw new VaultPreparationError("invalid_input", "vault send fee ceiling is invalid");
@@ -593,6 +768,7 @@ export class VaultManager {
     wallet: KaspaWallet,
     prepared: PreparedVaultSpend
   ): Promise<{ transactionId: string }> {
+    this.assertNotMigrating();
     assertPreparedVaultSpend(prepared);
     const transaction = requireBoundPreparedTransaction(prepared, this.networkId);
     try {
@@ -904,6 +1080,7 @@ export interface VaultOwnerRecoveryParams {
   readonly privateKey: string;
   readonly destination: string;
   readonly feeSompi?: bigint;
+  readonly broadcast?: boolean;
 }
 
 /**
@@ -931,10 +1108,28 @@ export async function recoverVaultWithOwner(
       signingKey: privateKey,
       destination: params.destination,
       ...(params.feeSompi === undefined ? {} : { feeSompi: params.feeSompi }),
+      broadcast: params.broadcast ?? true,
     });
   } finally {
     privateKey?.free();
   }
+}
+
+export async function submitPreparedOwnerRecovery(
+  wallet: KaspaWallet,
+  transactionJson: string,
+  expectedTransactionId: string,
+): Promise<{ transactionId: string }> {
+  const transaction = requirePreparedTransaction(transactionJson, expectedTransactionId);
+  try {
+    const rpc = await wallet.client();
+    const submitted = await (rpc as any).submitTransaction({ transaction, allowOrphan: false });
+    const transactionId = String(submitted?.transactionId ?? "");
+    if (transactionId !== expectedTransactionId) {
+      throw new Error("Kaspa node returned a different transaction identity for owner recovery");
+    }
+    return { transactionId };
+  } finally { transaction.free(); }
 }
 
 async function fundInitialVault(params: {

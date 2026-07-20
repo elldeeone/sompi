@@ -7,6 +7,11 @@ import {
   TRANSFER_VIEW_SCHEMA,
   WALLET_ACTIVITY_SCHEMA,
   WALLET_VIEW_SCHEMA,
+  WALLET_TECHNICAL_VIEW_SCHEMA,
+  POLICY_CHANGE_CREATE_REQUEST_SCHEMA,
+  POLICY_CHANGE_VIEW_SCHEMA,
+  VAULT_MIGRATION_CREATE_REQUEST_SCHEMA,
+  VAULT_MIGRATION_VIEW_SCHEMA,
 } from "./contracts.js";
 
 export const SOMPI_OPENAPI_VERSION = "3.2.0" as const;
@@ -71,6 +76,9 @@ export function sompiOpenApiDocument(version: string): Readonly<Record<string, u
           responses: apiResponses("Wallet activity", "WalletActivity"),
         },
       },
+      "/wallet/technical": {
+        get: { operationId: "getWalletTechnical", summary: "Read explicitly requested technical wallet evidence", responses: apiResponses("Technical wallet evidence", "WalletTechnicalView") },
+      },
       "/transfers": {
         post: {
           operationId: "createTransfer",
@@ -98,6 +106,29 @@ export function sompiOpenApiDocument(version: string): Readonly<Record<string, u
           responses: apiResponses("Reconciled Transfer state", "TransferView"),
         },
       },
+      "/policy-changes": {
+        post: {
+          operationId: "createPolicyChange", summary: "Propose exact everyday spending limits for owner approval",
+          requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/PolicyChangeCreateRequest" } } } },
+          responses: apiResponses("Policy Change state", "PolicyChangeView"),
+        },
+      },
+      "/policy-changes/{policyChangeId}": {
+        get: { operationId: "getPolicyChange", summary: "Read a spending-limit change", parameters: [idParameter("policyChangeId", "^pcg_[A-Za-z0-9_-]{22}$")], responses: apiResponses("Policy Change state", "PolicyChangeView") },
+      },
+      "/policy-changes/{policyChangeId}/recover": {
+        post: { operationId: "recoverPolicyChange", summary: "Resume the same owner-approved limit change", parameters: [idParameter("policyChangeId", "^pcg_[A-Za-z0-9_-]{22}$")], responses: apiResponses("Policy Change state", "PolicyChangeView") },
+      },
+      "/vault-migrations": {
+        post: {
+          operationId: "createVaultMigration", summary: "Propose a vault protection change for owner approval",
+          requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/VaultMigrationCreateRequest" } } } },
+          responses: apiResponses("Vault Migration state", "VaultMigrationView"),
+        },
+      },
+      "/vault-migrations/{vaultMigrationId}": {
+        get: { operationId: "getVaultMigration", summary: "Read a vault protection change", parameters: [idParameter("vaultMigrationId", "^vmg_[A-Za-z0-9_-]{22}$")], responses: apiResponses("Vault Migration state", "VaultMigrationView") },
+      },
     },
     components: {
       securitySchemes: {
@@ -111,6 +142,11 @@ export function sompiOpenApiDocument(version: string): Readonly<Record<string, u
         TransferView: withoutId(TRANSFER_VIEW_SCHEMA),
         WalletView: withoutId(WALLET_VIEW_SCHEMA),
         WalletActivity: withoutId(WALLET_ACTIVITY_SCHEMA),
+        WalletTechnicalView: withoutId(WALLET_TECHNICAL_VIEW_SCHEMA),
+        PolicyChangeCreateRequest: withoutId(POLICY_CHANGE_CREATE_REQUEST_SCHEMA),
+        PolicyChangeView: withoutId(POLICY_CHANGE_VIEW_SCHEMA),
+        VaultMigrationCreateRequest: withoutId(VAULT_MIGRATION_CREATE_REQUEST_SCHEMA),
+        VaultMigrationView: withoutId(VAULT_MIGRATION_VIEW_SCHEMA),
       },
     },
   });
@@ -138,6 +174,10 @@ function transferIdParameter(): Readonly<Record<string, unknown>> {
     name: "transferId", in: "path", required: true,
     schema: { type: "string", pattern: "^trf_[A-Za-z0-9_-]{22}$" },
   };
+}
+
+function idParameter(name: string, pattern: string): Readonly<Record<string, unknown>> {
+  return { name, in: "path", required: true, schema: { type: "string", pattern } };
 }
 
 function apiResponses(description: string, schema: string): Readonly<Record<string, unknown>> {

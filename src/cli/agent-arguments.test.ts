@@ -32,6 +32,7 @@ test("agent CLI parses the Sompi API commands", () => {
     merchantOrigin: "https://merchant.example",
   });
   assert.deepEqual(parseAgentArguments(["wallet"]), { kind: "wallet" });
+  assert.deepEqual(parseAgentArguments(["wallet-technical"]), { kind: "wallet-technical" });
   assert.deepEqual(parseAgentArguments(["activity", "--limit", "50"]), { kind: "activity", limit: 50 });
   assert.deepEqual(parseAgentArguments([
     "transfer", "--request-key", "send:one", "--to",
@@ -45,6 +46,25 @@ test("agent CLI parses the Sompi API commands", () => {
   assert.deepEqual(parseAgentArguments(["transfer-status", "trf_AAAAAAAAAAAAAAAAAAAAAA"]), {
     kind: "transfer-status", transferId: "trf_AAAAAAAAAAAAAAAAAAAAAA",
   });
+  assert.deepEqual(parseAgentArguments([
+    "change-limits", "--request-key", "limits:one", "--per-payment-kas", "2", "--per-hour-kas", "5",
+  ]), {
+    kind: "change-limits", requestKey: "limits:one", maximumPerPaymentKas: "2", maximumPerHourKas: "5",
+  });
+  assert.deepEqual(parseAgentArguments(["limit-change-status", "pcg_AAAAAAAAAAAAAAAAAAAAAA"]), {
+    kind: "limit-change-status", policyChangeId: "pcg_AAAAAAAAAAAAAAAAAAAAAA",
+  });
+  assert.deepEqual(parseAgentArguments(["limit-change-recover", "pcg_AAAAAAAAAAAAAAAAAAAAAA"]), {
+    kind: "limit-change-recover", policyChangeId: "pcg_AAAAAAAAAAAAAAAAAAAAAA",
+  });
+  assert.deepEqual(parseAgentArguments([
+    "change-vault-protection", "--request-key", "vault:one", "--maximum-kas", "10",
+  ]), {
+    kind: "change-vault-protection", requestKey: "vault:one", vaultProtectionMaximumKas: "10",
+  });
+  assert.deepEqual(parseAgentArguments(["vault-protection-change-status", "vmg_AAAAAAAAAAAAAAAAAAAAAA"]), {
+    kind: "vault-protection-change-status", vaultMigrationId: "vmg_AAAAAAAAAAAAAAAAAAAAAA",
+  });
 });
 
 test("agent CLI rejects ambiguous or secret-prone argument forms", () => {
@@ -56,10 +76,15 @@ test("agent CLI rejects ambiguous or secret-prone argument forms", () => {
     ["purchase", "--request-key", "x", "--url", "https://merchant.example", "--body-file", "relative"],
     ["status"],
     ["wallet", "extra"],
+    ["wallet-technical", "extra"],
     ["activity", "--limit", "0"],
     ["activity", "--limit", "101"],
     ["transfer", "--request-key", "x", "--to", "kaspatest:x"],
     ["transfer", "--request-key", "x", "--to", "kaspatest:x", "--amount-kas", "1", "--amount-sompi", "1"],
+    ["change-limits", "--request-key", "x", "--per-payment-kas", "1"],
+    ["change-vault-protection", "--request-key", "x", "--maximum-kas=1"],
+    ["limit-change-status", "bad"],
+    ["vault-protection-change-status", "bad"],
   ]) {
     assert.throws(() => parseAgentArguments(args), AgentCliArgumentError);
   }

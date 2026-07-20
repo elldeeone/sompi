@@ -28,7 +28,6 @@ test("vault Treasury returns one stable policy and exact additional-cost ceiling
     policy: {
       maxPerPaymentAtomic: "1000000000",
       maxPerHourAtomic: "5000000000",
-      approvalAboveAtomic: "0",
       allowlist: [],
     },
     additionalCostCeilingAtomic: "15000000",
@@ -45,7 +44,6 @@ test("vault Treasury reads and copies current operator policy on every call", as
   let policy = {
     maxPerPaymentAtomic: "100",
     maxPerHourAtomic: "500",
-    approvalAboveAtomic: "0",
     allowlist: ["merchant-b", "merchant-a"],
   };
   const treasury = new VaultTreasuryModule({
@@ -63,13 +61,11 @@ test("vault Treasury reads and copies current operator policy on every call", as
   policy = {
     maxPerPaymentAtomic: "250",
     maxPerHourAtomic: "1000",
-    approvalAboveAtomic: "50",
     allowlist: ["merchant-c"],
   };
   const second = await treasury.currentPolicy();
   assert.equal(second.maxPerPaymentAtomic, "250");
   assert.equal(second.maxPerHourAtomic, "1000");
-  assert.equal(second.approvalAboveAtomic, "50");
   assert.deepEqual(second.allowlist, ["merchant-c"]);
   assert.notEqual(second, first);
   assert.notEqual(second.allowlist, policy.allowlist);
@@ -85,7 +81,6 @@ test("vault Treasury reports fail-closed readiness blockers", async () => {
     policy: {
       maxPerPaymentAtomic: "1",
       maxPerHourAtomic: "1",
-      approvalAboveAtomic: "0",
       allowlist: [],
     },
     additionalCostCeilingAtomic: "1",
@@ -98,7 +93,6 @@ test("vault Treasury turns backend exceptions and malformed covenant identity in
   const policy = {
     maxPerPaymentAtomic: "1",
     maxPerHourAtomic: "1",
-    approvalAboveAtomic: "0",
     allowlist: [],
   };
   const throwing = new VaultTreasuryModule({
@@ -171,7 +165,6 @@ test("vault Treasury owns staging and recovery behind one Purchase-facing interf
     policy: {
       maxPerPaymentAtomic: "1",
       maxPerHourAtomic: "1",
-      approvalAboveAtomic: "0",
       allowlist: [],
     },
     additionalCostCeilingAtomic: "1",

@@ -1,10 +1,6 @@
 import { displayKas } from "./amount-display.js";
 
-/**
- * Immutable spending policy enforced below the Agent. Operator Provisioning
- * validates and installs the source manifest; this module receives one typed
- * projection for its complete process lifetime.
- */
+/** One immutable spending-policy revision enforced below the Agent. */
 export interface Policy {
   /** Hard cap per transaction, in sompi. */
   maxSompiPerTx: bigint;
@@ -12,35 +8,19 @@ export interface Policy {
   maxSompiPerHour: bigint;
   /** If non-empty, only these destination addresses may receive funds. */
   allowlist: string[];
-  /** Sends above this amount require durable human-present authorization.
-   *  0 disables the threshold. This never weakens the hard limits. */
-  requireApprovalAboveSompi: bigint;
 }
 
 export class PolicyEngine {
-  private readonly configuredPolicy: Readonly<Policy>;
+  private configuredPolicy: Readonly<Policy>;
 
   constructor(policy: Readonly<Policy>) {
-    if (
-      typeof policy?.maxSompiPerTx !== "bigint" ||
-      typeof policy?.maxSompiPerHour !== "bigint" ||
-      typeof policy?.requireApprovalAboveSompi !== "bigint" ||
-      !Array.isArray(policy?.allowlist) ||
-      policy.allowlist.some((entry) => typeof entry !== "string") ||
-      new Set(policy.allowlist).size !== policy.allowlist.length ||
-      policy.maxSompiPerTx <= 0n ||
-      policy.maxSompiPerHour <= 0n ||
-      policy.maxSompiPerTx > policy.maxSompiPerHour ||
-      policy.requireApprovalAboveSompi < 0n
-    ) {
-      throw new PolicyViolation("immutable operator policy is invalid");
-    }
-    this.configuredPolicy = Object.freeze({
-      maxSompiPerTx: policy.maxSompiPerTx,
-      maxSompiPerHour: policy.maxSompiPerHour,
-      allowlist: Object.freeze([...policy.allowlist]) as unknown as string[],
-      requireApprovalAboveSompi: policy.requireApprovalAboveSompi,
-    });
+    this.configuredPolicy = validatePolicy(policy);
+  }
+
+  /** Activate one already-authorized immutable policy revision. */
+  activate(policy: Readonly<Policy>): Readonly<Policy> {
+    this.configuredPolicy = validatePolicy(policy);
+    return this.configuredPolicy;
   }
 
   get policy(): Readonly<Policy> {
@@ -56,7 +36,6 @@ export class PolicyEngine {
     destination: string,
     amountSompi: bigint,
     committedCapacitySompi = 0n,
-    options: Readonly<{ humanApproved?: boolean }> = {},
   ): void {
     const p = this.policy;
     if (amountSompi <= 0n) {
@@ -66,16 +45,6 @@ export class PolicyEngine {
       throw new PolicyViolation(
         `amount ${displayAmount(amountSompi)} exceeds the per-payment limit of ${displayAmount(p.maxSompiPerTx)}` +
           OPERATOR_BOUNDARY
-      );
-    }
-    if (
-      p.requireApprovalAboveSompi > 0n &&
-      amountSompi > p.requireApprovalAboveSompi &&
-      options.humanApproved !== true
-    ) {
-      throw new PolicyViolation(
-        `amount ${displayAmount(amountSompi)} exceeds the approval threshold of ${displayAmount(p.requireApprovalAboveSompi)}. ` +
-          `Ask your human operator to approve the exact transfer through the trusted Sompi Authority`
       );
     }
     if (p.allowlist.length > 0 && !p.allowlist.includes(destination)) {
@@ -101,9 +70,28 @@ export class PolicyEngine {
       maxSompiPerTx: this.policy.maxSompiPerTx.toString(),
       maxSompiPerHour: this.policy.maxSompiPerHour.toString(),
       allowlist: this.policy.allowlist,
-      requireApprovalAboveSompi: this.policy.requireApprovalAboveSompi.toString(),
     };
   }
+}
+
+function validatePolicy(policy: Readonly<Policy>): Readonly<Policy> {
+    if (
+      typeof policy?.maxSompiPerTx !== "bigint" ||
+      typeof policy?.maxSompiPerHour !== "bigint" ||
+      !Array.isArray(policy?.allowlist) ||
+      policy.allowlist.some((entry) => typeof entry !== "string") ||
+      new Set(policy.allowlist).size !== policy.allowlist.length ||
+      policy.maxSompiPerTx <= 0n ||
+      policy.maxSompiPerHour <= 0n ||
+      policy.maxSompiPerTx > policy.maxSompiPerHour
+    ) {
+      throw new PolicyViolation("spending policy revision is invalid");
+    }
+    return Object.freeze({
+      maxSompiPerTx: policy.maxSompiPerTx,
+      maxSompiPerHour: policy.maxSompiPerHour,
+      allowlist: Object.freeze([...policy.allowlist]) as unknown as string[],
+    });
 }
 
 /**
@@ -112,9 +100,8 @@ export class PolicyEngine {
  * policy belongs to the human operator.
  */
 const OPERATOR_BOUNDARY =
-  ". This limit was set deliberately by your human operator. Do not replace the Operator Manifest, restart processes, " +
-  "or bypass these tools with direct scripts to get around it — report this message to your operator and let " +
-  "them decide";
+  ". This limit belongs to the wallet owner. Do not bypass Sompi or replace local state to get around it — " +
+  "report the limit and let the owner approve an exact limit change if they want one";
 
 export class PolicyViolation extends Error {
   constructor(reason: string) {

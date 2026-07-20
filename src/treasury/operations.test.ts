@@ -106,6 +106,49 @@ test("ambiguous submission remains fenced through temporary absence and later co
   });
 });
 
+test("an operation admitted under an older policy snapshot remains recoverable", async () => {
+  await withFixture(async ({ journal, policy, module, wallet }) => {
+    wallet.typedPrepareErrors.push(
+      new TreasuryPreparationError("transient_unavailable", "preparation", "temporary node failure"),
+    );
+    await assert.rejects(module.execute({
+        operationKey: "direct:policy-snapshot:recover",
+        kind: "wallet_send",
+        destination: DESTINATION,
+        amountAtomic: "100",
+      }), TreasuryPreparationError);
+    assert.equal(
+      journal.requireTreasuryOperation("direct:policy-snapshot:recover").state,
+      "intent",
+    );
+    const originalPolicyDigest = journal.requireTreasuryOperation(
+      "direct:policy-snapshot:recover",
+    ).policyDigest;
+
+    policy.activate({
+      maxSompiPerTx: 500n,
+      maxSompiPerHour: 5_000n,
+      allowlist: [DESTINATION],
+    });
+    journal.installPolicy({
+      maxPerPaymentAtomic: "500",
+      maxPerHourAtomic: "5000",
+      allowlist: [DESTINATION],
+    });
+    assert.notEqual(journal.requireActivePolicy().digest, originalPolicyDigest);
+
+    wallet.probes.push(observed(wallet.transactionId));
+    const recovered = await module.recover("direct:policy-snapshot:recover");
+    assert.equal(recovered.state, "completed");
+    assert.equal(wallet.submitCalls, 1);
+    assert.equal(
+      journal.requireTreasuryOperation("direct:policy-snapshot:recover").policyDigest,
+      originalPolicyDigest,
+      "recovery must retain the exact policy snapshot that admitted the operation",
+    );
+  });
+});
+
 test("observed fact survives a local commit crash without observation or submission replay", async () => {
   await withFixture(async ({ journal, module, vault }) => {
     vault.probes.push(observed(vault.transactionId));
@@ -230,7 +273,6 @@ test("driver takeover preserves an effect capability until authoritative observa
   const policy = new PolicyEngine({
     maxSompiPerTx: 1_000n,
     maxSompiPerHour: 10_000n,
-    requireApprovalAboveSompi: 0n,
     allowlist: [DESTINATION],
   });
   try {
@@ -306,7 +348,6 @@ test("an expired predecessor cannot be rebroadcast or release capacity after sub
   const policy = new PolicyEngine({
     maxSompiPerTx: 1_000n,
     maxSompiPerHour: 10_000n,
-    requireApprovalAboveSompi: 0n,
     allowlist: [DESTINATION],
   });
   const predecessor = new FakeAdapter("wallet_send", "a");
@@ -378,7 +419,6 @@ test("Vault send and deposit takeovers are observation-only while a submit prede
     const policy = new PolicyEngine({
       maxSompiPerTx: 1_000n,
       maxSompiPerHour: 10_000n,
-      requireApprovalAboveSompi: 0n,
       allowlist: [DESTINATION],
     });
     const predecessor = new FakeAdapter(kind, "a");
@@ -430,7 +470,6 @@ test("cancellation during a paused submit retains the effect fence until observa
   const policy = new PolicyEngine({
     maxSompiPerTx: 1_000n,
     maxSompiPerHour: 10_000n,
-    requireApprovalAboveSompi: 0n,
     allowlist: [DESTINATION],
   });
   const predecessor = new FakeAdapter("wallet_send", "a");
@@ -591,7 +630,6 @@ test("a waiter takeover drives its acquired generation instead of re-entering th
   const policy = new PolicyEngine({
     maxSompiPerTx: 1_000n,
     maxSompiPerHour: 10_000n,
-    requireApprovalAboveSompi: 0n,
     allowlist: [DESTINATION],
   });
   const wallet = new FakeAdapter("wallet_send", "d");
@@ -1138,7 +1176,6 @@ async function withFixture(
   const policy = new PolicyEngine({
     maxSompiPerTx: BigInt(limits.maxPerPaymentAtomic ?? "1000"),
     maxSompiPerHour: BigInt(limits.maxPerHourAtomic ?? "10000"),
-    requireApprovalAboveSompi: 0n,
     allowlist: [DESTINATION],
   });
   const wallet = new FakeAdapter("wallet_send", "1");

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 
 export const JOURNAL_APPLICATION_ID = 0x534f4d50; // SOMP
-export const JOURNAL_SCHEMA_VERSION = 16;
+export const JOURNAL_SCHEMA_VERSION = 18;
 
 export const JOURNAL_SCHEMA_V1_SQL = `
   CREATE TABLE schema_migrations (
@@ -64,7 +64,6 @@ export const JOURNAL_SCHEMA_V1_SQL = `
     version INTEGER NOT NULL UNIQUE CHECK (version >= 1),
     max_per_payment_atomic TEXT NOT NULL,
     max_per_hour_atomic TEXT NOT NULL,
-    approval_above_atomic TEXT NOT NULL,
     activated_at_ms INTEGER NOT NULL
   ) STRICT;
 
@@ -1158,6 +1157,144 @@ export const JOURNAL_SCHEMA_V16_MIGRATION_SQL = `
     BEGIN SELECT RAISE(ABORT, 'Treasury Transfer authorization is immutable'); END;
 `;
 
+/** Clean-cutover lifecycle for owner-approved everyday policy revisions. */
+export const JOURNAL_SCHEMA_V17_MIGRATION_SQL = `
+  CREATE TABLE policy_changes (
+    id TEXT PRIMARY KEY CHECK (id GLOB 'pcg_*'),
+    request_key TEXT NOT NULL UNIQUE,
+    state TEXT NOT NULL CHECK (state IN (
+      'created', 'awaiting_authority', 'authorised', 'applied',
+      'denied', 'expired', 'failed'
+    )),
+    expected_policy_digest TEXT NOT NULL REFERENCES policy_snapshots(digest) ON DELETE RESTRICT,
+    previous_max_per_payment_atomic TEXT NOT NULL,
+    previous_max_per_hour_atomic TEXT NOT NULL,
+    proposed_max_per_payment_atomic TEXT NOT NULL,
+    proposed_max_per_hour_atomic TEXT NOT NULL,
+    vault_maximum_outflow_atomic TEXT NOT NULL,
+    manifest_revision INTEGER NOT NULL CHECK (manifest_revision >= 1),
+    manifest_digest TEXT NOT NULL,
+    expires_at_ms INTEGER NOT NULL,
+    authority_id TEXT,
+    authority_evidence_digest TEXT UNIQUE,
+    authority_evidence BLOB,
+    applied_policy_digest TEXT REFERENCES policy_snapshots(digest) ON DELETE RESTRICT,
+    applied_policy_version INTEGER,
+    failure_code TEXT,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    CHECK ((authority_evidence_digest IS NULL AND authority_evidence IS NULL) OR
+           (authority_evidence_digest IS NOT NULL AND authority_evidence IS NOT NULL)),
+    CHECK ((applied_policy_digest IS NULL AND applied_policy_version IS NULL) OR
+           (applied_policy_digest IS NOT NULL AND applied_policy_version IS NOT NULL))
+  ) STRICT;
+
+  CREATE TABLE policy_change_transitions (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    policy_change_id TEXT NOT NULL REFERENCES policy_changes(id) ON DELETE RESTRICT,
+    from_state TEXT,
+    to_state TEXT NOT NULL,
+    reason_code TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL
+  ) STRICT;
+
+  CREATE INDEX policy_change_recovery ON policy_changes(state, updated_at_ms);
+  CREATE TRIGGER immutable_policy_change_identity
+    BEFORE UPDATE OF id, request_key, expected_policy_digest,
+                     previous_max_per_payment_atomic, previous_max_per_hour_atomic,
+                     proposed_max_per_payment_atomic, proposed_max_per_hour_atomic,
+                     vault_maximum_outflow_atomic, manifest_revision, manifest_digest,
+                     expires_at_ms
+    ON policy_changes
+    BEGIN SELECT RAISE(ABORT, 'Policy Change intent is immutable'); END;
+  CREATE TRIGGER immutable_policy_changes_delete BEFORE DELETE ON policy_changes
+    BEGIN SELECT RAISE(ABORT, 'Policy Changes are immutable history'); END;
+  CREATE TRIGGER immutable_policy_change_transitions_update BEFORE UPDATE ON policy_change_transitions
+    BEGIN SELECT RAISE(ABORT, 'Policy Change transitions are immutable'); END;
+  CREATE TRIGGER immutable_policy_change_transitions_delete BEFORE DELETE ON policy_change_transitions
+    BEGIN SELECT RAISE(ABORT, 'Policy Change transitions are immutable'); END;
+
+  CREATE TABLE vault_migrations (
+    id TEXT PRIMARY KEY CHECK (id GLOB 'vmg_*'),
+    request_key TEXT NOT NULL UNIQUE,
+    state TEXT NOT NULL CHECK (state IN (
+      'created', 'awaiting_authority', 'awaiting_owner', 'executing',
+      'applied', 'denied', 'expired', 'reconciliation_required', 'failed'
+    )),
+    old_vault_digest TEXT NOT NULL,
+    old_maximum_outflow_atomic TEXT NOT NULL,
+    new_maximum_outflow_atomic TEXT NOT NULL,
+    window_size_daa TEXT NOT NULL,
+    window_start_daa TEXT NOT NULL,
+    spent_in_window_atomic TEXT NOT NULL,
+    stable_receive_address TEXT NOT NULL,
+    manifest_revision INTEGER NOT NULL CHECK (manifest_revision >= 1),
+    manifest_digest TEXT NOT NULL,
+    expires_at_ms INTEGER NOT NULL,
+    authority_id TEXT,
+    authority_evidence_digest TEXT UNIQUE,
+    authority_evidence BLOB,
+    recovery_transaction_id TEXT,
+    replacement_transaction_id TEXT,
+    receipt_digest TEXT,
+    failure_code TEXT,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    CHECK ((authority_evidence_digest IS NULL AND authority_evidence IS NULL) OR
+           (authority_evidence_digest IS NOT NULL AND authority_evidence IS NOT NULL))
+  ) STRICT;
+
+  CREATE TABLE vault_migration_transitions (
+    sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+    vault_migration_id TEXT NOT NULL REFERENCES vault_migrations(id) ON DELETE RESTRICT,
+    from_state TEXT,
+    to_state TEXT NOT NULL,
+    reason_code TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL
+  ) STRICT;
+
+  CREATE INDEX vault_migration_recovery ON vault_migrations(state, updated_at_ms);
+  CREATE UNIQUE INDEX one_live_vault_migration ON vault_migrations((1))
+    WHERE state IN ('created', 'awaiting_authority', 'awaiting_owner', 'executing', 'reconciliation_required');
+  CREATE TRIGGER immutable_vault_migration_identity
+    BEFORE UPDATE OF id, request_key, old_vault_digest,
+                     old_maximum_outflow_atomic, new_maximum_outflow_atomic,
+                     window_size_daa, window_start_daa, spent_in_window_atomic,
+                     stable_receive_address, manifest_revision, manifest_digest,
+                     expires_at_ms
+    ON vault_migrations
+    BEGIN SELECT RAISE(ABORT, 'Vault Migration intent is immutable'); END;
+  CREATE TRIGGER immutable_vault_migrations_delete BEFORE DELETE ON vault_migrations
+    BEGIN SELECT RAISE(ABORT, 'Vault Migrations are immutable history'); END;
+  CREATE TRIGGER immutable_vault_migration_transitions_update BEFORE UPDATE ON vault_migration_transitions
+    BEGIN SELECT RAISE(ABORT, 'Vault Migration transitions are immutable'); END;
+  CREATE TRIGGER immutable_vault_migration_transitions_delete BEFORE DELETE ON vault_migration_transitions
+    BEGIN SELECT RAISE(ABORT, 'Vault Migration transitions are immutable'); END;
+`;
+
+/** Monotonic protection identity and cross-workflow activation bindings. */
+export const JOURNAL_SCHEMA_V18_MIGRATION_SQL = `
+  ALTER TABLE journal_policy
+    ADD COLUMN activation_generation INTEGER NOT NULL DEFAULT 1 CHECK (activation_generation >= 1);
+
+  ALTER TABLE policy_changes
+    ADD COLUMN expected_policy_generation INTEGER NOT NULL DEFAULT 1 CHECK (expected_policy_generation >= 1);
+  ALTER TABLE policy_changes
+    ADD COLUMN expected_vault_digest TEXT NOT NULL DEFAULT 'sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+
+  ALTER TABLE vault_migrations
+    ADD COLUMN expected_policy_digest TEXT NOT NULL DEFAULT 'sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+  ALTER TABLE vault_migrations
+    ADD COLUMN expected_policy_generation INTEGER NOT NULL DEFAULT 1 CHECK (expected_policy_generation >= 1);
+
+  CREATE TRIGGER immutable_policy_change_protection_binding
+    BEFORE UPDATE OF expected_policy_generation, expected_vault_digest ON policy_changes
+    BEGIN SELECT RAISE(ABORT, 'Policy Change protection binding is immutable'); END;
+  CREATE TRIGGER immutable_vault_migration_policy_binding
+    BEFORE UPDATE OF expected_policy_digest, expected_policy_generation ON vault_migrations
+    BEGIN SELECT RAISE(ABORT, 'Vault Migration policy binding is immutable'); END;
+`;
+
 export const JOURNAL_SCHEMA_V2_SQL = `${JOURNAL_SCHEMA_V1_SQL}\n${JOURNAL_SCHEMA_V2_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V3_SQL = `${JOURNAL_SCHEMA_V2_SQL}\n${JOURNAL_SCHEMA_V3_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V4_SQL = `${JOURNAL_SCHEMA_V3_SQL}\n${JOURNAL_SCHEMA_V4_MIGRATION_SQL}`;
@@ -1171,7 +1308,9 @@ export const JOURNAL_SCHEMA_V11_SQL = JOURNAL_SCHEMA_V10_SQL;
 export const JOURNAL_SCHEMA_V12_SQL = JOURNAL_SCHEMA_V11_SQL;
 export const JOURNAL_SCHEMA_V13_SQL = JOURNAL_SCHEMA_V12_SQL;
 export const JOURNAL_SCHEMA_V15_SQL = `${JOURNAL_SCHEMA_V13_SQL}\n${JOURNAL_SCHEMA_V14_MIGRATION_SQL}`;
-export const JOURNAL_SCHEMA_SQL = `${JOURNAL_SCHEMA_V15_SQL}\n${JOURNAL_SCHEMA_V16_MIGRATION_SQL}`;
+export const JOURNAL_SCHEMA_V16_SQL = `${JOURNAL_SCHEMA_V15_SQL}\n${JOURNAL_SCHEMA_V16_MIGRATION_SQL}`;
+export const JOURNAL_SCHEMA_V17_SQL = `${JOURNAL_SCHEMA_V16_SQL}\n${JOURNAL_SCHEMA_V17_MIGRATION_SQL}`;
+export const JOURNAL_SCHEMA_SQL = `${JOURNAL_SCHEMA_V17_SQL}\n${JOURNAL_SCHEMA_V18_MIGRATION_SQL}`;
 
 export const JOURNAL_SCHEMA_V1_CHECKSUM = sha256Text(JOURNAL_SCHEMA_V1_SQL);
 export const JOURNAL_SCHEMA_V2_CHECKSUM = sha256Text(JOURNAL_SCHEMA_V2_SQL);

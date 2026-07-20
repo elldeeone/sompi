@@ -1010,7 +1010,6 @@ class FakeDependencies {
       return {
         maxPerPaymentAtomic: this.policyPerPayment,
         maxPerHourAtomic: "10000",
-        approvalAboveAtomic: "1",
         allowlist: [TESTNET_PAYEE],
       };
     },

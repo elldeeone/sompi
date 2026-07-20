@@ -477,7 +477,6 @@ async function withStagingJournal(
     const policy = journal.installPolicy({
       maxPerPaymentAtomic: "1000000000",
       maxPerHourAtomic: "10000000000",
-      approvalAboveAtomic: "1000000000",
       allowlist: [MERCHANT_ADDRESS],
     });
     const reservation = journal.reservePolicy({

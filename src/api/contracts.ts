@@ -10,8 +10,12 @@ import { assertPurchaseId, assertPurchaseRequestKey } from "../purchase/identity
 import type { PurchaseIntent, PurchaseModule, PurchaseView } from "../purchase/types.js";
 import { TRANSFER_STATES, type TransferIntent, type TransferView } from "../transfer/types.js";
 import type { TransferModule } from "../transfer/module.js";
-import type { WalletActivityItem, WalletView, WalletViewModule } from "../wallet-view/module.js";
+import type { WalletActivityItem, WalletTechnicalView, WalletView, WalletViewModule } from "../wallet-view/module.js";
 import { parseKasAmount } from "../amount-display.js";
+import type { PolicyChangeModule } from "../policy-change/module.js";
+import type { PolicyChangeView } from "../policy-change/types.js";
+import type { VaultMigrationModule } from "../vault-migration/module.js";
+import type { VaultMigrationView } from "../vault-migration/types.js";
 
 export const SOMPI_API_VERSION = "sompi-agent-api-v2" as const;
 export const MAX_SOMPI_API_BODY_BYTES = 1_500_000;
@@ -20,6 +24,8 @@ export const MAX_SOMPI_API_RESPONSE_BYTES = 64 * 1024;
 
 const PURCHASE_ID_PATTERN = "^pur_[A-Za-z0-9_-]{22}$";
 const TRANSFER_ID_PATTERN = "^trf_[A-Za-z0-9_-]{22}$";
+const POLICY_CHANGE_ID_PATTERN = "^pcg_[A-Za-z0-9_-]{22}$";
+const VAULT_MIGRATION_ID_PATTERN = "^vmg_[A-Za-z0-9_-]{22}$";
 const REQUEST_KEY_PATTERN = "^[A-Za-z0-9._:-]{1,160}$";
 const DIGEST_PATTERN = "^sha256:[A-Za-z0-9_-]{43}$";
 const POSITIVE_ATOMIC_PATTERN = "^[1-9][0-9]*$";
@@ -70,12 +76,29 @@ export interface TransferCreateRequest {
   readonly amountKas: string;
 }
 
+export interface PolicyChangeCreateRequest {
+  readonly requestKey: string;
+  readonly maximumPerPaymentKas: string;
+  readonly maximumPerHourKas: string;
+}
+
+export interface VaultMigrationCreateRequest {
+  readonly requestKey: string;
+  readonly vaultProtectionMaximumKas: string;
+}
+
 export interface SompiApplication extends PurchaseApplication {
   wallet(signal?: AbortSignal): Promise<WalletView>;
+  walletTechnical(signal?: AbortSignal): Promise<WalletTechnicalView>;
   activity(limit: number, signal?: AbortSignal): Promise<readonly WalletActivityItem[]>;
   transfer(input: TransferCreateRequest, signal?: AbortSignal): Promise<TransferView>;
   transferStatus(transferId: string, signal?: AbortSignal): Promise<TransferView>;
   transferRecover(transferId: string, signal?: AbortSignal): Promise<TransferView>;
+  changePolicy(input: PolicyChangeCreateRequest, signal?: AbortSignal): Promise<PolicyChangeView>;
+  policyChangeStatus(policyChangeId: string, signal?: AbortSignal): Promise<PolicyChangeView>;
+  policyChangeRecover(policyChangeId: string, signal?: AbortSignal): Promise<PolicyChangeView>;
+  vaultMigration(input: VaultMigrationCreateRequest, signal?: AbortSignal): Promise<VaultMigrationView>;
+  vaultMigrationStatus(vaultMigrationId: string, signal?: AbortSignal): Promise<VaultMigrationView>;
 }
 
 export const PURCHASE_CREATE_REQUEST_SCHEMA: JSONSchemaType<PurchaseCreateRequest> = {
@@ -258,6 +281,101 @@ export const TRANSFER_CREATE_REQUEST_SCHEMA = {
   },
 } as const;
 
+export const POLICY_CHANGE_CREATE_REQUEST_SCHEMA = {
+  $id: "https://sompi.local/schemas/policy-change-create-request.json",
+  type: "object",
+  additionalProperties: false,
+  required: ["requestKey", "maximumPerPaymentKas", "maximumPerHourKas"],
+  properties: {
+    requestKey: { type: "string", pattern: REQUEST_KEY_PATTERN, maxLength: 160 },
+    maximumPerPaymentKas: { type: "string", pattern: "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$", maxLength: 32 },
+    maximumPerHourKas: { type: "string", pattern: "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$", maxLength: 32 },
+  },
+} as const;
+
+export const POLICY_CHANGE_VIEW_SCHEMA = {
+  $id: "https://sompi.local/schemas/policy-change-view.json",
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "id", "requestKey", "state", "summary", "previous", "proposed",
+    "vaultProtectionMaximum", "everyPaymentRequiresApproval", "expiresAt",
+  ],
+  properties: {
+    id: { type: "string", pattern: POLICY_CHANGE_ID_PATTERN },
+    requestKey: { type: "string", pattern: REQUEST_KEY_PATTERN, maxLength: 160 },
+    state: { enum: ["created", "awaiting_authority", "authorised", "applied", "denied", "expired", "failed"] },
+    summary: { type: "string", minLength: 1, maxLength: 512 },
+    userAction: { type: "string", minLength: 1, maxLength: 512 },
+    previous: {
+      type: "object", additionalProperties: false,
+      required: ["maximumPerPayment", "maximumPerHour"],
+      properties: { maximumPerPayment: KAS_AMOUNT_SCHEMA, maximumPerHour: KAS_AMOUNT_SCHEMA },
+    },
+    proposed: {
+      type: "object", additionalProperties: false,
+      required: ["maximumPerPayment", "maximumPerHour"],
+      properties: { maximumPerPayment: KAS_AMOUNT_SCHEMA, maximumPerHour: KAS_AMOUNT_SCHEMA },
+    },
+    vaultProtectionMaximum: KAS_AMOUNT_SCHEMA,
+    everyPaymentRequiresApproval: { const: true },
+    expiresAt: { type: "string", format: "date-time", maxLength: 40 },
+    appliedPolicyDigest: { type: "string", pattern: DIGEST_PATTERN },
+    appliedPolicyVersion: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
+  },
+} as const;
+
+export const VAULT_MIGRATION_CREATE_REQUEST_SCHEMA = {
+  $id: "https://sompi.local/schemas/vault-migration-create-request.json",
+  type: "object", additionalProperties: false,
+  required: ["requestKey", "vaultProtectionMaximumKas"],
+  properties: {
+    requestKey: { type: "string", pattern: REQUEST_KEY_PATTERN, maxLength: 160 },
+    vaultProtectionMaximumKas: { type: "string", pattern: "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$", maxLength: 32 },
+  },
+} as const;
+
+export const VAULT_MIGRATION_VIEW_SCHEMA = {
+  $id: "https://sompi.local/schemas/vault-migration-view.json",
+  type: "object", additionalProperties: false,
+  required: ["id", "requestKey", "state", "summary", "previousVaultProtectionMaximum", "proposedVaultProtectionMaximum", "receiveAddressUnchanged", "requiresOfflineOwnerKey", "expiresAt"],
+  properties: {
+    id: { type: "string", pattern: VAULT_MIGRATION_ID_PATTERN },
+    requestKey: { type: "string", pattern: REQUEST_KEY_PATTERN, maxLength: 160 },
+    state: { enum: ["created", "awaiting_authority", "awaiting_owner", "executing", "applied", "denied", "expired", "reconciliation_required", "failed"] },
+    summary: { type: "string", minLength: 1, maxLength: 512 },
+    userAction: { type: "string", minLength: 1, maxLength: 512 },
+    previousVaultProtectionMaximum: KAS_AMOUNT_SCHEMA,
+    proposedVaultProtectionMaximum: KAS_AMOUNT_SCHEMA,
+    receiveAddressUnchanged: { const: true }, requiresOfflineOwnerKey: { const: true },
+    expiresAt: { type: "string", format: "date-time", maxLength: 40 },
+    recoveryTransactionId: { type: "string", pattern: "^[a-f0-9]{64}$" },
+    replacementTransactionId: { type: "string", pattern: "^[a-f0-9]{64}$" },
+    receiptDigest: { type: "string", pattern: DIGEST_PATTERN },
+  },
+} as const;
+
+export const WALLET_TECHNICAL_VIEW_SCHEMA = {
+  $id: "https://sompi.local/schemas/wallet-technical-view.json",
+  type: "object", additionalProperties: false,
+  required: ["receiveAddress", "activeVault", "allowlist"],
+  properties: {
+    receiveAddress: { type: "string", pattern: "^kaspatest:[a-z0-9]{20,256}$", maxLength: 266 },
+    activeVault: { type: "object", additionalProperties: false,
+      required: ["address", "maximumOutflowAtomic", "windowSizeDaa", "windowStartDaa", "spentInWindowAtomic"],
+      properties: {
+        address: { type: "string", pattern: "^kaspatest:[a-z0-9]{20,256}$", maxLength: 266 },
+        maximumOutflowAtomic: { type: "string", pattern: POSITIVE_ATOMIC_PATTERN, maxLength: 20 },
+        windowSizeDaa: { type: "string", pattern: POSITIVE_ATOMIC_PATTERN, maxLength: 20 },
+        windowStartDaa: { type: "string", pattern: NONNEGATIVE_ATOMIC_PATTERN, maxLength: 20 },
+        spentInWindowAtomic: { type: "string", pattern: NONNEGATIVE_ATOMIC_PATTERN, maxLength: 20 },
+        outpoint: { type: "object", additionalProperties: false, required: ["txid", "index"], properties: { txid: { type: "string", pattern: "^[a-f0-9]{64}$" }, index: { type: "integer", minimum: 0, maximum: 0xffffffff } } },
+      },
+    },
+    allowlist: { type: "array", maxItems: 1024, uniqueItems: true, items: { type: "string", minLength: 1, maxLength: 300 } },
+  },
+} as const;
+
 const TRANSFER_FACTS_SCHEMA = {
   type: "object",
   additionalProperties: false,
@@ -359,7 +477,7 @@ export const TRANSFER_VIEW_SCHEMA = {
       additionalProperties: false,
       required: [
         "profile", "transferId", "requestKey", "destination", "amountAtomic", "feeAtomic",
-        "network", "fundingSource", "transactionId", "finality", "settledAt",
+        "network", "fundingSource", "fundingSummary", "transactionId", "finality", "settledAt",
       ],
       properties: {
         profile: { const: "urn:sompi:receipt:transfer:1" },
@@ -370,6 +488,7 @@ export const TRANSFER_VIEW_SCHEMA = {
         feeAtomic: { type: "string", pattern: NONNEGATIVE_ATOMIC_PATTERN, maxLength: 20 },
         network: { const: "kaspa:testnet-10" },
         fundingSource: { const: "vault-treasury" },
+        fundingSummary: { const: "Sent securely from your protected Sompi wallet." },
         transactionId: { type: "string", pattern: "^[a-f0-9]{64}$" },
         finality: { enum: ["accepted", "depth-confirmed"] },
         settledAt: { type: "string", format: "date-time", maxLength: 40 },
@@ -385,7 +504,7 @@ export const WALLET_VIEW_SCHEMA = {
   $id: "https://sompi.local/schemas/wallet-view.json",
   type: "object",
   additionalProperties: false,
-  required: ["network", "asset", "receive", "balance", "securing", "limits", "security", "chainStatus"],
+  required: ["network", "asset", "receive", "balance", "securing", "spendingProtection", "chainStatus"],
   properties: {
     network: { const: "kaspa:testnet-10" },
     asset: { const: "KAS" },
@@ -401,12 +520,11 @@ export const WALLET_VIEW_SCHEMA = {
     },
     balance: {
       type: "object", additionalProperties: false,
-      required: ["total", "available", "incoming", "protected", "pending", "provenance", "observedAt"],
+      required: ["total", "available", "incoming", "pending", "provenance", "observedAt"],
       properties: {
         total: KAS_AMOUNT_SCHEMA,
         available: KAS_AMOUNT_SCHEMA,
         incoming: KAS_AMOUNT_SCHEMA,
-        protected: KAS_AMOUNT_SCHEMA,
         pending: KAS_AMOUNT_SCHEMA,
         provenance: { const: "operator-node-and-local-vault-lineage" },
         observedAt: { type: "string", format: "date-time", maxLength: 40 },
@@ -425,34 +543,21 @@ export const WALLET_VIEW_SCHEMA = {
         transactionId: { type: "string", pattern: "^[a-f0-9]{64}$" },
       },
     },
-    limits: {
+    spendingProtection: {
       type: "object", additionalProperties: false,
-      required: ["perTransfer", "perHour", "approvalThreshold", "allowlist", "vaultWindow"],
+      required: ["maximumPerPayment", "maximumPerHour", "everyPaymentRequiresApproval", "vaultProtection"],
       properties: {
-        perTransfer: KAS_AMOUNT_SCHEMA,
-        perHour: KAS_AMOUNT_SCHEMA,
-        approvalThreshold: KAS_AMOUNT_SCHEMA,
-        allowlist: { type: "array", maxItems: 1_000, uniqueItems: true, items: { type: "string", maxLength: 266 } },
-        vaultWindow: {
+        maximumPerPayment: KAS_AMOUNT_SCHEMA,
+        maximumPerHour: KAS_AMOUNT_SCHEMA,
+        everyPaymentRequiresApproval: { const: true },
+        vaultProtection: {
           type: "object", additionalProperties: false,
-          required: ["maximumOutflow", "spent", "sizeDaa"],
+          required: ["maximumPerWindow", "remainingInWindow", "window", "summary"],
           properties: {
-            maximumOutflow: KAS_AMOUNT_SCHEMA,
-            spent: KAS_AMOUNT_SCHEMA,
-            sizeDaa: { type: "string", pattern: POSITIVE_ATOMIC_PATTERN, maxLength: 20 },
-          },
-        },
-      },
-    },
-    security: {
-      type: "object", additionalProperties: false, required: ["vaultAddress"],
-      properties: {
-        vaultAddress: { type: "string", pattern: "^kaspatest:[a-z0-9]{20,256}$", maxLength: 266 },
-        vaultOutpoint: {
-          type: "object", additionalProperties: false, required: ["txid", "index"],
-          properties: {
-            txid: { type: "string", pattern: "^[a-f0-9]{64}$" },
-            index: { type: "integer", minimum: 0, maximum: 0xffffffff },
+            maximumPerWindow: KAS_AMOUNT_SCHEMA,
+            remainingInWindow: KAS_AMOUNT_SCHEMA,
+            window: { const: "approximately 1 hour" },
+            summary: { type: "string", minLength: 1, maxLength: 512 },
           },
         },
       },
@@ -494,7 +599,12 @@ const validateView = ajv.compile<PurchaseView>(PURCHASE_VIEW_SCHEMA);
 const validateError = ajv.compile(SOMPI_API_ERROR_SCHEMA);
 const validateTransferCreate = ajv.compile<TransferCreateRequest>(TRANSFER_CREATE_REQUEST_SCHEMA);
 const validateTransferView = ajv.compile<TransferView>(TRANSFER_VIEW_SCHEMA);
+const validatePolicyChangeCreate = ajv.compile<PolicyChangeCreateRequest>(POLICY_CHANGE_CREATE_REQUEST_SCHEMA);
+const validatePolicyChangeView = ajv.compile<PolicyChangeView>(POLICY_CHANGE_VIEW_SCHEMA);
+const validateVaultMigrationCreate = ajv.compile<VaultMigrationCreateRequest>(VAULT_MIGRATION_CREATE_REQUEST_SCHEMA);
+const validateVaultMigrationView = ajv.compile<VaultMigrationView>(VAULT_MIGRATION_VIEW_SCHEMA);
 const validateWalletView = ajv.compile<WalletView>(WALLET_VIEW_SCHEMA);
+const validateWalletTechnicalView = ajv.compile<WalletTechnicalView>(WALLET_TECHNICAL_VIEW_SCHEMA);
 const validateWalletActivity = ajv.compile<readonly WalletActivityItem[]>(WALLET_ACTIVITY_SCHEMA);
 
 export class SompiApiContractError extends Error {
@@ -561,18 +671,92 @@ export function createSompiApplication(
   purchase: PurchaseModule,
   transfer: TransferModule,
   walletView: WalletViewModule,
+  policyChange: PolicyChangeModule,
+  vaultMigration: VaultMigrationModule,
 ): SompiApplication {
   const purchaseApplication = createPurchaseApplication(purchase);
   return Object.freeze({
     ...purchaseApplication,
     wallet: async () => assertWalletView(await walletView.wallet()),
+    walletTechnical: async () => assertWalletTechnicalView(walletView.technical()),
     activity: async (limit: number) => assertWalletActivity(await walletView.activity(limit)),
     transfer: async (input: TransferCreateRequest, signal?: AbortSignal) =>
       assertTransferView(await transfer.transfer(transferIntent(input), signal)),
     transferStatus: async (transferId: string) => assertTransferView(transfer.status(assertTransferId(transferId))),
     transferRecover: async (transferId: string, signal?: AbortSignal) =>
       assertTransferView(await transfer.recover(assertTransferId(transferId), signal)),
+    changePolicy: async (input: PolicyChangeCreateRequest, signal?: AbortSignal) => {
+      const request = parsePolicyChangeCreateRequest(input);
+      return assertPolicyChangeView(await policyChange.propose({
+        requestKey: request.requestKey,
+        maximumPerPaymentAtomic: parseKasAmount(request.maximumPerPaymentKas),
+        maximumPerHourAtomic: parseKasAmount(request.maximumPerHourKas),
+      }, signal));
+    },
+    policyChangeStatus: async (policyChangeId: string) =>
+      assertPolicyChangeView(policyChange.status(assertPolicyChangeId(policyChangeId))),
+    policyChangeRecover: async (policyChangeId: string, signal?: AbortSignal) =>
+      assertPolicyChangeView(await policyChange.recover(assertPolicyChangeId(policyChangeId), signal)),
+    vaultMigration: async (input: VaultMigrationCreateRequest, signal?: AbortSignal) => {
+      const request = parseVaultMigrationCreateRequest(input);
+      return assertVaultMigrationView(await vaultMigration.propose({
+        requestKey: request.requestKey,
+        newMaximumOutflowAtomic: parseKasAmount(request.vaultProtectionMaximumKas),
+      }, signal));
+    },
+    vaultMigrationStatus: async (vaultMigrationId: string) =>
+      assertVaultMigrationView(vaultMigration.status(assertVaultMigrationId(vaultMigrationId))),
   });
+}
+
+export function parseVaultMigrationCreateRequest(value: unknown): VaultMigrationCreateRequest {
+  if (!validateVaultMigrationCreate(value)) throw new SompiApiContractError("Vault Migration request does not match the canonical schema");
+  try { if (BigInt(parseKasAmount(value.vaultProtectionMaximumKas)) <= 0n) throw new Error("zero"); }
+  catch { throw new SompiApiContractError("Vault Migration request does not match the canonical schema"); }
+  return Object.freeze({ ...value });
+}
+
+export function assertVaultMigrationView(value: unknown): VaultMigrationView {
+  if (!validateVaultMigrationView(value)) throw new SompiApiContractError("Vault Migration response does not match the canonical schema");
+  return value as VaultMigrationView;
+}
+
+export function assertVaultMigrationId(value: string): string {
+  if (!/^vmg_[A-Za-z0-9_-]{22}$/.test(value)) throw new SompiApiContractError("Vault Migration ID is invalid");
+  return value;
+}
+
+export function assertWalletTechnicalView(value: unknown): WalletTechnicalView {
+  if (!validateWalletTechnicalView(value)) throw new SompiApiContractError("Wallet technical response does not match the canonical schema");
+  return value as WalletTechnicalView;
+}
+
+export function parsePolicyChangeCreateRequest(value: unknown): PolicyChangeCreateRequest {
+  if (!validatePolicyChangeCreate(value)) {
+    throw new SompiApiContractError("Policy Change request does not match the canonical schema");
+  }
+  try {
+    if (BigInt(parseKasAmount(value.maximumPerPaymentKas)) <= 0n || BigInt(parseKasAmount(value.maximumPerHourKas)) <= 0n) {
+      throw new Error("zero");
+    }
+  } catch {
+    throw new SompiApiContractError("Policy Change request does not match the canonical schema");
+  }
+  return Object.freeze({ ...value });
+}
+
+export function assertPolicyChangeView(value: unknown): PolicyChangeView {
+  if (!validatePolicyChangeView(value)) {
+    throw new SompiApiContractError("Policy Change response does not match the canonical schema");
+  }
+  return value as PolicyChangeView;
+}
+
+export function assertPolicyChangeId(value: string): string {
+  if (typeof value !== "string" || !/^pcg_[A-Za-z0-9_-]{22}$/.test(value)) {
+    throw new SompiApiContractError("Policy Change ID is invalid");
+  }
+  return value;
 }
 
 export function parseTransferCreateRequest(value: unknown): TransferCreateRequest {

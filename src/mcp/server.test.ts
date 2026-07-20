@@ -23,8 +23,9 @@ import {
 } from "./server.js";
 
 const EXPECTED_TOOLS = [
-  "purchase", "purchase_recover", "purchase_status", "transfer", "transfer_recover",
-  "transfer_status", "wallet", "wallet_activity",
+  "change_spending_limits", "change_vault_protection", "purchase", "purchase_recover", "purchase_status",
+  "spending_limit_change_recover", "spending_limit_change_status", "transfer", "transfer_recover", "transfer_status",
+  "vault_protection_change_status", "wallet", "wallet_activity", "wallet_technical_details",
 ] as const;
 
 test("MCP exposes stateless Purchase, wallet, and Transfer compatibility tools", () => {
@@ -40,10 +41,16 @@ test("real MCP transport delegates all behavior to the Purchase application", as
     async status() { calls.push("status"); return fakeView(); },
     async recover() { calls.push("recover"); return fakeView(); },
     async wallet() { calls.push("wallet"); return fakeWallet(); },
+    async walletTechnical() { calls.push("walletTechnical"); return fakeWalletTechnical(); },
     async activity() { calls.push("activity"); return []; },
     async transfer() { calls.push("transfer"); return fakeTransfer(); },
     async transferStatus() { calls.push("transferStatus"); return fakeTransfer(); },
     async transferRecover() { calls.push("transferRecover"); return fakeTransfer(); },
+    async changePolicy() { calls.push("changePolicy"); return fakePolicyChange(); },
+    async policyChangeStatus() { calls.push("policyChangeStatus"); return fakePolicyChange(); },
+    async policyChangeRecover() { calls.push("policyChangeRecover"); return fakePolicyChange(); },
+    async vaultMigration() { calls.push("vaultMigration"); return fakeVaultMigration(); },
+    async vaultMigrationStatus() { calls.push("vaultMigrationStatus"); return fakeVaultMigration(); },
   });
   const server = createSompiMcpServer(application, "test");
   const client = new Client({ name: "sompi-mcp-test", version: "test" });
@@ -60,10 +67,16 @@ test("real MCP transport delegates all behavior to the Purchase application", as
     await client.callTool({ name: "purchase_recover", arguments: { purchaseId: fakeView().id } });
     await client.callTool({ name: "wallet", arguments: {} });
     await client.callTool({ name: "wallet_activity", arguments: { limit: 10 } });
+    await client.callTool({ name: "wallet_technical_details", arguments: {} });
     await client.callTool({ name: "transfer", arguments: { requestKey: "mcp:transfer:one", destination: ADDRESS, amountKas: "0.00001" } });
     await client.callTool({ name: "transfer_status", arguments: { transferId: fakeTransfer().id } });
     await client.callTool({ name: "transfer_recover", arguments: { transferId: fakeTransfer().id } });
-    assert.deepEqual(calls, ["purchase", "status", "recover", "wallet", "activity", "transfer", "transferStatus", "transferRecover"]);
+    await client.callTool({ name: "change_spending_limits", arguments: { requestKey: "limits:one", maximumPerPaymentKas: "1", maximumPerHourKas: "2" } });
+    await client.callTool({ name: "spending_limit_change_status", arguments: { policyChangeId: fakePolicyChange().id } });
+    await client.callTool({ name: "spending_limit_change_recover", arguments: { policyChangeId: fakePolicyChange().id } });
+    await client.callTool({ name: "change_vault_protection", arguments: { requestKey: "vault:one", vaultProtectionMaximumKas: "10" } });
+    await client.callTool({ name: "vault_protection_change_status", arguments: { vaultMigrationId: fakeVaultMigration().id } });
+    assert.deepEqual(calls, ["purchase", "status", "recover", "wallet", "activity", "walletTechnical", "transfer", "transferStatus", "transferRecover", "changePolicy", "policyChangeStatus", "policyChangeRecover", "vaultMigration", "vaultMigrationStatus"]);
   } finally {
     await client.close();
     await server.close();
@@ -141,10 +154,16 @@ function fakeApplication(overrides: Partial<SompiApplication> = {}): SompiApplic
     async status() { return fakeView(); },
     async recover() { return fakeView(); },
     async wallet() { return fakeWallet(); },
+    async walletTechnical() { throw new Error("unused"); },
     async activity() { return []; },
     async transfer() { return fakeTransfer(); },
     async transferStatus() { return fakeTransfer(); },
     async transferRecover() { return fakeTransfer(); },
+    async changePolicy() { throw new Error("unused"); },
+    async policyChangeStatus() { throw new Error("unused"); },
+    async policyChangeRecover() { throw new Error("unused"); },
+    async vaultMigration() { throw new Error("unused"); },
+    async vaultMigrationStatus() { throw new Error("unused"); },
     ...overrides,
   };
 }
@@ -186,13 +205,16 @@ function fakeWallet(): WalletView {
     network: "kaspa:testnet-10",
     asset: "KAS",
     receive: { address: ADDRESS, qrPayload: ADDRESS, networkLabel: "Kaspa Testnet-10", warning: "Testnet funds only — do not send mainnet KAS." },
-    balance: { total: amount("10000"), available: amount("10000"), incoming: amount("0"), protected: amount("10000"), pending: amount("0"), provenance: "operator-node-and-local-vault-lineage", observedAt: "2030-01-01T00:00:00.000Z" },
+    balance: { total: amount("10000"), available: amount("10000"), incoming: amount("0"), pending: amount("0"), provenance: "operator-node-and-local-vault-lineage", observedAt: "2030-01-01T00:00:00.000Z" },
     securing: { automatic: true, state: "idle", summary: "No incoming funds are waiting to be secured.", userAction: "none", minimumAmount: amount("101") },
-    limits: { perTransfer: amount("1000"), perHour: amount("5000"), approvalThreshold: amount("1"), allowlist: [], vaultWindow: { maximumOutflow: amount("5000"), spent: amount("0"), sizeDaa: "100" } },
-    security: { vaultAddress: ADDRESS },
+    spendingProtection: { maximumPerPayment: amount("1000"), maximumPerHour: amount("5000"), everyPaymentRequiresApproval: true, vaultProtection: { maximumPerWindow: amount("5000"), remainingInWindow: amount("5000"), window: "approximately 1 hour", summary: "Protected." } },
     chainStatus: "observed",
   };
 }
+
+function fakeWalletTechnical() { return { receiveAddress: ADDRESS, activeVault: { address: ADDRESS, maximumOutflowAtomic: "1000000000", windowSizeDaa: "36000", windowStartDaa: "0", spentInWindowAtomic: "0" }, allowlist: [] } as const; }
+function fakePolicyChange() { return { id: "pcg_0123456789ABCDEFGHIJKL", requestKey: "limits:one", state: "applied", summary: "Spending limits updated. Every payment still requires your approval.", previous: { maximumPerPayment: amount("1000"), maximumPerHour: amount("5000") }, proposed: { maximumPerPayment: amount("2000"), maximumPerHour: amount("6000") }, vaultProtectionMaximum: amount("10000"), everyPaymentRequiresApproval: true, expiresAt: "2030-01-01T00:00:00.000Z", appliedPolicyDigest: `sha256:${"F".repeat(43)}`, appliedPolicyVersion: 2 } as const; }
+function fakeVaultMigration() { return { id: "vmg_0123456789ABCDEFGHIJKL", requestKey: "vault:one", state: "awaiting_owner", summary: "Vault protection change approved. Finish it with the offline owner key.", userAction: "Ask the operator to finish the protected vault update locally.", previousVaultProtectionMaximum: amount("10000"), proposedVaultProtectionMaximum: amount("20000"), receiveAddressUnchanged: true, requiresOfflineOwnerKey: true, expiresAt: "2030-01-01T00:00:00.000Z" } as const; }
 
 function amount(atomic: string) {
   const kas = atomic === "0" ? "0" : `0.${atomic.padStart(8, "0").replace(/0+$/, "")}`;

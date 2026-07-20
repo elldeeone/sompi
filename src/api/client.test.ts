@@ -22,10 +22,16 @@ test("API client authenticates over a verified permissioned Unix socket", async 
     async status() { calls.push("status"); return fakeView(); },
     async recover() { calls.push("recover"); return fakeView(); },
     async wallet() { calls.push("wallet"); return fakeWallet(); },
+    async walletTechnical() { calls.push("walletTechnical"); return fakeWalletTechnical(); },
     async activity() { calls.push("activity"); return []; },
     async transfer() { calls.push("transfer"); return fakeTransfer(); },
     async transferStatus() { calls.push("transferStatus"); return fakeTransfer(); },
     async transferRecover() { calls.push("transferRecover"); return fakeTransfer(); },
+    async changePolicy() { calls.push("changePolicy"); return fakePolicyChange(); },
+    async policyChangeStatus() { calls.push("policyChangeStatus"); return fakePolicyChange(); },
+    async policyChangeRecover() { calls.push("policyChangeRecover"); return fakePolicyChange(); },
+    async vaultMigration() { calls.push("vaultMigration"); return fakeVaultMigration(); },
+    async vaultMigrationStatus() { calls.push("vaultMigrationStatus"); return fakeVaultMigration(); },
   };
   const running = await startSompiApiServer({ application, credential, ...fixture.access, socketPath: fixture.socketPath });
   try {
@@ -33,11 +39,17 @@ test("API client authenticates over a verified permissioned Unix socket", async 
     assert.equal((await client.purchase({ requestKey: "api:one", url: "https://merchant.example/" })).id, fakeView().id);
     assert.equal((await client.status(fakeView().id)).id, fakeView().id);
     assert.equal((await client.wallet()).balance.available.atomic, "10000");
+    assert.equal((await client.walletTechnical()).receiveAddress, ADDRESS);
     assert.deepEqual(await client.activity(5), []);
     assert.equal((await client.transfer({ requestKey: "api:transfer:one", destination: ADDRESS, amountKas: "0.00001" })).id, fakeTransfer().id);
     assert.equal((await client.transferStatus(fakeTransfer().id)).id, fakeTransfer().id);
     assert.equal((await client.transferRecover(fakeTransfer().id)).id, fakeTransfer().id);
-    assert.deepEqual(calls, ["purchase", "status", "wallet", "activity", "transfer", "transferStatus", "transferRecover"]);
+    assert.equal((await client.changePolicy({ requestKey: "limits:one", maximumPerPaymentKas: "1", maximumPerHourKas: "2" })).state, "applied");
+    assert.equal((await client.policyChangeStatus(fakePolicyChange().id)).id, fakePolicyChange().id);
+    assert.equal((await client.policyChangeRecover(fakePolicyChange().id)).id, fakePolicyChange().id);
+    assert.equal((await client.vaultMigration({ requestKey: "vault:one", vaultProtectionMaximumKas: "10" })).state, "awaiting_owner");
+    assert.equal((await client.vaultMigrationStatus(fakeVaultMigration().id)).id, fakeVaultMigration().id);
+    assert.deepEqual(calls, ["purchase", "status", "wallet", "walletTechnical", "activity", "transfer", "transferStatus", "transferRecover", "changePolicy", "policyChangeStatus", "policyChangeRecover", "vaultMigration", "vaultMigrationStatus"]);
   } finally {
     await running.close();
     fixture.close();
@@ -142,13 +154,16 @@ function fakeWallet(): WalletView {
   return {
     network: "kaspa:testnet-10", asset: "KAS",
     receive: { address: ADDRESS, qrPayload: ADDRESS, networkLabel: "Kaspa Testnet-10", warning: "Testnet funds only — do not send mainnet KAS." },
-    balance: { total: amount("10000"), available: amount("10000"), incoming: amount("0"), protected: amount("10000"), pending: amount("0"), provenance: "operator-node-and-local-vault-lineage", observedAt: "2030-01-01T00:00:00.000Z" },
+    balance: { total: amount("10000"), available: amount("10000"), incoming: amount("0"), pending: amount("0"), provenance: "operator-node-and-local-vault-lineage", observedAt: "2030-01-01T00:00:00.000Z" },
     securing: { automatic: true, state: "idle", summary: "No incoming funds are waiting to be secured.", userAction: "none", minimumAmount: amount("101") },
-    limits: { perTransfer: amount("1000"), perHour: amount("5000"), approvalThreshold: amount("1"), allowlist: [], vaultWindow: { maximumOutflow: amount("5000"), spent: amount("0"), sizeDaa: "100" } },
-    security: { vaultAddress: ADDRESS },
+    spendingProtection: { maximumPerPayment: amount("1000"), maximumPerHour: amount("5000"), everyPaymentRequiresApproval: true, vaultProtection: { maximumPerWindow: amount("5000"), remainingInWindow: amount("5000"), window: "approximately 1 hour", summary: "Protected." } },
     chainStatus: "observed",
   };
 }
+
+function fakeWalletTechnical() { return { receiveAddress: ADDRESS, activeVault: { address: ADDRESS, maximumOutflowAtomic: "1000000000", windowSizeDaa: "36000", windowStartDaa: "0", spentInWindowAtomic: "0" }, allowlist: [] } as const; }
+function fakePolicyChange() { return { id: "pcg_0123456789ABCDEFGHIJKL", requestKey: "limits:one", state: "applied", summary: "Spending limits updated. Every payment still requires your approval.", previous: { maximumPerPayment: amount("1000"), maximumPerHour: amount("5000") }, proposed: { maximumPerPayment: amount("2000"), maximumPerHour: amount("6000") }, vaultProtectionMaximum: amount("10000"), everyPaymentRequiresApproval: true, expiresAt: "2030-01-01T00:00:00.000Z", appliedPolicyDigest: `sha256:${"F".repeat(43)}`, appliedPolicyVersion: 2 } as const; }
+function fakeVaultMigration() { return { id: "vmg_0123456789ABCDEFGHIJKL", requestKey: "vault:one", state: "awaiting_owner", summary: "Vault protection change approved. Finish it with the offline owner key.", userAction: "Ask the operator to finish the protected vault update locally.", previousVaultProtectionMaximum: amount("10000"), proposedVaultProtectionMaximum: amount("20000"), receiveAddressUnchanged: true, requiresOfflineOwnerKey: true, expiresAt: "2030-01-01T00:00:00.000Z" } as const; }
 
 function amount(atomic: string) {
   const kas = atomic === "0" ? "0" : `0.${atomic.padStart(8, "0").replace(/0+$/, "")}`;

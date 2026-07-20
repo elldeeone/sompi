@@ -357,7 +357,6 @@ export function assertSompiPurchaseRuntimeConfig(
     !isRecord(value.policy) ||
     value.policy.maxSompiPerTx !== policy.maxSompiPerTx ||
     value.policy.maxSompiPerHour !== policy.maxSompiPerHour ||
-    value.policy.requireApprovalAboveSompi !== policy.requireApprovalAboveSompi ||
     JSON.stringify(value.policy.allowlist) !== JSON.stringify(policy.allowlist)
   ) {
     throw new SompiRuntimeConfigError("runtime policy is not an exact Operator Manifest projection");

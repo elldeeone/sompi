@@ -32,6 +32,7 @@ export interface TransferAuthorizationFacts {
   readonly network: "kaspa:testnet-10";
   readonly feeCeilingAtomic: string;
   readonly maximumTotalAtomic: string;
+  readonly issuedAt: string;
   readonly expiresAt: string;
   readonly policyDigest: string;
   readonly operatorManifestRevision: number;
@@ -105,6 +106,7 @@ export interface TransferReceipt {
   readonly feeAtomic: string;
   readonly network: "kaspa:testnet-10";
   readonly fundingSource: "vault-treasury";
+  readonly fundingSummary: "Sent securely from your protected Sompi wallet.";
   readonly transactionId: string;
   readonly finality: "accepted" | "depth-confirmed";
   readonly settledAt: string;

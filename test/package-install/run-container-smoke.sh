@@ -17,6 +17,7 @@ fi
 
 exec docker run --rm --init --pull=missing \
   --mount "type=bind,src=$archive,dst=/package.tgz,readonly" \
+  --mount "type=bind,src=$repository_root/scripts/install-runtime-package.mjs,dst=/install-runtime-package.mjs,readonly" \
   --mount "type=bind,src=$repository_root/test/package-install/container-smoke.sh,dst=/container-smoke.sh,readonly" \
   "$image_reference" \
   bash /container-smoke.sh

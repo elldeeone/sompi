@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 
-import type { AnyAuthorityApprovalDisplay, AuthorityApprovalDisplay, TransferAuthorityApprovalDisplay } from "../adapters/ap2/human-authority.js";
+import type { AnyAuthorityApprovalDisplay, AuthorityApprovalDisplay, TransferAuthorityApprovalDisplay, VaultMigrationAuthorityApprovalDisplay } from "../adapters/ap2/human-authority.js";
 import {
   TelegramAuthorityApprovalPrompt,
   TelegramAuthorityPromptStore,
@@ -48,8 +48,15 @@ test("Telegram Authority denies an exact prompt", async (t) => {
   const fixture = createFixture(t, TOKEN_A);
   const pending = fixture.prompt.approve(display());
   await until(() => fixture.bot.sent.length === 1);
+  const denyData = fixture.bot.sent[0]!.denyData;
+  const legacyDecisionSubstitution = denyData.replace(/^sp:/, "sp:a:");
   assert.equal(
-    fixture.prompt.resolveCallback(envelope(fixture.bot.sent[0]!.denyData)).status,
+    fixture.prompt.resolveCallback(envelope(legacyDecisionSubstitution)).status,
+    "invalid",
+    "the relay must not be able to turn a Deny capability into Approve",
+  );
+  assert.equal(
+    fixture.prompt.resolveCallback(envelope(denyData)).status,
     "denied",
   );
   assert.equal(await pending, false);
@@ -62,6 +69,16 @@ test("Telegram Authority shows and resolves exact direct-Transfer facts", async 
   const sent = fixture.bot.sent[0]!;
   assert.equal(sent.text.kind, "transfer");
   assert.equal(fixture.prompt.resolveCallback(envelope(sent.approveData)).message, "Sompi Transfer approved.");
+  assert.equal(await pending, true);
+});
+
+test("Telegram Authority clearly separates vault approval from offline owner execution", async (t) => {
+  const fixture = createFixture(t, TOKEN_A);
+  const pending = fixture.prompt.approve(vaultMigrationDisplay());
+  await until(() => fixture.bot.sent.length === 1);
+  const sent = fixture.bot.sent[0]!;
+  assert.equal(sent.text.kind, "vault-migration");
+  assert.equal(fixture.prompt.resolveCallback(envelope(sent.approveData)).message, "Sompi Vault protection change approved.");
   assert.equal(await pending, true);
 });
 
@@ -97,6 +114,7 @@ test("Telegram Authority expires prompts and never restores them after restart",
   });
   const pending = first.approve(display());
   await until(() => bot.sent.length === 1);
+  const firstApproveData = bot.sent[0]!.approveData;
   first.close();
   await assert.rejects(pending, /stopped/);
   firstStore.close();
@@ -113,17 +131,19 @@ test("Telegram Authority expires prompts and never restores them after restart",
     second.close();
     secondStore.close();
   });
-  assert.equal(second.resolveCallback(envelope(`sp:a:${TOKEN_A}`)).status, "replayed");
+  assert.equal(second.resolveCallback(envelope(firstApproveData)).status, "replayed");
 });
 
 test("Telegram Authority permits a safe retry after a transport failure", async (t) => {
   const directory = temporaryDirectory(t);
   const store = new TelegramAuthorityPromptStore(path.join(directory, "prompts.sqlite"));
   let attempt = 0;
+  let activeApproveData: string | undefined;
   const bot: TelegramBotTransport = {
-    async sendApproval() {
+    async sendApproval(_display, approveData) {
       attempt += 1;
       if (attempt === 1) throw new Error("Telegram unavailable");
+      activeApproveData = approveData;
       return "2";
     },
   };
@@ -142,7 +162,8 @@ test("Telegram Authority permits a safe retry after a transport failure", async 
   await assert.rejects(prompt.approve(display()), /Telegram unavailable/);
   const pending = prompt.approve(display());
   await until(() => attempt === 2);
-  assert.equal(prompt.resolveCallback(envelope(`sp:a:${TOKEN_B}`)).status, "approved");
+  assert.equal(typeof activeApproveData, "string");
+  assert.equal(prompt.resolveCallback(envelope(activeApproveData!)).status, "approved");
   assert.equal(await pending, true);
 });
 
@@ -159,11 +180,11 @@ test("Telegram callback server accepts only its bounded exact envelope", async (
   });
   t.after(() => server.close());
 
-  const valid = await unixRequest(socketPath, JSON.stringify(envelope(`sp:a:${TOKEN_A}`)));
+  const valid = await unixRequest(socketPath, JSON.stringify(envelope(`sp:${TOKEN_A}`)));
   assert.equal(valid.status, 200);
   assert.equal(seen.length, 1);
   const extra = await unixRequest(socketPath, JSON.stringify({
-    ...envelope(`sp:a:${TOKEN_A}`),
+    ...envelope(`sp:${TOKEN_A}`),
     extra: true,
   }));
   assert.equal(extra.status, 400);
@@ -200,7 +221,7 @@ test("Telegram callback server makes a shared callback directory traversable by 
   assert.equal(socket.gid, groupId);
   assert.equal(socket.mode & 0o777, 0o660);
   assert.equal(
-    (await unixRequest(socketPath, JSON.stringify(envelope(`sp:a:${TOKEN_A}`)))).status,
+    (await unixRequest(socketPath, JSON.stringify(envelope(`sp:${TOKEN_A}`)))).status,
     200,
   );
 });
@@ -350,6 +371,23 @@ function transferDisplay(): TransferAuthorityApprovalDisplay {
     operatorManifestRevision: 1,
     operatorManifestDigest: "sha256:CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
     finalityFloor: "accepted",
+    recoveryRetry: false,
+  });
+}
+
+function vaultMigrationDisplay(): VaultMigrationAuthorityApprovalDisplay {
+  return Object.freeze({
+    kind: "vault-migration",
+    authorityRequestDigest: "sha256:EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",
+    vaultMigrationId: "vmg_AAAAAAAAAAAAAAAAAAAAAA",
+    requestKey: "vault:protection:one",
+    oldMaximumOutflowAtomic: "500000000",
+    newMaximumOutflowAtomic: "1000000000",
+    stableReceiveAddressWillNotChange: true,
+    requiresOfflineOwnerKey: true,
+    termsExpiresAt: "2026-07-18T05:01:00.000Z",
+    operatorManifestRevision: 1,
+    operatorManifestDigest: "sha256:CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
     recoveryRetry: false,
   });
 }

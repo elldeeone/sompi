@@ -1,6 +1,6 @@
 # Sompi Journal
 
-The SQLite Journal is Sompi's durable source of truth. Epoch **16** is the only
+The SQLite Journal is Sompi's durable source of truth. Epoch **18** is the only
 active schema.
 
 ## Rules
@@ -19,6 +19,8 @@ The Journal stores:
 
 - Purchase and transition history;
 - Transfer intent, authorization, transition, Treasury, and receipt history;
+- owner-approved Policy Changes and immutable activated policy snapshots;
+- Vault Migration approval, execution, reconciliation, and receipt state;
 - Checkout Terms and evidence attachments;
 - Authority decisions and verification facts;
 - policy reservations and Admission Leases;

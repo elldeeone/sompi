@@ -45,16 +45,18 @@ try {
   fs.mkdirSync(consumer, { mode: 0o700 });
   fs.writeFileSync(
     path.join(consumer, "package.json"),
-    `${JSON.stringify({ private: true, type: "module" })}\n`,
+    `${JSON.stringify({
+      private: true,
+      type: "module",
+    })}\n`,
     { mode: 0o600 }
   );
-  run("npm", [
-    "install",
-    "--no-audit",
-    "--no-fund",
-    "--package-lock=false",
-    archive,
-  ], consumer);
+  run(process.execPath, [
+    path.join(root, "scripts", "install-runtime-package.mjs"),
+    "--prefix", consumer,
+    "--package", archive,
+    "--expected-version", "0.10.0",
+  ], root);
   assertInstalledPackage(consumer);
   assertInstalledLicences(consumer);
   run(process.execPath, [

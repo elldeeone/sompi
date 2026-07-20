@@ -92,7 +92,6 @@ function completed(
   const policy = journal.installPolicy({
     maxPerPaymentAtomic: "10000000",
     maxPerHourAtomic: "10000000",
-    approvalAboveAtomic: "0",
     allowlist: [request.destination],
   });
   journal.claimTreasuryOperationIntent({

@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from "node:crypto";
-import type { PolicyEngine } from "../policy.js";
+import { PolicyEngine } from "../policy.js";
 import {
   TreasuryPreparationError,
   type TreasuryOperationAdapter,
@@ -527,6 +527,9 @@ export class TreasuryOperationModule {
 
   private authorize(operationKey: string, destination: string, amount: bigint): void {
     const operation = this.journal.requireTreasuryOperation(operationKey);
+    if (!operation.policyDigest) {
+      throw new TreasuryOperationError("Treasury operation has no durable policy snapshot");
+    }
     const ownCapacity =
       (operation.kind === "vault_deposit" || operation.kind === "batch_refund"
         ? 0n
@@ -536,9 +539,12 @@ export class TreasuryOperationModule {
     if (ownCapacity > total) {
       throw new TreasuryOperationError("Treasury capacity accounting is inconsistent");
     }
-    this.policy.authorize(destination, amount, total - ownCapacity, {
-      humanApproved: operation.authorizationEvidenceDigest !== undefined,
-    });
+    const snapshot = this.journal.requirePolicy(operation.policyDigest);
+    new PolicyEngine({
+      maxSompiPerTx: BigInt(snapshot.maxPerPaymentAtomic),
+      maxSompiPerHour: BigInt(snapshot.maxPerHourAtomic),
+      allowlist: [...snapshot.allowlist],
+    }).authorize(destination, amount, total - ownCapacity);
   }
 
   private installCurrentPolicy(): { readonly digest: string } {
@@ -546,7 +552,6 @@ export class TreasuryOperationModule {
     return this.journal.installPolicy({
       maxPerPaymentAtomic: policy.maxSompiPerTx.toString(),
       maxPerHourAtomic: policy.maxSompiPerHour.toString(),
-      approvalAboveAtomic: policy.requireApprovalAboveSompi.toString(),
       allowlist: Object.freeze([...policy.allowlist]),
     });
   }

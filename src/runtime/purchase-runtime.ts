@@ -58,7 +58,7 @@ import {
 } from "../purchase/egress-policy.js";
 import { PurchaseJournal } from "../purchase/journal.js";
 import { SompiPaidResponseVerifier } from "../purchase/paid-response-verifier.js";
-import type { PurchaseModule } from "../purchase/types.js";
+import type { PurchaseModule, Sha256Digest } from "../purchase/types.js";
 import { VaultTreasuryModule } from "../treasury/vault-treasury.js";
 import { TreasuryOperationModule } from "../treasury/operations.js";
 import {
@@ -67,6 +67,7 @@ import {
   WalletTreasuryOperationAdapter,
 } from "../treasury/operation-adapters.js";
 import { VaultManager, vaultStaticConfigurationDigest } from "../vault.js";
+import { assertVaultConfigurationLineage, reconcileAppliedVaultMigrationFence } from "../vault-migration/lineage.js";
 import { KaspaWallet } from "../wallet.js";
 import {
   assertSompiPurchaseRuntimeConfig,
@@ -78,16 +79,20 @@ import {
   JournalTreasuryStagingObservationSource,
   createJournalTreasuryStagingMetadataSource,
 } from "./journal-sources.js";
-import { TransferAuthorityClient } from "../transfer/authority.js";
+import { OwnerAuthorityClient } from "../authority/owner-authority.js";
 import { TransferModule } from "../transfer/module.js";
 import { WalletViewModule } from "../wallet-view/module.js";
 import { FundingIntakeModule } from "../funding-intake/module.js";
+import { PolicyChangeModule } from "../policy-change/module.js";
+import { VaultMigrationModule } from "../vault-migration/module.js";
 
 export interface SompiPurchaseRuntime {
   readonly purchase: PurchaseModule;
   readonly transfer: TransferModule;
   readonly walletView: WalletViewModule;
   readonly fundingIntake: FundingIntakeModule;
+  readonly policyChange: PolicyChangeModule;
+  readonly vaultMigration: VaultMigrationModule;
   readonly journal: PurchaseJournal;
   readonly wallet: KaspaWallet;
   readonly vault: VaultManager;
@@ -150,12 +155,6 @@ export function createSompiPurchaseRuntime(
   const witnessFetch = createPinnedGetFetch(witnessEgress, transport, now);
   const policy = new PolicyEngine(config.policy);
   const vault = new VaultManager(config.dataDirectory, config.networkId);
-  assertManifestVault(vault, config);
-  const wallet = new KaspaWallet({
-    networkId: config.networkId,
-    dataDir: config.dataDirectory,
-    nodeUrl: config.nodeUrl,
-  });
   let journal: PurchaseJournal | undefined;
   let authorityReplay: SqliteAuthorityReplayStore | undefined;
   try {
@@ -164,6 +163,14 @@ export function createSompiPurchaseRuntime(
       operatorManifestIdentity: config.operatorManifest.identity,
       admission: config.admission,
     });
+    assertManifestVault(vault, journal, config);
+    reconcileAppliedVaultMigrationFence({ vault, journal });
+    const wallet = new KaspaWallet({
+      networkId: config.networkId,
+      dataDir: config.dataDirectory,
+      nodeUrl: config.nodeUrl,
+    });
+    activateJournalPolicy(journal, policy);
     authorityReplay = new SqliteAuthorityReplayStore(
       config.authority.clientReplayDatabase,
       { now }
@@ -331,7 +338,7 @@ export function createSompiPurchaseRuntime(
       now,
     });
     const payment = new KaspaX402PaymentModule(exactPayment, batchPayment);
-    const transferAuthority = new TransferAuthorityClient({
+    const ownerAuthority = new OwnerAuthorityClient({
       authenticationProvider: authorityAuthentication,
       transport: authorityTransport,
       trust,
@@ -340,7 +347,7 @@ export function createSompiPurchaseRuntime(
     });
     const transfer = new TransferModule({
       journal,
-      authority: transferAuthority,
+      authority: ownerAuthority,
       treasury: treasuryOperations,
       source: () => {
         const current = vault.config();
@@ -357,6 +364,29 @@ export function createSompiPurchaseRuntime(
       wallet,
       vault,
       treasury: treasuryOperations,
+    });
+    const policyChange = new PolicyChangeModule({
+      journal,
+      policy,
+      authority: ownerAuthority,
+      manifest: () => config.operatorManifest.identity,
+      vaultProtection: () => {
+        const current = vault.config();
+        return Object.freeze({
+          digest: vaultStaticConfigurationDigest(current) as Sha256Digest,
+          maximumOutflowAtomic: current.maxOutflowSompi,
+        });
+      },
+      now,
+    });
+    const vaultMigration = new VaultMigrationModule({
+      journal,
+      vault,
+      wallet,
+      authority: ownerAuthority,
+      everydayMaximumAtomic: () => policy.policy.maxSompiPerHour.toString(),
+      manifest: () => config.operatorManifest.identity,
+      now,
     });
     const walletView = new WalletViewModule({
       wallet,
@@ -406,6 +436,8 @@ export function createSompiPurchaseRuntime(
       transfer,
       walletView,
       fundingIntake,
+      policyChange,
+      vaultMigration,
       journal,
       wallet,
       vault,
@@ -437,24 +469,18 @@ export function createSompiPurchaseRuntime(
 
 function assertManifestVault(
   vault: VaultManager,
+  journal: PurchaseJournal,
   config: SompiPurchaseRuntimeConfig
 ): void {
   if (!vault.configured) {
     throw new Error("Operator Manifest vault has not been provisioned");
   }
-  const actual = vault.config();
-  const expected = config.operatorManifest.manifest.vault;
-  if (
-    actual.template !== expected.template ||
-    actual.ownerPublic !== expected.ownerPublic ||
-    actual.agentPublic !== expected.agentPublic ||
-    actual.maxOutflowSompi !== expected.maxOutflowSompi ||
-    actual.windowSizeDaa !== expected.windowSizeDaa ||
-    vault.initialAddress() !== expected.address ||
-    vaultStaticConfigurationDigest(actual) !== expected.configDigest
-  ) {
-    throw new Error("provisioned vault does not match the Operator Manifest");
-  }
+  assertVaultConfigurationLineage({
+    vault,
+    journal,
+    manifestVault: config.operatorManifest.manifest.vault,
+    manifestIdentity: config.operatorManifest.identity,
+  });
 }
 
 function assertAuthorityProcessIsolation(
@@ -511,9 +537,22 @@ function purchasePolicy(policy: PolicyEngine) {
   return Object.freeze({
     maxPerPaymentAtomic: current.maxSompiPerTx.toString(),
     maxPerHourAtomic: current.maxSompiPerHour.toString(),
-    approvalAboveAtomic: current.requireApprovalAboveSompi.toString(),
     allowlist: Object.freeze([...current.allowlist]),
   });
+}
+
+function activateJournalPolicy(journal: PurchaseJournal, policy: PolicyEngine): void {
+  let active;
+  try {
+    active = journal.requireActivePolicy();
+  } catch {
+    active = journal.installPolicy(purchasePolicy(policy));
+  }
+  policy.activate(Object.freeze({
+    maxSompiPerTx: BigInt(active.maxPerPaymentAtomic),
+    maxSompiPerHour: BigInt(active.maxPerHourAtomic),
+    allowlist: [...active.allowlist],
+  }));
 }
 
 async function closeRuntimeResources(

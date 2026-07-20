@@ -69,7 +69,7 @@ class PluginTests(unittest.TestCase):
             with patch.object(MODULE, "_load_settings", return_value=(socket_path, 2.0)):
                 result = MODULE._on_gateway_callback_query(
                     platform="telegram",
-                    callback_data="sp:a:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                    callback_data="sp:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
                     user_id="123",
                     chat_id="123",
                 )
@@ -81,7 +81,7 @@ class PluginTests(unittest.TestCase):
             })
             self.assertEqual(received, [{
                 "profile": "sompi.telegram-authority-callback-v1",
-                "callbackData": "sp:a:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                "callbackData": "sp:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
                 "userId": "123",
                 "chatId": "123",
             }])
@@ -90,7 +90,7 @@ class PluginTests(unittest.TestCase):
         with patch.object(MODULE, "_relay", side_effect=OSError("unavailable")):
             result = MODULE._on_gateway_callback_query(
                 platform="telegram",
-                callback_data="sp:d:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                callback_data="sp:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
                 user_id="123",
                 chat_id="123",
             )

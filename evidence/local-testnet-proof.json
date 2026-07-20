@@ -5,24 +5,19 @@
   "liveNetworkConformanceClaimed": false,
   "authorityMode": "real-unix-framed-service-in-process-fixture",
   "initiationMode": "direct-purchase-module",
-  "adapterTransport": "sompi-demo-local-ap2-presentation-endpoints",
+  "merchantProfile": "generic-x402",
   "protocolPins": {
     "ap2": {
       "release": "v0.2.0",
       "gitCommit": "b4587ac1d055888a73b4b21750973cffba961793",
       "specification": "https://github.com/google-agentic-commerce/AP2/tree/v0.2.0/docs/ap2",
-      "profileId": "ap2-v0.2-hp-direct-sd-jwt-es256",
-      "merchantCheckoutProfile": "urn:sompi:checkout:single-resource:2",
       "mode": "human-present",
-      "checkoutMandateVct": "mandate.checkout.1",
-      "paymentMandateVct": "mandate.payment.1",
-      "rootSdJwtTyp": "example+sd-jwt",
-      "digestAlgorithm": "sha-256",
+      "evidenceProfile": "urn:sompi:ap2-derived-human-present:1",
       "signatureAlgorithms": [
         "ES256"
       ],
-      "nativeKasProfile": "urn:sompi:ap2:payment-instrument:kaspa-x402:1",
-      "nativeKasStrictlyStandardized": false
+      "interoperability": "none",
+      "sourceWatchOnly": true
     },
     "x402": {
       "version": 2,
@@ -55,12 +50,6 @@
       "integrity": "sha512-dq9AtApgg5PGFtBzPFSBl3HZQjHok5gaQCM6zh2Yk0aSmDCs1CbnVI8/HgASQkNKsWFpseIO9beg5xxpYhbIfA==",
       "typesVersion": "7.6.13"
     },
-    "sdJwt": {
-      "implementation": "@sd-jwt/core",
-      "version": "0.20.0",
-      "npmGitCommit": "af170ace9b42984f8c6447caf23256fde6204b31",
-      "integrity": "sha512-thTj5xtKqOvqnULELJGvCa64Hf+Hf7v0Dlao6mTh198rmZcyFCBop3vT1ShgWMhg5cL04ofXeiEhnQR10/8wjA=="
-    },
     "jose": {
       "implementation": "jose",
       "version": "5.10.0",
@@ -78,13 +67,12 @@
     "id": "pur_QUFBQUFBQUFBQUFBQUFBQQ",
     "state": "receipted",
     "paymentIdentifier": "pay_G-65DChbE33IuFTud_GkHWq29QcCKlSEB95e5ZtYu_I",
-    "checkoutDigest": "sha256:EgWz44XGYfmO0B1VmLC0ky-Kg4GPbFB9X9P6dmCCGKs",
-    "authorizationEvidenceDigest": "sha256:3Hlt_I2rdMbyCeRv2Zv8-zet5uPGaGFW7xgU0b6P8rw",
-    "settlementEvidenceDigest": "sha256:eKxQxDf16PWzLUoXyeRaS5aHk436Xlb32tuB_Zbpw7Q",
-    "fulfilmentDigest": "sha256:jtetvqEDFfwlEYv57dfdb3_xDswN8OJ7uKzmUj93p9E",
+    "checkoutDigest": "sha256:PE09rS1OcSudBCWH605DmdqYtr3ej7E-SuN7Tn9eOmA",
+    "authorizationEvidenceDigest": "sha256:wqaZ9v8fM0eWJPk0Kwshu6_Gq-Q81reMFPeEkZJrq9A",
+    "settlementEvidenceDigest": "sha256:ucVqy8COMJ3CgTDXB-JLvjkrwDJGSvS0Endqk6C-Xq8",
+    "fulfilmentDigest": "sha256:cfXOx9qeiTXQiuS04EWSds1WTGdkOyBCKbKL3MnuMNc",
     "receiptEvidenceDigests": [
-      "sha256:ctpWLOc13hhc6iIC56oFW7JT1nnAvlKegVsZfAW8ZbM",
-      "sha256:dlUkDNZw6UBEa_-zktVyAeY7-QQOf33hVNWJBz_JttM"
+      "sha256:vXZZXw5e35zCfutzuc2qyxhNqva3bPoYP5yrw47gC2A"
     ]
   },
   "transactions": {
@@ -106,6 +94,6 @@
     "paidRequestExtensionKeys": [
       "payment-identifier"
     ],
-    "ap2DataInX402Request": false
+    "authorityDataInX402Request": false
   }
 }

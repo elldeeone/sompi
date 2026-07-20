@@ -56,8 +56,8 @@ sompi-agent activity --limit 20
 
 The wallet view leads with `total`, `available`, `incoming`, and `pending`
 amounts in tKAS. It also returns the receive address, QR payload, deposit status,
-limits, and recent incoming, transfer, and purchase activity. Raw sompi remains
-available as exact machine-readable evidence but is not the default display.
+limits, and recent incoming, transfer, and purchase activity. Technical wallet
+details are returned only when explicitly requested.
 
 Send native KAS:
 
@@ -89,6 +89,37 @@ sompi-agent recover PURCHASE_ID
 Request keys identify logical actions. Reusing the same key and intent is
 idempotent. A new key does not bypass a denial or spending limit.
 
+## Limits
+
+Sompi shows two everyday limits and one stronger vault limit:
+
+- maximum for one payment;
+- maximum total in roughly one hour; and
+- vault protection: the on-chain ceiling enforced by SilverScript.
+
+Every payment still needs approval.
+
+Change the everyday limits:
+
+```sh
+sompi-agent change-limits \
+  --request-key limits-1 \
+  --per-payment-kas 1 \
+  --per-hour-kas 5
+```
+
+The exact change is approved or denied in the trusted chat and then applies to
+new work. Changing vault protection is deliberately stronger:
+
+```sh
+sompi-agent change-vault-protection \
+  --request-key vault-limit-1 \
+  --maximum-kas 10
+```
+
+After chat approval, the operator finishes the change locally with the offline
+owner key. The user's receive address does not change.
+
 ## Approval
 
 Ordinary chat proposes an action; it does not authorize one. Sompi sends the
@@ -109,12 +140,18 @@ The canonical interface is the authenticated local API:
 
 - `GET /wallet`
 - `GET /wallet/activity`
+- `GET /wallet/technical`
 - `POST /transfers`
 - `GET /transfers/{transferId}`
 - `POST /transfers/{transferId}/recover`
 - `POST /purchases`
 - `GET /purchases/{purchaseId}`
 - `POST /purchases/{purchaseId}/recover`
+- `POST /policy-changes`
+- `GET /policy-changes/{policyChangeId}`
+- `POST /policy-changes/{policyChangeId}/recover`
+- `POST /vault-migrations`
+- `GET /vault-migrations/{vaultMigrationId}`
 
 `sompi-agent` and `sompi-mcp` are thin clients of the same API. Removing MCP
 does not change wallet, authorization, payment, transfer, or recovery logic.
@@ -129,19 +166,19 @@ Agent / CLI / optional MCP
           |
     authenticated local API
           |
-   +------+-------+
-   |              |
-Transfer       Purchase
-   |              |
-   +---- Trusted Authority
-   +---- operator policy
-   +---- Funding Intake / SilverScript vault / Treasury
-   +---- chain evidence and recovery
+   +------+------+----------------+
+   |             |                |
+Transfer      Purchase        Limit changes
+   |             |                |
+   +------ Trusted Authority -----+
+   +------ active policy snapshots
+   +------ Funding Intake / protected wallet / Treasury
+   +------ chain evidence and recovery
 ```
 
 `Transfer` handles native sends. `Purchase` handles x402 commerce. AP2
 authorization and Kaspa-x402 payment execution remain separate adapters.
-Journal epoch 16 is the only supported state schema.
+Journal epoch 18 is the only supported state schema.
 
 Architecture sources:
 

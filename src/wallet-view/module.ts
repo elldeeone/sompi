@@ -19,7 +19,6 @@ export interface WalletView {
     total: KasAmountView;
     available: KasAmountView;
     incoming: KasAmountView;
-    protected: KasAmountView;
     pending: KasAmountView;
     provenance: "operator-node-and-local-vault-lineage";
     observedAt: string;
@@ -33,22 +32,31 @@ export interface WalletView {
     operationId?: string;
     transactionId?: string;
   }>;
-  readonly limits: Readonly<{
-    perTransfer: KasAmountView;
-    perHour: KasAmountView;
-    approvalThreshold: KasAmountView;
-    allowlist: readonly string[];
-    vaultWindow: Readonly<{
-      maximumOutflow: KasAmountView;
-      spent: KasAmountView;
-      sizeDaa: string;
+  readonly spendingProtection: Readonly<{
+    maximumPerPayment: KasAmountView;
+    maximumPerHour: KasAmountView;
+    everyPaymentRequiresApproval: true;
+    vaultProtection: Readonly<{
+      maximumPerWindow: KasAmountView;
+      remainingInWindow: KasAmountView;
+      window: "approximately 1 hour";
+      summary: string;
     }>;
   }>;
-  readonly security: Readonly<{
-    vaultAddress: string;
-    vaultOutpoint?: Readonly<{ txid: string; index: number }>;
-  }>;
   readonly chainStatus: "observed" | "unfunded" | "unavailable";
+}
+
+export interface WalletTechnicalView {
+  readonly receiveAddress: string;
+  readonly activeVault: Readonly<{
+    address: string;
+    maximumOutflowAtomic: string;
+    windowSizeDaa: string;
+    windowStartDaa: string;
+    spentInWindowAtomic: string;
+    outpoint?: Readonly<{ txid: string; index: number }>;
+  }>;
+  readonly allowlist: readonly string[];
 }
 
 export type WalletActivityItem = Readonly<{
@@ -113,7 +121,6 @@ export class WalletViewModule {
         total: kasAmountView(protectedAmount + incoming),
         available: kasAmountView(available),
         incoming: kasAmountView(incoming),
-        protected: kasAmountView(protectedAmount),
         pending: kasAmountView(reserved),
         provenance: "operator-node-and-local-vault-lineage" as const,
         observedAt,
@@ -127,22 +134,38 @@ export class WalletViewModule {
         ...(intake.operation ? { operationId: intake.operation.operationKey } : {}),
         ...(intake.operation?.transactionId ? { transactionId: intake.operation.transactionId } : {}),
       }),
-      limits: Object.freeze({
-        perTransfer: kasAmountView(policy.maxSompiPerTx),
-        perHour: kasAmountView(policy.maxSompiPerHour),
-        approvalThreshold: kasAmountView(policy.requireApprovalAboveSompi),
-        allowlist: Object.freeze([...policy.allowlist]),
-        vaultWindow: Object.freeze({
-          maximumOutflow: kasAmountView(config.maxOutflowSompi),
-          spent: kasAmountView(config.spentInWindowSompi),
-          sizeDaa: config.windowSizeDaa,
+      spendingProtection: Object.freeze({
+        maximumPerPayment: kasAmountView(policy.maxSompiPerTx),
+        maximumPerHour: kasAmountView(policy.maxSompiPerHour),
+        everyPaymentRequiresApproval: true as const,
+        vaultProtection: Object.freeze({
+          maximumPerWindow: kasAmountView(config.maxOutflowSompi),
+          remainingInWindow: kasAmountView(
+            BigInt(config.maxOutflowSompi) > BigInt(config.spentInWindowSompi)
+              ? BigInt(config.maxOutflowSompi) - BigInt(config.spentInWindowSompi)
+              : 0n,
+          ),
+          window: "approximately 1 hour" as const,
+          summary: "The vault enforces an on-chain maximum even if the agent software is compromised.",
         }),
       }),
-      security: Object.freeze({
-        vaultAddress: config.address,
-        ...(config.currentOutpoint ? { vaultOutpoint: Object.freeze({ ...config.currentOutpoint }) } : {}),
-      }),
       chainStatus,
+    });
+  }
+
+  technical(): WalletTechnicalView {
+    const config = this.options.vault.config();
+    return Object.freeze({
+      receiveAddress: this.options.wallet.address,
+      activeVault: Object.freeze({
+        address: config.address,
+        maximumOutflowAtomic: config.maxOutflowSompi,
+        windowSizeDaa: config.windowSizeDaa,
+        windowStartDaa: config.windowStartDaa,
+        spentInWindowAtomic: config.spentInWindowSompi,
+        ...(config.currentOutpoint ? { outpoint: Object.freeze({ ...config.currentOutpoint }) } : {}),
+      }),
+      allowlist: Object.freeze([...this.options.policy.policy.allowlist]),
     });
   }
 
@@ -185,7 +208,9 @@ export class WalletViewModule {
       id: transfer.id,
       requestKey: transfer.requestKey,
       state: transfer.state,
-      summary: `${kasAmountView(transfer.amountAtomic).display} transfer to ${transfer.destination}.`,
+      summary: transfer.state === "receipted"
+        ? `${kasAmountView(transfer.amountAtomic).display} sent securely from your Sompi vault to ${transfer.destination}.`
+        : `${kasAmountView(transfer.amountAtomic).display} transfer to ${transfer.destination}.`,
       amount: kasAmountView(transfer.amountAtomic),
       ...(transfer.actualFeeAtomic ? { fee: kasAmountView(transfer.actualFeeAtomic) } : {}),
       counterparty: transfer.destination,

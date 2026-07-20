@@ -228,7 +228,6 @@ export async function runLiveBatchProof(
       maxSompiPerTx: 200_000_000n,
       maxSompiPerHour: 500_000_000n,
       allowlist: [],
-      requireApprovalAboveSompi: 0n,
     });
     const treasury = new TreasuryOperationModule({
       journal,
@@ -671,7 +670,6 @@ function composeBatchCoordinator(input: {
     policy: {
       maxPerPaymentAtomic: "100000000",
       maxPerHourAtomic: "500000000",
-      approvalAboveAtomic: "0",
       allowlist: [input.initialized.config.wallets.merchantAddress],
     },
     additionalCostCeilingAtomic: "0",

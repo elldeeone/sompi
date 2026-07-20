@@ -258,6 +258,7 @@ function canonicalTransferFactsJson(facts: TransferAuthorizationFacts): string {
     network: facts.network,
     feeCeilingAtomic: facts.feeCeilingAtomic,
     maximumTotalAtomic: facts.maximumTotalAtomic,
+    issuedAt: facts.issuedAt,
     expiresAt: facts.expiresAt,
     policyDigest: facts.policyDigest,
     operatorManifestRevision: facts.operatorManifestRevision,
@@ -278,6 +279,7 @@ function assertTransferFactsMatchIntent(facts: TransferAuthorizationFacts, trans
     facts.network !== transfer.network ||
     facts.feeCeilingAtomic !== transfer.feeCeilingAtomic ||
     facts.maximumTotalAtomic !== transfer.maximumTotalAtomic ||
+    Date.parse(facts.issuedAt) !== transfer.createdAtMs ||
     Date.parse(facts.expiresAt) !== transfer.expiresAtMs ||
     facts.policyDigest !== transfer.policyDigest ||
     facts.operatorManifestRevision !== transfer.manifestRevision ||
@@ -344,6 +346,7 @@ function assertTransferReceiptMatches(receipt: TransferReceipt, transfer: Transf
     receipt.amountAtomic !== transfer.amountAtomic ||
     receipt.network !== transfer.network ||
     receipt.fundingSource !== "vault-treasury" ||
+    receipt.fundingSummary !== "Sent securely from your protected Sompi wallet." ||
     receipt.transactionId !== transfer.transactionId ||
     receipt.finality !== transfer.finalityFloor ||
     receipt.feeAtomic !== transfer.actualFeeAtomic ||
@@ -1033,7 +1036,6 @@ export interface EvidenceVerificationInput {
 export interface PolicyDefinition {
   maxPerPaymentAtomic: string;
   maxPerHourAtomic: string;
-  approvalAboveAtomic: string;
   allowlist: readonly string[];
 }
 
@@ -1041,6 +1043,116 @@ export interface PolicySnapshotRecord extends PolicyDefinition {
   digest: Sha256Digest;
   version: number;
   activatedAtMs: number;
+}
+
+export interface ActivePolicyRecord {
+  readonly policy: PolicySnapshotRecord;
+  readonly activationGeneration: number;
+}
+
+export type PolicyChangeJournalState =
+  | "created"
+  | "awaiting_authority"
+  | "authorised"
+  | "applied"
+  | "denied"
+  | "expired"
+  | "failed";
+
+export interface PolicyChangeJournalRecord {
+  id: string;
+  requestKey: string;
+  state: PolicyChangeJournalState;
+  expectedPolicyDigest: Sha256Digest;
+  expectedPolicyGeneration: number;
+  expectedVaultDigest: Sha256Digest;
+  previousMaximumPerPaymentAtomic: string;
+  previousMaximumPerHourAtomic: string;
+  proposedMaximumPerPaymentAtomic: string;
+  proposedMaximumPerHourAtomic: string;
+  vaultMaximumOutflowAtomic: string;
+  manifestRevision: number;
+  manifestDigest: Sha256Digest;
+  expiresAtMs: number;
+  authorityId?: string;
+  authorityEvidenceDigest?: Sha256Digest;
+  authorityEvidence?: Uint8Array;
+  appliedPolicyDigest?: Sha256Digest;
+  appliedPolicyVersion?: number;
+  failureCode?: string;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+export interface CreatePolicyChangeJournalInput {
+  id: string;
+  requestKey: string;
+  expectedPolicyDigest: Sha256Digest;
+  expectedPolicyGeneration: number;
+  expectedVaultDigest: Sha256Digest;
+  previousMaximumPerPaymentAtomic: string;
+  previousMaximumPerHourAtomic: string;
+  proposedMaximumPerPaymentAtomic: string;
+  proposedMaximumPerHourAtomic: string;
+  vaultMaximumOutflowAtomic: string;
+  manifestRevision: number;
+  manifestDigest: Sha256Digest;
+  expiresAtMs: number;
+}
+
+export type VaultMigrationJournalState =
+  | "created"
+  | "awaiting_authority"
+  | "awaiting_owner"
+  | "executing"
+  | "applied"
+  | "denied"
+  | "expired"
+  | "reconciliation_required"
+  | "failed";
+
+export interface VaultMigrationJournalRecord {
+  id: string;
+  requestKey: string;
+  state: VaultMigrationJournalState;
+  oldVaultDigest: Sha256Digest;
+  expectedPolicyDigest: Sha256Digest;
+  expectedPolicyGeneration: number;
+  oldMaximumOutflowAtomic: string;
+  newMaximumOutflowAtomic: string;
+  windowSizeDaa: string;
+  windowStartDaa: string;
+  spentInWindowAtomic: string;
+  stableReceiveAddress: string;
+  manifestRevision: number;
+  manifestDigest: Sha256Digest;
+  expiresAtMs: number;
+  authorityId?: string;
+  authorityEvidenceDigest?: Sha256Digest;
+  authorityEvidence?: Uint8Array;
+  recoveryTransactionId?: string;
+  replacementTransactionId?: string;
+  receiptDigest?: Sha256Digest;
+  failureCode?: string;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+export interface CreateVaultMigrationJournalInput {
+  id: string;
+  requestKey: string;
+  oldVaultDigest: Sha256Digest;
+  expectedPolicyDigest: Sha256Digest;
+  expectedPolicyGeneration: number;
+  oldMaximumOutflowAtomic: string;
+  newMaximumOutflowAtomic: string;
+  windowSizeDaa: string;
+  windowStartDaa: string;
+  spentInWindowAtomic: string;
+  stableReceiveAddress: string;
+  manifestRevision: number;
+  manifestDigest: Sha256Digest;
+  expiresAtMs: number;
 }
 
 export interface PolicyReservationInput {
@@ -2767,6 +2879,353 @@ export class PurchaseJournal {
     record.immediate();
   }
 
+  createPolicyChange(input: CreatePolicyChangeJournalInput): PolicyChangeJournalRecord {
+    validatePolicyChangeJournalInput(input);
+    const create = this.db.transaction(() => {
+      const existing = this.findPolicyChangeByRequestKey(input.requestKey);
+      if (existing) {
+        if (!policyChangeIntentMatches(existing, input)) {
+          throw new JournalInvariantError("Policy Change request key is already bound to different limits");
+        }
+        return existing;
+      }
+      const active = this.requireActivePolicy();
+      if (active.digest !== input.expectedPolicyDigest) {
+        throw new PolicyReservationError("active treasury policy changed before Policy Change creation");
+      }
+      const activation = this.requireActivePolicyActivation();
+      if (activation.activationGeneration !== input.expectedPolicyGeneration) {
+        throw new PolicyReservationError("active treasury policy generation changed before Policy Change creation");
+      }
+      if (
+        active.maxPerPaymentAtomic !== input.previousMaximumPerPaymentAtomic ||
+        active.maxPerHourAtomic !== input.previousMaximumPerHourAtomic
+      ) {
+        throw new PolicyReservationError(
+          "Policy Change previous limits do not match the active treasury policy"
+        );
+      }
+      const now = this.timestamp();
+      this.db.prepare(
+        `INSERT INTO policy_changes (
+           id, request_key, state, expected_policy_digest, expected_policy_generation,
+           expected_vault_digest,
+           previous_max_per_payment_atomic, previous_max_per_hour_atomic,
+           proposed_max_per_payment_atomic, proposed_max_per_hour_atomic,
+           vault_maximum_outflow_atomic, manifest_revision, manifest_digest,
+           expires_at_ms, created_at_ms, updated_at_ms
+         ) VALUES (?, ?, 'created', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        input.id,
+        input.requestKey,
+        input.expectedPolicyDigest,
+        input.expectedPolicyGeneration,
+        input.expectedVaultDigest,
+        input.previousMaximumPerPaymentAtomic,
+        input.previousMaximumPerHourAtomic,
+        input.proposedMaximumPerPaymentAtomic,
+        input.proposedMaximumPerHourAtomic,
+        input.vaultMaximumOutflowAtomic,
+        input.manifestRevision,
+        input.manifestDigest,
+        input.expiresAtMs,
+        now,
+        now,
+      );
+      this.insertPolicyChangeTransition(input.id, null, "created", "created", now);
+      return this.policyChange(input.id);
+    });
+    return create.immediate();
+  }
+
+  policyChange(id: string): PolicyChangeJournalRecord {
+    assertPolicyChangeId(id);
+    const row = this.db.prepare("SELECT * FROM policy_changes WHERE id = ?").get(id) as PolicyChangeRow | undefined;
+    if (!row) throw new JournalNotFoundError(`Policy Change ${id} does not exist`);
+    return policyChangeFromRow(row);
+  }
+
+  findPolicyChangeByRequestKey(requestKey: string): PolicyChangeJournalRecord | undefined {
+    assertPolicyChangeRequestKey(requestKey);
+    const row = this.db.prepare("SELECT * FROM policy_changes WHERE request_key = ?").get(requestKey) as PolicyChangeRow | undefined;
+    return row ? policyChangeFromRow(row) : undefined;
+  }
+
+  createVaultMigration(input: CreateVaultMigrationJournalInput): VaultMigrationJournalRecord {
+    validateVaultMigrationInput(input);
+    const create = this.db.transaction(() => {
+      const existing = this.findVaultMigrationByRequestKey(input.requestKey);
+      if (existing) {
+        if (!vaultMigrationIntentMatches(existing, input)) {
+          throw new JournalInvariantError("Vault Migration request key is already bound to different protection");
+        }
+        return existing;
+      }
+      const now = this.timestamp();
+      this.db.prepare(
+        `INSERT INTO vault_migrations (
+           id, request_key, state, old_vault_digest, expected_policy_digest,
+           expected_policy_generation,
+           old_maximum_outflow_atomic, new_maximum_outflow_atomic,
+           window_size_daa, window_start_daa, spent_in_window_atomic,
+           stable_receive_address, manifest_revision, manifest_digest,
+           expires_at_ms, created_at_ms, updated_at_ms
+         ) VALUES (?, ?, 'created', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        input.id, input.requestKey, input.oldVaultDigest,
+        input.expectedPolicyDigest, input.expectedPolicyGeneration,
+        input.oldMaximumOutflowAtomic, input.newMaximumOutflowAtomic,
+        input.windowSizeDaa, input.windowStartDaa, input.spentInWindowAtomic,
+        input.stableReceiveAddress, input.manifestRevision, input.manifestDigest,
+        input.expiresAtMs, now, now,
+      );
+      this.insertVaultMigrationTransition(input.id, null, "created", "created", now);
+      return this.vaultMigration(input.id);
+    });
+    return create.immediate();
+  }
+
+  vaultMigration(id: string): VaultMigrationJournalRecord {
+    assertVaultMigrationId(id);
+    const row = this.db.prepare("SELECT * FROM vault_migrations WHERE id = ?").get(id) as VaultMigrationRow | undefined;
+    if (!row) throw new JournalNotFoundError(`Vault Migration ${id} does not exist`);
+    return vaultMigrationFromRow(row);
+  }
+
+  findVaultMigrationByRequestKey(requestKey: string): VaultMigrationJournalRecord | undefined {
+    assertPolicyChangeRequestKey(requestKey);
+    const row = this.db.prepare("SELECT * FROM vault_migrations WHERE request_key = ?").get(requestKey) as VaultMigrationRow | undefined;
+    return row ? vaultMigrationFromRow(row) : undefined;
+  }
+
+  /** Ordered owner-approved vault lineage used only for startup verification. */
+  vaultMigrationLineage(): readonly VaultMigrationJournalRecord[] {
+    const rows = this.db.prepare(
+      `SELECT * FROM vault_migrations
+        WHERE state IN ('executing', 'reconciliation_required', 'applied')
+        ORDER BY created_at_ms ASC, id ASC`
+    ).all() as VaultMigrationRow[];
+    return Object.freeze(rows.map(vaultMigrationFromRow));
+  }
+
+  markVaultMigrationAwaitingAuthority(id: string): VaultMigrationJournalRecord {
+    return this.transitionVaultMigration(id, "created", "awaiting_authority", "authority_requested");
+  }
+
+  decideVaultMigration(
+    id: string,
+    decision: Readonly<{ decision: "approved" | "denied"; authorityId: string; evidenceDigest: Sha256Digest; evidence: Uint8Array }>,
+  ): VaultMigrationJournalRecord {
+    validatePolicyDecision(decision);
+    const decide = this.db.transaction(() => {
+      const current = this.vaultMigration(id);
+      if (["awaiting_owner", "denied", "expired"].includes(current.state)) return current;
+      if (current.state !== "awaiting_authority") {
+        throw new JournalInvariantError(`Vault Migration ${id} cannot be decided from ${current.state}`);
+      }
+      if (this.timestamp() >= current.expiresAtMs) {
+        return this.transitionVaultMigration(id, "awaiting_authority", "expired", "authority_expired");
+      }
+      const now = this.timestamp();
+      const next = decision.decision === "approved" ? "awaiting_owner" : "denied";
+      this.db.prepare(
+        `UPDATE vault_migrations SET state = ?, authority_id = ?, authority_evidence_digest = ?,
+           authority_evidence = ?, updated_at_ms = ? WHERE id = ? AND state = 'awaiting_authority'`
+      ).run(next, decision.authorityId, decision.evidenceDigest, Buffer.from(decision.evidence), now, id);
+      this.insertVaultMigrationTransition(id, "awaiting_authority", next, next === "denied" ? "authority_denied" : "authority_approved", now);
+      return this.vaultMigration(id);
+    });
+    return decide.immediate();
+  }
+
+  beginVaultMigrationExecution(id: string): VaultMigrationJournalRecord {
+    const begin = this.db.transaction(() => {
+      const current = this.vaultMigration(id);
+      if (current.state !== "awaiting_owner") {
+        throw new JournalInvariantError(`Vault Migration ${id} cannot execute from ${current.state}`);
+      }
+      const now = this.timestamp();
+      if (now >= current.expiresAtMs) {
+        return this.transitionVaultMigration(id, "awaiting_owner", "expired", "owner_execution_expired");
+      }
+      const activation = this.requireActivePolicyActivation();
+      if (
+        activation.policy.digest !== current.expectedPolicyDigest ||
+        activation.activationGeneration !== current.expectedPolicyGeneration
+      ) {
+        throw new PolicyReservationError("everyday policy changed after Vault Migration approval");
+      }
+      if (BigInt(activation.policy.maxPerPaymentAtomic) > BigInt(current.newMaximumOutflowAtomic) ||
+          BigInt(activation.policy.maxPerHourAtomic) > BigInt(current.newMaximumOutflowAtomic)) {
+        throw new PolicyReservationError("active everyday limits exceed proposed vault protection");
+      }
+      const direct = (this.db.prepare(
+        `SELECT COUNT(*) AS count FROM treasury_operations
+          WHERE state NOT IN ('completed', 'failed_terminal')`
+      ).get() as { count: number }).count;
+      const purchase = (this.db.prepare(
+        `SELECT COUNT(*) AS count FROM effects
+          WHERE kind = ? AND state NOT IN ('observed', 'failed_terminal', 'abandoned')`
+      ).get(TREASURY_STAGING_EFFECT_KIND) as { count: number }).count;
+      if (direct !== 0 || purchase !== 0) {
+        throw new JournalInvariantError("Vault Migration must wait for every unresolved wallet effect");
+      }
+      const updated = this.db.prepare(
+        `UPDATE vault_migrations SET state = 'executing', updated_at_ms = ?
+          WHERE id = ? AND state = 'awaiting_owner'`
+      ).run(now, id);
+      if (updated.changes !== 1) throw new JournalInvariantError(`concurrent Vault Migration execution for ${id}`);
+      this.insertVaultMigrationTransition(id, "awaiting_owner", "executing", "owner_execution_started", now);
+      return this.vaultMigration(id);
+    });
+    return begin.immediate();
+  }
+
+  assertVaultMigrationExecutionReady(id: string): VaultMigrationJournalRecord {
+    const current = this.vaultMigration(id);
+    if (current.state !== "awaiting_owner") {
+      throw new JournalInvariantError(`Vault Migration ${id} cannot execute from ${current.state}`);
+    }
+    if (this.timestamp() >= current.expiresAtMs) {
+      throw new JournalInvariantError("Vault Migration approval expired before owner execution");
+    }
+    const activation = this.requireActivePolicyActivation();
+    if (
+      activation.policy.digest !== current.expectedPolicyDigest ||
+      activation.activationGeneration !== current.expectedPolicyGeneration
+    ) {
+      throw new PolicyReservationError("everyday policy changed after Vault Migration approval");
+    }
+    if (BigInt(activation.policy.maxPerPaymentAtomic) > BigInt(current.newMaximumOutflowAtomic) ||
+        BigInt(activation.policy.maxPerHourAtomic) > BigInt(current.newMaximumOutflowAtomic)) {
+      throw new PolicyReservationError("active everyday limits exceed proposed vault protection");
+    }
+    const direct = this.unresolvedTreasuryOperationCount();
+    const purchase = (this.db.prepare(
+      `SELECT COUNT(*) AS count FROM effects
+        WHERE kind = ? AND state NOT IN ('observed', 'failed_terminal', 'abandoned')`
+    ).get(TREASURY_STAGING_EFFECT_KIND) as { count: number }).count;
+    if (direct !== 0 || purchase !== 0) {
+      throw new JournalInvariantError("Vault Migration must wait for every unresolved wallet effect");
+    }
+    return current;
+  }
+
+  requireVaultMigrationReconciliation(id: string, failureCode: string): VaultMigrationJournalRecord {
+    assertSafeIdentity(failureCode, "Vault Migration failure code", 100);
+    const update = this.db.transaction(() => {
+      const current = this.vaultMigration(id);
+      if (current.state === "reconciliation_required") return current;
+      if (current.state !== "executing") throw new JournalInvariantError(`Vault Migration ${id} is not executing`);
+      const now = this.timestamp();
+      this.db.prepare("UPDATE vault_migrations SET state = 'reconciliation_required', failure_code = ?, updated_at_ms = ? WHERE id = ? AND state = 'executing'")
+        .run(failureCode, now, id);
+      this.insertVaultMigrationTransition(id, "executing", "reconciliation_required", failureCode, now);
+      return this.vaultMigration(id);
+    });
+    return update.immediate();
+  }
+
+  completeVaultMigration(
+    id: string,
+    result: Readonly<{ recoveryTransactionId: string; replacementTransactionId: string; receiptDigest: Sha256Digest }>,
+  ): VaultMigrationJournalRecord {
+    assertTransactionId(result.recoveryTransactionId);
+    assertTransactionId(result.replacementTransactionId);
+    assertDigest(result.receiptDigest, "Vault Migration receipt digest");
+    const complete = this.db.transaction(() => {
+      const current = this.vaultMigration(id);
+      if (current.state === "applied") return current;
+      if (current.state !== "executing" && current.state !== "reconciliation_required") {
+        throw new JournalInvariantError(`Vault Migration ${id} cannot complete from ${current.state}`);
+      }
+      const now = this.timestamp();
+      this.db.prepare(
+        `UPDATE vault_migrations SET state = 'applied', recovery_transaction_id = ?,
+           replacement_transaction_id = ?, receipt_digest = ?, failure_code = NULL, updated_at_ms = ?
+         WHERE id = ? AND state IN ('executing', 'reconciliation_required')`
+      ).run(result.recoveryTransactionId, result.replacementTransactionId, result.receiptDigest, now, id);
+      this.insertVaultMigrationTransition(id, current.state, "applied", "replacement_accepted", now);
+      return this.vaultMigration(id);
+    });
+    return complete.immediate();
+  }
+
+  markPolicyChangeAwaitingAuthority(id: string): PolicyChangeJournalRecord {
+    return this.transitionPolicyChange(id, "created", "awaiting_authority", "authority_requested");
+  }
+
+  denyPolicyChange(
+    id: string,
+    decision: Readonly<{ authorityId: string; evidenceDigest: Sha256Digest; evidence: Uint8Array }>,
+  ): PolicyChangeJournalRecord {
+    return this.completePolicyChangeDecision(id, "denied", decision);
+  }
+
+  authorizeAndActivatePolicyChange(
+    id: string,
+    decision: Readonly<{ authorityId: string; evidenceDigest: Sha256Digest; evidence: Uint8Array }>,
+    definition: PolicyDefinition,
+    protection: Readonly<{
+      expectedPolicyGeneration: number;
+      expectedVaultDigest: Sha256Digest;
+      currentVaultDigest: Sha256Digest;
+      currentVaultMaximumOutflowAtomic: string;
+    }>,
+  ): PolicyChangeJournalRecord {
+    validatePolicyDecision(decision);
+    const canonical = canonicalPolicy(definition);
+    const activate = this.db.transaction(() => {
+      const current = this.policyChange(id);
+      if (current.state === "applied") return current;
+      if (current.state !== "awaiting_authority") {
+        throw new JournalInvariantError(`Policy Change ${id} cannot be authorized from ${current.state}`);
+      }
+      if (this.timestamp() >= current.expiresAtMs) {
+        return this.transitionPolicyChange(id, "awaiting_authority", "expired", "authority_expired");
+      }
+      if (
+        protection.expectedPolicyGeneration !== current.expectedPolicyGeneration ||
+        protection.expectedVaultDigest !== current.expectedVaultDigest ||
+        protection.currentVaultDigest !== current.expectedVaultDigest
+      ) {
+        throw new PolicyReservationError("protection state changed before this approved revision could be applied");
+      }
+      const vaultMaximum = decimalBigInt(
+        protection.currentVaultMaximumOutflowAtomic,
+        "current vault maximum outflow",
+      );
+      if (
+        decimalBigInt(canonical.maxPerPaymentAtomic, "per-payment limit") > vaultMaximum ||
+        decimalBigInt(canonical.maxPerHourAtomic, "hourly limit") > vaultMaximum
+      ) {
+        throw new PolicyReservationError("approved policy exceeds current vault protection");
+      }
+      const activeMigration = this.db.prepare(
+        `SELECT id FROM vault_migrations
+          WHERE state IN ('executing', 'reconciliation_required') LIMIT 1`
+      ).get() as { id: string } | undefined;
+      if (activeMigration) {
+        throw new PolicyReservationError("policy activation must wait for vault protection transition");
+      }
+      this.writePolicyChangeDecision(current, "authorised", decision);
+      const snapshot = this.activatePolicySnapshotIfCurrent(
+        current.expectedPolicyDigest,
+        current.expectedPolicyGeneration,
+        canonical,
+      );
+      const now = this.timestamp();
+      this.db.prepare(
+        `UPDATE policy_changes
+            SET state = 'applied', applied_policy_digest = ?, applied_policy_version = ?, updated_at_ms = ?
+          WHERE id = ? AND state = 'authorised'`
+      ).run(snapshot.digest, snapshot.version, now, id);
+      this.insertPolicyChangeTransition(id, "authorised", "applied", "policy_activated", now);
+      return this.policyChange(id);
+    });
+    return activate.immediate();
+  }
+
   installPolicy(definition: PolicyDefinition): PolicySnapshotRecord {
     const canonical = canonicalPolicy(definition);
     const digest = evidenceDigest(JSON.stringify(canonical));
@@ -2782,16 +3241,14 @@ export class PurchaseJournal {
         this.db
           .prepare(
             `INSERT INTO policy_snapshots
-               (digest, version, max_per_payment_atomic, max_per_hour_atomic,
-                approval_above_atomic, activated_at_ms)
-             VALUES (?, ?, ?, ?, ?, ?)`
+               (digest, version, max_per_payment_atomic, max_per_hour_atomic, activated_at_ms)
+             VALUES (?, ?, ?, ?, ?)`
           )
           .run(
             digest,
             version,
             canonical.maxPerPaymentAtomic,
             canonical.maxPerHourAtomic,
-            canonical.approvalAboveAtomic,
             now
           );
         for (const payee of canonical.allowlist) {
@@ -2802,18 +3259,41 @@ export class PurchaseJournal {
         this.inject("policy.after_snapshot_insert");
         snapshot = this.requirePolicy(digest);
       }
-      this.db
-        .prepare(
-          `INSERT INTO journal_policy (singleton, active_digest, updated_at_ms)
-           VALUES (1, ?, ?)
-           ON CONFLICT(singleton) DO UPDATE SET
-             active_digest = excluded.active_digest,
-             updated_at_ms = excluded.updated_at_ms`
-        )
-        .run(digest, now);
+      const current = this.db.prepare(
+        "SELECT active_digest, activation_generation FROM journal_policy WHERE singleton = 1"
+      ).get() as { active_digest: string; activation_generation: number } | undefined;
+      if (!current) {
+        this.db.prepare(
+          `INSERT INTO journal_policy (singleton, active_digest, updated_at_ms, activation_generation)
+           VALUES (1, ?, ?, 1)`
+        ).run(digest, now);
+      } else if (current.active_digest !== digest) {
+        this.db.prepare(
+          `UPDATE journal_policy
+              SET active_digest = ?, updated_at_ms = ?, activation_generation = activation_generation + 1
+            WHERE singleton = 1`
+        ).run(digest, now);
+      }
       return snapshot;
     });
     return install.immediate();
+  }
+
+  /** Activate an immutable policy revision only if the caller reviewed the active snapshot. */
+  activatePolicyIfCurrent(
+    expectedDigest: Sha256Digest,
+    definition: PolicyDefinition,
+  ): PolicySnapshotRecord {
+    assertDigest(expectedDigest, "expected active policy digest");
+    const canonical = canonicalPolicy(definition);
+    const activate = this.db.transaction(() =>
+      this.activatePolicySnapshotIfCurrent(
+        expectedDigest,
+        this.requireActivePolicyActivation().activationGeneration,
+        canonical,
+      )
+    );
+    return activate.immediate();
   }
 
   requireActivePolicy(): PolicySnapshotRecord {
@@ -2826,6 +3306,22 @@ export class PurchaseJournal {
       .get() as PolicySnapshotRow | undefined;
     if (!row) throw new PolicyReservationError("no active treasury policy is installed");
     return policyFromRow(row, this.policyAllowlist(row.digest));
+  }
+
+  requireActivePolicyActivation(): ActivePolicyRecord {
+    const row = this.db.prepare(
+      `SELECT p.*, j.activation_generation
+         FROM policy_snapshots p
+         JOIN journal_policy j ON j.active_digest = p.digest
+        WHERE j.singleton = 1`
+    ).get() as (PolicySnapshotRow & { activation_generation: number }) | undefined;
+    if (!row || !Number.isSafeInteger(row.activation_generation) || row.activation_generation < 1) {
+      throw new PolicyReservationError("no active treasury policy generation is installed");
+    }
+    return Object.freeze({
+      policy: policyFromRow(row, this.policyAllowlist(row.digest)),
+      activationGeneration: row.activation_generation,
+    });
   }
 
   preflightTreasuryOperation(input: TreasuryOperationPreflight): void {
@@ -2844,7 +3340,6 @@ export class PurchaseJournal {
       input.feeCeilingAtomic,
       this.timestamp(),
       undefined,
-      input.humanApprovalExpected,
     );
   }
 
@@ -2894,7 +3389,6 @@ export class PurchaseJournal {
         input.feeCeilingAtomic,
         now,
         undefined,
-        humanApproved,
       );
       try {
         this.db.prepare(
@@ -3067,10 +3561,9 @@ export class PurchaseJournal {
         if (current.cancellationRequested) {
           throw new JournalInvariantError("cancelled Treasury preparation cannot commit prepared material");
         }
-        const policy = this.requireActivePolicy();
+        const policy = this.requirePolicy(current.policyDigest as Sha256Digest);
         if (
-          current.policyDigest !== prepared.policyDigest ||
-          policy.digest !== prepared.policyDigest
+          current.policyDigest !== prepared.policyDigest
         ) {
           throw new PolicyReservationError(
             "treasury policy changed before direct operation preparation was committed"
@@ -3097,7 +3590,6 @@ export class PurchaseJournal {
           current.feeCeilingAtomic,
           now,
           operationKey,
-          current.authorizationEvidenceDigest !== undefined,
         );
         const stored = this.storePreparedMaterial(prepared.bytes, digest);
         const driverSql = driver
@@ -3381,12 +3873,7 @@ export class PurchaseJournal {
       const current = this.requireTreasuryOperation(operationKey);
       if (current.state !== "prepared" || current.cancellationRequested || current.preparationFenced) return false;
       if (driver && !driverOwns(current, driver, this.timestamp())) return false;
-      const policy = this.requireActivePolicy();
-      if (policy.digest !== current.policyDigest) {
-        throw new PolicyReservationError(
-          "treasury policy changed before direct operation submission"
-        );
-      }
+      const policy = this.requirePolicy(current.policyDigest as Sha256Digest);
       if (!current.resolvedAmountAtomic || current.feeAtomic === undefined) {
         throw new JournalInvariantError("direct Treasury operation lacks prepared cost facts");
       }
@@ -3400,7 +3887,6 @@ export class PurchaseJournal {
         current.feeCeilingAtomic,
         now,
         operationKey,
-        current.authorizationEvidenceDigest !== undefined,
       );
       const driverSql = driver
         ? " AND driver_owner = ? AND driver_generation = ?"
@@ -3825,26 +4311,11 @@ export class PurchaseJournal {
       const gross = amount + additionalCost;
       const maxPerPayment = decimalBigInt(policy.maxPerPaymentAtomic, "per-payment limit");
       const maxPerHour = decimalBigInt(policy.maxPerHourAtomic, "hourly limit");
-      const approvalThreshold = decimalBigInt(policy.approvalAboveAtomic, "approval threshold", true);
       if (gross > maxPerPayment) {
         throw new PolicyReservationError(`gross treasury movement ${gross} exceeds per-payment limit ${maxPerPayment}`);
       }
-      if (approvalThreshold > 0n && amount > approvalThreshold) {
-        if (!input.approvalEvidenceDigest) {
-          throw new PolicyReservationError("verified authority evidence is required above the approval threshold");
-        }
-        if (
-          !this.isVerifiedEvidenceLinked(input.purchaseId, input.approvalEvidenceDigest, {
-            attempt: null,
-            kind: "purchase-authorization",
-            verificationProfile: input.approvalVerificationProfile,
-            verifierId: input.approvalVerifierId,
-          })
-        ) {
-          throw new PolicyReservationError("authority evidence is not verified and linked to this Purchase");
-        }
-      } else if (
-        input.approvalEvidenceDigest &&
+      if (
+        !input.approvalEvidenceDigest ||
         !this.isVerifiedEvidenceLinked(input.purchaseId, input.approvalEvidenceDigest, {
         attempt: null,
         kind: "purchase-authorization",
@@ -3852,7 +4323,7 @@ export class PurchaseJournal {
         verifierId: input.approvalVerifierId,
         })
       ) {
-        throw new PolicyReservationError("provided authority evidence is not verified and linked to this Purchase");
+        throw new PolicyReservationError("verified authority evidence is required for every Purchase");
       }
       const used = this.policyCapacityUsedInternal(now);
       if (used + gross > maxPerHour) {
@@ -8317,6 +8788,207 @@ export class PurchaseJournal {
       .run(purchaseId, fromState ?? null, toState, reasonCode, detailDigest ?? null, now);
   }
 
+  private activatePolicySnapshotIfCurrent(
+    expectedDigest: Sha256Digest,
+    expectedGeneration: number,
+    canonical: PolicyDefinition,
+  ): PolicySnapshotRecord {
+    const active = this.requireActivePolicy();
+    const activation = this.requireActivePolicyActivation();
+    if (active.digest !== expectedDigest || activation.activationGeneration !== expectedGeneration) {
+      throw new PolicyReservationError(
+        "active treasury policy changed before this approved revision could be applied"
+      );
+    }
+    const digest = evidenceDigest(JSON.stringify(canonical));
+    let snapshot = this.findPolicy(digest);
+    const now = this.timestamp();
+    if (!snapshot) {
+      const version = Number(
+        (this.db.prepare("SELECT COALESCE(MAX(version), 0) + 1 AS version FROM policy_snapshots").get() as {
+          version: number;
+        }).version
+      );
+      this.db.prepare(
+        `INSERT INTO policy_snapshots
+           (digest, version, max_per_payment_atomic, max_per_hour_atomic, activated_at_ms)
+         VALUES (?, ?, ?, ?, ?)`
+      ).run(
+        digest,
+        version,
+        canonical.maxPerPaymentAtomic,
+        canonical.maxPerHourAtomic,
+        now,
+      );
+      for (const payee of canonical.allowlist) {
+        this.db.prepare(
+          "INSERT INTO policy_allowlist (policy_digest, payee) VALUES (?, ?)"
+        ).run(digest, payee);
+      }
+      snapshot = this.requirePolicy(digest);
+    }
+    const updated = this.db.prepare(
+      `UPDATE journal_policy
+          SET active_digest = ?, updated_at_ms = ?, activation_generation = activation_generation + 1
+        WHERE singleton = 1 AND active_digest = ? AND activation_generation = ?`
+    ).run(digest, now, expectedDigest, expectedGeneration);
+    if (updated.changes !== 1) {
+      throw new PolicyReservationError(
+        "active treasury policy changed before this approved revision could be applied"
+      );
+    }
+    return snapshot;
+  }
+
+  private transitionPolicyChange(
+    id: string,
+    fromState: PolicyChangeJournalState,
+    toState: PolicyChangeJournalState,
+    reasonCode: string,
+  ): PolicyChangeJournalRecord {
+    assertPolicyChangeId(id);
+    assertPolicyChangeTransition(fromState, toState);
+    assertCode(reasonCode, "Policy Change transition reason code");
+    const transition = this.db.transaction(() => {
+      const current = this.policyChange(id);
+      if (current.state === toState) return current;
+      if (current.state !== fromState) {
+        throw new JournalInvariantError(
+          `Policy Change ${id} expected ${fromState}, found ${current.state}`
+        );
+      }
+      const now = this.timestamp();
+      const updated = this.db.prepare(
+        "UPDATE policy_changes SET state = ?, updated_at_ms = ? WHERE id = ? AND state = ?"
+      ).run(toState, now, id, fromState);
+      if (updated.changes !== 1) {
+        throw new JournalInvariantError(`concurrent Policy Change transition for ${id}`);
+      }
+      this.insertPolicyChangeTransition(id, fromState, toState, reasonCode, now);
+      return this.policyChange(id);
+    });
+    return transition.immediate();
+  }
+
+  private completePolicyChangeDecision(
+    id: string,
+    toState: "denied",
+    decision: Readonly<{ authorityId: string; evidenceDigest: Sha256Digest; evidence: Uint8Array }>,
+  ): PolicyChangeJournalRecord {
+    validatePolicyDecision(decision);
+    const complete = this.db.transaction(() => {
+      const current = this.policyChange(id);
+      if (current.state === toState) {
+        if (current.authorityEvidenceDigest !== decision.evidenceDigest) {
+          throw new JournalInvariantError(`Policy Change ${id} has a different authority decision`);
+        }
+        return current;
+      }
+      if (current.state !== "awaiting_authority") {
+        throw new JournalInvariantError(
+          `Policy Change ${id} cannot be denied from ${current.state}`
+        );
+      }
+      if (this.timestamp() >= current.expiresAtMs) {
+        return this.transitionPolicyChange(id, "awaiting_authority", "expired", "authority_expired");
+      }
+      this.writePolicyChangeDecision(current, toState, decision);
+      return this.policyChange(id);
+    });
+    return complete.immediate();
+  }
+
+  private writePolicyChangeDecision(
+    current: PolicyChangeJournalRecord,
+    toState: "authorised" | "denied",
+    decision: Readonly<{ authorityId: string; evidenceDigest: Sha256Digest; evidence: Uint8Array }>,
+  ): void {
+    validatePolicyDecision(decision);
+    assertPolicyChangeTransition(current.state, toState);
+    const now = this.timestamp();
+    const updated = this.db.prepare(
+      `UPDATE policy_changes
+          SET state = ?, authority_id = ?, authority_evidence_digest = ?,
+              authority_evidence = ?, updated_at_ms = ?
+        WHERE id = ? AND state = 'awaiting_authority'`
+    ).run(
+      toState,
+      decision.authorityId,
+      decision.evidenceDigest,
+      Buffer.from(decision.evidence),
+      now,
+      current.id,
+    );
+    if (updated.changes !== 1) {
+      throw new JournalInvariantError(`concurrent Policy Change decision for ${current.id}`);
+    }
+    this.insertPolicyChangeTransition(
+      current.id,
+      "awaiting_authority",
+      toState,
+      toState === "authorised" ? "authority_approved" : "authority_denied",
+      now,
+    );
+  }
+
+  private insertPolicyChangeTransition(
+    id: string,
+    fromState: PolicyChangeJournalState | null,
+    toState: PolicyChangeJournalState,
+    reasonCode: string,
+    now: number,
+  ): void {
+    assertPolicyChangeId(id);
+    assertCode(reasonCode, "Policy Change transition reason code");
+    this.db.prepare(
+      `INSERT INTO policy_change_transitions
+         (policy_change_id, from_state, to_state, reason_code, created_at_ms)
+       VALUES (?, ?, ?, ?, ?)`
+    ).run(id, fromState, toState, reasonCode, now);
+  }
+
+  private transitionVaultMigration(
+    id: string,
+    fromState: VaultMigrationJournalState,
+    toState: VaultMigrationJournalState,
+    reasonCode: string,
+  ): VaultMigrationJournalRecord {
+    assertVaultMigrationId(id);
+    assertVaultMigrationTransition(fromState, toState);
+    assertCode(reasonCode, "Vault Migration transition reason code");
+    const transition = this.db.transaction(() => {
+      const current = this.vaultMigration(id);
+      if (current.state === toState) return current;
+      if (current.state !== fromState) {
+        throw new JournalInvariantError(`Vault Migration ${id} expected ${fromState}, found ${current.state}`);
+      }
+      const now = this.timestamp();
+      const updated = this.db.prepare(
+        "UPDATE vault_migrations SET state = ?, updated_at_ms = ? WHERE id = ? AND state = ?"
+      ).run(toState, now, id, fromState);
+      if (updated.changes !== 1) throw new JournalInvariantError(`concurrent Vault Migration transition for ${id}`);
+      this.insertVaultMigrationTransition(id, fromState, toState, reasonCode, now);
+      return this.vaultMigration(id);
+    });
+    return transition.immediate();
+  }
+
+  private insertVaultMigrationTransition(
+    id: string,
+    fromState: VaultMigrationJournalState | null,
+    toState: VaultMigrationJournalState,
+    reasonCode: string,
+    now: number,
+  ): void {
+    assertVaultMigrationId(id);
+    assertCode(reasonCode, "Vault Migration transition reason code");
+    this.db.prepare(
+      `INSERT INTO vault_migration_transitions
+         (vault_migration_id, from_state, to_state, reason_code, created_at_ms)
+       VALUES (?, ?, ?, ?, ?)`
+    ).run(id, fromState, toState, reasonCode, now);
+  }
+
   private insertAttemptTransition(
     purchaseId: PurchaseId,
     attempt: number,
@@ -8597,7 +9269,6 @@ export class PurchaseJournal {
     feeAtomic: string,
     now: number,
     excludeOperationKey?: string,
-    humanApproved = false,
   ): void {
     if (
       kind !== "vault_deposit" && kind !== "batch_refund" &&
@@ -8618,19 +9289,9 @@ export class PurchaseJournal {
     const gross = policyAmount + fee;
     const maxPerPayment = decimalBigInt(policy.maxPerPaymentAtomic, "per-payment limit");
     const maxPerHour = decimalBigInt(policy.maxPerHourAtomic, "hourly limit");
-    const approvalThreshold = decimalBigInt(
-      policy.approvalAboveAtomic,
-      "approval threshold",
-      true
-    );
     if (policyAmount > maxPerPayment) {
       throw new PolicyReservationError(
         `direct Treasury amount ${policyAmount} exceeds per-payment limit ${maxPerPayment}`
-      );
-    }
-    if (approvalThreshold > 0n && policyAmount > approvalThreshold && !humanApproved) {
-      throw new PolicyReservationError(
-        "direct Treasury movement exceeds the operator approval threshold; use an approved Transfer or operator-controlled transaction"
       );
     }
     const used = this.policyCapacityUsedInternal(now, excludeOperationKey);
@@ -9498,8 +10159,59 @@ interface PolicySnapshotRow {
   version: number;
   max_per_payment_atomic: string;
   max_per_hour_atomic: string;
-  approval_above_atomic: string;
   activated_at_ms: number;
+}
+
+interface PolicyChangeRow {
+  id: string;
+  request_key: string;
+  state: PolicyChangeJournalState;
+  expected_policy_digest: string;
+  expected_policy_generation: number;
+  expected_vault_digest: string;
+  previous_max_per_payment_atomic: string;
+  previous_max_per_hour_atomic: string;
+  proposed_max_per_payment_atomic: string;
+  proposed_max_per_hour_atomic: string;
+  vault_maximum_outflow_atomic: string;
+  manifest_revision: number;
+  manifest_digest: string;
+  expires_at_ms: number;
+  authority_id: string | null;
+  authority_evidence_digest: string | null;
+  authority_evidence: Uint8Array | null;
+  applied_policy_digest: string | null;
+  applied_policy_version: number | null;
+  failure_code: string | null;
+  created_at_ms: number;
+  updated_at_ms: number;
+}
+
+interface VaultMigrationRow {
+  id: string;
+  request_key: string;
+  state: VaultMigrationJournalState;
+  old_vault_digest: string;
+  expected_policy_digest: string;
+  expected_policy_generation: number;
+  old_maximum_outflow_atomic: string;
+  new_maximum_outflow_atomic: string;
+  window_size_daa: string;
+  window_start_daa: string;
+  spent_in_window_atomic: string;
+  stable_receive_address: string;
+  manifest_revision: number;
+  manifest_digest: string;
+  expires_at_ms: number;
+  authority_id: string | null;
+  authority_evidence_digest: string | null;
+  authority_evidence: Uint8Array | null;
+  recovery_transaction_id: string | null;
+  replacement_transaction_id: string | null;
+  receipt_digest: string | null;
+  failure_code: string | null;
+  created_at_ms: number;
+  updated_at_ms: number;
 }
 
 interface ReservationRow {
@@ -10051,10 +10763,73 @@ function policyFromRow(row: PolicySnapshotRow, allowlist: string[]): PolicySnaps
     version: row.version,
     maxPerPaymentAtomic: row.max_per_payment_atomic,
     maxPerHourAtomic: row.max_per_hour_atomic,
-    approvalAboveAtomic: row.approval_above_atomic,
     allowlist,
     activatedAtMs: row.activated_at_ms,
   };
+}
+
+function policyChangeFromRow(row: PolicyChangeRow): PolicyChangeJournalRecord {
+  return Object.freeze({
+    id: row.id,
+    requestKey: row.request_key,
+    state: row.state,
+    expectedPolicyDigest: row.expected_policy_digest as Sha256Digest,
+    expectedPolicyGeneration: row.expected_policy_generation,
+    expectedVaultDigest: row.expected_vault_digest as Sha256Digest,
+    previousMaximumPerPaymentAtomic: row.previous_max_per_payment_atomic,
+    previousMaximumPerHourAtomic: row.previous_max_per_hour_atomic,
+    proposedMaximumPerPaymentAtomic: row.proposed_max_per_payment_atomic,
+    proposedMaximumPerHourAtomic: row.proposed_max_per_hour_atomic,
+    vaultMaximumOutflowAtomic: row.vault_maximum_outflow_atomic,
+    manifestRevision: row.manifest_revision,
+    manifestDigest: row.manifest_digest as Sha256Digest,
+    expiresAtMs: row.expires_at_ms,
+    ...(row.authority_id === null ? {} : { authorityId: row.authority_id }),
+    ...(row.authority_evidence_digest === null
+      ? {}
+      : { authorityEvidenceDigest: row.authority_evidence_digest as Sha256Digest }),
+    ...(row.authority_evidence === null
+      ? {}
+      : { authorityEvidence: new Uint8Array(row.authority_evidence) }),
+    ...(row.applied_policy_digest === null
+      ? {}
+      : { appliedPolicyDigest: row.applied_policy_digest as Sha256Digest }),
+    ...(row.applied_policy_version === null
+      ? {}
+      : { appliedPolicyVersion: row.applied_policy_version }),
+    ...(row.failure_code === null ? {} : { failureCode: row.failure_code }),
+    createdAtMs: row.created_at_ms,
+    updatedAtMs: row.updated_at_ms,
+  });
+}
+
+function vaultMigrationFromRow(row: VaultMigrationRow): VaultMigrationJournalRecord {
+  return Object.freeze({
+    id: row.id,
+    requestKey: row.request_key,
+    state: row.state,
+    oldVaultDigest: row.old_vault_digest as Sha256Digest,
+    expectedPolicyDigest: row.expected_policy_digest as Sha256Digest,
+    expectedPolicyGeneration: row.expected_policy_generation,
+    oldMaximumOutflowAtomic: row.old_maximum_outflow_atomic,
+    newMaximumOutflowAtomic: row.new_maximum_outflow_atomic,
+    windowSizeDaa: row.window_size_daa,
+    windowStartDaa: row.window_start_daa,
+    spentInWindowAtomic: row.spent_in_window_atomic,
+    stableReceiveAddress: row.stable_receive_address,
+    manifestRevision: row.manifest_revision,
+    manifestDigest: row.manifest_digest as Sha256Digest,
+    expiresAtMs: row.expires_at_ms,
+    ...(row.authority_id === null ? {} : { authorityId: row.authority_id }),
+    ...(row.authority_evidence_digest === null ? {} : { authorityEvidenceDigest: row.authority_evidence_digest as Sha256Digest }),
+    ...(row.authority_evidence === null ? {} : { authorityEvidence: new Uint8Array(row.authority_evidence) }),
+    ...(row.recovery_transaction_id === null ? {} : { recoveryTransactionId: row.recovery_transaction_id }),
+    ...(row.replacement_transaction_id === null ? {} : { replacementTransactionId: row.replacement_transaction_id }),
+    ...(row.receipt_digest === null ? {} : { receiptDigest: row.receipt_digest as Sha256Digest }),
+    ...(row.failure_code === null ? {} : { failureCode: row.failure_code }),
+    createdAtMs: row.created_at_ms,
+    updatedAtMs: row.updated_at_ms,
+  });
 }
 
 function reservationFromRow(row: ReservationRow): PolicyReservationRecord {
@@ -10493,16 +11268,185 @@ function validateEvidenceMetadata(input: StoreEvidenceInput): void {
 function canonicalPolicy(definition: PolicyDefinition): PolicyDefinition {
   decimalBigInt(definition.maxPerPaymentAtomic, "per-payment limit");
   decimalBigInt(definition.maxPerHourAtomic, "hourly limit");
-  decimalBigInt(definition.approvalAboveAtomic, "approval threshold", true);
   const allowlist = [...new Set(definition.allowlist)];
   for (const payee of allowlist) assertBoundedText(payee, "policy allowlist payee", 300);
   allowlist.sort();
   return {
     maxPerPaymentAtomic: definition.maxPerPaymentAtomic,
     maxPerHourAtomic: definition.maxPerHourAtomic,
-    approvalAboveAtomic: definition.approvalAboveAtomic,
     allowlist,
   };
+}
+
+function validatePolicyChangeJournalInput(input: CreatePolicyChangeJournalInput): void {
+  assertPolicyChangeId(input.id);
+  assertPolicyChangeRequestKey(input.requestKey);
+  assertDigest(input.expectedPolicyDigest, "expected Policy Change policy digest");
+  if (!Number.isSafeInteger(input.expectedPolicyGeneration) || input.expectedPolicyGeneration < 1) {
+    throw new JournalInvariantError("expected Policy Change policy generation is invalid");
+  }
+  assertDigest(input.expectedVaultDigest, "expected Policy Change vault digest");
+  const previousPerPayment = decimalBigInt(
+    input.previousMaximumPerPaymentAtomic,
+    "previous per-payment limit",
+  );
+  const previousPerHour = decimalBigInt(
+    input.previousMaximumPerHourAtomic,
+    "previous hourly limit",
+  );
+  const proposedPerPayment = decimalBigInt(
+    input.proposedMaximumPerPaymentAtomic,
+    "proposed per-payment limit",
+  );
+  const proposedPerHour = decimalBigInt(
+    input.proposedMaximumPerHourAtomic,
+    "proposed hourly limit",
+  );
+  const vaultMaximum = decimalBigInt(
+    input.vaultMaximumOutflowAtomic,
+    "vault maximum outflow",
+  );
+  if (previousPerPayment > previousPerHour || proposedPerPayment > proposedPerHour) {
+    throw new PolicyReservationError("per-payment limit cannot exceed the hourly limit");
+  }
+  if (proposedPerPayment > vaultMaximum || proposedPerHour > vaultMaximum) {
+    throw new PolicyReservationError(
+      "everyday limits cannot exceed the current vault protection maximum"
+    );
+  }
+  if (!Number.isSafeInteger(input.manifestRevision) || input.manifestRevision < 1) {
+    throw new JournalInvariantError("Policy Change manifest revision is invalid");
+  }
+  assertDigest(input.manifestDigest, "Policy Change manifest digest");
+  if (!Number.isSafeInteger(input.expiresAtMs) || input.expiresAtMs <= 0) {
+    throw new JournalInvariantError("Policy Change expiry is invalid");
+  }
+}
+
+function policyChangeIntentMatches(
+  existing: PolicyChangeJournalRecord,
+  input: CreatePolicyChangeJournalInput,
+): boolean {
+  return existing.id === input.id &&
+    existing.expectedPolicyDigest === input.expectedPolicyDigest &&
+    existing.expectedPolicyGeneration === input.expectedPolicyGeneration &&
+    existing.expectedVaultDigest === input.expectedVaultDigest &&
+    existing.previousMaximumPerPaymentAtomic === input.previousMaximumPerPaymentAtomic &&
+    existing.previousMaximumPerHourAtomic === input.previousMaximumPerHourAtomic &&
+    existing.proposedMaximumPerPaymentAtomic === input.proposedMaximumPerPaymentAtomic &&
+    existing.proposedMaximumPerHourAtomic === input.proposedMaximumPerHourAtomic &&
+    existing.vaultMaximumOutflowAtomic === input.vaultMaximumOutflowAtomic &&
+    existing.manifestRevision === input.manifestRevision &&
+    existing.manifestDigest === input.manifestDigest &&
+    existing.expiresAtMs === input.expiresAtMs;
+}
+
+function validatePolicyDecision(
+  decision: Readonly<{ authorityId: string; evidenceDigest: Sha256Digest; evidence: Uint8Array }>,
+): void {
+  assertSafeIdentity(decision.authorityId, "Policy Change authority identity", 200);
+  assertDigest(decision.evidenceDigest, "Policy Change authority evidence digest");
+  if (
+    !(decision.evidence instanceof Uint8Array) ||
+    decision.evidence.byteLength === 0 ||
+    decision.evidence.byteLength > 128_000
+  ) {
+    throw new JournalInvariantError("Policy Change authority evidence is invalid");
+  }
+  if (evidenceDigest(decision.evidence) !== decision.evidenceDigest) {
+    throw new JournalInvariantError("Policy Change authority evidence digest does not match its bytes");
+  }
+}
+
+function assertPolicyChangeTransition(
+  from: PolicyChangeJournalState,
+  to: PolicyChangeJournalState,
+): void {
+  const allowed: Readonly<Record<PolicyChangeJournalState, readonly PolicyChangeJournalState[]>> = {
+    created: ["awaiting_authority", "failed"],
+    awaiting_authority: ["authorised", "denied", "expired", "failed"],
+    authorised: ["applied", "failed"],
+    applied: [],
+    denied: [],
+    expired: [],
+    failed: [],
+  };
+  if (from !== to && !allowed[from].includes(to)) {
+    throw new JournalInvariantError(`invalid Policy Change transition ${from} -> ${to}`);
+  }
+}
+
+function assertPolicyChangeId(value: string): void {
+  if (!/^pcg_[A-Za-z0-9_-]{22}$/.test(value)) {
+    throw new JournalInvariantError("invalid Policy Change identity");
+  }
+}
+
+function assertPolicyChangeRequestKey(value: string): void {
+  if (!/^[A-Za-z0-9._:-]{1,160}$/.test(value)) {
+    throw new JournalInvariantError("invalid Policy Change request key");
+  }
+}
+
+function validateVaultMigrationInput(input: CreateVaultMigrationJournalInput): void {
+  assertVaultMigrationId(input.id);
+  assertPolicyChangeRequestKey(input.requestKey);
+  assertDigest(input.oldVaultDigest, "old Vault Migration vault digest");
+  assertDigest(input.expectedPolicyDigest, "Vault Migration policy digest");
+  if (!Number.isSafeInteger(input.expectedPolicyGeneration) || input.expectedPolicyGeneration < 1) {
+    throw new JournalInvariantError("Vault Migration policy generation is invalid");
+  }
+  decimalBigInt(input.oldMaximumOutflowAtomic, "old vault maximum");
+  decimalBigInt(input.newMaximumOutflowAtomic, "new vault maximum");
+  decimalBigInt(input.windowSizeDaa, "vault window size");
+  decimalBigInt(input.windowStartDaa, "vault window start", true);
+  decimalBigInt(input.spentInWindowAtomic, "vault spent in window", true);
+  if (!/^kaspatest:[a-z0-9]+$/.test(input.stableReceiveAddress)) {
+    throw new JournalInvariantError("Vault Migration receive address is invalid");
+  }
+  if (!Number.isSafeInteger(input.manifestRevision) || input.manifestRevision < 1) {
+    throw new JournalInvariantError("Vault Migration manifest revision is invalid");
+  }
+  assertDigest(input.manifestDigest, "Vault Migration manifest digest");
+  if (!Number.isSafeInteger(input.expiresAtMs) || input.expiresAtMs <= 0) {
+    throw new JournalInvariantError("Vault Migration expiry is invalid");
+  }
+}
+
+function vaultMigrationIntentMatches(existing: VaultMigrationJournalRecord, input: CreateVaultMigrationJournalInput): boolean {
+  return existing.id === input.id &&
+    existing.oldVaultDigest === input.oldVaultDigest &&
+    existing.expectedPolicyDigest === input.expectedPolicyDigest &&
+    existing.expectedPolicyGeneration === input.expectedPolicyGeneration &&
+    existing.oldMaximumOutflowAtomic === input.oldMaximumOutflowAtomic &&
+    existing.newMaximumOutflowAtomic === input.newMaximumOutflowAtomic &&
+    existing.windowSizeDaa === input.windowSizeDaa &&
+    existing.windowStartDaa === input.windowStartDaa &&
+    existing.spentInWindowAtomic === input.spentInWindowAtomic &&
+    existing.stableReceiveAddress === input.stableReceiveAddress &&
+    existing.manifestRevision === input.manifestRevision &&
+    existing.manifestDigest === input.manifestDigest &&
+    existing.expiresAtMs === input.expiresAtMs;
+}
+
+function assertVaultMigrationTransition(from: VaultMigrationJournalState, to: VaultMigrationJournalState): void {
+  const allowed: Readonly<Record<VaultMigrationJournalState, readonly VaultMigrationJournalState[]>> = {
+    created: ["awaiting_authority", "failed"],
+    awaiting_authority: ["awaiting_owner", "denied", "expired", "failed"],
+    awaiting_owner: ["executing", "expired", "failed"],
+    executing: ["applied", "reconciliation_required", "failed"],
+    reconciliation_required: ["applied", "failed"],
+    applied: [], denied: [], expired: [], failed: [],
+  };
+  if (from !== to && !allowed[from].includes(to)) {
+    throw new JournalInvariantError(`invalid Vault Migration transition ${from} -> ${to}`);
+  }
+}
+
+function assertVaultMigrationId(value: string): void {
+  if (!/^vmg_[A-Za-z0-9_-]{22}$/.test(value)) {
+    throw new JournalInvariantError("invalid Vault Migration identity");
+  }
 }
 
 function validateTreasuryOperationPreflight(input: TreasuryOperationPreflight): void {

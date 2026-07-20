@@ -5,7 +5,12 @@ import * as Ajv2020Module from "ajv/dist/2020.js";
 import type { Ajv2020 as Ajv2020Instance, Options as AjvOptions } from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 
-import { PURCHASE_CREATE_REQUEST_SCHEMA, TRANSFER_CREATE_REQUEST_SCHEMA } from "./contracts.js";
+import {
+  POLICY_CHANGE_CREATE_REQUEST_SCHEMA,
+  PURCHASE_CREATE_REQUEST_SCHEMA,
+  TRANSFER_CREATE_REQUEST_SCHEMA,
+  VAULT_MIGRATION_CREATE_REQUEST_SCHEMA,
+} from "./contracts.js";
 import { sompiOpenApiDocument } from "./openapi.js";
 
 export const SOMPI_ARAZZO_VERSION = "1.1.0" as const;
@@ -22,7 +27,7 @@ export function sompiArazzoDocument(version: string): Readonly<JsonObject> {
     arazzo: SOMPI_ARAZZO_VERSION,
     info: {
       title: "Sompi recovery workflows",
-      summary: "Create, inspect, recover, and verify terminal Purchase and Transfer receipts.",
+      summary: "Operate and recover Sompi wallet, Transfer, Purchase, and protection changes.",
       description:
         "Uses only the authenticated, protocol-neutral Sompi API. " +
         "The recovery step reconciles durable evidence and never authorizes blind resubmission.",
@@ -149,6 +154,75 @@ export function sompiArazzoDocument(version: string): Readonly<JsonObject> {
           transferId: "$steps.createTransfer.outputs.transferId",
           transfer: "$steps.readTransferReceipt.outputs.transfer",
           receipt: "$steps.readTransferReceipt.outputs.receipt",
+        },
+      },
+      {
+        workflowId: "changeEverydaySpendingLimits",
+        summary: "Change the everyday spending limits with exact owner approval",
+        description:
+          "Proposes the new per-payment and hourly limits, resumes the same durable change if needed, " +
+          "and verifies that one approved policy version was applied.",
+        inputs: withoutId(POLICY_CHANGE_CREATE_REQUEST_SCHEMA),
+        steps: [
+          {
+            stepId: "createPolicyChange",
+            operationId: "$sourceDescriptions.sompi.createPolicyChange",
+            requestBody: { contentType: "application/json", payload: "$inputs" },
+            successCriteria: [{ condition: "$statusCode == 200" }],
+            outputs: { policyChangeId: "$response.body#/id" },
+          },
+          {
+            stepId: "recoverPolicyChange",
+            operationId: "$sourceDescriptions.sompi.recoverPolicyChange",
+            parameters: [{ name: "policyChangeId", in: "path", value: "$steps.createPolicyChange.outputs.policyChangeId" }],
+            successCriteria: [{ condition: "$statusCode == 200" }],
+          },
+          {
+            stepId: "readAppliedPolicyChange",
+            operationId: "$sourceDescriptions.sompi.getPolicyChange",
+            parameters: [{ name: "policyChangeId", in: "path", value: "$steps.createPolicyChange.outputs.policyChangeId" }],
+            successCriteria: [
+              { condition: "$statusCode == 200" },
+              { condition: "$response.body#/state == 'applied'" },
+            ],
+            outputs: { policyChange: "$response.body" },
+          },
+        ],
+        outputs: {
+          policyChangeId: "$steps.createPolicyChange.outputs.policyChangeId",
+          policyChange: "$steps.readAppliedPolicyChange.outputs.policyChange",
+        },
+      },
+      {
+        workflowId: "changeVaultProtection",
+        summary: "Approve a new on-chain vault protection maximum",
+        description:
+          "Proposes the exact new vault maximum and returns the durable identity used by the operator-only " +
+          "offline-owner execution. The user's public receive address remains unchanged.",
+        inputs: withoutId(VAULT_MIGRATION_CREATE_REQUEST_SCHEMA),
+        steps: [
+          {
+            stepId: "createVaultMigration",
+            operationId: "$sourceDescriptions.sompi.createVaultMigration",
+            requestBody: { contentType: "application/json", payload: "$inputs" },
+            successCriteria: [
+              { condition: "$statusCode == 200" },
+              { condition: "$response.body#/receiveAddressUnchanged == true" },
+              { condition: "$response.body#/requiresOfflineOwnerKey == true" },
+            ],
+            outputs: { vaultMigrationId: "$response.body#/id" },
+          },
+          {
+            stepId: "readVaultMigration",
+            operationId: "$sourceDescriptions.sompi.getVaultMigration",
+            parameters: [{ name: "vaultMigrationId", in: "path", value: "$steps.createVaultMigration.outputs.vaultMigrationId" }],
+            successCriteria: [{ condition: "$statusCode == 200" }],
+            outputs: { vaultMigration: "$response.body" },
+          },
+        ],
+        outputs: {
+          vaultMigrationId: "$steps.createVaultMigration.outputs.vaultMigrationId",
+          vaultMigration: "$steps.readVaultMigration.outputs.vaultMigration",
         },
       },
     ],

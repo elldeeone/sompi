@@ -171,7 +171,6 @@ function canonicalPolicy(candidate: PolicyDefinition): PolicyDefinition {
   return Object.freeze({
     maxPerPaymentAtomic: atomic(candidate.maxPerPaymentAtomic, false, "per-payment limit"),
     maxPerHourAtomic: atomic(candidate.maxPerHourAtomic, false, "hourly limit"),
-    approvalAboveAtomic: atomic(candidate.approvalAboveAtomic, true, "approval threshold"),
     allowlist: Object.freeze([...allowlist].sort()),
   });
 }

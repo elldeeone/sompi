@@ -303,7 +303,7 @@ function transferReceiptScenario(journal: PurchaseJournal, clock: TestClock): Fa
   const receipt: TransferReceipt = Object.freeze({
     profile: "urn:sompi:receipt:transfer:1", transferId: TRANSFER_ID, requestKey: "fault:transfer:one",
     destination: TRANSFER_ADDRESS, amountAtomic: "100", feeAtomic: "10", network: "kaspa:testnet-10",
-    fundingSource: "vault-treasury", transactionId: "ab".repeat(32), finality: "accepted",
+    fundingSource: "vault-treasury", fundingSummary: "Sent securely from your protected Sompi wallet.", transactionId: "ab".repeat(32), finality: "accepted",
     settledAt: new Date(clock.value).toISOString(),
   });
   return {
@@ -338,7 +338,8 @@ function awaitingTransfer(journal: PurchaseJournal, clock: TestClock) {
     sourceVaultAddress: transfer.sourceVaultAddress, sourceVaultDigest: transfer.sourceVaultDigest,
     destination: transfer.destination, amountAtomic: transfer.amountAtomic, asset: "KAS", network: "kaspa:testnet-10",
     feeCeilingAtomic: transfer.feeCeilingAtomic, maximumTotalAtomic: transfer.maximumTotalAtomic,
-    expiresAt: new Date(transfer.expiresAtMs).toISOString(), policyDigest: transfer.policyDigest,
+    issuedAt: new Date(transfer.createdAtMs).toISOString(), expiresAt: new Date(transfer.expiresAtMs).toISOString(),
+    policyDigest: transfer.policyDigest,
     operatorManifestRevision: transfer.manifestRevision, operatorManifestDigest: transfer.manifestDigest,
     finalityFloor: transfer.finalityFloor,
   });
@@ -1676,7 +1677,6 @@ function policyDefinition() {
   return {
     maxPerPaymentAtomic: "1000",
     maxPerHourAtomic: "10000",
-    approvalAboveAtomic: "1000",
     allowlist: ["kaspatest:merchant"],
   };
 }
@@ -1685,7 +1685,6 @@ function policyFacts(policy: PolicySnapshotRecord) {
   return {
     maxPerPaymentAtomic: policy.maxPerPaymentAtomic,
     maxPerHourAtomic: policy.maxPerHourAtomic,
-    approvalAboveAtomic: policy.approvalAboveAtomic,
     allowlist: [...policy.allowlist],
   };
 }

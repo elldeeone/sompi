@@ -36,6 +36,8 @@ async function main(): Promise<void> {
         ? await client.recover(command.purchaseId)
         : command.kind === "wallet"
           ? await client.wallet()
+          : command.kind === "wallet-technical"
+            ? await client.walletTechnical()
           : command.kind === "activity"
             ? await client.activity(command.limit)
             : command.kind === "transfer"
@@ -47,7 +49,17 @@ async function main(): Promise<void> {
               : command.kind === "transfer-status"
                 ? await client.transferStatus(command.transferId)
                 : command.kind === "transfer-recover"
-                  ? await client.transferRecover(command.transferId)
+                ? await client.transferRecover(command.transferId)
+                : command.kind === "change-limits"
+                  ? await client.changePolicy({ requestKey: command.requestKey, maximumPerPaymentKas: command.maximumPerPaymentKas, maximumPerHourKas: command.maximumPerHourKas })
+                  : command.kind === "limit-change-status"
+                    ? await client.policyChangeStatus(command.policyChangeId)
+                    : command.kind === "limit-change-recover"
+                      ? await client.policyChangeRecover(command.policyChangeId)
+                    : command.kind === "change-vault-protection"
+                      ? await client.vaultMigration({ requestKey: command.requestKey, vaultProtectionMaximumKas: command.vaultProtectionMaximumKas })
+                      : command.kind === "vault-protection-change-status"
+                        ? await client.vaultMigrationStatus(command.vaultMigrationId)
                   : unreachable(command);
   process.stdout.write(`${JSON.stringify(view, null, 2)}\n`);
 }

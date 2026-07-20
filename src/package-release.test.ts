@@ -117,8 +117,12 @@ test("current documentation exposes the API-first wallet and alpha.8 payment cut
     "`POST /purchases`",
     "`GET /purchases/{purchaseId}`",
     "`POST /purchases/{purchaseId}/recover`",
+    "`POST /policy-changes`",
+    "`POST /vault-migrations`",
     "sompi-agent wallet",
     "sompi-agent transfer",
+    "sompi-agent change-limits",
+    "sompi-agent change-vault-protection",
     "`sompi-mcp`",
   ]) {
     assert.ok(readme.includes(required), `README is missing ${required}`);
@@ -189,7 +193,7 @@ test("current documentation exposes the API-first wallet and alpha.8 payment cut
     path.join(ROOT, "docs", "architecture", "PURCHASE_JOURNAL.md"),
     "utf8",
   );
-  assert.match(journal, /Epoch \*\*16\*\* is the only\s+active schema/);
+  assert.match(journal, /Epoch \*\*18\*\* is the only\s+active schema/);
 });
 
 function sourceFiles(directory: string): string[] {

@@ -547,6 +547,104 @@
         }
       }
     },
+    "/wallet/technical": {
+      "get": {
+        "operationId": "getWalletTechnical",
+        "summary": "Read explicitly requested technical wallet evidence",
+        "responses": {
+          "200": {
+            "description": "Technical wallet evidence",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WalletTechnicalView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/transfers": {
       "post": {
         "operationId": "createTransfer",
@@ -786,6 +884,549 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/TransferView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/policy-changes": {
+      "post": {
+        "operationId": "createPolicyChange",
+        "summary": "Propose exact everyday spending limits for owner approval",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PolicyChangeCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Policy Change state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyChangeView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/policy-changes/{policyChangeId}": {
+      "get": {
+        "operationId": "getPolicyChange",
+        "summary": "Read a spending-limit change",
+        "parameters": [
+          {
+            "name": "policyChangeId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^pcg_[A-Za-z0-9_-]{22}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Policy Change state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyChangeView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/policy-changes/{policyChangeId}/recover": {
+      "post": {
+        "operationId": "recoverPolicyChange",
+        "summary": "Resume the same owner-approved limit change",
+        "parameters": [
+          {
+            "name": "policyChangeId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^pcg_[A-Za-z0-9_-]{22}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Policy Change state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PolicyChangeView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/vault-migrations": {
+      "post": {
+        "operationId": "createVaultMigration",
+        "summary": "Propose a vault protection change for owner approval",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VaultMigrationCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Vault Migration state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VaultMigrationView"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "Bounded structured error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SompiApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/vault-migrations/{vaultMigrationId}": {
+      "get": {
+        "operationId": "getVaultMigration",
+        "summary": "Read a vault protection change",
+        "parameters": [
+          {
+            "name": "vaultMigrationId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^vmg_[A-Za-z0-9_-]{22}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Vault Migration state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VaultMigrationView"
                 }
               }
             }
@@ -1839,6 +2480,7 @@
               "feeAtomic",
               "network",
               "fundingSource",
+              "fundingSummary",
               "transactionId",
               "finality",
               "settledAt"
@@ -1876,6 +2518,9 @@
               },
               "fundingSource": {
                 "const": "vault-treasury"
+              },
+              "fundingSummary": {
+                "const": "Sent securely from your protected Sompi wallet."
               },
               "transactionId": {
                 "type": "string",
@@ -1919,8 +2564,7 @@
           "receive",
           "balance",
           "securing",
-          "limits",
-          "security",
+          "spendingProtection",
           "chainStatus"
         ],
         "properties": {
@@ -1965,7 +2609,6 @@
               "total",
               "available",
               "incoming",
-              "protected",
               "pending",
               "provenance",
               "observedAt"
@@ -2032,36 +2675,6 @@
                 }
               },
               "incoming": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "atomic",
-                  "kas",
-                  "unit",
-                  "display"
-                ],
-                "properties": {
-                  "atomic": {
-                    "type": "string",
-                    "pattern": "^(?:0|[1-9][0-9]*)$",
-                    "maxLength": 20
-                  },
-                  "kas": {
-                    "type": "string",
-                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
-                    "maxLength": 32
-                  },
-                  "unit": {
-                    "const": "tKAS"
-                  },
-                  "display": {
-                    "type": "string",
-                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})? tKAS$",
-                    "maxLength": 40
-                  }
-                }
-              },
-              "protected": {
                 "type": "object",
                 "additionalProperties": false,
                 "required": [
@@ -2206,18 +2819,17 @@
               }
             }
           },
-          "limits": {
+          "spendingProtection": {
             "type": "object",
             "additionalProperties": false,
             "required": [
-              "perTransfer",
-              "perHour",
-              "approvalThreshold",
-              "allowlist",
-              "vaultWindow"
+              "maximumPerPayment",
+              "maximumPerHour",
+              "everyPaymentRequiresApproval",
+              "vaultProtection"
             ],
             "properties": {
-              "perTransfer": {
+              "maximumPerPayment": {
                 "type": "object",
                 "additionalProperties": false,
                 "required": [
@@ -2247,7 +2859,7 @@
                   }
                 }
               },
-              "perHour": {
+              "maximumPerHour": {
                 "type": "object",
                 "additionalProperties": false,
                 "required": [
@@ -2277,55 +2889,20 @@
                   }
                 }
               },
-              "approvalThreshold": {
+              "everyPaymentRequiresApproval": {
+                "const": true
+              },
+              "vaultProtection": {
                 "type": "object",
                 "additionalProperties": false,
                 "required": [
-                  "atomic",
-                  "kas",
-                  "unit",
-                  "display"
+                  "maximumPerWindow",
+                  "remainingInWindow",
+                  "window",
+                  "summary"
                 ],
                 "properties": {
-                  "atomic": {
-                    "type": "string",
-                    "pattern": "^(?:0|[1-9][0-9]*)$",
-                    "maxLength": 20
-                  },
-                  "kas": {
-                    "type": "string",
-                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
-                    "maxLength": 32
-                  },
-                  "unit": {
-                    "const": "tKAS"
-                  },
-                  "display": {
-                    "type": "string",
-                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})? tKAS$",
-                    "maxLength": 40
-                  }
-                }
-              },
-              "allowlist": {
-                "type": "array",
-                "maxItems": 1000,
-                "uniqueItems": true,
-                "items": {
-                  "type": "string",
-                  "maxLength": 266
-                }
-              },
-              "vaultWindow": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "maximumOutflow",
-                  "spent",
-                  "sizeDaa"
-                ],
-                "properties": {
-                  "maximumOutflow": {
+                  "maximumPerWindow": {
                     "type": "object",
                     "additionalProperties": false,
                     "required": [
@@ -2355,7 +2932,7 @@
                       }
                     }
                   },
-                  "spent": {
+                  "remainingInWindow": {
                     "type": "object",
                     "additionalProperties": false,
                     "required": [
@@ -2385,43 +2962,13 @@
                       }
                     }
                   },
-                  "sizeDaa": {
-                    "type": "string",
-                    "pattern": "^[1-9][0-9]*$",
-                    "maxLength": 20
-                  }
-                }
-              }
-            }
-          },
-          "security": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "vaultAddress"
-            ],
-            "properties": {
-              "vaultAddress": {
-                "type": "string",
-                "pattern": "^kaspatest:[a-z0-9]{20,256}$",
-                "maxLength": 266
-              },
-              "vaultOutpoint": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "txid",
-                  "index"
-                ],
-                "properties": {
-                  "txid": {
-                    "type": "string",
-                    "pattern": "^[a-f0-9]{64}$"
+                  "window": {
+                    "const": "approximately 1 hour"
                   },
-                  "index": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 4294967295
+                  "summary": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 512
                   }
                 }
               }
@@ -2560,6 +3107,501 @@
               "format": "date-time",
               "maxLength": 40
             }
+          }
+        }
+      },
+      "WalletTechnicalView": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "receiveAddress",
+          "activeVault",
+          "allowlist"
+        ],
+        "properties": {
+          "receiveAddress": {
+            "type": "string",
+            "pattern": "^kaspatest:[a-z0-9]{20,256}$",
+            "maxLength": 266
+          },
+          "activeVault": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "address",
+              "maximumOutflowAtomic",
+              "windowSizeDaa",
+              "windowStartDaa",
+              "spentInWindowAtomic"
+            ],
+            "properties": {
+              "address": {
+                "type": "string",
+                "pattern": "^kaspatest:[a-z0-9]{20,256}$",
+                "maxLength": 266
+              },
+              "maximumOutflowAtomic": {
+                "type": "string",
+                "pattern": "^[1-9][0-9]*$",
+                "maxLength": 20
+              },
+              "windowSizeDaa": {
+                "type": "string",
+                "pattern": "^[1-9][0-9]*$",
+                "maxLength": 20
+              },
+              "windowStartDaa": {
+                "type": "string",
+                "pattern": "^(?:0|[1-9][0-9]*)$",
+                "maxLength": 20
+              },
+              "spentInWindowAtomic": {
+                "type": "string",
+                "pattern": "^(?:0|[1-9][0-9]*)$",
+                "maxLength": 20
+              },
+              "outpoint": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "txid",
+                  "index"
+                ],
+                "properties": {
+                  "txid": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "index": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 4294967295
+                  }
+                }
+              }
+            }
+          },
+          "allowlist": {
+            "type": "array",
+            "maxItems": 1024,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 300
+            }
+          }
+        }
+      },
+      "PolicyChangeCreateRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requestKey",
+          "maximumPerPaymentKas",
+          "maximumPerHourKas"
+        ],
+        "properties": {
+          "requestKey": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._:-]{1,160}$",
+            "maxLength": 160
+          },
+          "maximumPerPaymentKas": {
+            "type": "string",
+            "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
+            "maxLength": 32
+          },
+          "maximumPerHourKas": {
+            "type": "string",
+            "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
+            "maxLength": 32
+          }
+        }
+      },
+      "PolicyChangeView": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "requestKey",
+          "state",
+          "summary",
+          "previous",
+          "proposed",
+          "vaultProtectionMaximum",
+          "everyPaymentRequiresApproval",
+          "expiresAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^pcg_[A-Za-z0-9_-]{22}$"
+          },
+          "requestKey": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._:-]{1,160}$",
+            "maxLength": 160
+          },
+          "state": {
+            "enum": [
+              "created",
+              "awaiting_authority",
+              "authorised",
+              "applied",
+              "denied",
+              "expired",
+              "failed"
+            ]
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "userAction": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "previous": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "maximumPerPayment",
+              "maximumPerHour"
+            ],
+            "properties": {
+              "maximumPerPayment": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "atomic",
+                  "kas",
+                  "unit",
+                  "display"
+                ],
+                "properties": {
+                  "atomic": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)$",
+                    "maxLength": 20
+                  },
+                  "kas": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
+                    "maxLength": 32
+                  },
+                  "unit": {
+                    "const": "tKAS"
+                  },
+                  "display": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})? tKAS$",
+                    "maxLength": 40
+                  }
+                }
+              },
+              "maximumPerHour": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "atomic",
+                  "kas",
+                  "unit",
+                  "display"
+                ],
+                "properties": {
+                  "atomic": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)$",
+                    "maxLength": 20
+                  },
+                  "kas": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
+                    "maxLength": 32
+                  },
+                  "unit": {
+                    "const": "tKAS"
+                  },
+                  "display": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})? tKAS$",
+                    "maxLength": 40
+                  }
+                }
+              }
+            }
+          },
+          "proposed": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "maximumPerPayment",
+              "maximumPerHour"
+            ],
+            "properties": {
+              "maximumPerPayment": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "atomic",
+                  "kas",
+                  "unit",
+                  "display"
+                ],
+                "properties": {
+                  "atomic": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)$",
+                    "maxLength": 20
+                  },
+                  "kas": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
+                    "maxLength": 32
+                  },
+                  "unit": {
+                    "const": "tKAS"
+                  },
+                  "display": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})? tKAS$",
+                    "maxLength": 40
+                  }
+                }
+              },
+              "maximumPerHour": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "atomic",
+                  "kas",
+                  "unit",
+                  "display"
+                ],
+                "properties": {
+                  "atomic": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)$",
+                    "maxLength": 20
+                  },
+                  "kas": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
+                    "maxLength": 32
+                  },
+                  "unit": {
+                    "const": "tKAS"
+                  },
+                  "display": {
+                    "type": "string",
+                    "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})? tKAS$",
+                    "maxLength": 40
+                  }
+                }
+              }
+            }
+          },
+          "vaultProtectionMaximum": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "atomic",
+              "kas",
+              "unit",
+              "display"
+            ],
+            "properties": {
+              "atomic": {
+                "type": "string",
+                "pattern": "^(?:0|[1-9][0-9]*)$",
+                "maxLength": 20
+              },
+              "kas": {
+                "type": "string",
+                "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
+                "maxLength": 32
+              },
+              "unit": {
+                "const": "tKAS"
+              },
+              "display": {
+                "type": "string",
+                "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})? tKAS$",
+                "maxLength": 40
+              }
+            }
+          },
+          "everyPaymentRequiresApproval": {
+            "const": true
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "maxLength": 40
+          },
+          "appliedPolicyDigest": {
+            "type": "string",
+            "pattern": "^sha256:[A-Za-z0-9_-]{43}$"
+          },
+          "appliedPolicyVersion": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          }
+        }
+      },
+      "VaultMigrationCreateRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "requestKey",
+          "vaultProtectionMaximumKas"
+        ],
+        "properties": {
+          "requestKey": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._:-]{1,160}$",
+            "maxLength": 160
+          },
+          "vaultProtectionMaximumKas": {
+            "type": "string",
+            "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
+            "maxLength": 32
+          }
+        }
+      },
+      "VaultMigrationView": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "requestKey",
+          "state",
+          "summary",
+          "previousVaultProtectionMaximum",
+          "proposedVaultProtectionMaximum",
+          "receiveAddressUnchanged",
+          "requiresOfflineOwnerKey",
+          "expiresAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^vmg_[A-Za-z0-9_-]{22}$"
+          },
+          "requestKey": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._:-]{1,160}$",
+            "maxLength": 160
+          },
+          "state": {
+            "enum": [
+              "created",
+              "awaiting_authority",
+              "awaiting_owner",
+              "executing",
+              "applied",
+              "denied",
+              "expired",
+              "reconciliation_required",
+              "failed"
+            ]
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "userAction": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "previousVaultProtectionMaximum": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "atomic",
+              "kas",
+              "unit",
+              "display"
+            ],
+            "properties": {
+              "atomic": {
+                "type": "string",
+                "pattern": "^(?:0|[1-9][0-9]*)$",
+                "maxLength": 20
+              },
+              "kas": {
+                "type": "string",
+                "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
+                "maxLength": 32
+              },
+              "unit": {
+                "const": "tKAS"
+              },
+              "display": {
+                "type": "string",
+                "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})? tKAS$",
+                "maxLength": 40
+              }
+            }
+          },
+          "proposedVaultProtectionMaximum": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "atomic",
+              "kas",
+              "unit",
+              "display"
+            ],
+            "properties": {
+              "atomic": {
+                "type": "string",
+                "pattern": "^(?:0|[1-9][0-9]*)$",
+                "maxLength": 20
+              },
+              "kas": {
+                "type": "string",
+                "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})?$",
+                "maxLength": 32
+              },
+              "unit": {
+                "const": "tKAS"
+              },
+              "display": {
+                "type": "string",
+                "pattern": "^(?:0|[1-9][0-9]*)(?:\\.[0-9]{1,8})? tKAS$",
+                "maxLength": 40
+              }
+            }
+          },
+          "receiveAddressUnchanged": {
+            "const": true
+          },
+          "requiresOfflineOwnerKey": {
+            "const": true
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "maxLength": 40
+          },
+          "recoveryTransactionId": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "replacementTransactionId": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$"
+          },
+          "receiptDigest": {
+            "type": "string",
+            "pattern": "^sha256:[A-Za-z0-9_-]{43}$"
           }
         }
       }

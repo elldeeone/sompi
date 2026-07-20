@@ -34,7 +34,8 @@ When the user asks to install Sompi:
 4. Preview with the pinned package:
 
    ```sh
-   npm exec --yes --package=@elldeeone/sompi@0.10.0 -- \
+   npm exec --yes --allow-scripts=better-sqlite3@12.11.1 \
+     --package=@elldeeone/sompi@0.10.0 -- \
      sompi-operator bootstrap-preview ~/.sompi/bootstrap-request.json
    ```
 
@@ -64,6 +65,11 @@ sompi-agent status PURCHASE_ID
 sompi-agent recover PURCHASE_ID
 sompi-agent wallet
 sompi-agent activity --limit 20
+sompi-agent change-limits --request-key TASK_KEY --per-payment-kas KAS --per-hour-kas KAS
+sompi-agent limit-change-status POLICY_CHANGE_ID
+sompi-agent limit-change-recover POLICY_CHANGE_ID
+sompi-agent change-vault-protection --request-key TASK_KEY --maximum-kas KAS
+sompi-agent vault-protection-change-status VAULT_MIGRATION_ID
 sompi-agent transfer --request-key TASK_KEY --to KASPATEST_ADDRESS --amount-kas KAS
 sompi-agent transfer-status TRANSFER_ID
 sompi-agent transfer-recover TRANSFER_ID
@@ -81,6 +87,34 @@ For balance, address, limits, deposit status, or recent-activity questions, use 
 - `securing.summary`: whether a deposit is detected, moving, complete, or needs attention.
 
 Do not call these balances “sompi” unless the user asks for atomic units. Do not expose the internal vault address unless the user explicitly asks for security details. Do not inspect keys, credential files, the Journal, or the node directly.
+
+If the user explicitly asks for vault, covenant, DAA, atomic-unit, or allowlist details, run `sompi-agent wallet-technical`. Do not use that command for an ordinary balance, address, limits, deposit, or activity question.
+
+## Spending Limits
+
+When the user asks to change the maximum per payment or maximum per hour, confirm both values in tKAS/KAS and run:
+
+```sh
+sompi-agent change-limits --request-key TASK_KEY --per-payment-kas KAS --per-hour-kas KAS
+```
+
+Sompi sends the exact old and new limits to the trusted approval chat. Wait for the result. If approved, the new limits apply only to new work. Every payment still requires its own approval. Never invent or mention an approval threshold.
+
+Use `limit-change-status` or `limit-change-recover` only for the same returned Policy Change ID. Never create another request key to bypass a denial, expiry, conflict, or recovery state.
+
+## Vault Protection
+
+Vault protection is the stronger on-chain maximum. When the user asks to change it, confirm the new tKAS/KAS maximum and run:
+
+```sh
+sompi-agent change-vault-protection --request-key TASK_KEY --maximum-kas KAS
+```
+
+The trusted chat approves only the exact plan. It does not provide the offline owner signature. After approval, tell the user that the operator must finish the protected update locally using the returned Vault Migration ID. Never request, read, transmit, or accept the owner key. The receive address remains unchanged before, during, and after the update.
+
+Vault protection cannot be lower than the everyday hourly limit. If Sompi
+rejects the requested maximum for that reason, propose and approve the lower
+everyday limits first, then create one new vault-protection request.
 
 ## Direct KAS Transfer
 

@@ -13,7 +13,8 @@ secrets. Set the OS user, Telegram IDs, trusted TN10 node, Merchant allow rules,
 and spending limits, then preview it:
 
 ```bash
-npm exec --yes --package=@elldeeone/sompi@0.10.0 -- \
+npm exec --yes --allow-scripts=better-sqlite3@12.11.1 \
+  --package=@elldeeone/sompi@0.10.0 -- \
   sompi-operator bootstrap-preview REQUEST.json
 ```
 
@@ -107,11 +108,46 @@ receive `SOMPI_OPERATOR_MANIFEST`, Authority, wallet, policy, Merchant, node,
 receipt, or finality configuration. The trusted API runtime receives the
 operator manifest and distinct Authority deployment locators separately.
 
+## Change vault protection
+
+Ordinary spending limits change through the trusted approval chat. Vault
+protection is stronger: it is enforced by the funded SilverScript vault and
+therefore requires an owner-signed replacement.
+
+1. The user asks the Agent for the new protection maximum.
+2. The Agent runs `sompi-agent change-vault-protection` and the trusted chat
+   approves or denies the exact old and new limits.
+   Vault protection cannot be lower than the active everyday hourly limit;
+   lower everyday limits first when necessary.
+3. After approval, copy only the returned Vault Migration ID to a local
+   operator terminal. Never put the owner key in chat or an Agent session.
+4. Run the owner step locally with the normal Sompi runtime environment:
+
+   ```bash
+   sompi-operator vault-migrate execute VAULT_MIGRATION_ID /root/sompi-owner-key
+   ```
+
+5. If the command reports an uncertain chain outcome, do not start a second
+   migration. Reconcile the same ID:
+
+   ```bash
+   sompi-operator vault-migrate recover VAULT_MIGRATION_ID /root/sompi-owner-key
+   ```
+
+Sompi pauses outward vault work during replacement, carries the current rolling
+spend forward, and resumes only after the Journal and chain evidence agree. The
+user keeps the same receive address. Internal old/new vault addresses are
+technical evidence, not new deposit addresses.
+
 ## Static drift and recovery
 
 The Journal binds the exact manifest revision/digest before work. Runtime also
-re-derives the vault address and static configuration digest at every start.
-Never replace a funded vault's owner key, Agent key, cap, window, template, or
-initial address. If any static fact must change, use the offline owner recovery
-path, create a fresh runtime/manifest target, and fund it only after the full
-provisioning and status ceremony passes.
+re-derives the vault identity and verifies every applied migration in order at
+each start. Use the guided flow above for protection-limit changes. Never edit
+vault files, policy snapshots, or the Operator Manifest by hand, and never
+replace a funded vault's owner key, Agent key, window, template, or receive
+identity in place.
+
+`sompi-operator status` verifies the initial installed manifest boundary. Read
+an in-progress or completed protection change with
+`sompi-agent vault-protection-change-status VAULT_MIGRATION_ID`.

@@ -32,11 +32,12 @@ import {
   startTelegramCallbackServer,
   type RunningTelegramCallbackServer,
 } from "./telegram-authority.js";
+import { AuthorityPromptAdmission } from "./prompt-admission.js";
 import {
-  TransferAuthorityDecisionStore,
-  TransferAuthorityService,
-  isTransferAuthorityRequestWire,
-} from "../transfer/authority.js";
+  OwnerAuthorityDecisionStore,
+  OwnerAuthorityService,
+  isOwnerAuthorityRequestWire,
+} from "./owner-authority.js";
 
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
@@ -335,19 +336,21 @@ export async function startAuthorityRuntime(
     instrumentId: identity.instrumentId,
     prompt,
   });
+  const promptAdmission = new AuthorityPromptAdmission(access.admission.authorityPrompts);
   const service = new AuthorityService({
     replayStore: replay,
     decisionStore: decisions,
     authenticationProvider: authentication,
     humanDecision,
-    ...(access.admission ? { admission: { authorityPrompts: access.admission.authorityPrompts } } : {}),
+    promptAdmission,
   });
-  const transferDecisions = new TransferAuthorityDecisionStore(`${paths.decisionDatabase}.transfers`);
-  const transferService = new TransferAuthorityService({
+  const ownerDecisions = new OwnerAuthorityDecisionStore(`${paths.decisionDatabase}.owner`);
+  const ownerService = new OwnerAuthorityService({
     authenticationProvider: authentication,
     signer,
     prompt,
-    decisions: transferDecisions,
+    decisions: ownerDecisions,
+    promptAdmission,
   });
   const server = new AuthorityUnixDecisionServer({
     socketPath: paths.socket,
@@ -357,8 +360,8 @@ export async function startAuthorityRuntime(
       : { socketGroupId: access.socketGroupId }),
     ...(access.admission ? { admission: access.admission } : {}),
     endpoint: new AuthorityDecisionEndpoint({
-      handleDecision: (wire, signal) => isTransferAuthorityRequestWire(wire)
-        ? transferService.handleDecision(wire, signal)
+      handleDecision: (wire, signal) => isOwnerAuthorityRequestWire(wire)
+        ? ownerService.handleDecision(wire, signal)
         : service.handleDecision(wire, signal),
     }),
   });
@@ -371,7 +374,7 @@ export async function startAuthorityRuntime(
     telegramStore?.close();
     replay.close();
     decisions.close();
-    transferDecisions.close();
+    ownerDecisions.close();
     throw error;
   }
   let closed = false;
@@ -388,7 +391,7 @@ export async function startAuthorityRuntime(
       telegramStore?.close();
       replay.close();
       decisions.close();
-      transferDecisions.close();
+      ownerDecisions.close();
     },
   });
 }

@@ -125,9 +125,14 @@ export interface TreasuryOperationJournal {
   installPolicy(definition: {
     readonly maxPerPaymentAtomic: string;
     readonly maxPerHourAtomic: string;
-    readonly approvalAboveAtomic: string;
     readonly allowlist: readonly string[];
   }): { readonly digest: string };
+  requirePolicy(digest: string): Readonly<{
+    digest: string;
+    maxPerPaymentAtomic: string;
+    maxPerHourAtomic: string;
+    allowlist: readonly string[];
+  }>;
   preflightTreasuryOperation(input: TreasuryOperationPreflight): void;
   claimTreasuryOperationIntent(input: TreasuryOperationIntent): TreasuryOperationRecord;
   claimTreasuryOperationDriver(

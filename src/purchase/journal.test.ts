@@ -307,7 +307,6 @@ test("security decisions rehash evidence and require the exact verifier profile 
     const policy = journal.installPolicy({
       maxPerPaymentAtomic: "100",
       maxPerHourAtomic: "500",
-      approvalAboveAtomic: "50",
       allowlist: ["kaspatest:merchant"],
     });
     const wrongProfilePurchase = authorizedPurchase(journal, 60);
@@ -375,13 +374,11 @@ test("policy is one persisted snapshot and approval evidence is bound to the Pur
     const policyA = journal.installPolicy({
       maxPerPaymentAtomic: "100",
       maxPerHourAtomic: "150",
-      approvalAboveAtomic: "50",
       allowlist: ["kaspatest:merchant"],
     });
     assert.equal(journal.installPolicy({
       maxPerPaymentAtomic: "100",
       maxPerHourAtomic: "150",
-      approvalAboveAtomic: "50",
       allowlist: ["kaspatest:merchant"],
     }).digest, policyA.digest);
 
@@ -403,7 +400,6 @@ test("policy is one persisted snapshot and approval evidence is bound to the Pur
     const policyB = journal.installPolicy({
       maxPerPaymentAtomic: "200",
       maxPerHourAtomic: "200",
-      approvalAboveAtomic: "200",
       allowlist: ["kaspatest:merchant"],
     });
     assert.notEqual(policyB.digest, policyA.digest);
@@ -416,10 +412,10 @@ test("policy is one persisted snapshot and approval evidence is bound to the Pur
   });
 });
 
-test("approval threshold zero retains the existing disabled-threshold semantics", () => {
+test("every Purchase reservation requires independently verified owner approval", () => {
   withJournal(({ journal, clock }) => {
     const purchase = authorizedPurchase(journal, 63);
-    const policy = installPolicy(journal, { approvalAboveAtomic: "0" });
+    const policy = installPolicy(journal, {});
     assert.equal(reserve(journal, purchase, policy, "threshold-disabled", clock.value).state, "active");
   });
 });
@@ -589,7 +585,6 @@ test("treasury staging is durable, idempotent, and gates exact payment preparati
     restarted.installPolicy({
       maxPerPaymentAtomic: "2000",
       maxPerHourAtomic: "20000",
-      approvalAboveAtomic: "2000",
       allowlist: ["kaspatest:merchant"],
     });
 
@@ -670,6 +665,45 @@ test("treasury staging rejects output substitutions and records one immutable ob
       () => journal.recordObservedTreasuryStaging(claim.lease, { ...input, outpoint: `${input.transactionId}:9` }),
       JournalInvariantError
     );
+  });
+});
+
+test("Vault Migration cannot begin while a prepared Purchase effect can still spend the vault", () => {
+  withJournal(({ journal, clock }) => {
+    installPolicy(journal);
+    plannedTreasuryStagingFlow(journal, 94, clock.value);
+    const activation = journal.requireActivePolicyActivation();
+    const id = "vmg_AAAAAAAAAAAAAAAAAAAAAA";
+    journal.createVaultMigration({
+      id,
+      requestKey: "vault:migration:prepared-purchase",
+      oldVaultDigest: evidenceDigest("old-vault"),
+      expectedPolicyDigest: activation.policy.digest,
+      expectedPolicyGeneration: activation.activationGeneration,
+      oldMaximumOutflowAtomic: "10000",
+      newMaximumOutflowAtomic: "20000",
+      windowSizeDaa: "36000",
+      windowStartDaa: "0",
+      spentInWindowAtomic: "0",
+      stableReceiveAddress: "kaspatest:qq2n2shqkghczyel57af242ffs50x5uj07w7ezg7kwm8frwt5xhljqa3d68et",
+      manifestRevision: 1,
+      manifestDigest: evidenceDigest("manifest"),
+      expiresAtMs: clock.value + 120_000,
+    });
+    journal.markVaultMigrationAwaitingAuthority(id);
+    const evidence = Buffer.from("approved migration", "utf8");
+    journal.decideVaultMigration(id, {
+      decision: "approved",
+      authorityId: "owner",
+      evidenceDigest: evidenceDigest(evidence),
+      evidence,
+    });
+
+    assert.throws(
+      () => journal.assertVaultMigrationExecutionReady(id),
+      /wait for every unresolved wallet effect/,
+    );
+    assert.equal(journal.vaultMigration(id).state, "awaiting_owner");
   });
 });
 
@@ -1466,12 +1500,11 @@ function authorizedPurchase(journal: PurchaseJournal, seed: number, amountAtomic
 
 function installPolicy(
   journal: PurchaseJournal,
-  overrides: Partial<{ maxPerPaymentAtomic: string; maxPerHourAtomic: string; approvalAboveAtomic: string }> = {}
+  overrides: Partial<{ maxPerPaymentAtomic: string; maxPerHourAtomic: string;}> = {}
 ): PolicySnapshotRecord {
   return journal.installPolicy({
     maxPerPaymentAtomic: overrides.maxPerPaymentAtomic ?? "1000",
     maxPerHourAtomic: overrides.maxPerHourAtomic ?? "10000",
-    approvalAboveAtomic: overrides.approvalAboveAtomic ?? "1000",
     allowlist: ["kaspatest:merchant"],
   });
 }

@@ -24,6 +24,12 @@ test("Arazzo 1.1 workflow validates against the pinned schema and canonical Open
   const document = sompiArazzoDocument("0.8.1") as any;
   validateSompiArazzoDocument(document, sompiOpenApiDocument("0.8.1"));
   assert.equal(document.arazzo, "1.1.0");
+  assert.deepEqual(document.workflows.map((workflow: any) => workflow.workflowId), [
+    "recoverInterruptedPurchase",
+    "recoverInterruptedTransfer",
+    "changeEverydaySpendingLimits",
+    "changeVaultProtection",
+  ]);
   assert.match(SOMPI_ARAZZO_SCHEMA_SHA256, /^[a-f0-9]{64}$/);
   assert.deepEqual(
     document.workflows[0].steps.map((step: any) => step.operationId),
@@ -68,10 +74,16 @@ test("Arazzo recovery scenario runs create, status, recover, and terminal receip
       return view("receipted", [RECEIPT_DIGEST]);
     },
     async wallet() { throw new Error("unused"); },
+    async walletTechnical() { throw new Error("unused"); },
     async activity() { return []; },
     async transfer() { throw new Error("unused"); },
     async transferStatus() { throw new Error("unused"); },
     async transferRecover() { throw new Error("unused"); },
+    async changePolicy() { throw new Error("unused"); },
+    async policyChangeStatus() { throw new Error("unused"); },
+    async policyChangeRecover() { throw new Error("unused"); },
+    async vaultMigration() { throw new Error("unused"); },
+    async vaultMigrationStatus() { throw new Error("unused"); },
   };
   const credential = generateAgentApiCredential();
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-arazzo-api-"));

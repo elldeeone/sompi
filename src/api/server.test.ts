@@ -78,6 +78,35 @@ test("canonical wallet and Transfer routes stay authenticated and recovery-scope
   }
 });
 
+test("wallet details, limit changes, and vault protection use the same authenticated API", async () => {
+  const credential = generateAgentApiCredential();
+  const calls: string[] = [];
+  const application = fakeApplication({
+    async walletTechnical() { calls.push("walletTechnical"); return fakeWalletTechnical(); },
+    async changePolicy() { calls.push("changePolicy"); return fakePolicyChange(); },
+    async policyChangeStatus() { calls.push("policyChangeStatus"); return fakePolicyChange(); },
+    async policyChangeRecover() { calls.push("policyChangeRecover"); return fakePolicyChange(); },
+    async vaultMigration() { calls.push("vaultMigration"); return fakeVaultMigration(); },
+    async vaultMigrationStatus() { calls.push("vaultMigrationStatus"); return fakeVaultMigration(); },
+  });
+  const running = await startTestServer({ application, credential });
+  try {
+    const auth = { authorization: `Bearer ${credential.token}` };
+    const json = { ...auth, "content-type": "application/json" };
+    assert.equal((await apiRequest(running.socketPath, "GET", "/wallet/technical", auth)).status, 200);
+    assert.equal((await apiRequest(running.socketPath, "POST", "/policy-changes", json,
+      JSON.stringify({ requestKey: "limits:one", maximumPerPaymentKas: "1", maximumPerHourKas: "2" }))).status, 200);
+    assert.equal((await apiRequest(running.socketPath, "GET", `/policy-changes/${fakePolicyChange().id}`, auth)).status, 200);
+    assert.equal((await apiRequest(running.socketPath, "POST", `/policy-changes/${fakePolicyChange().id}/recover`, auth)).status, 200);
+    assert.equal((await apiRequest(running.socketPath, "POST", "/vault-migrations", json,
+      JSON.stringify({ requestKey: "vault:one", vaultProtectionMaximumKas: "10" }))).status, 200);
+    assert.equal((await apiRequest(running.socketPath, "GET", `/vault-migrations/${fakeVaultMigration().id}`, auth)).status, 200);
+    assert.deepEqual(calls, ["walletTechnical", "changePolicy", "policyChangeStatus", "policyChangeRecover", "vaultMigration", "vaultMigrationStatus"]);
+  } finally {
+    await running.close();
+  }
+});
+
 test("API startup refuses an unprovisioned socket directory without changing its permissions", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-api-unprovisioned-"));
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
@@ -311,10 +340,16 @@ function fakeApplication(overrides: Partial<SompiApplication> = {}): SompiApplic
   return {
     async purchase() { return fakeView(); }, async status() { return fakeView(); }, async recover() { return fakeView(); },
     async wallet() { throw new Error("unused"); },
+    async walletTechnical() { throw new Error("unused"); },
     async activity() { return []; },
     async transfer() { throw new Error("unused"); },
     async transferStatus() { throw new Error("unused"); },
     async transferRecover() { throw new Error("unused"); },
+    async changePolicy() { throw new Error("unused"); },
+    async policyChangeStatus() { throw new Error("unused"); },
+    async policyChangeRecover() { throw new Error("unused"); },
+    async vaultMigration() { throw new Error("unused"); },
+    async vaultMigrationStatus() { throw new Error("unused"); },
     ...overrides,
   };
 }
@@ -348,12 +383,23 @@ function fakeWallet(): WalletView {
   return {
     network: "kaspa:testnet-10", asset: "KAS",
     receive: { address: ADDRESS, qrPayload: ADDRESS, networkLabel: "Kaspa Testnet-10", warning: "Testnet funds only — do not send mainnet KAS." },
-    balance: { total: amount("10000"), available: amount("10000"), incoming: amount("0"), protected: amount("10000"), pending: amount("0"), provenance: "operator-node-and-local-vault-lineage", observedAt: "2030-01-01T00:00:00.000Z" },
+    balance: { total: amount("10000"), available: amount("10000"), incoming: amount("0"), pending: amount("0"), provenance: "operator-node-and-local-vault-lineage", observedAt: "2030-01-01T00:00:00.000Z" },
     securing: { automatic: true, state: "idle", summary: "No incoming funds are waiting to be secured.", userAction: "none", minimumAmount: amount("101") },
-    limits: { perTransfer: amount("1000"), perHour: amount("5000"), approvalThreshold: amount("1"), allowlist: [], vaultWindow: { maximumOutflow: amount("5000"), spent: amount("0"), sizeDaa: "100" } },
-    security: { vaultAddress: ADDRESS },
+    spendingProtection: { maximumPerPayment: amount("1000"), maximumPerHour: amount("5000"), everyPaymentRequiresApproval: true, vaultProtection: { maximumPerWindow: amount("5000"), remainingInWindow: amount("5000"), window: "approximately 1 hour", summary: "Protected." } },
     chainStatus: "observed",
   };
+}
+
+function fakeWalletTechnical() {
+  return { receiveAddress: ADDRESS, activeVault: { address: ADDRESS, maximumOutflowAtomic: "1000000000", windowSizeDaa: "36000", windowStartDaa: "0", spentInWindowAtomic: "0" }, allowlist: [] } as const;
+}
+
+function fakePolicyChange() {
+  return { id: "pcg_0123456789ABCDEFGHIJKL", requestKey: "limits:one", state: "applied", summary: "Spending limits updated. Every payment still requires your approval.", previous: { maximumPerPayment: amount("1000"), maximumPerHour: amount("5000") }, proposed: { maximumPerPayment: amount("2000"), maximumPerHour: amount("6000") }, vaultProtectionMaximum: amount("10000"), everyPaymentRequiresApproval: true, expiresAt: "2030-01-01T00:00:00.000Z", appliedPolicyDigest: `sha256:${"F".repeat(43)}`, appliedPolicyVersion: 2 } as const;
+}
+
+function fakeVaultMigration() {
+  return { id: "vmg_0123456789ABCDEFGHIJKL", requestKey: "vault:one", state: "awaiting_owner", summary: "Vault protection change approved. Finish it with the offline owner key.", userAction: "Ask the operator to finish the protected vault update locally.", previousVaultProtectionMaximum: amount("10000"), proposedVaultProtectionMaximum: amount("20000"), receiveAddressUnchanged: true, requiresOfflineOwnerKey: true, expiresAt: "2030-01-01T00:00:00.000Z" } as const;
 }
 
 function amount(atomic: string) {

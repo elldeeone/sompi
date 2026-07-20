@@ -280,7 +280,6 @@ export async function runLocalTestnetProof(
       maxSompiPerTx: 100_000_000n,
       maxSompiPerHour: 500_000_000n,
       allowlist: [],
-      requireApprovalAboveSompi: 0n,
     });
     let faultInjected = false;
     let journal = new PurchaseJournal(journalFilename, {
@@ -597,7 +596,6 @@ function composeCoordinator(input: {
     policy: {
       maxPerPaymentAtomic: "100000000",
       maxPerHourAtomic: "500000000",
-      approvalAboveAtomic: "0",
       allowlist: [PAY_TO],
     },
     additionalCostCeilingAtomic: ADDITIONAL_COST_CEILING_ATOMIC,
@@ -687,10 +685,16 @@ function purchaseProofApplication(application: PurchaseApplication): SompiApplic
   return Object.freeze({
     ...application,
     wallet: unavailable,
+    walletTechnical: unavailable,
     activity: async () => [],
     transfer: unavailable,
     transferStatus: unavailable,
     transferRecover: unavailable,
+    changePolicy: unavailable,
+    policyChangeStatus: unavailable,
+    policyChangeRecover: unavailable,
+    vaultMigration: unavailable,
+    vaultMigrationStatus: unavailable,
   });
 }
 

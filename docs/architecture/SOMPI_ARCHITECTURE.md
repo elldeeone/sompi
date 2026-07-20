@@ -22,6 +22,9 @@ Agent skill / sompi-agent / MCP compatibility
              Chain Evidence
 
 stable receive address -> Funding Intake -> Treasury -> SilverScript vault
+
+Agent proposal -> Policy Change module -> Trusted Authority -> policy revision
+Operator owner signature -> Vault Migration module -> replacement vault
 ```
 
 API, CLI, skill, and MCP do not own purchasing or transfer behavior. They
@@ -72,6 +75,33 @@ idempotent vault deposit through the existing Treasury and Chain Evidence
 modules. Its public interface is reconcile and status; UTXO selection,
 idempotency, fee thresholds, execution serialization, and recovery stay inside
 the implementation. A read-only Wallet View never triggers this mutation.
+
+### Policy Change module
+
+Owns proposal idempotency, exact before/after facts, owner decision evidence,
+generation-and-vault-bound compare-and-swap activation, immutable policy
+revisions, restart recovery, and the public change view. Existing operations
+retain their original policy snapshot. The Agent interface can propose but
+cannot activate a change.
+
+### Vault Migration module
+
+Owns the durable protection-change state machine: outward-work fencing,
+window-accounting preservation, owner-signing handoff, old-vault recovery,
+replacement launch, Chain Evidence, atomic activation, resume, and receipt.
+The offline owner signer is an operator-only adapter at this seam.
+
+Policy activation and vault execution share one Journal protection-transition
+gate. Migration admission counts both direct Treasury operations and Purchase
+staging Effects, and a prepared vault spend rechecks the local migration fence
+before submission. Replacement launch requires independently accepted recovery
+evidence.
+
+### Wallet Experience module
+
+Projects the one-wallet user model used by every presentation adapter. It
+keeps vault addresses, DAA, atomic accounting, policy/manifest digests, and
+protocol profiles behind explicit technical details.
 
 ### Checkout Terms seam
 
@@ -152,7 +182,7 @@ The effect then executes outside the database transaction. Its result is
 observed and committed separately. A timeout or crash after possible submission
 enters reconciliation; it never grants permission to rebuild or resend.
 
-Journal epoch 16 is the only active schema.
+Journal epoch 18 is the only active schema.
 
 ## Exact payment
 
@@ -206,6 +236,13 @@ The canonical operations are:
 - `POST /transfers`
 - `GET /transfers/{transferId}`
 - `POST /transfers/{transferId}/recover`
+- `POST /policy-changes`
+- `GET /policy-changes/{policyChangeId}`
+- `POST /policy-changes/{policyChangeId}/recover`
+- `POST /vault-migrations`
+- `GET /vault-migrations/{vaultMigrationId}`
+
+The operator-only interface executes and recovers an approved Vault Migration.
 
 `sompi-agent` is the normal agent integration. The packaged skill instructs an
 agent to use only this CLI and to reuse stable request keys. MCP provides the

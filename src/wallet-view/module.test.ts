@@ -5,19 +5,30 @@ import { WalletViewModule } from "./module.js";
 
 const ADDRESS = "kaspatest:qq2n2shqkghczyel57af242ffs50x5uj07w7ezg7kwm8frwt5xhljqa3d68et";
 
-test("Wallet View reports authoritative vault balance, reservations, and policy limits", async () => {
+test("Wallet View presents one address, one balance, and simple spending protection", async () => {
   const module = fixture();
   const view = await module.wallet();
   assert.equal(view.network, "kaspa:testnet-10");
   assert.equal(view.receive.address, ADDRESS);
   assert.equal(view.balance.total.display, "0.000053 tKAS");
-  assert.equal(view.balance.protected.atomic, "5000");
   assert.equal(view.balance.incoming.atomic, "300");
   assert.equal(view.balance.pending.atomic, "1200");
   assert.equal(view.balance.available.atomic, "3800");
-  assert.equal(view.limits.perTransfer.atomic, "2000");
+  assert.equal(view.spendingProtection.maximumPerPayment.atomic, "2000");
+  assert.equal(view.spendingProtection.everyPaymentRequiresApproval, true);
+  assert.equal(view.spendingProtection.vaultProtection.remainingInWindow.atomic, "9750");
+  assert.equal("security" in view, false);
   assert.equal(view.securing.state, "detected");
   assert.equal(view.chainStatus, "observed");
+});
+
+test("technical wallet details are available only through the explicit view", () => {
+  const module = fixture();
+  const details = module.technical();
+  assert.equal(details.receiveAddress, ADDRESS);
+  assert.equal(details.activeVault.address, ADDRESS);
+  assert.equal(details.activeVault.windowSizeDaa, "100");
+  assert.deepEqual(details.allowlist, [ADDRESS]);
 });
 
 test("Wallet View fails read-only balance closed and bounds merged activity", async () => {
@@ -54,7 +65,7 @@ function fixture(input: { unavailable?: boolean } = {}): WalletViewModule {
       }),
     } as any,
     treasury: { pendingCapacityUsed: () => 1200n, recent: () => [] } as any,
-    policy: { policy: { maxSompiPerTx: 2000n, maxSompiPerHour: 8000n, requireApprovalAboveSompi: 1n, allowlist: [ADDRESS] } } as any,
+    policy: { policy: { maxSompiPerTx: 2000n, maxSompiPerHour: 8000n,allowlist: [ADDRESS] } } as any,
     journal: {
       listTransfers: () => [{
         id: "trf_0123456789ABCDEFGHIJKL", requestKey: "send:one", state: "receipted",

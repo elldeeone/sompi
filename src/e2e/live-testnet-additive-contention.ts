@@ -788,7 +788,6 @@ function contentionStagingModule(
       maxSompiPerTx: BigInt(String(runPolicy.maxSompiPerTx)),
       maxSompiPerHour: BigInt(String(runPolicy.maxSompiPerHour)),
       allowlist: [...allowlist],
-      requireApprovalAboveSompi: 0n,
     }),
     adapters: [
       new WalletTreasuryOperationAdapter(initialized.treasuryWallet, chainEvidence, "accepted"),

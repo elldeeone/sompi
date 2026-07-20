@@ -80,6 +80,29 @@ existing durable vault-deposit Treasury lifecycle. It may narrow custody into
 the vault without human spend authorization, but cannot select an external
 recipient, create a Purchase or Transfer, or loosen policy.
 
+### Policy Change
+
+The stable lifecycle record for one owner-approved change to everyday spending
+limits. The Agent may propose it. The isolated Authority signs the exact
+before/after facts, and the Policy Change module activates one immutable
+Journal policy revision. It cannot change vault protection, keys, fee ceilings,
+allowlists, egress, Chain Evidence, admission, or recovery authority.
+
+### Vault Migration
+
+The operator-owned lifecycle for changing on-chain vault protection. It fences
+outward work, preserves rolling-window usage, requires the offline owner key,
+recovers the old vault, launches and observes the replacement, and keeps the
+stable receive address unchanged. Telegram approval authorizes the plan but is
+not the owner recovery signature.
+
+### Wallet Experience
+
+The KAS-first user projection shared by API, CLI, skill, MCP, Telegram,
+receipts, and errors. It presents one wallet, one stable receive address, one
+combined balance, everyday spending limits, approval requirements, actions,
+and advanced vault protection. Protocol and vault evidence stays technical.
+
 ### Trusted Authority
 
 A separate deterministic, non-agentic process. It displays and signs the exact
@@ -161,7 +184,7 @@ Ambiguous outcomes enter recovery. Recovery observes before retrying and never
 creates replacement payment authority. Fulfilment recovery reuses the same
 settled payment and request.
 
-Journal epoch 16 is the only active schema.
+Journal epoch 18 is the only active schema.
 
 ## Authorization facts
 

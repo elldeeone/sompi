@@ -52,6 +52,7 @@
     "host-bootstrap.example.json",
     "scripts/package.json",
     "scripts/prepare-package.mjs",
+    "scripts/install-runtime-package.mjs",
     "scripts/require-source-tree.mjs",
     "scripts/run-protocol-conformance.mjs",
     "scripts/vault-fixtures.json",

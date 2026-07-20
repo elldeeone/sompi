@@ -32,7 +32,13 @@ async function main(): Promise<void> {
     const listener = sompiApiListenerConfigFromEnv();
     const recoveryListener = sompiRecoveryApiListenerConfigFromEnv();
     runtime = createSompiPurchaseRuntime(purchaseRuntimeConfigFromEnv());
-    const application = createSompiApplication(runtime.purchase, runtime.transfer, runtime.walletView);
+    const application = createSompiApplication(
+      runtime.purchase,
+      runtime.transfer,
+      runtime.walletView,
+      runtime.policyChange,
+      runtime.vaultMigration,
+    );
     recoveryApi = await startSompiRecoveryApiServer({
       application,
       credential: recoveryListener.credential,

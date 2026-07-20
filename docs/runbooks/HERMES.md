@@ -1,7 +1,8 @@
 # Hermes integration
 
 Hermes calls the local Sompi API through `sompi-agent`. MCP is not required.
-Purchase approval stays in the separate `sompi-authority` process.
+Purchase, Transfer, and owner-limit approval stay in the separate
+`sompi-authority` process.
 
 ## Install
 
@@ -59,6 +60,10 @@ Then ask the agent to purchase an allowed test resource. Verify that:
 - a second tap is rejected as replay;
 - the agent cannot read the Authority key, bot token, wallet, or recovery
   credential.
+
+Also verify normal wallet questions, one direct Transfer, and one everyday-limit
+change. A vault-protection change should stop at the offline-owner handoff; the
+Hermes process must never receive that key or execute the replacement.
 
 ## Roll back
 

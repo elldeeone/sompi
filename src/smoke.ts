@@ -215,7 +215,6 @@ function policyVector(
     maxSompiPerTx: 100n,
     maxSompiPerHour: 1_000n,
     allowlist: [] as string[],
-    requireApprovalAboveSompi: 0n,
   };
   const policy = new PolicyEngine(configured);
   let denied = false;
@@ -232,7 +231,7 @@ function policyVector(
     remainedImmutable = error instanceof PolicyViolation;
   }
   check(
-    "operator policy is immutable for the process lifetime",
+    "active policy revisions are immutable snapshots",
     denied && remainedImmutable && policy.policy.maxSompiPerTx === 100n
   );
 }

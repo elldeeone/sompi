@@ -1,6 +1,6 @@
 # Sompi AP2 + Kaspa-x402 implementation plan
 
-Status: **Phases 0-14 verified**
+Status: **Phases 0-17 verified**
 
 Architecture: [`docs/architecture/SOMPI_ARCHITECTURE.md`](architecture/SOMPI_ARCHITECTURE.md)
 
@@ -751,6 +751,93 @@ automatically secured the existing receive-address deposit through transaction
 `6076b807a4dd9edd7bc9e37a8a5d82c115cccf3ec0aea168c6b923b1c51c29d0`,
 required no approval, and reported `10000.9490244 tKAS` available with nothing
 incoming or pending.
+
+## Phase 16: Owner-managed limits and one-wallet UX
+
+Purpose: let users manage everyday limits and vault protection without exposing
+operator, covenant, or protocol internals.
+
+- [x] Accept ADR-0021 and add Policy Change, Vault Migration, and Wallet
+  Experience to the domain model.
+- [x] Add durable owner-approved Policy Change proposal, decision, activation,
+  status, and recovery.
+- [x] Apply immutable policy revisions only to new work; preserve existing
+  operation snapshots and reject stale concurrent changes.
+- [x] Remove approval-threshold behavior and presentation from the clean-cutover
+  runtime.
+- [x] Add guided Vault Migration proposal, approval, owner-signing handoff,
+  execution fence, window preservation, Chain Evidence, activation, and receipt.
+- [x] Preserve the stable receive identity across vault replacement and keep
+  vault addresses technical-only.
+- [x] Replace normal Wallet View with the one-wallet Wallet Experience
+  projection and KAS-first plain-language receipts/errors.
+- [x] Add API, CLI, skill, MCP, OpenAPI, Arazzo, onboarding, and Telegram parity.
+- [x] Add full onboarding, limit-change, vault-migration, wallet, transfer,
+  Purchase, denial, restart, replay, ambiguity, and recovery journeys.
+- [x] Pass the complete clean-cutover release verifier and record current
+  acceptance evidence in `CURRENT_STATE.md`.
+
+Gate:
+
+- The Agent may propose but cannot approve or activate a policy or vault change.
+- Everyday limits change through one exact human-present Telegram decision.
+- Vault protection changes only after separate offline-owner execution.
+- A migration cannot reset rolling spend, duplicate an effect, or change the
+  stable receive address.
+- Ordinary users see one wallet/address/balance and no vault, DAA, sompi, or
+  protocol jargon unless they request technical details.
+
+Acceptance evidence (2026-07-20): 502 tests run, with 501 passing and one
+privileged ownership test skipped. Offline smoke, protocol conformance,
+OpenAPI/Arazzo validation, Hermes compatibility, deterministic local E2E,
+package/clean-consumer verification, production dependency audit, retained
+TN10 evidence, and all 12 vault fixtures against upstream SilverScript
+`26e3b9f94821b6fe47a2492755252ec4f995abb1` pass. The complete release
+verifier passes from a clean isolated copy of this exact working tree.
+
+## Phase 17: Security review remediation
+
+Purpose: close every validated finding from the owner-policy and vault-migration
+change set without preserving vulnerable compatibility paths.
+
+- [x] Make runtime installation scriptless and grant only one exact,
+  manifest-verified native rebuild capability with a behaviour probe.
+- [x] Replace mutable Telegram decision callbacks with separate opaque approval
+  and denial capabilities that are invalidated together.
+- [x] Apply one shared Authority prompt-admission budget to Purchase, Transfer,
+  Policy Change, and Vault Migration requests.
+- [x] Add a monotonic policy activation generation and bind policy changes to
+  the current vault protection digest.
+- [x] Bind vault migrations to the exact policy digest and activation
+  generation so separately approved changes cannot compose into an unsafe cap.
+- [x] Include prepared Purchase payment effects in the migration fence and
+  recheck the fence immediately before chain submission.
+- [x] Recover admitted Treasury operations against their immutable policy
+  snapshot instead of requiring that snapshot to remain globally active.
+- [x] Require independently accepted recovery evidence before activating a
+  replacement vault.
+- [x] Re-run the original exploit harnesses, focused regressions, the complete
+  test suite, protocol conformance, deterministic E2E, generated contract
+  checks, dependency audit, SilverScript fixtures, and clean release verifier.
+
+Gate:
+
+- Package installation cannot execute an unreviewed dependency lifecycle
+  script.
+- A denial callback cannot be converted into approval, and prompt limits cannot
+  be bypassed through a different Authority request type.
+- Replayed or separately approved protection changes cannot activate against a
+  different policy generation or vault protection state.
+- Migration cannot overtake a prepared or newly submitted payment effect.
+- Crash recovery neither strands admitted work nor activates a replacement
+  vault without accepted recovery evidence.
+
+Acceptance evidence (2026-07-20): 509 tests run, with 508 passing and one
+privileged ownership test skipped. The original exploit harnesses are closed;
+offline smoke, Kaspa-x402 alpha.8 conformance, generated OpenAPI/Arazzo checks,
+Hermes compatibility, deterministic local E2E, production dependency audit,
+all 12 SilverScript vault fixtures, and the clean isolated release verifier
+pass.
 
 ## Deferred tracks (not part of the alpha.8 clean cutover)
 

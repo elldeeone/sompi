@@ -665,7 +665,6 @@ function composeLiveCoordinator(input: {
     policy: {
       maxPerPaymentAtomic: "100000000",
       maxPerHourAtomic: "1000000000",
-      approvalAboveAtomic: "0",
       allowlist: [input.payTo],
     },
     additionalCostCeilingAtomic: LIVE_ADDITIONAL_COST_CEILING_ATOMIC,
@@ -1324,10 +1323,16 @@ function purchaseProofApplication(application: PurchaseApplication): SompiApplic
   return Object.freeze({
     ...application,
     wallet: unavailable,
+    walletTechnical: unavailable,
     activity: async () => [],
     transfer: unavailable,
     transferStatus: unavailable,
     transferRecover: unavailable,
+    changePolicy: unavailable,
+    policyChangeStatus: unavailable,
+    policyChangeRecover: unavailable,
+    vaultMigration: unavailable,
+    vaultMigrationStatus: unavailable,
   });
 }
 

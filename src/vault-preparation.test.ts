@@ -10,7 +10,12 @@ import {
 } from "./kaspa-wasm.js";
 import { buildRedeemScript } from "./vault/template.js";
 import { KaspaWallet } from "./wallet.js";
-import { VaultManager, VaultPreparationError, generateOwnerKey } from "./vault.js";
+import {
+  VaultManager,
+  VaultPreparationError,
+  generateOwnerKey,
+  vaultStaticConfigurationDigest,
+} from "./vault.js";
 
 test("vault staging is prepared, submitted, observed, and committed at separate durable edges", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-vault-prepared-"));
@@ -45,6 +50,7 @@ test("vault staging is prepared, submitted, observed, and committed at separate 
     )
   );
   let submitted: Transaction | undefined;
+  let submitCalls = 0;
   let failPoint: "wallet.client" | "getUtxosByAddresses" | "getFeeEstimate" | "getServerInfo" | undefined;
   (wallet as any).client = async () => ({
     getUtxosByAddresses: async (addresses: string[]) => {
@@ -111,6 +117,7 @@ test("vault staging is prepared, submitted, observed, and committed at separate 
         : [],
     }),
     submitTransaction: async ({ transaction }: { transaction: Transaction }) => {
+      submitCalls += 1;
       submitted?.free();
       submitted = new Transaction(transaction);
       return { transactionId: String(submitted.finalize()) };
@@ -159,6 +166,15 @@ test("vault staging is prepared, submitted, observed, and committed at separate 
     assert.equal(prepared.amountSompi, 70_000_000n);
     assert.equal(prepared.transaction.includes(agentPrivate), false);
     assert.equal((await vault.submitPreparedSend(wallet, prepared)).transactionId, prepared.transactionId);
+    const migrationId = "vmg_AAAAAAAAAAAAAAAAAAAAAA";
+    const oldVaultDigest = vaultStaticConfigurationDigest(vault.config());
+    vault.beginMigration(migrationId, oldVaultDigest);
+    await assert.rejects(
+      vault.submitPreparedSend(wallet, prepared),
+      /vault protection update is in progress/,
+    );
+    assert.equal(submitCalls, 1, "a prepared spend must not cross an active migration fence");
+    vault.finishMigration(migrationId, oldVaultDigest);
     assert.equal(vault.config().currentOutpoint?.txid, fundingTxid);
     const observed = {
       transactionId: prepared.transactionId,

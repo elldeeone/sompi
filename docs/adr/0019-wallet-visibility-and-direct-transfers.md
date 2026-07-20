@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-07-19
 - Amends: ADR-0002, ADR-0003, ADR-0005, ADR-0007, and ADR-0015
+- Amended by: ADR-0021 (every Transfer requires exact human-present approval)
 
 ## Context
 
@@ -53,8 +54,8 @@ An ambiguous submission remains recoverable and never creates replacement
 authority. The Transfer module calls the existing `vault_send` Treasury
 adapter. The SilverScript continuation, operator hard limits, fee ceiling,
 Chain Evidence floor, and Journal-first effect rules remain authoritative.
-An exact approved Transfer satisfies the manifest's human-approval threshold;
-the Journal binds that approval evidence to the Treasury Movement. It never
+Every Transfer requires one exact human-present approval; the Journal binds
+that approval evidence to the Treasury Movement. It never
 bypasses the destination allowlist, per-transfer ceiling, rolling-hour ceiling,
 or fee ceiling.
 

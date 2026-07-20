@@ -341,8 +341,17 @@ function ensureReleasePackage(version: string, currentPackageRoot: string, runne
   const current = fs.realpathSync(path.resolve(currentPackageRoot));
   if (fs.existsSync(installedRoot) && fs.realpathSync(installedRoot) === current) return installedRoot;
   if (fs.existsSync(releasePrefix)) throw new HostBootstrapError("Sompi release target already exists but is not the running package");
-  fs.mkdirSync(INSTALL_ROOT, { recursive: true, mode: 0o755 });
-  runner.run("npm", ["install", "--prefix", releasePrefix, "--omit=dev", "--no-audit", "--no-fund", `${PACKAGE_NAME}@${version}`]);
+  fs.mkdirSync(releasePrefix, { recursive: true, mode: 0o755 });
+  fs.writeFileSync(path.join(releasePrefix, "package.json"), `${JSON.stringify({
+    private: true,
+  })}\n`, { mode: 0o644 });
+  runner.run(process.execPath, [
+    path.join(currentPackageRoot, "scripts", "install-runtime-package.mjs"),
+    "--prefix", releasePrefix,
+    "--package", `${PACKAGE_NAME}@${version}`,
+    "--expected-version", version,
+    "--omit-dev",
+  ]);
   if (!fs.existsSync(installedRoot)) throw new HostBootstrapError("exact Sompi release was not installed");
   return installedRoot;
 }

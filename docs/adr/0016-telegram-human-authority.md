@@ -24,15 +24,21 @@ Operator Manifest and remains testnet-only.
 
 The isolated `sompi-authority` process:
 
-- creates and durably records a high-entropy, single-use callback capability
-  bound to the authenticated Authority request digest, exact Purchase facts,
-  expected Telegram user/chat, decision choices, and expiry;
+- creates and durably records independent high-entropy, single-use Approve and
+  Deny capabilities bound to the authenticated Authority request digest, exact
+  displayed facts, expected Telegram user/chat, one fixed decision, and expiry;
 - sends the complete deterministic approval display directly through the
   configured Telegram bot API;
 - signs approval or denial only after consuming a matching callback capability;
-- invalidates the capability before returning the signed decision;
+- atomically invalidates both capabilities before returning the decision;
 - fails closed on expiry, replay, mismatch, transport uncertainty, or restart
   state that cannot be reconciled.
+
+The callback wire carries only the opaque decision capability. It contains no
+relay-selected approval/denial field that can be rewritten. Purchase,
+Transfer, Policy Change, and Vault Migration prompts also acquire one shared
+Authority admission budget before any Telegram prompt is durably created or
+sent.
 
 A small external Hermes plugin handles only callback delivery. A generic
 gateway interaction hook passes an authorized Telegram callback to the plugin.
@@ -72,8 +78,9 @@ authorization.
 - The User can approve or deny a Purchase in the same Telegram conversation
   used with the agent.
 - The LLM and MCP remain unable to approve a Purchase.
-- A compromised or unavailable Hermes interaction adapter can deny service but
-  cannot manufacture an Authority capability.
+- A compromised or unavailable Hermes interaction adapter can deny service or
+  deliver the capability selected by the user, but cannot rewrite that
+  capability into the opposite decision or manufacture a new one.
 - Telegram account and bot operations become part of the initial testnet human-
   presence assumption; this is not hardware-backed or mainnet authorization.
 - The Authority needs a private bot-token file and a separate callback socket,

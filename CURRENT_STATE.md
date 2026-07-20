@@ -4,9 +4,12 @@ Last updated: **2026-07-20**
 
 ## Status
 
-The generic x402 Merchant cutover, near-automatic Hermes onboarding, wallet
-visibility, direct native-KAS Transfers, and the automatic funding-intake UX
-are published and deployed on Terah.
+The published `0.10.0` runtime on Terah includes the generic x402 Merchant
+cutover, Hermes onboarding, wallet visibility, direct native-KAS Transfers,
+and automatic funding intake. The current source tree is the epoch-18 clean
+cutover for owner-managed limits, one-wallet UX, and the completed security
+remediation. It is locally complete and verified, but not yet committed,
+published, or deployed.
 
 Sompi is an API-first local agent wallet and purchasing runtime:
 
@@ -16,8 +19,58 @@ Sompi is an API-first local agent wallet and purchasing runtime:
 - `sompi-authority` is the isolated human-present Authority;
 - `sompi-operator` provisions policy, vault, chain evidence, and credentials.
 
-Journal epoch 16 is the only active schema. It is a clean cutover with no
-epoch-15 reader.
+Journal epoch 18 is the only source-tree schema. It is a clean cutover with no
+reader for earlier epochs.
+
+## Owner-managed limits and vault protection
+
+- Everyday per-payment and hourly limits change through one durable Policy
+  Change and exact human-present approval. The new policy applies only to new
+  work; existing work keeps its original snapshot.
+- Every outgoing payment requires approval. The removed approval-threshold
+  model has no runtime, manifest, Journal, API, CLI, or agent surface.
+- Vault protection changes use a separate durable Vault Migration. Chat
+  approval records the exact plan; execution still requires the offline owner
+  key through `sompi-operator vault-migrate`.
+- Migration fences new vault effects, preserves current rolling-window spend,
+  records exact prepared transactions before submission, and reconciles
+  ambiguous outcomes without replacement broadcasts.
+- The public receive address is stable across internal vault replacement.
+  Internal vault addresses and atomic/DAA evidence are technical-only.
+- The API is canonical. `sompi-agent` and optional MCP tools remain thin
+  clients of the same Policy Change, Vault Migration, Wallet, Transfer, and
+  Purchase modules.
+
+Acceptance evidence: 513 tests run, with 512 passing and one root-only
+ownership test skipped. Offline smoke, Kaspa-x402 alpha.8 conformance,
+OpenAPI/Arazzo validation, Hermes callback tests, deterministic local E2E,
+package and clean-consumer verification, production dependency audit, retained
+TN10 evidence, and the complete release verifier pass. Current upstream
+SilverScript `26e3b9f94821b6fe47a2492755252ec4f995abb1` reproduces all 12 vault
+fixtures exactly.
+
+## Security remediation
+
+- Runtime packages install scriptlessly. The only native build capability is a
+  name-, version-, and lifecycle-command-bound rebuild of `better-sqlite3`,
+  followed by an actual SQLite behaviour probe.
+- Telegram approval and denial are separate opaque capabilities. Consuming one
+  atomically invalidates both, and Policy Change prompts share the same
+  Authority admission budget as Purchase and Transfer prompts.
+- Policy protection has a monotonic activation generation. Policy and vault
+  changes bind the exact generation and counterpart protection digest, so
+  A-B-A replay and separately approved unsafe compositions fail closed.
+- Vault Migration fences both direct Treasury operations and prepared Purchase
+  effects, then rechecks the fence immediately before submission.
+- Already admitted Treasury work remains recoverable against its immutable
+  policy snapshot, while replacement-vault activation requires independently
+  accepted recovery evidence.
+- Policy Change request keys are bound to both requested limits. Owner Authority
+  requests bind their durable creation and expiry times instead of assuming one
+  fixed approval lifetime.
+- A Vault Migration fence is removed only when the Journal proves owner
+  execution never began and the vault still matches the approved old digest;
+  expiry-boundary and restart recovery are both covered.
 
 ## Wallet and Transfer integration
 
@@ -33,7 +86,7 @@ epoch-15 reader.
 - The signed `sompi.transfer.1` decision binds the recipient, amount, source,
   fee and total ceilings, policy, manifest, expiry, finality, and Transfer ID.
 - The Journal links approved Transfer evidence to the exact Treasury Movement.
-  Approval may satisfy the approval threshold but cannot bypass the allowlist,
+  Owner approval cannot bypass the allowlist,
   per-transfer, rolling-hour, or fee ceilings.
 - The per-transfer ceiling applies to the exact recipient amount. The fee has a
   separate ceiling and amount plus fee consume rolling capacity. A read-only
@@ -41,11 +94,11 @@ epoch-15 reader.
   durable intent repeats the same check against current capacity.
 - API, CLI, MCP compatibility, OpenAPI, Arazzo, and the Hermes skill use the
   same Transfer and Wallet View interfaces.
-- The complete local suite passes 486 tests (485 pass, one privileged-only
+- The complete local suite passes 513 tests (512 pass, one privileged-only
   ownership test skipped) plus the offline smoke.
 
 Version `0.10.0` is published, tagged `v0.10.0`, and deployed on Terah from the
-byte-verified public registry package. It preserves epoch 16 while replacing
+byte-verified public registry package. That historical release uses epoch 16 and replaced
 the old wallet projection with one stable receive address, automatic inward
 securing, unified activity, and KAS-first public amounts.
 

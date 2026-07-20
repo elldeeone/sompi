@@ -309,6 +309,34 @@ export class SecureLocalStateDirectory {
     }
   }
 
+  /** Durably remove a validated Sompi-owned state file. */
+  removeFile(name: string): void {
+    const filename = this.filePath(name);
+    this.assertDirectoryUnchanged();
+    this.removeInterruptedTemporaryFiles(name);
+    const before = secureFileStat(filename, this.expectedUid, this.label);
+    const descriptor = fs.openSync(filename, fs.constants.O_RDONLY | noFollowFlag());
+    try {
+      const opened = fs.fstatSync(descriptor, { bigint: true });
+      assertSecureFile(opened, this.expectedUid, this.label);
+      if (!sameIdentity(before, opened)) {
+        throw new SecureLocalStateError(`${this.label} file changed while opening`);
+      }
+    } finally {
+      fs.closeSync(descriptor);
+    }
+    const current = secureFileStat(filename, this.expectedUid, this.label);
+    if (!sameIdentity(before, current)) {
+      throw new SecureLocalStateError(`${this.label} file changed before removal`);
+    }
+    fs.unlinkSync(filename);
+    this.fsyncDirectory();
+    this.assertDirectoryUnchanged();
+    if (pathExists(filename)) {
+      throw new SecureLocalStateError(`${this.label} file was not removed`);
+    }
+  }
+
   private filePath(name: string): string {
     const leaf = requireLeafName(name);
     const filename = path.join(this.directory, leaf);

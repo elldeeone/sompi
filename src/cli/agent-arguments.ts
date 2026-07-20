@@ -6,10 +6,16 @@ export const AGENT_USAGE = [
   "  sompi-agent status PURCHASE_ID",
   "  sompi-agent recover PURCHASE_ID",
   "  sompi-agent wallet",
+  "  sompi-agent wallet-technical",
   "  sompi-agent activity [--limit 1..100]",
   "  sompi-agent transfer --request-key KEY --to KASPATEST_ADDRESS (--amount-kas KAS | --amount-sompi SOMPI)",
   "  sompi-agent transfer-status TRANSFER_ID",
   "  sompi-agent transfer-recover TRANSFER_ID",
+  "  sompi-agent change-limits --request-key KEY --per-payment-kas KAS --per-hour-kas KAS",
+  "  sompi-agent limit-change-status POLICY_CHANGE_ID",
+  "  sompi-agent limit-change-recover POLICY_CHANGE_ID",
+  "  sompi-agent change-vault-protection --request-key KEY --maximum-kas KAS",
+  "  sompi-agent vault-protection-change-status VAULT_MIGRATION_ID",
   "  sompi-agent --help",
 ].join("\n");
 
@@ -28,6 +34,7 @@ export type AgentCliCommand =
   | Readonly<{ kind: "status"; purchaseId: string }>
   | Readonly<{ kind: "recover"; purchaseId: string }>
   | Readonly<{ kind: "wallet" }>
+  | Readonly<{ kind: "wallet-technical" }>
   | Readonly<{ kind: "activity"; limit: number }>
   | Readonly<{
       kind: "transfer";
@@ -37,7 +44,12 @@ export type AgentCliCommand =
       amountSompi?: string;
     }>
   | Readonly<{ kind: "transfer-status"; transferId: string }>
-  | Readonly<{ kind: "transfer-recover"; transferId: string }>;
+  | Readonly<{ kind: "transfer-recover"; transferId: string }>
+  | Readonly<{ kind: "change-limits"; requestKey: string; maximumPerPaymentKas: string; maximumPerHourKas: string }>
+  | Readonly<{ kind: "limit-change-status"; policyChangeId: string }>
+  | Readonly<{ kind: "limit-change-recover"; policyChangeId: string }>
+  | Readonly<{ kind: "change-vault-protection"; requestKey: string; vaultProtectionMaximumKas: string }>
+  | Readonly<{ kind: "vault-protection-change-status"; vaultMigrationId: string }>;
 
 export class AgentCliArgumentError extends Error {
   constructor(message: string) {
@@ -54,9 +66,9 @@ export function parseAgentArguments(args: readonly string[]): AgentCliCommand {
     if (args.length !== 2 || !args[1]) throw new AgentCliArgumentError(`${args[0]} requires one Purchase ID`);
     return Object.freeze({ kind: args[0], purchaseId: args[1] });
   }
-  if (args[0] === "wallet") {
+  if (args[0] === "wallet" || args[0] === "wallet-technical") {
     if (args.length !== 1) throw new AgentCliArgumentError("wallet does not accept arguments");
-    return Object.freeze({ kind: "wallet" });
+    return Object.freeze({ kind: args[0] });
   }
   if (args[0] === "activity") {
     if (args.length === 1) return Object.freeze({ kind: "activity", limit: 20 });
@@ -72,6 +84,21 @@ export function parseAgentArguments(args: readonly string[]): AgentCliCommand {
     return Object.freeze({ kind: args[0], transferId: args[1] });
   }
   if (args[0] === "transfer") return parseTransferArguments(args.slice(1));
+  if (args[0] === "limit-change-status" || args[0] === "limit-change-recover") {
+    if (args.length !== 2 || !/^pcg_[A-Za-z0-9_-]{22}$/.test(args[1] ?? "")) throw new AgentCliArgumentError("limit-change-status requires one Policy Change ID");
+    return Object.freeze({ kind: args[0], policyChangeId: args[1]! });
+  }
+  if (args[0] === "vault-protection-change-status") {
+    if (args.length !== 2 || !/^vmg_[A-Za-z0-9_-]{22}$/.test(args[1] ?? "")) throw new AgentCliArgumentError("vault-protection-change-status requires one Vault Migration ID");
+    return Object.freeze({ kind: "vault-protection-change-status", vaultMigrationId: args[1]! });
+  }
+  if (args[0] === "change-limits") return parseNamed(args.slice(1), "change-limits", ["--request-key", "--per-payment-kas", "--per-hour-kas"], (values) => ({
+    kind: "change-limits" as const, requestKey: values.get("--request-key")!,
+    maximumPerPaymentKas: values.get("--per-payment-kas")!, maximumPerHourKas: values.get("--per-hour-kas")!,
+  }));
+  if (args[0] === "change-vault-protection") return parseNamed(args.slice(1), "change-vault-protection", ["--request-key", "--maximum-kas"], (values) => ({
+    kind: "change-vault-protection" as const, requestKey: values.get("--request-key")!, vaultProtectionMaximumKas: values.get("--maximum-kas")!,
+  }));
   if (args[0] !== "purchase") throw new AgentCliArgumentError("unknown or missing command");
   const values = new Map<string, string>();
   const allowed = new Set([
@@ -104,6 +131,22 @@ export function parseAgentArguments(args: readonly string[]): AgentCliCommand {
     ...(values.has("--merchant-id") ? { merchantId: values.get("--merchant-id")! } : {}),
     ...(values.has("--merchant-origin") ? { merchantOrigin: values.get("--merchant-origin")! } : {}),
   });
+}
+
+function parseNamed<T extends AgentCliCommand>(
+  args: readonly string[], label: string, required: readonly string[], build: (values: Map<string, string>) => T,
+): T {
+  const values = new Map<string, string>();
+  if (args.length !== required.length * 2) throw new AgentCliArgumentError(`${label} requires ${required.join(", ")}`);
+  for (let index = 0; index < args.length; index += 2) {
+    const option = args[index]; const value = args[index + 1];
+    if (!option || !required.includes(option) || !value || value.startsWith("--") || values.has(option)) {
+      throw new AgentCliArgumentError(`${label} options are invalid`);
+    }
+    values.set(option, value);
+  }
+  if (required.some((name) => !values.has(name))) throw new AgentCliArgumentError(`${label} requires ${required.join(", ")}`);
+  return Object.freeze(build(values)) as T;
 }
 
 function parseTransferArguments(args: readonly string[]): AgentCliCommand {

@@ -15,6 +15,11 @@ import {
   assertWalletActivity,
   assertWalletView,
   assertPurchaseView,
+  assertPolicyChangeView,
+  assertVaultMigrationView,
+  assertWalletTechnicalView,
+  parsePolicyChangeCreateRequest,
+  parseVaultMigrationCreateRequest,
   parsePurchaseCreateRequest,
   parseTransferCreateRequest,
 } from "./contracts.js";
@@ -38,6 +43,8 @@ const DEFAULT_MAX_CONTROL_CONCURRENCY = 2;
 const DEFAULT_MAX_CONNECTIONS = 32;
 const PURCHASE_PATH = /^\/purchases\/(pur_[A-Za-z0-9_-]{22})(\/recover)?$/;
 const TRANSFER_PATH = /^\/transfers\/(trf_[A-Za-z0-9_-]{22})(\/recover)?$/;
+const POLICY_CHANGE_PATH = /^\/policy-changes\/(pcg_[A-Za-z0-9_-]{22})(\/recover)?$/;
+const VAULT_MIGRATION_PATH = /^\/vault-migrations\/(vmg_[A-Za-z0-9_-]{22})$/;
 const WALLET_ACTIVITY_PATH = /^\/wallet\/activity(?:\?limit=([1-9][0-9]{0,2}))?$/;
 
 export interface SompiApiServerOptions extends SompiApiSocketAccess {
@@ -252,9 +259,26 @@ async function routeRequest(
     const input = parseTransferCreateRequest(await readJsonBody(request, signal));
     return application.transfer(input, signal);
   }
+  if (audience === "agent" && method === "POST" && target === "/policy-changes") {
+    requireJson(request);
+    return application.changePolicy(
+      parsePolicyChangeCreateRequest(await readJsonBody(request, signal)),
+      signal,
+    );
+  }
+  if (audience === "agent" && method === "POST" && target === "/vault-migrations") {
+    requireJson(request);
+    return assertVaultMigrationView(await application.vaultMigration(
+      parseVaultMigrationCreateRequest(await readJsonBody(request, signal)), signal,
+    ));
+  }
   if (audience === "agent" && method === "GET" && target === "/wallet") {
     rejectBody(request);
     return application.wallet(signal);
+  }
+  if (audience === "agent" && method === "GET" && target === "/wallet/technical") {
+    rejectBody(request);
+    return assertWalletTechnicalView(await application.walletTechnical(signal));
   }
   const activity = WALLET_ACTIVITY_PATH.exec(target);
   if (audience === "agent" && method === "GET" && activity) {
@@ -277,16 +301,31 @@ async function routeRequest(
     rejectBody(request);
     return application.transferStatus(transferMatch[1], signal);
   }
+  const policyChangeMatch = POLICY_CHANGE_PATH.exec(target);
+  if (audience === "agent" && policyChangeMatch && method === "GET" && policyChangeMatch[2] === undefined) {
+    rejectBody(request);
+    return application.policyChangeStatus(policyChangeMatch[1], signal);
+  }
+  if (policyChangeMatch && method === "POST" && policyChangeMatch[2] === "/recover") {
+    rejectBody(request);
+    return application.policyChangeRecover(policyChangeMatch[1], signal);
+  }
+  const vaultMigrationMatch = VAULT_MIGRATION_PATH.exec(target);
+  if (audience === "agent" && vaultMigrationMatch && method === "GET") {
+    rejectBody(request);
+    return application.vaultMigrationStatus(vaultMigrationMatch[1], signal);
+  }
   if (transferMatch && method === "POST" && transferMatch[2] === "/recover") {
     rejectBody(request);
     return application.transferRecover(transferMatch[1], signal);
   }
   if (audience === "operator-recovery" && (
-    target === "/purchases" || target === "/transfers" || target === "/wallet" || target.startsWith("/wallet/activity")
+    target === "/purchases" || target === "/transfers" || target === "/policy-changes" || target === "/vault-migrations" ||
+    target === "/wallet" || target.startsWith("/wallet/activity")
   )) {
     throw new HttpBoundaryError(404, "NOT_FOUND", "The resource does not exist.", false);
   }
-  if (["/purchases", "/transfers", "/wallet", "/wallet/activity"].includes(target) || match || transferMatch || activity) {
+  if (["/purchases", "/transfers", "/policy-changes", "/vault-migrations", "/wallet", "/wallet/technical", "/wallet/activity"].includes(target) || match || transferMatch || policyChangeMatch || vaultMigrationMatch || activity) {
     throw new HttpBoundaryError(405, "METHOD_NOT_ALLOWED", "The method is not supported for this resource.", false);
   }
   throw new HttpBoundaryError(404, "NOT_FOUND", "The resource does not exist.", false);
@@ -344,7 +383,9 @@ async function raceWithSignal<T>(operation: Promise<T>, signal: AbortSignal): Pr
 }
 
 function isMutation(request: http.IncomingMessage): boolean {
-  return request.method === "POST" && (request.url === "/purchases" || request.url === "/transfers");
+  return request.method === "POST" && (
+    request.url === "/purchases" || request.url === "/transfers" || request.url === "/policy-changes" || request.url === "/vault-migrations"
+  );
 }
 
 function apiLane(maximum: number): {
@@ -367,6 +408,12 @@ function writeView(response: http.ServerResponse, value: unknown): void {
     ? assertWalletActivity(value)
     : isRecord(value) && value.id?.toString().startsWith("trf_")
       ? assertTransferView(value)
+      : isRecord(value) && value.id?.toString().startsWith("pcg_")
+        ? assertPolicyChangeView(value)
+      : isRecord(value) && value.id?.toString().startsWith("vmg_")
+        ? assertVaultMigrationView(value)
+      : isRecord(value) && value.receiveAddress !== undefined && value.activeVault !== undefined
+        ? assertWalletTechnicalView(value)
       : isRecord(value) && value.network === "kaspa:testnet-10" && value.balance !== undefined
         ? assertWalletView(value)
         : assertPurchaseView(value);

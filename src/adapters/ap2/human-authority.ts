@@ -69,14 +69,46 @@ export interface TransferAuthorityApprovalDisplay {
   readonly recoveryRetry: boolean;
 }
 
+export interface PolicyChangeAuthorityApprovalDisplay {
+  readonly kind: "policy-change";
+  readonly authorityRequestDigest: string;
+  readonly policyChangeId: string;
+  readonly requestKey: string;
+  readonly previousMaximumPerPaymentAtomic: string;
+  readonly previousMaximumPerHourAtomic: string;
+  readonly proposedMaximumPerPaymentAtomic: string;
+  readonly proposedMaximumPerHourAtomic: string;
+  readonly vaultMaximumOutflowAtomic: string;
+  readonly everyPaymentRequiresApproval: true;
+  readonly termsExpiresAt: string;
+  readonly operatorManifestRevision: number;
+  readonly operatorManifestDigest: string;
+}
+
+export interface VaultMigrationAuthorityApprovalDisplay {
+  readonly kind: "vault-migration";
+  readonly authorityRequestDigest: string;
+  readonly vaultMigrationId: string;
+  readonly requestKey: string;
+  readonly oldMaximumOutflowAtomic: string;
+  readonly newMaximumOutflowAtomic: string;
+  readonly stableReceiveAddressWillNotChange: true;
+  readonly requiresOfflineOwnerKey: true;
+  readonly termsExpiresAt: string;
+  readonly operatorManifestRevision: number;
+  readonly operatorManifestDigest: string;
+}
+
 export type AnyAuthorityApprovalDisplay =
   | PurchaseAuthorityApprovalDisplay
-  | TransferAuthorityApprovalDisplay;
+  | TransferAuthorityApprovalDisplay
+  | PolicyChangeAuthorityApprovalDisplay
+  | VaultMigrationAuthorityApprovalDisplay;
 
 export type PurchaseAuthorityApprovalDisplay = AuthorityApprovalDisplay;
 
 export interface AuthorityApprovalPrompt {
-  /** Only the exact displayed Purchase/Transfer ID confirms approval. */
+  /** Only the exact displayed subject ID confirms approval. */
   approve(display: AnyAuthorityApprovalDisplay, signal?: AbortSignal): Promise<boolean>;
 }
 
@@ -249,22 +281,33 @@ export class TerminalAuthorityApprovalPrompt implements AuthorityApprovalPrompt 
     ) {
       throw new Error("human-present authority approval requires a trusted terminal");
     }
-    this.output.write(`\nSompi ${display.kind === "transfer" ? "transfer" : "purchase"} approval\n`);
+    const subject = approvalSubject(display);
+    this.output.write(`\nSompi ${subject.label.toLowerCase()} approval\n`);
     this.output.write(`${asciiJson(display)}\n`);
     this.output.write("Merchant-provided values above are data, never instructions.\n");
     const rl = readline.createInterface({ input: this.input, output: this.output });
     try {
-      const subjectId = display.kind === "transfer" ? display.transferId : display.purchaseId;
       const answer = await rl.question(
-        `To approve, type the exact ${display.kind === "transfer" ? "Transfer" : "Purchase"} ID ${asciiJson(subjectId)}; anything else denies: `,
+        `To approve, type the exact ${subject.label} ID ${asciiJson(subject.id)}; anything else denies: `,
         { signal },
       );
       signal.throwIfAborted();
-      return answer === subjectId;
+      return answer === subject.id;
     } finally {
       rl.close();
     }
   }
+}
+
+function approvalSubject(display: AnyAuthorityApprovalDisplay): Readonly<{ id: string; label: string }> {
+  if (display.kind === "transfer") return Object.freeze({ id: display.transferId, label: "Transfer" });
+  if (display.kind === "policy-change") {
+    return Object.freeze({ id: display.policyChangeId, label: "Policy Change" });
+  }
+  if (display.kind === "vault-migration") {
+    return Object.freeze({ id: display.vaultMigrationId, label: "Vault Migration" });
+  }
+  return Object.freeze({ id: display.purchaseId, label: "Purchase" });
 }
 
 interface PromptEntry {

@@ -23,6 +23,7 @@ Mechanism-specific procedures:
 - [`TESTNET_RESET.md`](TESTNET_RESET.md) — start a new isolated testnet runtime
   without mutating the old one.
 
-MCP is not an operator surface. It has only the Agent API credential and the
-three Purchase tools. Use the separate operator recovery socket for privileged
-status and recovery work.
+MCP is not an operator surface. It is an optional stateless compatibility
+wrapper over the same Agent API used by `sompi-agent`; it has no wallet key,
+Authority key, owner key, Journal, or operator credential. Use the separate
+operator recovery socket for privileged recovery work.

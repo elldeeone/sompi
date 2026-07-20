@@ -1,3 +1,5 @@
+import * as path from "node:path";
+
 export const MCP_USAGE = [
   "usage: sompi-mcp [start]",
   "       sompi-mcp --help",
@@ -20,6 +22,7 @@ export const OPERATOR_USAGE = [
   "       sompi-operator agent-credential FILE OPERATOR_UID RUNTIME_GID",
   "       sompi-operator recovery-credential FILE OPERATOR_UID RECOVERY_GID",
   "       sompi-operator owner-key",
+  "       sompi-operator vault-migrate (execute|recover) VAULT_MIGRATION_ID OWNER_KEY_FILE",
   "       sompi-operator --help",
 ].join("\n");
 
@@ -44,6 +47,7 @@ export type OperatorCliCommand =
   | Readonly<{ kind: "agent-credential"; filename: string; operatorUid: number; runtimeGid: number }>
   | Readonly<{ kind: "recovery-credential"; filename: string; operatorUid: number; recoveryGid: number }>
   | Readonly<{ kind: "owner-key" }>
+  | Readonly<{ kind: "vault-migrate"; action: "execute" | "recover"; vaultMigrationId: string; ownerKeyFile: string }>
   | Readonly<{ kind: "help" }>;
 
 export class CliArgumentError extends Error {
@@ -93,6 +97,12 @@ export function parseOperatorArguments(args: readonly string[]): OperatorCliComm
   }
   if (args.length === 1 && (args[0] === "--help" || args[0] === "help")) return Object.freeze({ kind: "help" });
   if (args.length === 1 && args[0] === "owner-key") return Object.freeze({ kind: "owner-key" });
+  if (args.length === 4 && args[0] === "vault-migrate") {
+    if (args[1] !== "execute" && args[1] !== "recover") throw new CliArgumentError("vault-migrate action is invalid");
+    if (!/^vmg_[A-Za-z0-9_-]{22}$/.test(args[2])) throw new CliArgumentError("Vault Migration ID is invalid");
+    if (!path.isAbsolute(args[3]) || path.resolve(args[3]) !== args[3]) throw new CliArgumentError("owner key file must be a canonical absolute path");
+    return Object.freeze({ kind: "vault-migrate", action: args[1], vaultMigrationId: args[2], ownerKeyFile: args[3] });
+  }
   if (args.length === 2 && args[0] === "bootstrap-preview") return Object.freeze({ kind: "bootstrap-preview", request: args[1] });
   if (args.length === 3 && args[0] === "bootstrap") {
     if (!/^sha256:[A-Za-z0-9_-]{43}$/.test(args[2])) throw new CliArgumentError("host bootstrap digest is invalid");

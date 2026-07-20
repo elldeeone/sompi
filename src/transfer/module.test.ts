@@ -54,8 +54,8 @@ test("Transfer records approval before one exact vault Treasury movement and rec
   );
 });
 
-test("approved Transfer evidence satisfies only the approval threshold", async (t) => {
-  const fixture = setup(t, "approved", false, "1");
+test("approved Transfer evidence authorizes only its exact direct vault movement", async (t) => {
+  const fixture = setup(t, "approved", false);
   const transfer = await fixture.module.transfer({
     requestKey: "telegram:send:threshold",
     destination: ADDRESS,
@@ -197,7 +197,6 @@ function setup(
   t: TestContext,
   decision: "approved" | "denied" = "approved",
   failFirst = false,
-  approvalAboveAtomic = "0",
 ) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-transfer-"));
   fs.chmodSync(directory, 0o700);
@@ -211,7 +210,6 @@ function setup(
   const policyDigest = journal.installPolicy({
     maxPerPaymentAtomic: "1000000000",
     maxPerHourAtomic: "5000000000",
-    approvalAboveAtomic,
     allowlist: [],
   }).digest;
   const authority = new FakeAuthority(decision);

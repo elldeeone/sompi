@@ -13,7 +13,10 @@ fail() {
 mkdir -p /opt/sompi
 cd /opt/sompi
 npm init -y >/dev/null
-npm install --no-audit --no-fund /package.tgz >&2
+node /install-runtime-package.mjs \
+  --prefix /opt/sompi \
+  --package /package.tgz \
+  --expected-version 0.10.0 >&2
 
 package_root=/opt/sompi/node_modules/@elldeeone/sompi
 [[ -x /opt/sompi/node_modules/.bin/sompi-mcp ]] || fail "MCP bin is missing"

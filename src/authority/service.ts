@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 
 import type { Sha256Digest } from "../purchase/types.js";
 import type { AuthorityAuthenticationProvider } from "./key-provider.js";
+import {
+  AuthorityPromptAdmission,
+  AuthorityPromptAdmissionError,
+} from "./prompt-admission.js";
 import type {
   AuthorityDecisionStore,
   StoredAuthorityDecision,
@@ -90,6 +94,7 @@ export interface AuthorityServiceOptions {
   readonly faultInjector?: AuthorityServiceFaultInjector;
   /** Manifest projection in production; explicit values are used by hermetic tests. */
   readonly admission?: Readonly<{ authorityPrompts: number }>;
+  readonly promptAdmission?: AuthorityPromptAdmission;
   readonly maxHumanDecisionMs?: number;
 }
 
@@ -107,10 +112,9 @@ export class AuthorityService {
   private readonly now: () => number;
   private readonly responseTtlMs: number;
   private readonly leaseHeartbeatMs: number;
-  private readonly promptCapacity: number;
+  private readonly promptAdmission: AuthorityPromptAdmission;
   private readonly maxHumanDecisionMs: number;
   private readonly shutdownController = new AbortController();
-  private activePrompts = 0;
 
   constructor(private readonly options: AuthorityServiceOptions) {
     if (
@@ -125,7 +129,9 @@ export class AuthorityService {
     this.now = options.now ?? Date.now;
     this.responseTtlMs = options.responseTtlMs ?? 20_000;
     this.leaseHeartbeatMs = options.leaseHeartbeatMs ?? 5_000;
-    this.promptCapacity = requirePromptCapacity(options.admission?.authorityPrompts ?? 4);
+    this.promptAdmission = options.promptAdmission ?? new AuthorityPromptAdmission(
+      requirePromptCapacity(options.admission?.authorityPrompts ?? 4),
+    );
     this.maxHumanDecisionMs = requireHumanDecisionTimeout(options.maxHumanDecisionMs ?? 120_000);
     if (
       !Number.isSafeInteger(this.responseTtlMs) ||
@@ -148,11 +154,7 @@ export class AuthorityService {
   }
 
   admissionStatus(): Readonly<{ activePrompts: number; budget: number; saturated: boolean }> {
-    return Object.freeze({
-      activePrompts: this.activePrompts,
-      budget: this.promptCapacity,
-      saturated: this.activePrompts >= this.promptCapacity,
-    });
+    return this.promptAdmission.status();
   }
 
   async handleDecision(
@@ -164,10 +166,15 @@ export class AuthorityService {
         // Reserve the bounded human-work slot before parsing can acquire any
         // durable replay rows. A saturated authenticated flood therefore has
         // no durable replay side effect.
-        if (this.activePrompts >= this.promptCapacity) {
-          throw new AuthorityServiceError("busy");
+        let releasePrompt: (() => void) | undefined;
+        try {
+          releasePrompt = this.promptAdmission.acquire();
+        } catch (error) {
+          if (error instanceof AuthorityPromptAdmissionError) {
+            throw new AuthorityServiceError("busy");
+          }
+          throw error;
         }
-        this.activePrompts += 1;
         try {
           const request = parseAuthorityApprovalRequest(authenticatedRequestWire, {
             ...authentication,
@@ -229,7 +236,7 @@ export class AuthorityService {
           this.assertTransportActive(request, transportSignal);
           return decisionResponse(sealed, persisted);
         } finally {
-          this.activePrompts -= 1;
+          releasePrompt();
         }
       });
     } catch (error) {

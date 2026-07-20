@@ -29,7 +29,6 @@ test("Operator Manifest is exact, canonical, immutable, and projects one policy"
       maxSompiPerTx: 100_000_000n,
       maxSompiPerHour: 500_000_000n,
       allowlist: [],
-      requireApprovalAboveSompi: 0n,
     });
   } finally {
     fixture.close();
@@ -157,7 +156,6 @@ function buildManifestValue(
       maxSompiPerTx: "100000000",
       maxSompiPerHour: "500000000",
       allowlist: [],
-      requireApprovalAboveSompi: "0",
       additionalCostCeilingAtomic: "25000000",
       operationFeeCeilingAtomic: "25000000",
     },

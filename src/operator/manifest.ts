@@ -40,7 +40,6 @@ export interface OperatorManifest {
     maxSompiPerTx: string;
     maxSompiPerHour: string;
     allowlist: readonly string[];
-    requireApprovalAboveSompi: string;
     additionalCostCeilingAtomic: string;
     operationFeeCeilingAtomic: string;
   }>;
@@ -147,7 +146,6 @@ export function parseOperatorManifest(value: unknown): OperatorManifest {
     "maxSompiPerTx",
     "maxSompiPerHour",
     "allowlist",
-    "requireApprovalAboveSompi",
     "additionalCostCeilingAtomic",
     "operationFeeCeilingAtomic",
   ], "Operator Manifest treasury");
@@ -157,10 +155,6 @@ export function parseOperatorManifest(value: unknown): OperatorManifest {
     throw new OperatorManifestError("per-payment policy limit exceeds hourly policy limit");
   }
   const allowlist = stringList(treasury.allowlist, "Treasury allowlist", 256, 256);
-  const requireApprovalAboveSompi = atomic(
-    treasury.requireApprovalAboveSompi,
-    "approval threshold"
-  );
   const additionalCostCeilingAtomic = atomic(
     treasury.additionalCostCeilingAtomic,
     "Purchase additional-cost ceiling"
@@ -283,7 +277,6 @@ export function parseOperatorManifest(value: unknown): OperatorManifest {
       maxSompiPerTx,
       maxSompiPerHour,
       allowlist,
-      requireApprovalAboveSompi,
       additionalCostCeilingAtomic,
       operationFeeCeilingAtomic,
     },
@@ -322,7 +315,6 @@ export function operatorPolicy(manifest: OperatorManifest): Policy {
     maxSompiPerTx: BigInt(manifest.treasury.maxSompiPerTx),
     maxSompiPerHour: BigInt(manifest.treasury.maxSompiPerHour),
     allowlist: Object.freeze([...manifest.treasury.allowlist]) as unknown as string[],
-    requireApprovalAboveSompi: BigInt(manifest.treasury.requireApprovalAboveSompi),
   });
 }
 

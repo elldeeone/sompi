@@ -702,7 +702,6 @@ function policyDefinition() {
   return {
     maxPerPaymentAtomic: "1000",
     maxPerHourAtomic: "10000",
-    approvalAboveAtomic: "1000",
     allowlist: ["kaspatest:merchant"],
   };
 }

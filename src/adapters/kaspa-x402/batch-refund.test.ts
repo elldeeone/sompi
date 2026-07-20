@@ -165,7 +165,6 @@ test("accepted merchant claim atomically advances the channel and supersedes a c
     const policy = fixture.journal.installPolicy({
       maxPerPaymentAtomic: "10000000",
       maxPerHourAtomic: "10000000",
-      approvalAboveAtomic: "0",
       allowlist: [ADDRESS],
     });
     let intent = fixture.journal.claimTreasuryOperationIntent({
@@ -449,7 +448,6 @@ async function preparedClaimRace(
   const policy = fixture.journal.installPolicy({
     maxPerPaymentAtomic: "10000000",
     maxPerHourAtomic: "10000000",
-    approvalAboveAtomic: "0",
     allowlist: [ADDRESS],
   });
   let intent = fixture.journal.claimTreasuryOperationIntent({
@@ -492,7 +490,6 @@ function completedTreasury(
   const policy = journal.installPolicy({
     maxPerPaymentAtomic: "10000000",
     maxPerHourAtomic: "10000000",
-    approvalAboveAtomic: "0",
     allowlist: [request.destination],
   });
   journal.claimTreasuryOperationIntent({

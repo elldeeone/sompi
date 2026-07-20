@@ -23,7 +23,7 @@ import { createSompiPurchaseRuntime } from "./purchase-runtime.js";
 
 const NOW = 1_800_000_000_000;
 
-test("composition uses one dynamic clock and one immutable operator policy", async () => {
+test("composition uses one dynamic clock and an immutable active policy snapshot", async () => {
   const fixture = await runtimeFixture();
   let now = NOW;
   const runtime = createSompiPurchaseRuntime(fixture.config, {
@@ -215,7 +215,6 @@ async function runtimeFixture(): Promise<RuntimeFixture> {
       maxSompiPerTx: "100",
       maxSompiPerHour: "500",
       allowlist: [],
-      requireApprovalAboveSompi: "0",
       additionalCostCeilingAtomic: "25000000",
       operationFeeCeilingAtomic: "25000000",
     },

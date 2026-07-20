@@ -147,7 +147,6 @@ function runtimeFixture() {
       maxSompiPerTx: "100000000",
       maxSompiPerHour: "500000000",
       allowlist: [],
-      requireApprovalAboveSompi: "0",
       additionalCostCeilingAtomic: "25000000",
       operationFeeCeilingAtomic: "25000000",
     },

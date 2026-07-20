@@ -32,6 +32,8 @@ test("secure local state publishes no-clobber files and atomically replaces boun
     assert.equal(fs.statSync(filename).mode & 0o777, 0o600);
     assert.equal(fs.statSync(filename).nlink, 1);
     assert.throws(() => state.readFile("secret", 3), /size is invalid/);
+    state.removeFile("secret");
+    assert.equal(state.fileExists("secret"), false);
 
     state.createEmptyFileExclusive("empty.sqlite");
     const empty = path.join(state.directory, "empty.sqlite");

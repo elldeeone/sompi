@@ -10,9 +10,14 @@ import {
   assertTransferView,
   assertWalletActivity,
   assertWalletView,
+  assertWalletTechnicalView,
+  assertPolicyChangeView,
+  assertVaultMigrationView,
   createPurchaseApplication,
   parsePurchaseCreateRequest,
   parseTransferCreateRequest,
+  parsePolicyChangeCreateRequest,
+  parseVaultMigrationCreateRequest,
   purchaseIntent,
   transferIntent,
 } from "./contracts.js";
@@ -75,15 +80,45 @@ test("wallet and Transfer contracts reject unknown fields, wrong networks, and o
   const wallet = {
     network: "kaspa:testnet-10", asset: "KAS",
     receive: { address, qrPayload: address, networkLabel: "Kaspa Testnet-10", warning: "Testnet funds only — do not send mainnet KAS." },
-    balance: { total: amount("1"), available: amount("1"), incoming: amount("0"), protected: amount("1"), pending: amount("0"), provenance: "operator-node-and-local-vault-lineage", observedAt: "2030-01-01T00:00:00.000Z" },
+    balance: { total: amount("1"), available: amount("1"), incoming: amount("0"), pending: amount("0"), provenance: "operator-node-and-local-vault-lineage", observedAt: "2030-01-01T00:00:00.000Z" },
     securing: { automatic: true, state: "idle", summary: "No incoming funds are waiting to be secured.", userAction: "none", minimumAmount: amount("1") },
-    limits: { perTransfer: amount("1"), perHour: amount("1"), approvalThreshold: amount("1"), allowlist: [], vaultWindow: { maximumOutflow: amount("1"), spent: amount("0"), sizeDaa: "1" } },
-    security: { vaultAddress: address },
+    spendingProtection: { maximumPerPayment: amount("1"), maximumPerHour: amount("1"), everyPaymentRequiresApproval: true, vaultProtection: { maximumPerWindow: amount("1"), remainingInWindow: amount("1"), window: "approximately 1 hour", summary: "Protected." } },
     chainStatus: "observed",
   };
   assert.equal(assertWalletView(wallet).balance.available.atomic, "1");
   assert.throws(() => assertWalletView({ ...wallet, privateKey: "secret" }), SompiApiContractError);
   assert.deepEqual(assertWalletActivity([]), []);
+});
+
+test("limit and vault-protection contracts are KAS-first, closed, and explicit about offline ownership", () => {
+  const address = "kaspatest:qq2n2shqkghczyel57af242ffs50x5uj07w7ezg7kwm8frwt5xhljqa3d68et";
+  assert.deepEqual(parsePolicyChangeCreateRequest({ requestKey: "limits:one", maximumPerPaymentKas: "1", maximumPerHourKas: "2.5" }), {
+    requestKey: "limits:one", maximumPerPaymentKas: "1", maximumPerHourKas: "2.5",
+  });
+  assert.throws(() => parsePolicyChangeCreateRequest({ requestKey: "limits:one", maximumPerPaymentKas: "1", maximumPerHourKas: "2", approvalThresholdKas: "1" }), SompiApiContractError);
+  assert.deepEqual(parseVaultMigrationCreateRequest({ requestKey: "vault:one", vaultProtectionMaximumKas: "10" }), {
+    requestKey: "vault:one", vaultProtectionMaximumKas: "10",
+  });
+  assert.throws(() => parseVaultMigrationCreateRequest({ requestKey: "vault:one", vaultProtectionMaximumKas: "10", ownerKey: "secret" }), SompiApiContractError);
+  assert.equal(assertPolicyChangeView({
+    id: "pcg_0123456789ABCDEFGHIJKL", requestKey: "limits:one", state: "applied", summary: "Spending limits updated.",
+    previous: { maximumPerPayment: amount("100000000"), maximumPerHour: amount("200000000") },
+    proposed: { maximumPerPayment: amount("200000000"), maximumPerHour: amount("300000000") },
+    vaultProtectionMaximum: amount("1000000000"), everyPaymentRequiresApproval: true,
+    expiresAt: "2030-01-01T00:00:00.000Z",
+  }).state, "applied");
+  assert.equal(assertVaultMigrationView({
+    id: "vmg_0123456789ABCDEFGHIJKL", requestKey: "vault:one", state: "awaiting_owner",
+    summary: "Vault protection change approved. Finish it with the offline owner key.",
+    userAction: "Ask the operator to finish the protected vault update locally.",
+    previousVaultProtectionMaximum: amount("500000000"), proposedVaultProtectionMaximum: amount("1000000000"),
+    receiveAddressUnchanged: true, requiresOfflineOwnerKey: true, expiresAt: "2030-01-01T00:00:00.000Z",
+  }).requiresOfflineOwnerKey, true);
+  assert.equal(assertWalletTechnicalView({
+    receiveAddress: address,
+    activeVault: { address, maximumOutflowAtomic: "1000000000", windowSizeDaa: "36000", windowStartDaa: "0", spentInWindowAtomic: "0" },
+    allowlist: [],
+  }).activeVault.address, address);
 });
 
 function amount(atomic: string) {

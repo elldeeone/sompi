@@ -9,11 +9,20 @@ import {
   assertTransferView,
   assertWalletActivity,
   assertWalletView,
+  assertPolicyChangeId,
+  assertPolicyChangeView,
+  assertVaultMigrationId,
+  assertVaultMigrationView,
+  assertWalletTechnicalView,
   parsePurchaseCreateRequest,
   parseTransferCreateRequest,
+  parsePolicyChangeCreateRequest,
+  parseVaultMigrationCreateRequest,
   type SompiApplication,
   type PurchaseCreateRequest,
   type TransferCreateRequest,
+  type PolicyChangeCreateRequest,
+  type VaultMigrationCreateRequest,
 } from "./contracts.js";
 import type { AgentApiCredential } from "./credential.js";
 import {
@@ -22,8 +31,10 @@ import {
 } from "./socket.js";
 import type { PurchaseView } from "../purchase/types.js";
 import type { TransferView } from "../transfer/types.js";
-import type { WalletActivityItem, WalletView } from "../wallet-view/module.js";
+import type { WalletActivityItem, WalletTechnicalView, WalletView } from "../wallet-view/module.js";
 import { assertPurchaseId } from "../purchase/identity.js";
+import type { PolicyChangeView } from "../policy-change/types.js";
+import type { VaultMigrationView } from "../vault-migration/types.js";
 
 export interface SompiApiClientOptions extends SompiApiSocketAccess {
   readonly socketPath: string;
@@ -71,6 +82,10 @@ export class SompiApiClient implements SompiApplication {
     return this.request("GET", "/wallet", undefined, assertWalletView, signal);
   }
 
+  walletTechnical(signal?: AbortSignal): Promise<WalletTechnicalView> {
+    return this.request("GET", "/wallet/technical", undefined, assertWalletTechnicalView, signal);
+  }
+
   activity(limit = 20, signal?: AbortSignal): Promise<readonly WalletActivityItem[]> {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
       throw new SompiApiClientError("INVALID_REQUEST", "Wallet activity limit must be between 1 and 100.", false);
@@ -88,6 +103,38 @@ export class SompiApiClient implements SompiApplication {
 
   transferRecover(transferId: string, signal?: AbortSignal): Promise<TransferView> {
     return this.request("POST", `/transfers/${assertTransferId(transferId)}/recover`, undefined, assertTransferView, signal);
+  }
+
+  changePolicy(input: PolicyChangeCreateRequest, signal?: AbortSignal): Promise<PolicyChangeView> {
+    return this.request(
+      "POST",
+      "/policy-changes",
+      parsePolicyChangeCreateRequest(input),
+      assertPolicyChangeView,
+      signal,
+    );
+  }
+
+  policyChangeStatus(policyChangeId: string, signal?: AbortSignal): Promise<PolicyChangeView> {
+    return this.request(
+      "GET",
+      `/policy-changes/${assertPolicyChangeId(policyChangeId)}`,
+      undefined,
+      assertPolicyChangeView,
+      signal,
+    );
+  }
+
+  policyChangeRecover(policyChangeId: string, signal?: AbortSignal): Promise<PolicyChangeView> {
+    return this.request("POST", `/policy-changes/${assertPolicyChangeId(policyChangeId)}/recover`, undefined, assertPolicyChangeView, signal);
+  }
+
+  vaultMigration(input: VaultMigrationCreateRequest, signal?: AbortSignal): Promise<VaultMigrationView> {
+    return this.request("POST", "/vault-migrations", parseVaultMigrationCreateRequest(input), assertVaultMigrationView, signal);
+  }
+
+  vaultMigrationStatus(vaultMigrationId: string, signal?: AbortSignal): Promise<VaultMigrationView> {
+    return this.request("GET", `/vault-migrations/${assertVaultMigrationId(vaultMigrationId)}`, undefined, assertVaultMigrationView, signal);
   }
 
   private async request<T>(

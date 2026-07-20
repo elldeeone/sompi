@@ -31,7 +31,7 @@ test("MCP CLI accepts only its closed command surface", () => {
   assert.match(MCP_USAGE, /^usage: sompi-mcp/);
 });
 
-test("operator CLI exposes only preview, provision, install, status, and offline owner-key", () => {
+test("operator CLI exposes provisioning and offline-owner vault migration only", () => {
   assert.deepEqual(parseOperatorArguments(["bootstrap-preview", "request.json"]), {
     kind: "bootstrap-preview", request: "request.json",
   });
@@ -61,7 +61,13 @@ test("operator CLI exposes only preview, provision, install, status, and offline
     kind: "recovery-credential", filename: "recovery.json", operatorUid: 0, recoveryGid: 1001,
   });
   assert.deepEqual(parseOperatorArguments(["owner-key"]), { kind: "owner-key" });
-  for (const args of [[], ["bootstrap-preview"], ["bootstrap", "x", "bad"], ["bootstrap-activate", "x", "bad"], ["bootstrap-activate-worker", "extra"], ["install"], ["status", "x", "-1", "1"], ["agent-credential", "x", "-1", "1"], ["recovery-credential", "x", "-1", "1"], ["owner-key", "extra"], ["start"]]) {
+  assert.deepEqual(parseOperatorArguments(["vault-migrate", "execute", "vmg_AAAAAAAAAAAAAAAAAAAAAA", "/root/owner-key"]), {
+    kind: "vault-migrate", action: "execute", vaultMigrationId: "vmg_AAAAAAAAAAAAAAAAAAAAAA", ownerKeyFile: "/root/owner-key",
+  });
+  assert.deepEqual(parseOperatorArguments(["vault-migrate", "recover", "vmg_AAAAAAAAAAAAAAAAAAAAAA", "/root/owner-key"]), {
+    kind: "vault-migrate", action: "recover", vaultMigrationId: "vmg_AAAAAAAAAAAAAAAAAAAAAA", ownerKeyFile: "/root/owner-key",
+  });
+  for (const args of [[], ["bootstrap-preview"], ["bootstrap", "x", "bad"], ["bootstrap-activate", "x", "bad"], ["bootstrap-activate-worker", "extra"], ["install"], ["status", "x", "-1", "1"], ["agent-credential", "x", "-1", "1"], ["recovery-credential", "x", "-1", "1"], ["owner-key", "extra"], ["vault-migrate", "execute", "bad", "/root/key"], ["vault-migrate", "unknown", "vmg_AAAAAAAAAAAAAAAAAAAAAA", "/root/key"], ["start"]]) {
     assert.throws(() => parseOperatorArguments(args), CliArgumentError);
   }
   assert.match(OPERATOR_USAGE, /^usage: sompi-operator/);

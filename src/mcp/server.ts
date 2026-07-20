@@ -8,6 +8,9 @@ import {
   assertWalletActivity,
   assertWalletView,
   assertPurchaseView,
+  assertPolicyChangeView,
+  assertVaultMigrationView,
+  assertWalletTechnicalView,
   type SompiApplication,
   type PurchaseCreateRequest,
 } from "../api/contracts.js";
@@ -15,6 +18,7 @@ import {
 const PURCHASE_ID = z.string().regex(/^pur_[A-Za-z0-9_-]{22}$/);
 const PURCHASE_REQUEST_KEY = z.string().regex(/^[A-Za-z0-9._:-]{1,160}$/);
 const TRANSFER_ID = z.string().regex(/^trf_[A-Za-z0-9_-]{22}$/);
+const POLICY_CHANGE_ID = z.string().regex(/^pcg_[A-Za-z0-9_-]{22}$/);
 const KASPA_TESTNET_ADDRESS = z.string().regex(/^kaspatest:[a-z0-9]{20,256}$/);
 const POSITIVE_KAS = z.string().regex(/^(?:0|[1-9][0-9]*)(?:\.[0-9]{1,8})?$/);
 const HTTP_METHOD = z.string().regex(/^[A-Z][A-Z0-9!#$%&'*+.^_`|~-]{0,31}$/).default("GET");
@@ -119,6 +123,13 @@ export function registerSompiTools(registrar: McpToolRegistrar, application: Som
     assertWalletActivity,
   );
   register(
+    "wallet_technical_details",
+    "Read explicit technical wallet and vault evidence. Use only when the user asks for technical details.",
+    {},
+    (_args, signal) => application.walletTechnical(signal),
+    assertWalletTechnicalView,
+  );
+  register(
     "transfer",
     "Request a human-approved direct Testnet-10 KAS transfer from the Sompi vault.",
     {
@@ -143,6 +154,50 @@ export function registerSompiTools(registrar: McpToolRegistrar, application: Som
     { transferId: TRANSFER_ID },
     ({ transferId }: { transferId: string }, signal) => application.transferRecover(transferId, signal),
     assertTransferView,
+  );
+  register(
+    "change_spending_limits",
+    "Propose exact everyday spending limits. The owner must approve the change through Sompi Authority.",
+    {
+      requestKey: PURCHASE_REQUEST_KEY,
+      maximumPerPaymentKas: POSITIVE_KAS,
+      maximumPerHourKas: POSITIVE_KAS,
+    },
+    (args: Readonly<{
+      requestKey: string;
+      maximumPerPaymentKas: string;
+      maximumPerHourKas: string;
+    }>, signal) => application.changePolicy(args, signal),
+    assertPolicyChangeView,
+  );
+  register(
+    "spending_limit_change_status",
+    "Read one durable spending-limit change without performing a side effect.",
+    { policyChangeId: POLICY_CHANGE_ID },
+    ({ policyChangeId }: { policyChangeId: string }, signal) =>
+      application.policyChangeStatus(policyChangeId, signal),
+    assertPolicyChangeView,
+  );
+  register(
+    "spending_limit_change_recover",
+    "Resume an interrupted owner-approved spending-limit change without creating a different change.",
+    { policyChangeId: POLICY_CHANGE_ID },
+    ({ policyChangeId }: { policyChangeId: string }, signal) => application.policyChangeRecover(policyChangeId, signal),
+    assertPolicyChangeView,
+  );
+  register(
+    "change_vault_protection",
+    "Propose a vault protection maximum. Owner approval and separate offline-key execution are required.",
+    { requestKey: PURCHASE_REQUEST_KEY, vaultProtectionMaximumKas: POSITIVE_KAS },
+    (args: Readonly<{ requestKey: string; vaultProtectionMaximumKas: string }>, signal) => application.vaultMigration(args, signal),
+    assertVaultMigrationView,
+  );
+  register(
+    "vault_protection_change_status",
+    "Read a vault protection change. This cannot execute the offline-owner migration.",
+    { vaultMigrationId: z.string().regex(/^vmg_[A-Za-z0-9_-]{22}$/) },
+    ({ vaultMigrationId }: { vaultMigrationId: string }, signal) => application.vaultMigrationStatus(vaultMigrationId, signal),
+    assertVaultMigrationView,
   );
 }
 

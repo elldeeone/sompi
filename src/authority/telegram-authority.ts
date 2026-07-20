@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as path from "node:path";
@@ -13,12 +13,12 @@ import type {
 } from "../adapters/ap2/human-authority.js";
 
 const APPLICATION_ID = 0x53544741;
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const CALLBACK_PROFILE = "sompi.telegram-authority-callback-v1" as const;
 const TOKEN_BYTES = 24;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{32}$/;
 const DIGEST_PATTERN = /^sha256:[A-Za-z0-9_-]{43}$/;
-const SUBJECT_ID_PATTERN = /^(?:pur|trf)_[A-Za-z0-9_-]{22}$/;
+const SUBJECT_ID_PATTERN = /^(?:pur|trf|pcg|vmg)_[A-Za-z0-9_-]{22}$/;
 const MAX_CALLBACK_BODY_BYTES = 1_024;
 const MAX_TELEGRAM_RESPONSE_BYTES = 64 * 1024;
 const TELEGRAM_MESSAGE_LIMIT = 4_096;
@@ -32,8 +32,9 @@ CREATE TABLE telegram_authority_meta (
 ) STRICT;
 
 CREATE TABLE telegram_authority_prompts (
-  token_digest TEXT PRIMARY KEY,
   request_digest TEXT NOT NULL,
+  approve_token_digest TEXT PRIMARY KEY,
+  deny_token_digest TEXT NOT NULL UNIQUE,
   subject_id TEXT NOT NULL,
   chat_id TEXT NOT NULL,
   user_id TEXT NOT NULL,
@@ -95,8 +96,9 @@ export interface TelegramAuthorityApprovalPromptOptions {
 }
 
 interface PendingPrompt {
-  readonly tokenDigest: string;
-  readonly subjectKind: "purchase" | "transfer";
+  readonly approveTokenDigest: string;
+  readonly denyTokenDigest: string;
+  readonly subjectKind: "purchase" | "transfer" | "policy-change" | "vault-migration";
   readonly resolve: (approved: boolean) => void;
   readonly reject: (error: Error) => void;
 }
@@ -126,15 +128,19 @@ export class TelegramAuthorityApprovalPrompt implements AuthorityApprovalPrompt 
     if (!Number.isSafeInteger(expiresAtMs) || expiresAtMs <= now) {
       throw new Error("Telegram Authority request is already expired");
     }
-    const token = this.randomToken();
-    if (!TOKEN_PATTERN.test(token)) throw new Error("Telegram Authority token source is invalid");
-    const tokenDigest = tokenHash(token);
-    const approveData = `sp:a:${token}`;
-    const denyData = `sp:d:${token}`;
+    const rootToken = this.randomToken();
+    if (!TOKEN_PATTERN.test(rootToken)) throw new Error("Telegram Authority token source is invalid");
+    const approveToken = decisionToken(rootToken, "approved");
+    const denyToken = decisionToken(rootToken, "denied");
+    const approveTokenDigest = tokenHash(approveToken);
+    const denyTokenDigest = tokenHash(denyToken);
+    const approveData = `sp:${approveToken}`;
+    const denyData = `sp:${denyToken}`;
     this.options.store.prepare({
-      tokenDigest,
+      approveTokenDigest,
+      denyTokenDigest,
       requestDigest: display.authorityRequestDigest,
-      subjectId: display.kind === "transfer" ? display.transferId : display.purchaseId,
+      subjectId: approvalSubject(display).id,
       chatId: this.options.config.chatId,
       userId: this.options.config.userId,
       expiresAtMs,
@@ -145,22 +151,24 @@ export class TelegramAuthorityApprovalPrompt implements AuthorityApprovalPrompt 
     let expiryTimer: NodeJS.Timeout | undefined;
     const decision = new Promise<boolean>((resolve, reject) => {
       const entry: PendingPrompt = {
-        tokenDigest,
-        subjectKind: display.kind === "transfer" ? "transfer" : "purchase",
+        approveTokenDigest,
+        denyTokenDigest,
+        subjectKind: approvalSubject(display).kind,
         resolve,
         reject,
       };
-      this.pending.set(tokenDigest, entry);
+      this.pending.set(approveTokenDigest, entry);
+      this.pending.set(denyTokenDigest, entry);
       abort = () => {
-        if (this.pending.delete(tokenDigest)) {
-          this.options.store.finish(tokenDigest, "cancelled", this.timestamp());
+        if (this.deletePending(entry)) {
+          this.options.store.finish(approveTokenDigest, "cancelled", this.timestamp());
           reject(abortError());
         }
       };
       effectiveSignal.addEventListener("abort", abort, { once: true });
       expiryTimer = setTimeout(() => {
-        if (this.pending.delete(tokenDigest)) {
-          this.options.store.finish(tokenDigest, "expired", this.timestamp());
+        if (this.deletePending(entry)) {
+          this.options.store.finish(approveTokenDigest, "expired", this.timestamp());
           reject(new Error("Telegram Authority prompt expired"));
         }
       }, expiresAtMs - now);
@@ -175,17 +183,19 @@ export class TelegramAuthorityApprovalPrompt implements AuthorityApprovalPrompt 
         effectiveSignal,
       );
       effectiveSignal.throwIfAborted();
-      this.options.store.markSent(tokenDigest, messageId);
+      this.options.store.markSent(approveTokenDigest, messageId);
       return await decision;
     } catch (error) {
-      if (this.pending.delete(tokenDigest)) {
-        this.options.store.finish(tokenDigest, "cancelled", this.timestamp());
+      const entry = this.pending.get(approveTokenDigest);
+      if (entry && this.deletePending(entry)) {
+        this.options.store.finish(approveTokenDigest, "cancelled", this.timestamp());
       }
       throw error;
     } finally {
       if (expiryTimer) clearTimeout(expiryTimer);
       if (abort) effectiveSignal.removeEventListener("abort", abort);
-      this.pending.delete(tokenDigest);
+      this.pending.delete(approveTokenDigest);
+      this.pending.delete(denyTokenDigest);
     }
   }
 
@@ -208,7 +218,6 @@ export class TelegramAuthorityApprovalPrompt implements AuthorityApprovalPrompt 
       tokenDigest,
       userId: input.userId,
       chatId: input.chatId,
-      decision: parsed.decision,
       nowMs: now,
     });
     if (consumed === "expired") {
@@ -217,22 +226,30 @@ export class TelegramAuthorityApprovalPrompt implements AuthorityApprovalPrompt 
     if (consumed !== "approved" && consumed !== "denied") {
       return result("replayed", "This Sompi approval has already been resolved.");
     }
-    this.pending.delete(tokenDigest);
+    this.deletePending(waiter);
     waiter.resolve(consumed === "approved");
     return result(
       consumed,
       consumed === "approved"
-        ? waiter.subjectKind === "transfer" ? "Sompi Transfer approved." : "Sompi Purchase approved."
-        : waiter.subjectKind === "transfer" ? "Sompi Transfer denied." : "Sompi Purchase denied.",
+        ? approvalDecisionMessage(waiter.subjectKind, true)
+        : approvalDecisionMessage(waiter.subjectKind, false),
     );
   }
 
   close(): void {
-    for (const [tokenDigest, entry] of this.pending) {
-      this.pending.delete(tokenDigest);
-      this.options.store.finish(tokenDigest, "cancelled", this.timestamp());
+    for (const entry of new Set(this.pending.values())) {
+      this.deletePending(entry);
+      this.options.store.finish(entry.approveTokenDigest, "cancelled", this.timestamp());
       entry.reject(new Error("Telegram Authority stopped"));
     }
+  }
+
+  private deletePending(entry: PendingPrompt): boolean {
+    const existed = this.pending.get(entry.approveTokenDigest) === entry ||
+      this.pending.get(entry.denyTokenDigest) === entry;
+    this.pending.delete(entry.approveTokenDigest);
+    this.pending.delete(entry.denyTokenDigest);
+    return existed;
   }
 
   private timestamp(): number {
@@ -266,7 +283,8 @@ export class TelegramAuthorityPromptStore {
   }
 
   prepare(input: Readonly<{
-    tokenDigest: string;
+    approveTokenDigest: string;
+    denyTokenDigest: string;
     requestDigest: string;
     subjectId: string;
     chatId: string;
@@ -286,12 +304,13 @@ export class TelegramAuthorityPromptStore {
       }
       this.db.prepare(
         `INSERT INTO telegram_authority_prompts
-           (token_digest, request_digest, subject_id, chat_id, user_id,
+           (request_digest, approve_token_digest, deny_token_digest, subject_id, chat_id, user_id,
             expires_at_ms, message_id, state, created_at_ms, resolved_at_ms)
-         VALUES (?, ?, ?, ?, ?, ?, NULL, 'prepared', ?, NULL)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'prepared', ?, NULL)`,
       ).run(
-        input.tokenDigest,
         input.requestDigest,
+        input.approveTokenDigest,
+        input.denyTokenDigest,
         input.subjectId,
         input.chatId,
         input.userId,
@@ -306,8 +325,8 @@ export class TelegramAuthorityPromptStore {
     validateDigest(tokenDigest, "Telegram callback token digest");
     if (!/^[1-9][0-9]{0,19}$/.test(messageId)) throw new Error("Telegram message ID is invalid");
     const changed = this.db.prepare(
-      "UPDATE telegram_authority_prompts SET state = 'sent', message_id = ? WHERE token_digest = ? AND state = 'prepared'",
-    ).run(messageId, tokenDigest).changes;
+      "UPDATE telegram_authority_prompts SET state = 'sent', message_id = ? WHERE (approve_token_digest = ? OR deny_token_digest = ?) AND state = 'prepared'",
+    ).run(messageId, tokenDigest, tokenDigest).changes;
     if (changed !== 1) throw new Error("Telegram Authority prompt state changed before send");
   }
 
@@ -315,29 +334,30 @@ export class TelegramAuthorityPromptStore {
     tokenDigest: string;
     userId: string;
     chatId: string;
-    decision: "approved" | "denied";
     nowMs: number;
   }>): "approved" | "denied" | "expired" | "replayed" {
     validateDigest(input.tokenDigest, "Telegram callback token digest");
     const consume = this.db.transaction(() => {
       const row = this.db.prepare(
-        `SELECT chat_id, user_id, expires_at_ms, state
-           FROM telegram_authority_prompts WHERE token_digest = ?`,
-      ).get(input.tokenDigest) as PromptRow | undefined;
+        `SELECT chat_id, user_id, expires_at_ms, state,
+                CASE WHEN approve_token_digest = ? THEN 'approved' ELSE 'denied' END AS decision
+           FROM telegram_authority_prompts
+          WHERE approve_token_digest = ? OR deny_token_digest = ?`,
+      ).get(input.tokenDigest, input.tokenDigest, input.tokenDigest) as (PromptRow & { decision: "approved" | "denied" }) | undefined;
       if (!row || (row.state !== "prepared" && row.state !== "sent")) return "replayed" as const;
       if (!safeEqual(row.chat_id, input.chatId) || !safeEqual(row.user_id, input.userId)) {
         return "replayed" as const;
       }
       if (input.nowMs >= row.expires_at_ms) {
         this.db.prepare(
-          "UPDATE telegram_authority_prompts SET state = 'expired', resolved_at_ms = ? WHERE token_digest = ?",
-        ).run(input.nowMs, input.tokenDigest);
+          "UPDATE telegram_authority_prompts SET state = 'expired', resolved_at_ms = ? WHERE approve_token_digest = ? OR deny_token_digest = ?",
+        ).run(input.nowMs, input.tokenDigest, input.tokenDigest);
         return "expired" as const;
       }
       const changed = this.db.prepare(
-        "UPDATE telegram_authority_prompts SET state = ?, resolved_at_ms = ? WHERE token_digest = ? AND state IN ('prepared', 'sent')",
-      ).run(input.decision, input.nowMs, input.tokenDigest).changes;
-      return changed === 1 ? input.decision : "replayed" as const;
+        "UPDATE telegram_authority_prompts SET state = ?, resolved_at_ms = ? WHERE (approve_token_digest = ? OR deny_token_digest = ?) AND state IN ('prepared', 'sent')",
+      ).run(row.decision, input.nowMs, input.tokenDigest, input.tokenDigest).changes;
+      return changed === 1 ? row.decision : "replayed" as const;
     });
     return consume.immediate();
   }
@@ -345,8 +365,8 @@ export class TelegramAuthorityPromptStore {
   finish(tokenDigest: string, state: "cancelled" | "expired", nowMs: number): void {
     validateDigest(tokenDigest, "Telegram callback token digest");
     this.db.prepare(
-      "UPDATE telegram_authority_prompts SET state = ?, resolved_at_ms = ? WHERE token_digest = ? AND state IN ('prepared', 'sent')",
-    ).run(state, nowMs, tokenDigest);
+      "UPDATE telegram_authority_prompts SET state = ?, resolved_at_ms = ? WHERE (approve_token_digest = ? OR deny_token_digest = ?) AND state IN ('prepared', 'sent')",
+    ).run(state, nowMs, tokenDigest, tokenDigest);
   }
 
   expirePending(nowMs: number): number {
@@ -601,11 +621,7 @@ function telegramApprovalText(display: AnyAuthorityApprovalDisplay): string {
       "",
       `<b>Recipient:</b> <code>${html(display.destination)}</code>`,
       `<b>Amount:</b> ${html(displayKas(display.amountAtomic))}`,
-      `<b>Network:</b> ${html(display.network)}`,
-      `<b>Maximum fee:</b> ${html(displayKas(display.feeCeilingAtomic))}`,
       `<b>Maximum total:</b> ${html(displayKas(display.maximumTotalAtomic))}`,
-      `<b>Source vault:</b> <code>${html(display.sourceVaultAddress)}</code>`,
-      `<b>Finality floor:</b> ${html(display.finalityFloor)}`,
       `<b>Expires:</b> ${html(display.termsExpiresAt)}`,
       `<b>Transfer:</b> <code>${html(display.transferId)}</code>`,
       "",
@@ -613,6 +629,38 @@ function telegramApprovalText(display: AnyAuthorityApprovalDisplay): string {
     ].join("\n");
     if (Buffer.byteLength(text, "utf8") > TELEGRAM_MESSAGE_LIMIT) {
       throw new Error("Transfer facts exceed the Telegram approval display limit");
+    }
+    return text;
+  }
+  if (display.kind === "policy-change") {
+    const text = [
+      "<b>Change Sompi spending limits?</b>",
+      "",
+      `<b>Maximum per payment:</b> ${html(displayKas(display.proposedMaximumPerPaymentAtomic))}`,
+      `<b>Maximum per hour:</b> ${html(displayKas(display.proposedMaximumPerHourAtomic))}`,
+      `<b>Vault protection maximum:</b> ${html(displayKas(display.vaultMaximumOutflowAtomic))}`,
+      "<b>Payment approval:</b> You still approve every payment.",
+      `<b>Expires:</b> ${html(display.termsExpiresAt)}`,
+      `<b>Change:</b> <code>${html(display.policyChangeId)}</code>`,
+    ].join("\n");
+    if (Buffer.byteLength(text, "utf8") > TELEGRAM_MESSAGE_LIMIT) {
+      throw new Error("Policy Change facts exceed the Telegram approval display limit");
+    }
+    return text;
+  }
+  if (display.kind === "vault-migration") {
+    const text = [
+      "<b>Change Sompi vault protection?</b>",
+      "",
+      `<b>Current maximum:</b> ${html(displayKas(display.oldMaximumOutflowAtomic))}`,
+      `<b>New maximum:</b> ${html(displayKas(display.newMaximumOutflowAtomic))}`,
+      "<b>Your receive address:</b> Will not change.",
+      "<b>Next step:</b> Offline owner-key execution is still required.",
+      `<b>Expires:</b> ${html(display.termsExpiresAt)}`,
+      `<b>Change:</b> <code>${html(display.vaultMigrationId)}</code>`,
+    ].join("\n");
+    if (Buffer.byteLength(text, "utf8") > TELEGRAM_MESSAGE_LIMIT) {
+      throw new Error("Vault Migration facts exceed the Telegram approval display limit");
     }
     return text;
   }
@@ -641,11 +689,11 @@ function telegramApprovalText(display: AnyAuthorityApprovalDisplay): string {
   return text;
 }
 
-function parseCallback(input: TelegramCallbackInput): { decision: "approved" | "denied"; token: string } | undefined {
+function parseCallback(input: TelegramCallbackInput): { token: string } | undefined {
   if (!input || input.profile !== CALLBACK_PROFILE || typeof input.callbackData !== "string") return undefined;
-  const match = /^sp:([ad]):([A-Za-z0-9_-]{32})$/.exec(input.callbackData);
+  const match = /^sp:([A-Za-z0-9_-]{32})$/.exec(input.callbackData);
   if (!match) return undefined;
-  return { decision: match[1] === "a" ? "approved" : "denied", token: match[2] };
+  return { token: match[1] };
 }
 
 function parseCallbackEnvelope(value: unknown): TelegramCallbackInput | undefined {
@@ -701,9 +749,7 @@ function validateTelegramAuthorityConfig(config: TelegramAuthorityConfig): void 
 }
 
 function validateDisplay(display: AnyAuthorityApprovalDisplay): void {
-  const subjectId = display?.kind === "transfer"
-    ? display.transferId
-    : display?.purchaseId ?? "";
+  const subjectId = display ? approvalSubject(display).id : "";
   if (
     !display ||
     !DIGEST_PATTERN.test(display.authorityRequestDigest) ||
@@ -712,8 +758,32 @@ function validateDisplay(display: AnyAuthorityApprovalDisplay): void {
   ) throw new Error("Telegram Authority display is invalid");
 }
 
+function approvalSubject(display: AnyAuthorityApprovalDisplay): Readonly<{
+  id: string;
+  kind: "purchase" | "transfer" | "policy-change" | "vault-migration";
+}> {
+  if (display.kind === "transfer") return Object.freeze({ id: display.transferId, kind: "transfer" });
+  if (display.kind === "policy-change") {
+    return Object.freeze({ id: display.policyChangeId, kind: "policy-change" });
+  }
+  if (display.kind === "vault-migration") {
+    return Object.freeze({ id: display.vaultMigrationId, kind: "vault-migration" });
+  }
+  return Object.freeze({ id: display.purchaseId, kind: "purchase" });
+}
+
+function approvalDecisionMessage(
+  kind: "purchase" | "transfer" | "policy-change" | "vault-migration",
+  approved: boolean,
+): string {
+  const label = kind === "policy-change" ? "Spending limit change" : kind === "vault-migration" ? "Vault protection change" : kind === "transfer" ? "Transfer" : "Purchase";
+  return `Sompi ${label} ${approved ? "approved" : "denied"}.`;
+}
+
 function validatePromptInput(input: Readonly<Record<string, unknown>>): void {
-  validateDigest(String(input.tokenDigest), "Telegram callback token digest");
+  validateDigest(String(input.approveTokenDigest), "Telegram approve token digest");
+  validateDigest(String(input.denyTokenDigest), "Telegram deny token digest");
+  if (input.approveTokenDigest === input.denyTokenDigest) throw new Error("Telegram decision capabilities must be distinct");
   validateDigest(String(input.requestDigest), "Authority request digest");
   if (!SUBJECT_ID_PATTERN.test(String(input.subjectId))) throw new Error("Authority subject ID is invalid");
   if (!chatId(String(input.chatId)) || !userId(String(input.userId))) throw new Error("Telegram identity is invalid");
@@ -728,6 +798,13 @@ function validateDigest(value: string, label: string): void {
 
 function tokenHash(token: string): string {
   return `sha256:${createHash("sha256").update(token, "ascii").digest("base64url")}`;
+}
+
+function decisionToken(rootToken: string, decision: "approved" | "denied"): string {
+  return createHmac("sha256", Buffer.from(rootToken, "ascii"))
+    .update(`sompi.telegram-decision:${decision}`, "ascii")
+    .digest("base64url")
+    .slice(0, 32);
 }
 
 function safeEqual(left: string, right: string): boolean {

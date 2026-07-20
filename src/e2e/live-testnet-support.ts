@@ -403,13 +403,11 @@ export async function bootstrapLiveProof(input: {
     maxSompiPerTx: "600000000",
     maxSompiPerHour: "700000000",
     allowlist: [config.wallets.treasuryAddress],
-    requireApprovalAboveSompi: "0",
   });
   writePolicyOnce(layout.purchasePolicyPath, {
     maxSompiPerTx: "500000000",
     maxSompiPerHour: "1000000000",
     allowlist: [config.additiveHead.address, config.vault.address],
-    requireApprovalAboveSompi: "0",
   });
 
   let progress = readProgress(layout.progressPath, config.runId);
@@ -1368,7 +1366,6 @@ function treasuryModule(input: {
       maxSompiPerTx: BigInt(String(raw.maxSompiPerTx)),
       maxSompiPerHour: BigInt(String(raw.maxSompiPerHour)),
       allowlist: Array.isArray(raw.allowlist) ? raw.allowlist.map(String) : [],
-      requireApprovalAboveSompi: BigInt(String(raw.requireApprovalAboveSompi ?? "0")),
     }),
     adapters: [
       new WalletTreasuryOperationAdapter(input.wallet, chainEvidence, "accepted"),
