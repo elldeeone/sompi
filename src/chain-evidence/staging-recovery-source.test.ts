@@ -3,9 +3,18 @@ import test from "node:test";
 
 import type { StagingRecoveryRaceRequest } from "../adapters/kaspa-x402/abandoned-staging-recovery.js";
 import type { Sha256Digest } from "../purchase/types.js";
-import type { ChainEvidenceModule } from "./module.js";
+import {
+  ChainEvidenceModule,
+  digest,
+  nonPresent,
+  outputsDigest,
+} from "./module.js";
 import { ChainEvidenceStagingRecoveryRaceSource } from "./staging-recovery-source.js";
-import type { ChainEvidenceRecord } from "./types.js";
+import type {
+  ChainEvidenceRecord,
+  ChainEvidenceRequest,
+  ChainSourceEvidence,
+} from "./types.js";
 
 const EXACT_ID = "11".repeat(32);
 const RECOVERY_ID = "22".repeat(32);
@@ -76,6 +85,54 @@ test("uncorroborated candidate absence remains unknown rather than conflicting",
   assert.equal(evidence.exactPayment?.status, "unknown");
   assert.equal(evidence.recovery.status, "unknown");
   assert.equal(evidence.staging.status, "spent");
+});
+
+test("a confirmed exact winner corroborates recovery absence in one observation call", async () => {
+  const calls = new Map<string, number>();
+  const sourceEvidence = (request: Readonly<ChainEvidenceRequest>): ChainSourceEvidence => {
+    calls.set(request.transactionId, (calls.get(request.transactionId) ?? 0) + 1);
+    if (request.transactionId !== EXACT_ID) {
+      return nonPresent("absent", "test-source", digest(`absent:${request.transactionId}`), Date.now());
+    }
+    return {
+      status: "present",
+      level: "accepted",
+      view: "historical",
+      sourceProfile: "test-source",
+      transactionId: request.transactionId,
+      blockHash: "55".repeat(32),
+      acceptingBlockHash: "66".repeat(32),
+      acceptingBlockDaaScore: "100",
+      virtualDaaScore: "101",
+      outputsDigest: outputsDigest(request),
+      detailDigest: digest(`present:${request.transactionId}`),
+      observedAtMs: Date.now(),
+    };
+  };
+  const chainEvidence = new ChainEvidenceModule(
+    { observe: async (request) => sourceEvidence(request) },
+    { observe: async (request) => sourceEvidence(request) },
+    {
+      findAccepted: () => undefined,
+      record: (record) => Object.freeze({ ...record }),
+    },
+  );
+  const source = new ChainEvidenceStagingRecoveryRaceSource(
+    chainEvidence,
+    { client: async () => ({ getUtxosByAddresses: async () => ({ entries: [] }) }) as never },
+    "accepted"
+  );
+
+  const evidence = await source.observeRace(request());
+  assert.equal(calls.get(EXACT_ID), 2);
+  assert.equal(calls.get(RECOVERY_ID), 4);
+  assert.equal(evidence.exactPayment?.status, "observed");
+  assert.equal(evidence.recovery.status, "absent");
+  assert.equal(evidence.staging.status, "spent");
+  assert.equal(
+    evidence.staging.status === "spent" ? evidence.staging.spendingTransactionId : undefined,
+    EXACT_ID
+  );
 });
 
 function request(): StagingRecoveryRaceRequest {

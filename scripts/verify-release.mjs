@@ -55,7 +55,7 @@ try {
     path.join(root, "scripts", "install-runtime-package.mjs"),
     "--prefix", consumer,
     "--package", archive,
-    "--expected-version", "0.11.8",
+    "--expected-version", "0.11.9",
   ], root);
   assertInstalledPackage(consumer);
   assertInstalledLicences(consumer);
@@ -99,7 +99,7 @@ function assertInstalledPackage(consumer) {
   const manifest = JSON.parse(fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"));
   if (
     manifest.name !== "@elldeeone/sompi" ||
-    manifest.version !== "0.11.8" ||
+    manifest.version !== "0.11.9" ||
     Object.prototype.hasOwnProperty.call(manifest, "main") ||
     JSON.stringify(manifest.exports) !== JSON.stringify({ "./package.json": "./package.json" })
   ) fail("clean installation exposed an unexpected package identity or export");

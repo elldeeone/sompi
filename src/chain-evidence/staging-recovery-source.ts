@@ -9,23 +9,55 @@ import type {
   StagingRecoveryRaceRequest,
   StagingRecoveryRaceSource,
 } from "../adapters/kaspa-x402/abandoned-staging-recovery.js";
-import type { ChainEvidenceModule } from "./module.js";
+import {
+  ABSENCE_PROPAGATION_INTERVAL_MS,
+  type ChainEvidenceModule,
+} from "./module.js";
 import type { FinalityFloor } from "./types.js";
+
+const DEFAULT_CORROBORATION_DELAY_MS = ABSENCE_PROPAGATION_INTERVAL_MS + 100;
 
 export class ChainEvidenceStagingRecoveryRaceSource implements StagingRecoveryRaceSource {
   constructor(
     private readonly chainEvidence: ChainEvidenceModule,
     private readonly rpc: { client(): Promise<RpcClient> },
-    private readonly floor: FinalityFloor
-  ) {}
+    private readonly floor: FinalityFloor,
+    private readonly corroborationDelayMs = DEFAULT_CORROBORATION_DELAY_MS
+  ) {
+    if (
+      !Number.isSafeInteger(corroborationDelayMs) ||
+      corroborationDelayMs < 0 ||
+      corroborationDelayMs > 5_000
+    ) {
+      throw new Error("staging recovery corroboration delay is invalid");
+    }
+  }
 
   async observeRace(request: Readonly<StagingRecoveryRaceRequest>): Promise<Readonly<StagingRecoveryRaceEvidence>> {
     request.signal.throwIfAborted();
-    const [exactPayment, recovery, staging] = await Promise.all([
+    let [exactPayment, recovery, staging] = await Promise.all([
       request.exactPayment ? this.candidate(request, request.exactPayment, "exact") : Promise.resolve(null),
       this.candidate(request, request.recovery, "recovery"),
       this.staging(request),
     ]);
+    // A confirmed winner plus a spent staging outpoint is common after an
+    // ambiguous first submission. Chain Evidence deliberately requires two
+    // absence observations before declaring the losing candidate absent. Do
+    // that bounded corroboration inside one recovery request so an agent does
+    // not have to issue two commands within the short in-memory proof window.
+    if (staging.status === "spent") {
+      if (exactPayment?.status === "observed" && recovery.status === "unknown") {
+        await abortableDelay(this.corroborationDelayMs, request.signal);
+        recovery = await this.candidate(request, request.recovery, "recovery");
+      } else if (
+        recovery.status === "observed" &&
+        exactPayment?.status === "unknown" &&
+        request.exactPayment
+      ) {
+        await abortableDelay(this.corroborationDelayMs, request.signal);
+        exactPayment = await this.candidate(request, request.exactPayment, "exact");
+      }
+    }
     const exactId = exactPayment?.status === "observed" ? exactPayment.transactionId : undefined;
     const recoveryId = recovery.status === "observed" ? recovery.transactionId : undefined;
     const boundStaging = staging.status === "spent" && staging.spendingTransactionId === undefined
@@ -120,6 +152,26 @@ export class ChainEvidenceStagingRecoveryRaceSource implements StagingRecoveryRa
       return Object.freeze({ status: "unknown" as const, detailDigest: evidenceDigest(`staging-unavailable:${request.staging.outpoint}`) });
     }
   }
+}
+
+async function abortableDelay(delayMs: number, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted();
+  if (delayMs === 0) return;
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(done, delayMs);
+    timer.unref();
+    signal.addEventListener("abort", aborted, { once: true });
+
+    function done(): void {
+      signal.removeEventListener("abort", aborted);
+      resolve();
+    }
+
+    function aborted(): void {
+      clearTimeout(timer);
+      reject(signal.reason ?? new Error("staging recovery observation aborted"));
+    }
+  });
 }
 
 function parseOutpoint(value: string): { transactionId: string; index: number } {

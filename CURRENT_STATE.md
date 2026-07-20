@@ -4,7 +4,7 @@ Last updated: **2026-07-20**
 
 ## Status
 
-The published `0.11.5` runtime on Terah is the epoch-18 clean cutover for the
+The published `0.11.8` runtime on Terah is the epoch-18 clean cutover for the
 generic x402 Merchant path, Hermes onboarding, wallet visibility, direct
 native-KAS Transfers, automatic funding intake, owner-managed limits, and the
 one-wallet UX. Its funded direct-Transfer and generic exact-purchase canaries
@@ -16,7 +16,7 @@ manifest and owner key, verifies the API-owned runtime directory, then
 permanently drops to the pinned API UID/GID before opening wallet, Journal, or
 evidence state.
 
-`0.11.8` is the current release candidate. It closes a live short-offer edge:
+`0.11.9` is the current release candidate. It closes a live short-offer edge:
 single-transaction approval now expires 30 seconds before Checkout expiry, so
 Sompi cannot start Treasury staging without enough time for the first Merchant
 submission. Temporarily uncorroborated recovery absence stays pending rather
@@ -30,7 +30,9 @@ requiring a second status call.
 If an exact payment wins after a staging-recovery race was already planned, the
 recovery Effect is now closed against that winner before projection. A
 receipted Purchase therefore reports completion rather than stale recovery
-guidance.
+guidance. The final follow-up performs the required two-read losing-candidate
+absence corroboration inside one recovery request instead of relying on an
+agent to issue two commands within the short proof window.
 
 Sompi is an API-first local agent wallet and purchasing runtime:
 
@@ -62,7 +64,7 @@ reader for earlier epochs.
   clients of the same Policy Change, Vault Migration, Wallet, Transfer, and
   Purchase modules.
 
-Acceptance evidence: 522 tests run, with 521 passing and one root-only
+Acceptance evidence: 525 tests run, with 524 passing and one root-only
 ownership test skipped. Offline smoke, Kaspa-x402 alpha.8 conformance,
 OpenAPI/Arazzo validation, Hermes callback tests, deterministic local E2E,
 package and clean-consumer verification, production dependency audit, retained
@@ -233,7 +235,7 @@ Terah remains the private operator-controlled Hermes deployment.
 - Hermes is active.
 - Sompi `0.8.2` was quiesced, backed up, and owner-recovered. The old runtime
   was removed to a plain-Hermes baseline, then the current installation was
-  built through the public bootstrap workflow. The byte-verified `0.11.5`
+  built through the public bootstrap workflow. The byte-verified `0.11.8`
   package now runs without replacing epoch-18 state.
 - The installed Sompi skill, callback plugin, isolated compatibility overlay,
   systemd units, and package match this repository.
@@ -262,9 +264,9 @@ The earlier Phase 11 and `0.8.2` evidence remains historical.
 
 ## Verification
 
-For the published `0.11.5` release:
+For the `0.11.9` release candidate:
 
-- 518 unit tests run: 517 pass and one root-only ownership test is skipped;
+- 525 unit tests run: 524 pass and one root-only ownership test is skipped;
 - the three Hermes plugin tests pass;
 - local generic-Merchant E2E and crash recovery pass;
 - x402 package/source/vector conformance passes;
@@ -281,10 +283,11 @@ The existing audit record remains under [`security/audits/`](security/audits/).
 
 ## Release
 
-The current release is `@elldeeone/sompi@0.11.5`, tagged `v0.11.5`. The registry
-tarball matches the verified 218-file release artifact (npm SHA-1
-`b6884924305ca5e10ee801cda65c712ba2ee7cf7`). The published package is live on
-Terah. Wallet, automatic funding, Transfer, x402 Purchase, recovery,
+The current published release is `@elldeeone/sompi@0.11.8`, tagged `v0.11.8`.
+The registry tarball matches the verified release artifact (npm SHA-1
+`ef5099bdad3f9666d4d0d3e1936b345fd97b0682`) and is live on Terah. `0.11.9`
+is the release candidate that makes the final staging-race corroboration
+single-call. Wallet, automatic funding, Transfer, x402 Purchase, recovery,
 agent-skill, Vault Migration, and fresh-agent preview paths are canary proven.
 
 Mainnet, autonomous authorization, passkeys, UCP, and official AP2/x402

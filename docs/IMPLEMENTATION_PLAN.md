@@ -873,6 +873,9 @@ internal error or require a second call to release the user-facing flow.
 The `0.11.8` live-canary follow-up closes an already-planned staging-recovery
 Effect when its exact payment wins, preventing stale recovery guidance on a
 receipted Purchase.
+The `0.11.9` follow-up performs the required two-read losing-candidate absence
+corroboration inside one bounded recovery request, so an agent does not need to
+issue two recovery commands inside the in-memory proof window.
 
 ## Deferred tracks (not part of the alpha.8 clean cutover)
 

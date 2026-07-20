@@ -15,7 +15,7 @@ import {
 const HASH32 = /^[a-f0-9]{64}$/;
 const DIGEST = /^sha256:[A-Za-z0-9_-]{43}$/;
 const ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/;
-const ABSENCE_PROPAGATION_INTERVAL_MS = 1_000;
+export const ABSENCE_PROPAGATION_INTERVAL_MS = 1_000;
 const ABSENCE_RETENTION_MS = 30_000;
 const MAX_TRACKED_ABSENCES = 1_024;
 
