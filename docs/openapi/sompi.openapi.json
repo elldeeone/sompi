@@ -3,7 +3,7 @@
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
   "info": {
     "title": "Sompi API",
-    "version": "0.11.0",
+    "version": "0.11.1",
     "description": "Authenticated wallet view, direct KAS Transfer, and protocol-neutral Purchase lifecycles for Sompi."
   },
   "security": [
@@ -2342,6 +2342,7 @@
                   "network",
                   "feeCeilingAtomic",
                   "maximumTotalAtomic",
+                  "issuedAt",
                   "expiresAt",
                   "policyDigest",
                   "operatorManifestRevision",
@@ -2395,6 +2396,11 @@
                     "type": "string",
                     "pattern": "^[1-9][0-9]*$",
                     "maxLength": 20
+                  },
+                  "issuedAt": {
+                    "type": "string",
+                    "format": "date-time",
+                    "maxLength": 40
                   },
                   "expiresAt": {
                     "type": "string",

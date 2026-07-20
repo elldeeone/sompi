@@ -382,7 +382,7 @@ const TRANSFER_FACTS_SCHEMA = {
   required: [
     "profile", "transferId", "requestKey", "sourceVaultAddress", "sourceVaultDigest",
     "destination", "amountAtomic", "asset", "network", "feeCeilingAtomic",
-    "maximumTotalAtomic", "expiresAt", "policyDigest", "operatorManifestRevision",
+    "maximumTotalAtomic", "issuedAt", "expiresAt", "policyDigest", "operatorManifestRevision",
     "operatorManifestDigest", "finalityFloor",
   ],
   properties: {
@@ -397,6 +397,7 @@ const TRANSFER_FACTS_SCHEMA = {
     network: { const: "kaspa:testnet-10" },
     feeCeilingAtomic: { type: "string", pattern: NONNEGATIVE_ATOMIC_PATTERN, maxLength: 20 },
     maximumTotalAtomic: { type: "string", pattern: POSITIVE_ATOMIC_PATTERN, maxLength: 20 },
+    issuedAt: { type: "string", format: "date-time", maxLength: 40 },
     expiresAt: { type: "string", format: "date-time", maxLength: 40 },
     policyDigest: { type: "string", pattern: DIGEST_PATTERN },
     operatorManifestRevision: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER },

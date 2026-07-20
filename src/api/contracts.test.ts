@@ -76,6 +76,41 @@ test("wallet and Transfer contracts reject unknown fields, wrong networks, and o
     recoveryRequired: false, safeToRetry: true, userAction: "none",
   };
   assert.equal(assertTransferView(transfer).id, transfer.id);
+  assert.equal(assertTransferView({
+    ...transfer,
+    state: "failed_terminal",
+    failureCode: "treasury_operation_failed",
+    authorization: {
+      transferId: transfer.id,
+      facts: {
+        profile: "sompi.transfer.1",
+        transferId: transfer.id,
+        requestKey: transfer.requestKey,
+        sourceVaultAddress: transfer.sourceVaultAddress,
+        sourceVaultDigest: transfer.sourceVaultDigest,
+        destination: transfer.destination,
+        amountAtomic: transfer.amountAtomic,
+        asset: "KAS",
+        network: "kaspa:testnet-10",
+        feeCeilingAtomic: transfer.feeCeilingAtomic,
+        maximumTotalAtomic: transfer.maximumTotalAtomic,
+        issuedAt: "2030-01-01T00:00:00.000Z",
+        expiresAt: "2030-01-01T00:02:00.000Z",
+        policyDigest: transfer.policyDigest,
+        operatorManifestRevision: transfer.manifestRevision,
+        operatorManifestDigest: transfer.manifestDigest,
+        finalityFloor: "accepted",
+      },
+      factsDigest: `sha256:${"E".repeat(43)}`,
+      decision: "approved",
+      authorityId: "urn:sompi:authority:test",
+      evidenceDigest: `sha256:${"F".repeat(43)}`,
+      verificationProfile: "urn:sompi:authority-decision:owner:1",
+      verifierId: "urn:sompi:authority:test",
+      decidedAtMs: 1_900_000_000_001,
+      expiresAtMs: 2_000_000_000_000,
+    },
+  }).state, "failed_terminal");
   assert.throws(() => assertTransferView({ ...transfer, rawTransaction: "secret" }), SompiApiContractError);
   const wallet = {
     network: "kaspa:testnet-10", asset: "KAS",
