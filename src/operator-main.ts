@@ -61,7 +61,9 @@ try {
     }
     case "vault-migrate": {
       const ownerPrivateKey = readOwnerKey(command.ownerKeyFile);
-      const config = purchaseRuntimeConfigFromEnv();
+      const config = purchaseRuntimeConfigFromEnv(process.env, undefined, {
+        operatorManifestReaderRole: "operator",
+      });
       const runtime = createSompiPurchaseRuntime(config);
       try {
         const executor = new OfflineOwnerVaultMigrationExecutor({

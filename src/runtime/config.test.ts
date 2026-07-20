@@ -85,6 +85,23 @@ test("production configuration rejects a manifest replaceable by the MCP user", 
   }
 });
 
+test("offline owner operations select the trusted operator manifest reader role", () => {
+  const fixture = runtimeFixture();
+  try {
+    const config = purchaseRuntimeConfigFromEnv(
+      fixture.environment,
+      fixture.root,
+      {
+        allowSameUserOperatorManifestForTests: true,
+        operatorManifestReaderRole: "operator",
+      }
+    );
+    assert.equal(config.operatorManifest.filename, fixture.environment.SOMPI_OPERATOR_MANIFEST);
+  } finally {
+    fixture.close();
+  }
+});
+
 test("programmatic runtime configuration rejects manifest projection drift and unknown fields", () => {
   const fixture = runtimeFixture();
   try {

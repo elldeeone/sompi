@@ -4,12 +4,13 @@ Last updated: **2026-07-20**
 
 ## Status
 
-The published `0.11.0` runtime on Terah is the epoch-18 clean cutover for the
+The published `0.11.1` runtime on Terah is the epoch-18 clean cutover for the
 generic x402 Merchant path, Hermes onboarding, wallet visibility, direct
 native-KAS Transfers, automatic funding intake, owner-managed limits, and the
-one-wallet UX. The current source tree is the `0.11.1` patch candidate fixing
-the approved-Transfer response contract found during the live release canary;
-it is not yet published or deployed.
+one-wallet UX. Its funded direct-Transfer and generic exact-purchase canaries
+are accepted and receipted. The current source tree is the `0.11.2` patch
+candidate fixing the offline-owner manifest reader role exposed before the
+vault-protection migration could create or broadcast a transaction.
 
 Sompi is an API-first local agent wallet and purchasing runtime:
 
@@ -41,7 +42,7 @@ reader for earlier epochs.
   clients of the same Policy Change, Vault Migration, Wallet, Transfer, and
   Purchase modules.
 
-Acceptance evidence: 513 tests run, with 512 passing and one root-only
+Acceptance evidence: 514 tests run, with 513 passing and one root-only
 ownership test skipped. Offline smoke, Kaspa-x402 alpha.8 conformance,
 OpenAPI/Arazzo validation, Hermes callback tests, deterministic local E2E,
 package and clean-consumer verification, production dependency audit, retained
