@@ -778,6 +778,48 @@ test("ambiguous paid request and recovery sweep reconcile the exact winner witho
   }
 });
 
+test("a settled exact winner closes an already-planned staging recovery race", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-settled-race-cleanup-"));
+  fs.chmodSync(directory, 0o700);
+  const filename = path.join(directory, "purchase.sqlite");
+  let nowMs = NOW;
+  const journal = new PurchaseJournal(filename, { now: () => nowMs });
+  const dependencies = new FakeDependencies();
+  dependencies.termsExpiresAt = new Date(NOW + 5_000).toISOString();
+  dependencies.submitMode = "throw";
+  dependencies.observeMode = "pending";
+  const coordinator = makeCoordinator(journal, dependencies, () => nowMs);
+  try {
+    const purchase = await coordinator.purchase(makeIntent());
+    assert.equal(purchase.state, "failed_recoverable");
+
+    nowMs = NOW + 6_000;
+    dependencies.stagingRecoveryObserveMode = "safe_to_submit";
+    dependencies.stagingRecoverySubmitMode = "ambiguous";
+    await coordinator.recover(purchase.id);
+    assert.equal(dependencies.recoveryCalls.submit, 1);
+    assert.equal(
+      journal.treasuryStagingRecoveryJournalContext(purchase.id, 1)?.effect.state,
+      "ambiguous"
+    );
+
+    dependencies.observeMode = "settled";
+    dependencies.stagingRecoveryObserveMode = "exact_payment_won";
+    const completed = await coordinator.recover(purchase.id);
+    assert.equal(completed.state, "receipted");
+    assert.match(completed.summary, /purchase complete/i);
+    assert.equal(completed.userAction, "none");
+    assert.equal(dependencies.recoveryCalls.submit, 1);
+    assert.equal(
+      journal.treasuryStagingRecoveryJournalContext(purchase.id, 1)?.effect.state,
+      "observed"
+    );
+  } finally {
+    journal.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("unknown staging spender fails closed and over-ceiling recovery remains persisted for manual authority", async () => {
   await withFixture(async ({ coordinator, dependencies, intent, journal }) => {
     dependencies.submitMode = "throw";

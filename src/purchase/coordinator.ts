@@ -1842,21 +1842,29 @@ export class PurchaseCoordinator implements PurchaseModule {
     purchaseId: PurchaseId
   ): Promise<"none" | "pending" | "exact_payment_won" | "recovery_won" | "conflict"> {
     const attempts = this.journal.paymentAttempts(purchaseId);
-    if (attempts.length !== 1 || this.journal.findSettlementForPurchase(purchaseId)) {
-      return "none";
-    }
+    if (attempts.length !== 1) return "none";
     const attempt = attempts[0];
-    const staged = this.journal.treasuryStagingRecoveryContext(
-      purchaseId,
-      attempt.attempt
-    );
-    if (!staged?.observation || staged.reservation.state !== "in_flight") {
-      return "none";
-    }
     let recovery = this.journal.treasuryStagingRecoveryJournalContext(
       purchaseId,
       attempt.attempt
     );
+    // A settlement normally means no recovery race is needed. If a race was
+    // already durably planned, however, it must still observe the exact winner
+    // and close its Effect; otherwise a completed Purchase is projected as
+    // requiring recovery forever.
+    if (this.journal.findSettlementForPurchase(purchaseId) && !recovery) {
+      return "none";
+    }
+    const staged = this.journal.treasuryStagingRecoveryContext(
+      purchaseId,
+      attempt.attempt
+    );
+    if (
+      !staged?.observation ||
+      (!recovery && staged.reservation.state !== "in_flight")
+    ) {
+      return "none";
+    }
     if (!recovery) {
       const purchase = this.journal.requirePurchase(purchaseId);
       const paymentEffect = this.paymentEffect(purchaseId, false);

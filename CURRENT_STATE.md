@@ -16,7 +16,7 @@ manifest and owner key, verifies the API-owned runtime directory, then
 permanently drops to the pinned API UID/GID before opening wallet, Journal, or
 evidence state.
 
-`0.11.7` is the current release candidate. It closes a live short-offer edge:
+`0.11.8` is the current release candidate. It closes a live short-offer edge:
 single-transaction approval now expires 30 seconds before Checkout expiry, so
 Sompi cannot start Treasury staging without enough time for the first Merchant
 submission. Temporarily uncorroborated recovery absence stays pending rather
@@ -27,6 +27,10 @@ recovered on TN10 with no Merchant payment; evidence is recorded in
 An Authority prompt that reaches that earlier deadline now returns the expired
 Purchase in the same API call instead of surfacing a generic internal error and
 requiring a second status call.
+If an exact payment wins after a staging-recovery race was already planned, the
+recovery Effect is now closed against that winner before projection. A
+receipted Purchase therefore reports completion rather than stale recovery
+guidance.
 
 Sompi is an API-first local agent wallet and purchasing runtime:
 
