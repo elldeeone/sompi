@@ -31,7 +31,7 @@ if (args[0] === "install") {
   fs.mkdirSync(path.join(native, "lib"), { recursive: true });
   fs.mkdirSync(sompi, { recursive: true });
   fs.writeFileSync(path.join(sompi, "package.json"), JSON.stringify({
-    name: "@elldeeone/sompi", version: "0.11.3", dependencies: { "better-sqlite3": "12.11.1" }
+    name: "@elldeeone/sompi", version: "0.11.4", dependencies: { "better-sqlite3": "12.11.1" }
   }));
   const nativeScripts = { install: "prebuild-install || node-gyp rebuild --release" };
   if (fs.existsSync(path.join(root, "inject-extra-lifecycle"))) nativeScripts.postinstall = "node unexpected.js";
@@ -48,7 +48,7 @@ if (args[0] === "install") {
     path.resolve("scripts/install-runtime-package.mjs"),
     "--prefix", prefix,
     "--package", "/reviewed/sompi.tgz",
-    "--expected-version", "0.11.3",
+    "--expected-version", "0.11.4",
   ], {
     cwd: path.resolve("."),
     env: {
@@ -74,7 +74,7 @@ if (args[0] === "install") {
     path.resolve("scripts/install-runtime-package.mjs"),
     "--prefix", rejectedPrefix,
     "--package", "/reviewed/sompi.tgz",
-    "--expected-version", "0.11.3",
+    "--expected-version", "0.11.4",
   ], {
     cwd: path.resolve("."),
     env: {

@@ -16,7 +16,7 @@ npm init -y >/dev/null
 node /install-runtime-package.mjs \
   --prefix /opt/sompi \
   --package /package.tgz \
-  --expected-version 0.11.3 >&2
+  --expected-version 0.11.4 >&2
 
 package_root=/opt/sompi/node_modules/@elldeeone/sompi
 [[ -x /opt/sompi/node_modules/.bin/sompi-mcp ]] || fail "MCP bin is missing"

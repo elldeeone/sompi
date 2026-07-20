@@ -821,6 +821,8 @@ change set without preserving vulnerable compatibility paths.
   checks, dependency audit, SilverScript fixtures, and clean release verifier.
 - [x] Terminalize expired and stale owner-approved Vault Migration plans before
   any owner-key or chain work so superseded plans cannot block replacement.
+- [x] Validate offline-owner inputs as root, then permanently enter the pinned
+  API UID/GID before opening API-owned runtime state.
 
 Gate:
 

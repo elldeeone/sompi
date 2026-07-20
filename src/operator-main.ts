@@ -19,6 +19,7 @@ import {
   previewHostBootstrap,
 } from "./operator/host-bootstrap.js";
 import { activateHostBootstrap, installHostBootstrap } from "./operator/host-install.js";
+import { OfflineRuntimeIdentityError, enterOfflineOwnerRuntime } from "./operator/offline-runtime.js";
 import { activateBootstrapVault } from "./operator/vault-activation.js";
 import { generateOwnerKey } from "./vault.js";
 import { purchaseRuntimeConfigFromEnv } from "./runtime/config.js";
@@ -61,9 +62,8 @@ try {
     }
     case "vault-migrate": {
       const ownerPrivateKey = readOwnerKey(command.ownerKeyFile);
-      const config = purchaseRuntimeConfigFromEnv(process.env, undefined, {
-        operatorManifestReaderRole: "operator",
-      });
+      enterOfflineOwnerRuntime(process.env);
+      const config = purchaseRuntimeConfigFromEnv(process.env);
       const runtime = createSompiPurchaseRuntime(config);
       try {
         const executor = new OfflineOwnerVaultMigrationExecutor({
@@ -107,7 +107,7 @@ try {
   if (error instanceof CliArgumentError) {
     process.stderr.write(`fatal: ${error.message}\n${OPERATOR_USAGE}\n`);
     process.exitCode = 2;
-  } else if (error instanceof OperatorProvisioningError || error instanceof OperatorManifestError || error instanceof ApiCredentialInstallError || error instanceof HostBootstrapError) {
+  } else if (error instanceof OperatorProvisioningError || error instanceof OperatorManifestError || error instanceof ApiCredentialInstallError || error instanceof HostBootstrapError || error instanceof OfflineRuntimeIdentityError) {
     process.stderr.write(`fatal: ${error.message}\n`);
     process.exitCode = 1;
   } else {

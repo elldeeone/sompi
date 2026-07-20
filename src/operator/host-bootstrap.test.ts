@@ -18,7 +18,7 @@ import { renderApiUnit, renderAuthorityUnit, renderTmpfiles, renderVaultActivati
 
 const REQUEST = {
   schema: HOST_BOOTSTRAP_SCHEMA,
-  packageVersion: "0.11.3",
+  packageVersion: "0.11.4",
   agent: { kind: "hermes", user: "luke" },
   ownerRecoveryFile: "/root/sompi-owner-recovery.json",
   telegramBotTokenFile: "/root/sompi-telegram-token",
@@ -75,9 +75,9 @@ test("host bootstrap request is canonical, previewable, and creates the existing
   const request = parseHostBootstrapRequest(REQUEST);
   const digest = hostBootstrapRequestDigest(request);
   assert.match(digest, /^sha256:[A-Za-z0-9_-]{43}$/);
-  const preview = previewHostBootstrap(request, "0.11.3", "/tmp/request.json");
+  const preview = previewHostBootstrap(request, "0.11.4", "/tmp/request.json");
   assert.equal(preview.requestDigest, digest);
-  assert.equal(preview.package, "@elldeeone/sompi@0.11.3");
+  assert.equal(preview.package, "@elldeeone/sompi@0.11.4");
   assert.equal(preview.minimumFundingSompi, "85000000");
   assert.deepEqual(preview.merchants, ["demo.kaspa-x402.org:443"]);
   assert.match(preview.nextCommand, /^sudo sompi-operator bootstrap/);

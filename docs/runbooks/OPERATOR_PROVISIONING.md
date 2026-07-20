@@ -14,7 +14,7 @@ and spending limits, then preview it:
 
 ```bash
 npm exec --yes --allow-scripts=better-sqlite3@12.11.1 \
-  --package=@elldeeone/sompi@0.11.3 -- \
+  --package=@elldeeone/sompi@0.11.4 -- \
   sompi-operator bootstrap-preview REQUEST.json
 ```
 
@@ -126,6 +126,10 @@ therefore requires an owner-signed replacement.
    ```bash
    sompi-operator vault-migrate execute VAULT_MIGRATION_ID /root/sompi-owner-key
    ```
+
+   The short-lived command reads the owner key and validates the operator
+   manifest as root, then permanently drops to the pinned API UID/GID before it
+   opens runtime state. The API service and Agent never receive the owner key.
 
 5. If the command reports an uncertain chain outcome, do not start a second
    migration. Reconcile the same ID:

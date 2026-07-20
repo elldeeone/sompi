@@ -66,7 +66,6 @@ export interface SompiPurchaseRuntimeConfig {
 
 export interface PurchaseRuntimeConfigFromEnvOptions {
   readonly allowSameUserOperatorManifestForTests?: boolean;
-  readonly operatorManifestReaderRole?: "runtime" | "operator";
 }
 
 export class SompiRuntimeConfigError extends Error {
@@ -99,7 +98,7 @@ export function purchaseRuntimeConfigFromEnv(
   const operatorManifest = loadOperatorManifest(manifestPath, {
     expectedOperatorUserId: operatorUserId,
     runtimeGroupId,
-    readerRole: options.operatorManifestReaderRole ?? "runtime",
+    readerRole: "runtime",
     ...(options.allowSameUserOperatorManifestForTests
       ? { allowSameUserForTests: true }
       : {}),
