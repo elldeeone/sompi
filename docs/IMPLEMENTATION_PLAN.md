@@ -865,8 +865,11 @@ recovery transaction
 `64703a37cf9fbe8416798f25bd117eac71fa8609fda8ad6ef227179b03a9aa2d`.
 The `0.11.6` cut reserves 30 seconds for single-transaction execution before
 presenting authority as live, keeps uncorroborated recovery absence pending,
-and projects a proven no-payment recovery as `expired`. The full 522-test suite
-passes with one expected privileged ownership skip.
+and projects a proven no-payment recovery as `expired`. The follow-up suite runs
+523 tests, with 522 passing and one expected privileged ownership skip.
+The `0.11.7` follow-up also projects an in-flight Authority timeout as `expired`
+in the original API call, so a missed prompt cannot surface as a generic
+internal error or require a second call to release the user-facing flow.
 
 ## Deferred tracks (not part of the alpha.8 clean cutover)
 

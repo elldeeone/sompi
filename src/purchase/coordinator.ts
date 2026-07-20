@@ -887,16 +887,35 @@ export class PurchaseCoordinator implements PurchaseModule {
       terms.checkoutEvidenceDigest,
       "checkout-terms"
     );
-    const response = await this.authority.request({
-      request,
-      checkoutEvidence: {
-        bytes: this.journal.readEvidence(terms.checkoutEvidenceDigest),
-        digest: terms.checkoutEvidenceDigest,
-        mediaType: checkoutArtifact.mediaType,
-        profile: checkoutArtifact.profile,
-        issuer: checkoutArtifact.issuer,
-      },
-    });
+    let response: AuthorityResult;
+    try {
+      response = await this.authority.request({
+        request,
+        checkoutEvidence: {
+          bytes: this.journal.readEvidence(terms.checkoutEvidenceDigest),
+          digest: terms.checkoutEvidenceDigest,
+          mediaType: checkoutArtifact.mediaType,
+          profile: checkoutArtifact.profile,
+          issuer: checkoutArtifact.issuer,
+        },
+      });
+    } catch (error) {
+      // A human-present Authority can time out while this call is in flight.
+      // Once the durable request deadline has elapsed, no Authority response
+      // can authorize this Purchase, so project the terminal fact immediately
+      // instead of leaking an adapter error and requiring a second API call.
+      if (request.expiresAtMs <= this.now()) {
+        this.journal.transitionPurchase(
+          purchase.id,
+          "awaiting_authority",
+          "expired",
+          "authorization_request_expired_during_prompt",
+          request.requestDigest
+        );
+        return true;
+      }
+      throw error;
+    }
     if (response.status === "pending") return false;
     const verified = assertVerifiedAuthorityDecision(response.decision);
     const signed = verified.evidence;

@@ -182,6 +182,33 @@ test("authority expires before the Checkout deadline to preserve the execution w
   }
 });
 
+test("an Authority prompt timeout returns the expired Purchase without a retry", async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-authority-timeout-"));
+  fs.chmodSync(directory, 0o700);
+  let now = NOW;
+  const journal = new PurchaseJournal(path.join(directory, "purchase.sqlite"), { now: () => now });
+  const dependencies = new FakeDependencies();
+  dependencies.termsExpiresAt = new Date(NOW + 60_000).toISOString();
+  dependencies.onAuthorityRequest = () => {
+    now = NOW + 30_000;
+    throw new Error("authority request expired during approval");
+  };
+  const coordinator = makeCoordinator(journal, dependencies, () => now, 30_000);
+  try {
+    const expired = await coordinator.purchase(makeIntent());
+    assert.equal(expired.state, "expired");
+    assert.equal(expired.authorization.status, "pending");
+    assert.equal(expired.treasury.status, "unreserved");
+    assert.equal(expired.paymentAttempts.length, 0);
+    assert.equal(dependencies.calls.authority, 1);
+    assert.equal(dependencies.calls.prepareStaging, 0);
+    assert.match(expired.userAction ?? "", /fresh merchant terms/i);
+  } finally {
+    journal.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test("caller cancellation before an external Treasury effect atomically releases capacity", async () => {
   await withFixture(async ({ coordinator, dependencies, intent, journal }) => {
     const cancellation = new AbortController();
@@ -930,6 +957,7 @@ class FakeDependencies {
   stagingRecoveryFeeAtomic = "1";
   stagingFeeAtomic = "1";
   onStagingObserved?: () => void;
+  onAuthorityRequest?: () => void;
   onStagingPrepared?: () => void;
   onStagingSubmit?: () => void;
   onExactPrepared?: () => void;
@@ -1018,6 +1046,7 @@ class FakeDependencies {
     request: async ({ request, checkoutEvidence }): Promise<AuthorityResult> => {
       this.calls.authority++;
       assert.equal(checkoutEvidence.digest, evidenceDigest(checkoutEvidence.bytes));
+      this.onAuthorityRequest?.();
       if (this.authorityMode === "pending") return { status: "pending" };
       return verifiedAuthorityResult(
         request,
