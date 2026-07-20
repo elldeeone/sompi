@@ -21,3 +21,8 @@ token, recovery key, prepared transaction, or private node URL.
 human-approved Transfer sent exactly the configured per-transfer maximum of
 `100,000,000` sompi while accounting for its fee separately. The old failed
 Transfer remained terminal and was not retried.
+
+`terah-automatic-funding-0.10.0.json` records the `0.10.0` wallet-UX canary.
+Terah detected funds at the same receive address, secured them through one
+durable vault-deposit transaction without an approval prompt, preserved epoch
+16, and exposed the resulting balance and activity in tKAS.

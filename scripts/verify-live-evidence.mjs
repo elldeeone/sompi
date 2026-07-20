@@ -245,6 +245,54 @@ if (
   )
 ) throw new Error("0.9.1 transfer-limit evidence invariants changed");
 
+const automaticFunding = JSON.parse(
+  fs.readFileSync(path.join(walletTransferEvidence, "terah-automatic-funding-0.10.0.json"), "utf8")
+);
+const automaticFundingEncoded = JSON.stringify(automaticFunding);
+if (
+  createHash("sha256").update(automaticFundingEncoded).digest("hex") !==
+    "b7375d81bb7f97506b4a6fc7fdafe10b3e6e6edd6d6f711fec354d6dc65ef02e" ||
+  automaticFunding.profile !== "urn:sompi:evidence:terah-automatic-funding:1" ||
+  automaticFunding.network !== "kaspa:testnet-10" ||
+  automaticFunding.packageVersion !== "0.10.0" ||
+  automaticFunding.journalEpoch !== 16 ||
+  automaticFunding.deployment?.registryArtifactByteIdentical !== true ||
+  automaticFunding.deployment?.stateReinitialized !== false ||
+  automaticFunding.deployment?.walletIdentityPreserved !== true ||
+  automaticFunding.deployment?.journalPreserved !== true ||
+  automaticFunding.deployment?.privateMaterialIncluded !== false ||
+  automaticFunding.receive?.stableAcrossDeployment !== true ||
+  automaticFunding.automaticSecuring?.automatic !== true ||
+  automaticFunding.automaticSecuring?.authorityDecisionRequired !== false ||
+  automaticFunding.automaticSecuring?.operationKind !== "vault_deposit" ||
+  automaticFunding.automaticSecuring?.state !== "completed" ||
+  automaticFunding.automaticSecuring?.paymentTransactionCount !== 1 ||
+  automaticFunding.automaticSecuring?.finality !== "accepted" ||
+  BigInt(automaticFunding.walletBefore?.incomingAtomic ?? -1) -
+      BigInt(automaticFunding.automaticSecuring?.feeAtomic ?? -1) !==
+    BigInt(automaticFunding.automaticSecuring?.amountAtomic ?? -1) ||
+  BigInt(automaticFunding.walletBefore?.protectedAtomic ?? -1) +
+      BigInt(automaticFunding.automaticSecuring?.amountAtomic ?? -1) !==
+    BigInt(automaticFunding.walletAfter?.protectedAtomic ?? -1) ||
+  automaticFunding.walletAfter?.availableAtomic !== automaticFunding.walletAfter?.protectedAtomic ||
+  automaticFunding.walletAfter?.totalAtomic !== automaticFunding.walletAfter?.protectedAtomic ||
+  automaticFunding.walletAfter?.incomingAtomic !== "0" ||
+  automaticFunding.walletAfter?.pendingAtomic !== "0" ||
+  automaticFunding.walletAfter?.securingState !== "idle" ||
+  automaticFunding.walletAfter?.vaultOutpoint?.transactionId !==
+    automaticFunding.automaticSecuring?.transactionId ||
+  automaticFunding.walletAfter?.vaultOutpoint?.index !==
+    automaticFunding.automaticSecuring?.continuationOutputIndex ||
+  automaticFunding.assertions?.oneReceiveAddress !== true ||
+  automaticFunding.assertions?.incomingPrincipalConserved !== true ||
+  automaticFunding.assertions?.outwardApprovalBoundaryUnchanged !== true ||
+  automaticFunding.assertions?.noAutomaticTransferOrPurchase !== true ||
+  automaticFunding.assertions?.noDuplicateSubmission !== true ||
+  /(?:privateKey|wallet-key|owner\.key|ipc-mac\.key|sourceWalletDirectory|nodeUrl|telegramBotToken|apiCredential)/i.test(
+    automaticFundingEncoded
+  )
+) throw new Error("0.10.0 automatic-funding evidence invariants changed");
+
 process.stdout.write("Generic x402, wallet/Transfer, and historical TN10 evidence passed.\n");
 
 function readHistorical(filename) {

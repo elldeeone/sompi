@@ -1,12 +1,12 @@
 # Current state
 
-Last updated: **2026-07-19**
+Last updated: **2026-07-20**
 
 ## Status
 
 The generic x402 Merchant cutover, near-automatic Hermes onboarding, wallet
 visibility, direct native-KAS Transfers, and the automatic funding-intake UX
-are implemented in the current working tree.
+are published and deployed on Terah.
 
 Sompi is an API-first local agent wallet and purchasing runtime:
 
@@ -44,14 +44,10 @@ epoch-15 reader.
 - The complete local suite passes 486 tests (485 pass, one privileged-only
   ownership test skipped) plus the offline smoke.
 
-This automatic-intake and wallet-UX cutover is implemented but not yet
-published or deployed. The currently published `0.9.1` package and Terah still
-run the preceding wallet interface until a new release is deliberately cut and
-canary tested.
-
-Version `0.9.1` is published, tagged `v0.9.1`, and deployed on Terah from the
-byte-verified public registry package. It corrects the `0.9.0` boundary error
-that combined an exact per-transfer-limit amount with its separate fee ceiling.
+Version `0.10.0` is published, tagged `v0.10.0`, and deployed on Terah from the
+byte-verified public registry package. It preserves epoch 16 while replacing
+the old wallet projection with one stable receive address, automatic inward
+securing, unified activity, and KAS-first public amounts.
 
 ## Protocols
 
@@ -146,8 +142,8 @@ Terah remains the private operator-controlled Hermes deployment.
 - Hermes is active.
 - Sompi `0.8.2` was quiesced, backed up, and owner-recovered. The old runtime
   was removed to a plain-Hermes baseline, then `0.9.0` was installed through
-  the public bootstrap workflow. The byte-verified `0.9.1` package replaced
-  the release files without replacing the epoch-16 state.
+  the public bootstrap workflow. The byte-verified `0.10.0` package now runs
+  without replacing the epoch-16 state.
 - The installed Sompi skill, callback plugin, isolated compatibility overlay,
   systemd units, and package match this repository.
 - Authority, API, Hermes gateway, and all local sockets are healthy.
@@ -155,28 +151,30 @@ Terah remains the private operator-controlled Hermes deployment.
   created fresh keys and Journal epoch 16. Activation transaction
   `a8b2082a59b147dc223a26c112468e63d5f793727665b26bc2ffdb4796ae78ae`
   deposited `277,229,550` sompi into the new SilverScript vault.
-- Natural wallet questions return the observed balance, current address,
-  limits, and chain status through the Sompi API.
+- Natural wallet questions return one receive address, total/available/incoming/
+  pending tKAS balances, securing state, limits, chain status, and activity.
 - Human-approved direct Transfers and the standard-native x402 regression are
-  receipted. The current vault outpoint is
-  `35be8e0493513ec977e8bfd54337f36e09584c57c49d0f0525431ebe028f0f65:1`
-  with `86,725,800` sompi and no reservation.
+  receipted. Automatic funding intake secured the existing receive-address
+  deposit without an approval prompt in transaction
+  `6076b807a4dd9edd7bc9e37a8a5d82c115cccf3ec0aea168c6b923b1c51c29d0`.
+  The current vault outpoint is that transaction's output `0`, with
+  `10000.9490244 tKAS` available and nothing incoming or pending.
 - Authority, API, Hermes gateway, and all local sockets remain healthy.
 
 The earlier Phase 11 and `0.8.2` evidence remains historical.
 
 ## Verification
 
-For the published `0.9.1` release:
+For the published `0.10.0` release:
 
-- 476 unit tests run: 475 pass and one root-only ownership test is skipped;
+- 486 unit tests run: 485 pass and one root-only ownership test is skipped;
 - the three Hermes plugin tests pass;
 - local generic-Merchant E2E and crash recovery pass;
 - x402 package/source/vector conformance passes;
 - current and historical funded evidence locks pass;
 - OpenAPI and Arazzo checks pass;
 - production dependency audit reports zero vulnerabilities;
-- the 205-file package policy, clean install, licence audit, and consumer smoke
+- the 208-file package policy, clean install, licence audit, and consumer smoke
   pass.
 
 The complete release verifier passes, including its final clean-tree assertion.
@@ -186,11 +184,11 @@ The existing audit record remains under [`security/audits/`](security/audits/).
 
 ## Release
 
-The current release is `@elldeeone/sompi@0.9.1`, tagged `v0.9.1`. The registry
-tarball is byte-identical to the verified 205-file release artifact (SHA-256
-`cdcbbfb90d892d8e46dc510dcb6347fea4ca48194d9e3a6e41d053f077b97bd9`).
-The published package is live on Terah and its wallet, Transfer, x402 Purchase,
-recovery, and agent-skill paths are canary proven.
+The current release is `@elldeeone/sompi@0.10.0`, tagged `v0.10.0`. The registry
+tarball is byte-identical to the verified 208-file release artifact (SHA-256
+`fc957b4c912fe178717c62c88ff06429368a758abd9fd47cba4f6b26096e8948`).
+The published package is live on Terah and its wallet, automatic funding,
+Transfer, x402 Purchase, recovery, and agent-skill paths are canary proven.
 
 Mainnet, autonomous authorization, passkeys, UCP, and official AP2/x402
 interoperability remain out of scope. See

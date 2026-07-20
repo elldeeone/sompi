@@ -742,12 +742,15 @@ Gate:
 - No automatic path can create an outward payment or weaken policy.
 - Transfers and x402 Purchases continue to pass unchanged.
 
-Local acceptance evidence (2026-07-19): 486 tests run, with 485 passing and
-one privileged ownership test skipped. The offline smoke proof, Kaspa-x402
-alpha.8 conformance, OpenAPI and Arazzo checks, Hermes compatibility tests,
+Acceptance evidence (2026-07-19): 486 tests run, with 485 passing and one
+privileged ownership test skipped. The offline smoke proof, Kaspa-x402 alpha.8
+conformance, OpenAPI and Arazzo checks, Hermes compatibility tests,
 SilverScript compiler fixture reproduction, and production dependency audit
-all pass. A funded automatic-intake canary and deployment remain release work;
-the published `0.9.1` package and Terah do not yet contain Phase 15.
+all pass. Published `0.10.0` was deployed without replacing epoch 16. Terah
+automatically secured the existing receive-address deposit through transaction
+`6076b807a4dd9edd7bc9e37a8a5d82c115cccf3ec0aea168c6b923b1c51c29d0`,
+required no approval, and reported `10000.9490244 tKAS` available with nothing
+incoming or pending.
 
 ## Deferred tracks (not part of the alpha.8 clean cutover)
 

@@ -1,0 +1,68 @@
+{
+  "profile": "urn:sompi:evidence:terah-automatic-funding:1",
+  "recordedAt": "2026-07-19T15:04:31.065Z",
+  "network": "kaspa:testnet-10",
+  "packageVersion": "0.10.0",
+  "runtimeCommit": "897b6e46d990f1d22d0bfe166c86a766a746e19d",
+  "packageArchiveSha256": "fc957b4c912fe178717c62c88ff06429368a758abd9fd47cba4f6b26096e8948",
+  "packageRegistryShasum": "f3d854c4ebbac74e1fcef6987dcccf51a87c835b",
+  "packageRegistryIntegrity": "sha512-AeDJz/AMMNDE9rWeYOD7vRaw80+m2dTGzgo0E535m2xGL2hA1sCfWqVjnKR6xq+T2OHy6fc/vEl3Sd+poatdRg==",
+  "journalEpoch": 16,
+  "deployment": {
+    "priorVersion": "0.9.1",
+    "currentVersion": "0.10.0",
+    "registryArtifactByteIdentical": true,
+    "stateReinitialized": false,
+    "walletIdentityPreserved": true,
+    "journalPreserved": true,
+    "sompiApi": "active",
+    "sompiAuthority": "active",
+    "hermesGateway": "active",
+    "privateMaterialIncluded": false
+  },
+  "receive": {
+    "address": "kaspatest:qrxeq3nwsc90spysdga0flxsujzkypg8ngnllcek4efhpfy2ghm2w0c3sfrw4",
+    "stableAcrossDeployment": true,
+    "networkWarning": "Testnet funds only — do not send mainnet KAS."
+  },
+  "walletBefore": {
+    "protectedAtomic": "86725800",
+    "incomingAtomic": "1000010000000",
+    "pendingAtomic": "0"
+  },
+  "automaticSecuring": {
+    "automatic": true,
+    "authorityDecisionRequired": false,
+    "operationKind": "vault_deposit",
+    "operationId": "funding-intake:vltDzkrcUD_6D6iSxIAYJqXR0RgVIZtg7Y7q13q-Kt4",
+    "state": "completed",
+    "amountAtomic": "1000008176640",
+    "feeAtomic": "1823360",
+    "transactionId": "6076b807a4dd9edd7bc9e37a8a5d82c115cccf3ec0aea168c6b923b1c51c29d0",
+    "continuationOutputIndex": 0,
+    "paymentTransactionCount": 1,
+    "finality": "accepted",
+    "userActionAfter": "none"
+  },
+  "walletAfter": {
+    "chainStatus": "observed",
+    "totalAtomic": "1000094902440",
+    "availableAtomic": "1000094902440",
+    "incomingAtomic": "0",
+    "protectedAtomic": "1000094902440",
+    "pendingAtomic": "0",
+    "securingState": "idle",
+    "vaultAddress": "kaspatest:pz75m439tesznm2cx4p7tn8m6934yqwa7pmxyn7etzthqyhuwyvg6au8xfttm",
+    "vaultOutpoint": {
+      "transactionId": "6076b807a4dd9edd7bc9e37a8a5d82c115cccf3ec0aea168c6b923b1c51c29d0",
+      "index": 0
+    }
+  },
+  "assertions": {
+    "oneReceiveAddress": true,
+    "incomingPrincipalConserved": true,
+    "outwardApprovalBoundaryUnchanged": true,
+    "noAutomaticTransferOrPurchase": true,
+    "noDuplicateSubmission": true
+  }
+}
