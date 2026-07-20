@@ -4,7 +4,7 @@ Last updated: **2026-07-20**
 
 ## Status
 
-The published `0.11.8` runtime on Terah is the epoch-18 clean cutover for the
+The published `0.11.9` runtime on Terah is the epoch-18 clean cutover for the
 generic x402 Merchant path, Hermes onboarding, wallet visibility, direct
 native-KAS Transfers, automatic funding intake, owner-managed limits, and the
 one-wallet UX. Its funded direct-Transfer and generic exact-purchase canaries
@@ -16,7 +16,7 @@ manifest and owner key, verifies the API-owned runtime directory, then
 permanently drops to the pinned API UID/GID before opening wallet, Journal, or
 evidence state.
 
-`0.11.9` is the current release candidate. It closes a live short-offer edge:
+`0.11.9` closes a live short-offer edge:
 single-transaction approval now expires 30 seconds before Checkout expiry, so
 Sompi cannot start Treasury staging without enough time for the first Merchant
 submission. Temporarily uncorroborated recovery absence stays pending rather
@@ -33,6 +33,10 @@ receipted Purchase therefore reports completion rather than stale recovery
 guidance. The final follow-up performs the required two-read losing-candidate
 absence corroboration inside one recovery request instead of relying on an
 agent to issue two commands within the short proof window.
+The funded follow-up paid the demo Merchant exactly once, returned the report,
+and now projects every staging-race Effect as observed with no pending user
+action. Evidence is recorded in
+[`evidence/purchase-staging-race-0.11.9/`](evidence/purchase-staging-race-0.11.9/README.md).
 
 Sompi is an API-first local agent wallet and purchasing runtime:
 
@@ -235,7 +239,7 @@ Terah remains the private operator-controlled Hermes deployment.
 - Hermes is active.
 - Sompi `0.8.2` was quiesced, backed up, and owner-recovered. The old runtime
   was removed to a plain-Hermes baseline, then the current installation was
-  built through the public bootstrap workflow. The byte-verified `0.11.8`
+  built through the public bootstrap workflow. The byte-verified `0.11.9`
   package now runs without replacing epoch-18 state.
 - The installed Sompi skill, callback plugin, isolated compatibility overlay,
   systemd units, and package match this repository.
@@ -259,12 +263,17 @@ Terah remains the private operator-controlled Hermes deployment.
   `7c02e09cfa711f5f398524d3d25b5a2538cc44982cfe57db18b3168659df1310:0`.
   The post-migration wallet reports `9999.2554038 tKAS` available, 4 tKAS
   vault protection, and nothing incoming or pending.
+- The `0.11.9` staging-race canary paid `0.2 tKAS` once in transaction
+  `1ca0d3425228172da951c032aedaab40ee708927a1842a5f05a95fa82d9950ea`,
+  returned the report, and left every Purchase Effect observed. Its planned
+  losing recovery transaction was never broadcast. The current wallet has
+  `9998.4288957 tKAS` available, `0 tKAS` pending, and no required user action.
 
 The earlier Phase 11 and `0.8.2` evidence remains historical.
 
 ## Verification
 
-For the `0.11.9` release candidate:
+For `0.11.9`:
 
 - 525 unit tests run: 524 pass and one root-only ownership test is skipped;
 - the three Hermes plugin tests pass;
@@ -283,12 +292,11 @@ The existing audit record remains under [`security/audits/`](security/audits/).
 
 ## Release
 
-The current published release is `@elldeeone/sompi@0.11.8`, tagged `v0.11.8`.
+The current published release is `@elldeeone/sompi@0.11.9`, tagged `v0.11.9`.
 The registry tarball matches the verified release artifact (npm SHA-1
-`ef5099bdad3f9666d4d0d3e1936b345fd97b0682`) and is live on Terah. `0.11.9`
-is the release candidate that makes the final staging-race corroboration
-single-call. Wallet, automatic funding, Transfer, x402 Purchase, recovery,
-agent-skill, Vault Migration, and fresh-agent preview paths are canary proven.
+`e114261cf7030a7a4402f6719f233056862e59d1`) and is live on Terah. Wallet,
+automatic funding, Transfer, x402 Purchase, staging-race recovery, agent-skill,
+Vault Migration, and fresh-agent preview paths are canary proven.
 
 Mainnet, autonomous authorization, passkeys, UCP, and official AP2/x402
 interoperability remain out of scope. See

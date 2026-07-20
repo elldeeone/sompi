@@ -876,6 +876,15 @@ receipted Purchase.
 The `0.11.9` follow-up performs the required two-read losing-candidate absence
 corroboration inside one bounded recovery request, so an agent does not need to
 issue two recovery commands inside the in-memory proof window.
+It was published and byte-verified on Terah from npm SHA-1
+`e114261cf7030a7a4402f6719f233056862e59d1`. Funded Purchase
+`pur_L0ZdrqqwdNTEJsUuhREI4w` paid the demo Merchant exactly once in accepted
+transaction
+`1ca0d3425228172da951c032aedaab40ee708927a1842a5f05a95fa82d9950ea`,
+returned the report, and now has all three staging-race Effects observed. The
+planned losing recovery transaction was not broadcast, the Treasury reservation
+is spent, and an idempotent recovery call on deployed `0.11.9` required no user
+action.
 
 ## Deferred tracks (not part of the alpha.8 clean cutover)
 
