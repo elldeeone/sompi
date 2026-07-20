@@ -8,8 +8,8 @@ The published `0.10.0` runtime on Terah includes the generic x402 Merchant
 cutover, Hermes onboarding, wallet visibility, direct native-KAS Transfers,
 and automatic funding intake. The current source tree is the epoch-18 clean
 cutover for owner-managed limits, one-wallet UX, and the completed security
-remediation. It is locally complete and verified, but not yet committed,
-published, or deployed.
+remediation. It is committed on `main` and is being cut as `0.11.0`; it is not
+yet published or deployed.
 
 Sompi is an API-first local agent wallet and purchasing runtime:
 
