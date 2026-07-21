@@ -1,5 +1,5 @@
 /**
- * Concrete Kaspa-x402 alpha.8 adapter surface. Sompi intentionally exposes
+ * Concrete Kaspa-x402 alpha.9 adapter surface. Sompi intentionally exposes
  * only its pinned testnet-10 profiles here; the Purchase domain remains
  * independent of these protocol-specific types.
  */

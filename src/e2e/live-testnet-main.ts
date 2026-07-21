@@ -42,9 +42,9 @@ function parseArgs(args: string[]): {
 } {
   let exactProfile: "standard-native" | "additive" = "standard-native";
   let purchaseIngress: "http-api" | "mcp-api-compatibility" = "http-api";
-  let directory = path.join(os.homedir(), ".local", "state", "sompi", "alpha8-standard-live-proof");
+  let directory = path.join(os.homedir(), ".local", "state", "sompi", "alpha9-standard-live-proof");
   let sourceWalletDirectory = path.join(os.homedir(), ".sompi", "testnet-10");
-  let reportFilename = path.resolve("evidence", "live-testnet10", "alpha8-standard-report.json");
+  let reportFilename = path.resolve("evidence", "live-testnet10", "alpha9-standard-report.json");
   let humanPresentAuthority = false;
   for (let index = 0; index < args.length; index++) {
     const argument = args[index];

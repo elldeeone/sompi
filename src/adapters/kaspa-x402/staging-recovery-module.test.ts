@@ -10,7 +10,7 @@ const STAGING_TX = "11".repeat(32);
 const PAY_TO = "kaspatest:merchant";
 const EVIDENCE = evidenceDigest("staging-evidence");
 
-test("alpha.8 standard-native requirements reach abandoned-staging recovery", async () => {
+test("alpha.9 standard-native requirements reach abandoned-staging recovery", async () => {
   let calls = 0;
   const required = paymentRequired("standard-native", "accepted");
   const paymentRequirements = Buffer.from(

@@ -31,7 +31,7 @@ function parseArgs(args: string[]): {
   readonly sourceWalletDirectory: string;
   readonly reportFilename: string;
 } {
-  let directory = path.join(os.homedir(), ".local", "state", "sompi", "alpha8-batch-live-proof");
+  let directory = path.join(os.homedir(), ".local", "state", "sompi", "alpha9-batch-live-proof");
   let sourceWalletDirectory = path.join(os.homedir(), ".sompi", "testnet-10");
   let reportFilename = path.join(
     os.homedir(),
@@ -39,7 +39,7 @@ function parseArgs(args: string[]): {
     "state",
     "sompi",
     "reports",
-    "alpha8-batch-report.json"
+    "alpha9-batch-report.json"
   );
   for (let index = 0; index < args.length; index += 1) {
     const argument = args[index];

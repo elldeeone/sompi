@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 
 export const JOURNAL_APPLICATION_ID = 0x534f4d50; // SOMP
-export const JOURNAL_SCHEMA_VERSION = 18;
+export const JOURNAL_SCHEMA_VERSION = 19;
 
 export const JOURNAL_SCHEMA_V1_SQL = `
   CREATE TABLE schema_migrations (
@@ -867,7 +867,7 @@ export const JOURNAL_SCHEMA_V9_MIGRATION_SQL = `
 `;
 
 /**
- * Clean-cutover epoch for alpha.8 batch channel state and its distinct
+ * Clean-cutover epoch for alpha.9 batch channel state and its distinct
  * Treasury Movements. Channel private keys are deliberately absent: they live
  * in the owner-only channel-key store and are addressed only by public key.
  */
@@ -1032,7 +1032,7 @@ export const JOURNAL_SCHEMA_V10_MIGRATION_SQL = `
  * Clean-cutover epoch for resumable batch claim/refund race discovery.
  *
  * The cursor is recovery state, not trusted chain evidence. A discovered
- * winner still has to pass the alpha.8 transaction checks and the configured
+ * winner still has to pass the alpha.9 transaction checks and the configured
  * Chain Evidence floor before the Journal may apply it.
  */
 export const JOURNAL_SCHEMA_V14_MIGRATION_SQL = `
@@ -1310,7 +1310,10 @@ export const JOURNAL_SCHEMA_V13_SQL = JOURNAL_SCHEMA_V12_SQL;
 export const JOURNAL_SCHEMA_V15_SQL = `${JOURNAL_SCHEMA_V13_SQL}\n${JOURNAL_SCHEMA_V14_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V16_SQL = `${JOURNAL_SCHEMA_V15_SQL}\n${JOURNAL_SCHEMA_V16_MIGRATION_SQL}`;
 export const JOURNAL_SCHEMA_V17_SQL = `${JOURNAL_SCHEMA_V16_SQL}\n${JOURNAL_SCHEMA_V17_MIGRATION_SQL}`;
-export const JOURNAL_SCHEMA_SQL = `${JOURNAL_SCHEMA_V17_SQL}\n${JOURNAL_SCHEMA_V18_MIGRATION_SQL}`;
+export const JOURNAL_SCHEMA_V18_SQL = `${JOURNAL_SCHEMA_V17_SQL}\n${JOURNAL_SCHEMA_V18_MIGRATION_SQL}`;
+/** Alpha.9 is a clean epoch boundary; its physical schema intentionally starts from V18's shape. */
+export const JOURNAL_SCHEMA_V19_SQL = JOURNAL_SCHEMA_V18_SQL;
+export const JOURNAL_SCHEMA_SQL = JOURNAL_SCHEMA_V19_SQL;
 
 export const JOURNAL_SCHEMA_V1_CHECKSUM = sha256Text(JOURNAL_SCHEMA_V1_SQL);
 export const JOURNAL_SCHEMA_V2_CHECKSUM = sha256Text(JOURNAL_SCHEMA_V2_SQL);

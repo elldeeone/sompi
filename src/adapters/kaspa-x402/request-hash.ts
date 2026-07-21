@@ -8,7 +8,7 @@ export interface X402HttpRequestHashInput {
 }
 
 /**
- * Reproduce the pinned alpha.8 HTTP fingerprint used by DirectModeClient and
+ * Reproduce the pinned alpha.9 HTTP fingerprint used by DirectModeClient and
  * DirectModeServer. Sompi's protocol-neutral resource fingerprint is not an
  * x402 requestHash: the latter also binds the selected payment requirements.
  */

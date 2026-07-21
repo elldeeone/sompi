@@ -59,7 +59,7 @@ const roots = [
   "scripts/verify-packed-artifact.mjs",
   "test/conformance",
   "vendor/ap2-v0.2-schemas",
-  "vendor/kaspa-x402-alpha.8-conformance",
+  "vendor/kaspa-x402-alpha.9-conformance",
   "vendor/kaspa-wasm",
 ];
 const executableFiles = new Set([
@@ -92,7 +92,7 @@ const requiredFiles = [
   "dist/authority-main.js",
   "dist/index.js",
   "dist/operator-main.js",
-  "dist/conformance/kaspa-x402-alpha8.js",
+  "dist/conformance/kaspa-x402-alpha9.js",
   "dist/smoke.js",
   "integrations/hermes/plugin/__init__.py",
   "integrations/hermes/plugin/plugin.yaml",
@@ -107,7 +107,7 @@ const requiredFiles = [
   "vendor/ap2-v0.2-schemas/LICENSE",
   "vendor/kaspa-wasm/LICENSE",
   "vendor/kaspa-wasm/kaspa_bg.wasm",
-  "vendor/kaspa-x402-alpha.8-conformance/LICENSE",
+  "vendor/kaspa-x402-alpha.9-conformance/LICENSE",
 ];
 for (const relative of requiredFiles) requireRegularFile(relative);
 

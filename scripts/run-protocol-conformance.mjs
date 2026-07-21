@@ -8,7 +8,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const sourceMarker = path.join(root, "src/conformance/kaspa-x402-alpha8.ts");
+const sourceMarker = path.join(root, "src/conformance/kaspa-x402-alpha9.ts");
 if (fs.existsSync(sourceMarker)) {
   run("npm", ["run", "build"], { cwd: root });
 }
@@ -39,14 +39,14 @@ validateKaspaX402Checkout(kaspaX402Checkout);
 verifyKaspaX402PublishedPackages(kaspaX402Checkout);
 run(process.execPath, [
   "--test",
-  path.join(root, "dist/conformance/kaspa-x402-alpha8.js"),
+  path.join(root, "dist/conformance/kaspa-x402-alpha9.js"),
 ], { cwd: root });
 
 process.stdout.write(
   [
     "Protocol conformance passed.",
     `AP2: v0.2.0 @ ${ap2.commit} (source and schema provenance watch only).`,
-    `Kaspa-x402: 0.1.0-alpha.8 @ ${provenance.kaspaX402.sourceCommit} (published packages reproduced byte-for-byte; offline exact HTTP and full-consensus profile vectors).`,
+    `Kaspa-x402: 0.1.0-alpha.9 @ ${provenance.kaspaX402.sourceCommit} (published packages reproduced byte-for-byte; offline exact HTTP, exact/batch interoperability, and full-consensus vectors).`,
     "Claim boundary: no live testnet, general AP2, standardized native-KAS AP2, or mainnet claim.",
     "",
   ].join("\n")

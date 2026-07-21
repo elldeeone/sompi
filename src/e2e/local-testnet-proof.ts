@@ -188,7 +188,7 @@ export interface RunLocalTestnetProofOptions {
  * Runs one fully local vertical proof. The external Kaspa/RPC boundary alone
  * is deterministic in-memory Testnet-10, so this never claims live network
  * conformance. Every Sompi module, authority signature, Unix authority frame,
- * Kaspa-x402 alpha.8 transaction, Merchant acceptance, and journal write is
+ * Kaspa-x402 alpha.9 transaction, Merchant acceptance, and journal write is
  * the production implementation.
  */
 export async function runLocalTestnetProof(

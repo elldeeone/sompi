@@ -53,7 +53,7 @@ import { x402HttpRequestHash } from "./request-hash.js";
 const NETWORK = "kaspa:testnet-10" as const;
 const SOURCE = "vault-treasury" as const;
 const UINT64_MAX = (1n << 64n) - 1n;
-const SETTLEMENT_PROFILE = "kaspa-x402-0.1.0-alpha.8-batch-settlement";
+const SETTLEMENT_PROFILE = "kaspa-x402-0.1.0-alpha.9-batch-settlement";
 const SETTLEMENT_MEDIA_TYPE = "application/x.kaspa-x402-payment-response";
 const BATCH_PROFILE = "kaspa-escrow-v1:batch-settlement";
 
@@ -577,7 +577,7 @@ export class KaspaX402BatchPaymentModule implements KaspaPaymentModule {
       paymentResponse
     );
     const verification = Object.freeze({
-      verifierId: "sompi-kaspa-x402-alpha8-batch",
+      verifierId: "sompi-kaspa-x402-alpha9-batch",
       profile: SETTLEMENT_PROFILE,
       detailDigest: evidenceDigest(Buffer.from(stableStringify({
         executionId: applied.executionId,

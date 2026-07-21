@@ -102,10 +102,10 @@ test("MCP production code has only the canonical API client capability", () => {
   }
 });
 
-test("current documentation exposes the API-first wallet and alpha.8 payment cutover", () => {
+test("current documentation exposes the API-first wallet and alpha.9 payment cutover", () => {
   const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
   for (const required of [
-    "Kaspa-x402 `0.1.0-alpha.8`",
+    "Kaspa-x402 `0.1.0-alpha.9`",
     "`standard-native`",
     "`additive`",
     "Kaspa-x402 batch settlement",

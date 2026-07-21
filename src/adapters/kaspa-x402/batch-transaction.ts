@@ -7,7 +7,7 @@ import { ScriptPublicKey, Transaction } from "../../kaspa-wasm.js";
 
 type BatchTransactionArtifact = BatchClaimTxV1Artifact | BatchRefundTxV1Artifact;
 
-/** Rehydrate one public alpha.8 reference artifact through the pinned Kaspa SDK. */
+/** Rehydrate one public alpha.9 reference artifact through the pinned Kaspa SDK. */
 export function sdkBatchTransaction(artifact: BatchTransactionArtifact): Transaction {
   const scripts: ScriptPublicKey[] = [];
   try {

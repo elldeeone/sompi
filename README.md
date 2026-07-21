@@ -15,7 +15,7 @@ reach the chain or a merchant.
 
 - Kaspa Testnet-10 only.
 - Human-present approval only.
-- Kaspa-x402 `0.1.0-alpha.8`.
+- Kaspa-x402 `0.1.0-alpha.9`.
 - Exact `standard-native` and `additive` purchases.
 - Kaspa-x402 batch settlement with approval for every charge increase.
 - Local authenticated API and CLI.
@@ -29,7 +29,7 @@ interoperability or send AP2 artifacts to ordinary x402 merchants.
 Tell Hermes:
 
 > Install the Sompi skill from
-> https://raw.githubusercontent.com/elldeeone/sompi/v0.11.11/integrations/hermes/sompi/SKILL.md
+> https://raw.githubusercontent.com/elldeeone/sompi/v0.12.0/integrations/hermes/sompi/SKILL.md
 > and set up Sompi for this host.
 
 Hermes gathers non-secret setup facts and gives you one command to run locally.

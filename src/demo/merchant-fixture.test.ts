@@ -16,7 +16,7 @@ import { DEMO_NETWORK, DemoMerchantFixture } from "./merchant-fixture.js";
 const PAY_TO = "kaspatest:qpumuen7l8wthtz45p3ftn58pvrs9xlumvkuu2xet8egzkcklqtes5z8rkmpd";
 const PURCHASE_ID = assertPurchaseId("pur_AAAAAAAAAAAAAAAAAAAAAA");
 
-test("demo merchant exposes and restores one generic alpha.8 x402 offer", async () => {
+test("demo merchant exposes and restores one generic alpha.9 x402 offer", async () => {
   const store = new SqliteMerchantServerStateStore(":memory:");
   const merchant = await DemoMerchantFixture.create({
     merchantId: "https://merchant.example",

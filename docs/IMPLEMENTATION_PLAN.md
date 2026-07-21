@@ -978,7 +978,44 @@ replacing its epoch-18 Journal, wallet, keys, receive address, or policy state.
 The live authenticated Wallet View passes; Authority, API, and Hermes are
 active with zero post-start restarts.
 
-## Deferred tracks (not part of the alpha.8 clean cutover)
+## Phase 20: Kaspa-x402 alpha.9 clean cutover
+
+Purpose: replace the unstable protocol dependency and its runtime epoch as one
+fail-closed release, with no alpha.8 compatibility path.
+
+- [x] Accept ADR-0023 and pin all four Kaspa-x402 `0.1.0-alpha.9` packages,
+  source commit, annotated release tag object, and npm integrity values.
+- [x] Replace active alpha.8 vectors and conformance code with the unmodified
+  alpha.9 HTTP, consensus, exact-interoperability, and batch-interoperability
+  vectors.
+- [x] Enforce canonical exact authorization expiry before normal settlement
+  while retaining observation-only recovery of an already-durable expired
+  attempt.
+- [x] Conform canonical batch payment-requirements and commitment identifiers.
+- [x] Begin Journal epoch 19 and reject every epoch 1-18 database without
+  mutation, migration, compatibility reader, or fallback.
+- [x] Remove alpha.8 from active code, fixtures, commands, package contents,
+  and current documentation; retain only explicitly historical records.
+- [ ] Pass the complete release verifier and clean installed-artifact proof for
+  `0.12.0`.
+- [ ] Record fresh funded Testnet-10 exact and batch evidence against alpha.9.
+- [ ] Publish and independently fetch/verify the exact `0.12.0` npm artifact.
+- [ ] Archive the complete Terah epoch-18 runtime, provision a fresh epoch-19
+  identity, and pass authenticated Wallet, Authority, exact, and recovery
+  canaries without importing old state.
+
+Gate:
+
+- No active alpha.8 runtime, fixture, package, command, or fallback remains.
+- Exact authorization cannot outlive its offer or additive challenge; expired
+  durable attempts remain observable without creating a new payment.
+- Batch commitments reproduce the language-independent alpha.9 vector.
+- Epoch-18 state cannot open under epoch 19 and remains immutable in its
+  operator archive.
+- Release and deployment claims are backed by clean-install, funded TN10, and
+  fresh-runtime evidence.
+
+## Deferred tracks (not part of the alpha.9 clean cutover)
 
 ### Autonomous AP2
 

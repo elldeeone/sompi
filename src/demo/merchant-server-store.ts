@@ -184,7 +184,7 @@ export interface SqliteMerchantServerStateStoreOptions {
   readonly busyTimeoutMs?: number;
 }
 
-/** Durable alpha.8 Merchant state for exact and batch-settlement. */
+/** Durable alpha.9 Merchant state for exact and batch-settlement. */
 export class SqliteMerchantServerStateStore implements ServerStateStore {
   private readonly db: Database.Database;
 

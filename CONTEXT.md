@@ -13,7 +13,7 @@ tokens, or operator recovery access.
 
 - Network: Kaspa Testnet-10.
 - Authorization: human-present, AP2-derived internal evidence.
-- Payment: Kaspa-x402 `0.1.0-alpha.8`.
+- Payment: Kaspa-x402 `0.1.0-alpha.9`.
 - Exact profiles: `standard-native` and `additive`.
 - Batch: capital-backed channels with approval for every charge increment.
 - Agent interface: authenticated local API and `sompi-agent`.

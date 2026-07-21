@@ -7,7 +7,7 @@ import type { ChainEvidenceRequest } from "./types.js";
 const TRANSACTION_ID = "11".repeat(32);
 const SCRIPT = `000020${"22".repeat(32)}ac`;
 
-test("exact Chain Evidence records the selected alpha.8 profile mechanism", async () => {
+test("exact Chain Evidence records the selected alpha.9 profile mechanism", async () => {
   const requests: ChainEvidenceRequest[] = [];
   const source = new ChainEvidenceExactOutputSource(
     {

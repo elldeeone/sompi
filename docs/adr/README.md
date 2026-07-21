@@ -28,3 +28,4 @@ or documentation is not allowed.
 | [0020](0020-automatic-funding-intake-and-wallet-ux.md) | Automatic funding intake and KAS-first wallet UX | Accepted |
 | [0021](0021-owner-approved-policy-and-vault-ux.md) | Owner-approved policy changes and guided vault migration | Accepted |
 | [0022](0022-progressive-approval-and-agent-continuation-ux.md) | Progressive approval display and bounded agent continuation | Accepted |
+| [0023](0023-kaspa-x402-alpha9-clean-cutover.md) | Kaspa-x402 alpha.9 clean cutover and Journal epoch 19 | Accepted |

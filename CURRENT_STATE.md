@@ -4,6 +4,28 @@ Last updated: **2026-07-21**
 
 ## Status
 
+The source tree is now the `0.12.0` Kaspa-x402 `0.1.0-alpha.9` clean-cutover
+candidate defined by ADR-0023. All four protocol packages, their exact source
+and release provenance, and the unmodified HTTP, consensus, exact-interoperable,
+and batch-interoperable vectors are pinned. The settlement verifier applies
+alpha.9's canonical authorization timeout and additive-challenge bounds before
+normal work; an expired already-durable attempt remains observation-only during
+recovery. Canonical batch requirements and commitment IDs are independently
+reproduced from the upstream vector.
+
+Journal epoch 19 is the only active source-tree epoch. It deliberately retains
+epoch 18's physical schema while changing the semantic protocol/recovery
+boundary. Epochs 1-18 are rejected without mutation, migration, compatibility
+reader, or fallback. Active alpha.8 packages, fixtures, code paths, commands,
+and current documentation have been removed; historical ADR and funded
+evidence records remain labelled as history.
+
+Local acceptance currently passes 551 tests (550 pass and one expected
+root-only ownership skip), offline smoke, exact package/source reproduction,
+and all five alpha.9 protocol-conformance checks. Release publication, fresh
+funded TN10 evidence, and the fresh Terah epoch-19 runtime are not yet claimed
+in this intermediate state.
+
 The current `0.11.11` release completes the user-interaction follow-up to
 `0.11.10`. `sompi-agent transfer` now continues the same durable Transfer
 through routine settlement and receipt recovery, using the same 75-second
@@ -84,7 +106,7 @@ Sompi is an API-first local agent wallet and purchasing runtime:
 - `sompi-authority` is the isolated human-present Authority;
 - `sompi-operator` provisions policy, vault, chain evidence, and credentials.
 
-Journal epoch 18 is the only source-tree schema. It is a clean cutover with no
+Journal epoch 19 is the only source-tree schema. It is a clean cutover with no
 reader for earlier epochs.
 
 ## Owner-managed limits and vault protection

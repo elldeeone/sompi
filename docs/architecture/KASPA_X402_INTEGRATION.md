@@ -2,7 +2,7 @@
 
 ## Pin
 
-Sompi supports Kaspa-x402 `0.1.0-alpha.8` on `kaspa:testnet-10`.
+Sompi supports Kaspa-x402 `0.1.0-alpha.9` on `kaspa:testnet-10`.
 
 Packages are pinned exactly:
 

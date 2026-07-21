@@ -153,7 +153,7 @@ export interface LiveAdditiveContentionReport {
   readonly protocol: {
     readonly binding: "kaspa-exact-v2";
     readonly exactProfile: "additive";
-    readonly packageVersion: "0.1.0-alpha.8";
+    readonly packageVersion: "0.1.0-alpha.9";
     readonly transactionEncoding: "kaspa-sdk-safe-json-v2.0.0";
   };
   readonly initialHead: LiveChainMilestone & {
@@ -456,7 +456,7 @@ export async function runLiveAdditiveContentionProof(
       protocol: Object.freeze({
         binding: "kaspa-exact-v2" as const,
         exactProfile: "additive" as const,
-        packageVersion: "0.1.0-alpha.8" as const,
+        packageVersion: "0.1.0-alpha.9" as const,
         transactionEncoding: "kaspa-sdk-safe-json-v2.0.0" as const,
       }),
       initialHead: Object.freeze({
@@ -542,7 +542,7 @@ export function assertLiveAdditiveContentionReport(
     report.network !== LIVE_NETWORK ||
     report.protocol.binding !== "kaspa-exact-v2" ||
     report.protocol.exactProfile !== "additive" ||
-    report.protocol.packageVersion !== "0.1.0-alpha.8" ||
+    report.protocol.packageVersion !== "0.1.0-alpha.9" ||
     report.chainProvenance.nodeNetwork !== "testnet-10" ||
     report.chainProvenance.nodeSynced !== true ||
     report.chainProvenance.nodeUtxoIndex !== true ||

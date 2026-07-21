@@ -48,7 +48,7 @@ export type BatchRaceRecoveryStore = Pick<
  * Identifies an accepted merchant claim which won the claim/refund race.
  *
  * The address index is used only to discover the candidate transaction. The
- * candidate is then constrained to the alpha.8 claim shape and independently
+ * candidate is then constrained to the alpha.9 claim shape and independently
  * corroborated through Sompi's central Chain Evidence module before it can
  * advance local channel state.
  */
@@ -175,7 +175,7 @@ export class HttpsBatchClaimRaceSource implements BatchClaimRaceSource {
       if (spenders.length === 1) {
         const candidate = validateClaimCandidate(spenders[0]!, channel);
         if (!candidate || candidate.transactionId === input.refundTransactionId) {
-          return unknown("accepted-spender-is-not-alpha8-claim");
+          return unknown("accepted-spender-is-not-alpha9-claim");
         }
         return this.verifyCandidate(input, channel, candidate);
       }

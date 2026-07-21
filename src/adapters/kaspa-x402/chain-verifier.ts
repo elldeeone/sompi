@@ -5,6 +5,7 @@ import type { AddressCodec } from "@kaspa-x402/client";
 import {
   decodePaymentResponseHeader,
   encodePaymentResponseHeader,
+  exactAuthorizationExpiryError,
   exactRequestAuthorizationDigest,
   exactRequestAuthorizationId,
   hexToBytes,
@@ -51,7 +52,7 @@ const EXACT_BINDING = "kaspa-exact-v2" as const;
 const EXACT_TEMPLATE = "kaspa-x402-kip10-additive-v1" as const;
 const EXACT_ENCODING = "kaspa-sdk-safe-json-v2.0.0" as const;
 const FUNDING_SOURCE = "vault-treasury" as const;
-const SETTLEMENT_PROFILE = "kaspa-x402-0.1.0-alpha.8-exact-settlement";
+const SETTLEMENT_PROFILE = "kaspa-x402-0.1.0-alpha.9-exact-settlement";
 const NATIVE_SUBNETWORK = "00".repeat(20);
 const HASH32 = /^[a-f0-9]{64}$/;
 const DIGEST = /^sha256:[A-Za-z0-9_-]{43}$/;
@@ -150,7 +151,7 @@ export interface KaspaExactChainVerifierOptions {
   verifierId?: string;
   observationTimeoutMs?: number;
   now?: () => number;
-  /** Wall clock used for the alpha.8 payer authorization expiry. */
+  /** Wall clock used for the alpha.9 payer authorization expiry. */
   authorizationNow?: () => number;
 }
 
@@ -160,7 +161,7 @@ export interface KaspaX402ServerStorePaymentResponseLookupOptions {
 }
 
 /**
- * Merchant recovery adapter for alpha.8's durable idempotency store. This
+ * Merchant recovery adapter for alpha.9's durable idempotency store. This
  * reads the already-committed PAYMENT-RESPONSE; it never invokes the paid
  * handler and therefore cannot accept or execute a second payment.
  */
@@ -309,7 +310,7 @@ interface PaymentBindingState {
 }
 
 /**
- * Deep alpha.8 adapter implementing both Settlement verification and passive
+ * Deep alpha.9 adapter implementing both Settlement verification and passive
  * recovery. It revalidates the immutable exact transaction independently of
  * the Merchant and only accepts chain-attested Merchant output facts.
  */
@@ -344,7 +345,7 @@ export class KaspaExactChainVerifier
     this.merchantResponses = options.merchantResponses;
     this.addressCodec = options.addressCodec ?? new KaspaTestnet10AddressCodec();
     this.verifierId = requireBoundedIdentifier(
-      options.verifierId ?? "sompi:kaspa-chain-verifier:alpha.8",
+      options.verifierId ?? "sompi:kaspa-chain-verifier:alpha.9",
       "Settlement verifier identity"
     );
     this.observationTimeoutMs = requireTimeout(
@@ -630,7 +631,7 @@ function parseExactPayment(
 
   const retry = validatePaymentRetry({ paymentRequired, paymentPayload });
   if (!retry.ok) {
-    throw error("artifact_mismatch", "alpha.8 PaymentRequired/PaymentPayload pair is invalid", {
+    throw error("artifact_mismatch", "alpha.9 PaymentRequired/PaymentPayload pair is invalid", {
       cause: retry.error,
     });
   }
@@ -642,7 +643,7 @@ function parseExactPayment(
     paymentRequired.accepts.length !== 1 ||
     stableStringify(paymentRequired.accepts[0]) !== stableStringify(paymentPayload.accepted)
   ) {
-    throw error("artifact_mismatch", "alpha.8 payment artifacts changed the exact resource or requirement");
+    throw error("artifact_mismatch", "alpha.9 payment artifacts changed the exact resource or requirement");
   }
   const accepted = paymentPayload.accepted;
   const requestHash = x402HttpRequestHash(context.request, accepted);
@@ -665,6 +666,30 @@ function parseExactPayment(
   if (!Number.isSafeInteger(accepted.maxTimeoutSeconds) || accepted.maxTimeoutSeconds <= 0) {
     throw error("artifact_mismatch", "exact payment timeout is invalid");
   }
+  const authorizationExpiry = canonicalTime(
+    paymentPayload.payload.type === "exact-transaction"
+      ? paymentPayload.payload.authorization.expiresAt
+      : undefined,
+    "authorization expiry"
+  );
+  const challengeExpiresAt = extra.profile === "additive"
+    ? new Date(canonicalTime(extra.challengeExpiresAt, "additive challenge expiry")).toISOString()
+    : undefined;
+  if (challengeExpiresAt !== undefined && authorizationExpiry > Date.parse(challengeExpiresAt)) {
+    throw error("artifact_mismatch", "payer authorization outlives the additive challenge");
+  }
+  const expiryError = exactAuthorizationExpiryError({
+    maxTimeoutSeconds: accepted.maxTimeoutSeconds,
+    authorizationExpiresAt: new Date(authorizationExpiry).toISOString(),
+    ...(challengeExpiresAt === undefined ? {} : { challengeExpiresAt }),
+    nowMs: options.authorizationNowMs,
+  });
+  if (
+    expiryError !== undefined &&
+    !(options.allowExpired && (expiryError === "expired_authorization" || expiryError === "expired_challenge"))
+  ) {
+    throw error("artifact_mismatch", `payer authorization expiry is invalid: ${expiryError}`);
+  }
   assertPaymentIdentifierExtensions(paymentRequired, paymentPayload, paymentIdentifier);
   const profile = extra.profile;
   const requiredFinality = requireFinality(extra.finality, "exact required finality");
@@ -682,7 +707,7 @@ function parseExactPayment(
   }
 
   if (paymentPayload.payload.type !== "exact-transaction") {
-    throw error("artifact_mismatch", "PaymentPayload is not alpha.8 exact-transaction");
+    throw error("artifact_mismatch", "PaymentPayload is not alpha.9 exact-transaction");
   }
   const payload = paymentPayload.payload;
   if (
@@ -756,10 +781,6 @@ function parseExactPayment(
     }
     headId = requireHash(extra.headId, "additive head ID");
     const challengeId = requireHash(extra.challengeId, "additive challenge ID");
-    const challengeExpiry = canonicalTime(extra.challengeExpiresAt, "additive challenge expiry");
-    if (!options.allowExpired && challengeExpiry <= options.nowMs) {
-      throw error("artifact_mismatch", "additive challenge expired before Settlement verification");
-    }
     const headOutpoint = {
       transactionId: requireHash(extra.expectedHeadOutpoint.txid, "head transaction ID"),
       index: uint32(extra.expectedHeadOutpoint.index, "head output index"),
@@ -828,9 +849,6 @@ function parseExactPayment(
     payload.authorization.version !== "kaspa-x402-exact-request-authorization-v1" ||
     payload.authorization.inputIndex !== authorizationInputIndex ||
     payload.authorization.digest !== expectedAuthorizationDigest ||
-    (!options.allowExpired &&
-      canonicalTime(payload.authorization.expiresAt, "authorization expiry") <=
-        options.authorizationNowMs) ||
     !schnorr.verify(
       hexToBytes(payload.authorization.signature, { expectedLength: 64 }),
       hexToBytes(expectedAuthorizationDigest, { expectedLength: 32 }),

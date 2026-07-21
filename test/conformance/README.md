@@ -4,5 +4,6 @@
 official AP2/x402 integration. Sompi does not ship the superseded bilateral AP2
 Merchant profile or claim AP2 interoperability.
 
-The same record pins Kaspa-x402 package integrity and alpha.8 vectors. The
+The same record pins Kaspa-x402 package integrity and the alpha.9 exact HTTP,
+consensus, exact-interoperability, and batch-interoperability vectors. The
 conformance result is offline evidence, not a live-network or mainnet claim.

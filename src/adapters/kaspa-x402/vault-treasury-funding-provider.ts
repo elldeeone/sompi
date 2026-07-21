@@ -45,7 +45,7 @@ export interface VaultTreasuryFundingProviderOptions {
 }
 
 /**
- * Attempt-scoped alpha.8 FundingProvider. It can authorize and sign exactly one
+ * Attempt-scoped alpha.9 FundingProvider. It can authorize and sign exactly one
  * immutable request, cannot broadcast, and has no batch-deposit authority.
  */
 export class VaultTreasuryFundingProvider implements FundingProvider {
@@ -192,6 +192,9 @@ function validateExactRequest(
     throw new Error("additive head script facts are invalid");
   }
   requireFutureTime(head.challengeExpiresAt, now, "head challenge expiry");
+  if (Date.parse(request.authorizationExpiresAt) > Date.parse(head.challengeExpiresAt)) {
+    throw new Error("request authorization must not outlive the additive challenge");
+  }
 }
 
 function validateExactResult(

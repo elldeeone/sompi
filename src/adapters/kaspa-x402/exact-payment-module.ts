@@ -62,7 +62,7 @@ import {
 import { x402HttpRequestHash } from "./request-hash.js";
 
 const CLIENT_VERSION: SupportedProtocolProfiles["x402"]["packages"]["client"]["version"] =
-  "0.1.0-alpha.8";
+  "0.1.0-alpha.9";
 const TESTNET_10: SupportedProtocolProfiles["x402"]["network"] = "kaspa:testnet-10";
 const ASSET = "KAS" as const;
 const FUNDING_SOURCE = "vault-treasury" as const;
@@ -205,7 +205,7 @@ interface ProcessedPaymentResponse {
 }
 
 /**
- * Protocol-aware adapter behind the Treasury seam. It validates alpha.8
+ * Protocol-aware adapter behind the Treasury seam. It validates alpha.9
  * requirements and immutable effect bindings, while the underlying driver
  * owns the vault transaction and chain observation.
  */
@@ -292,7 +292,7 @@ export class KaspaX402TreasuryStagingAdapter implements Pick<
 }
 
 /**
- * Pinned alpha.8 exact adapter. AP2 and Agent-facing types remain outside this
+ * Pinned alpha.9 exact adapter. AP2 and Agent-facing types remain outside this
  * module; only the internal Purchase execution seam reaches it.
  */
 export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
@@ -850,7 +850,7 @@ export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
     if (verified.verification.profile !== SETTLEMENT_PROFILE) {
       throw adapterError(
         "settlement_mismatch",
-        "Settlement verifier used a profile outside the pinned alpha.8 exact adapter"
+        "Settlement verifier used a profile outside the pinned alpha.9 exact adapter"
       );
     }
     const outputIndex = exactPayload(rehydrated.envelope.paymentPayload).paymentOutputIndex;

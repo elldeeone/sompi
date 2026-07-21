@@ -13,7 +13,7 @@ import { evidenceDigest } from "../../purchase/identity.js";
 import type { CheckoutTerms, Sha256Digest } from "../../purchase/types.js";
 
 export const KASPA_X402_PAYMENT_REQUIRED_PROFILE =
-  "kaspa-x402-0.1.0-alpha.8-payment-required" as const;
+  "kaspa-x402-0.1.0-alpha.9-payment-required" as const;
 
 const TESTNET = "kaspa:testnet-10";
 const MAX_REQUIREMENTS_BYTES = 32 * 1024;
@@ -299,7 +299,7 @@ function verifiedArtifact(
     issuer: terms.merchant.id,
     declaredDigest: digest,
     verification: Object.freeze({
-      verifierId: "kaspa-x402:0.1.0-alpha.8:payment-required",
+      verifierId: "kaspa-x402:0.1.0-alpha.9:payment-required",
       profile: KASPA_X402_PAYMENT_REQUIRED_PROFILE,
       detailDigest: checkoutTermsFactsDigest(terms),
     }),

@@ -33,7 +33,7 @@ import { SecureBatchChannelSigner } from "./batch-channel-signer.js";
 const ADDRESS = "kaspatest:qq2n2shqkghczyel57af242ffs50x5uj07w7ezg7kwm8frwt5xhljqa3d68et";
 const ACTIVE_TXID = "55".repeat(32) as Hash32Hex;
 
-test("public alpha.8 claim builder and DirectModeServer rotate one accepted continuation", async () => {
+test("public alpha.9 claim builder and DirectModeServer rotate one accepted continuation", async () => {
   await withClaimFixture("accepted", async ({ server, store, channel }) => {
     const preview = await server.previewClaim(channel.channelId);
     assert.equal(preview.claimable, true);

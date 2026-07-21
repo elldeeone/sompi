@@ -21,7 +21,7 @@ const DEMO_ACCEPTED: ExactPaymentRequirements = {
   },
 };
 
-test("bodyless HTTP requestHash matches the landed alpha.8 demo fingerprint", () => {
+test("bodyless HTTP requestHash matches the landed alpha.9 demo fingerprint", () => {
   assert.equal(
     x402HttpRequestHash(
       {

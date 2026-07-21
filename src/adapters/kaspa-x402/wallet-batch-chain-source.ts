@@ -24,7 +24,7 @@ export interface WalletBatchChainRpcProvider {
 }
 
 /**
- * Read-only alpha.8 batch chain source. It deliberately exposes none of the
+ * Read-only alpha.9 batch chain source. It deliberately exposes none of the
  * wallet's signing or submission capability to the Kaspa-x402 client.
  */
 export class WalletBatchChainSource implements BatchActiveUtxoSource {
@@ -90,7 +90,7 @@ export class WalletBatchChainSource implements BatchActiveUtxoSource {
     if (!Array.isArray(response.entries) || response.entries.length > MAX_UTXOS) {
       throw new Error("batch UTXO response count is invalid");
     }
-    // The alpha.8 funding-provider seam can express returned UTXOs, but it
+    // The alpha.9 funding-provider seam can express returned UTXOs, but it
     // cannot distinguish proven spend from stale, pruned, or unavailable
     // negative evidence. Passing an empty array to DirectModeClient would let
     // that provisional observation retire durable channel state. Sompi's

@@ -54,7 +54,7 @@ export interface BatchChannelCapitalResult {
 }
 
 /**
- * Capitalizes alpha.8 batch channels without authorizing a Purchase.
+ * Capitalizes alpha.9 batch channels without authorizing a Purchase.
  *
  * The immutable channel identity and deposit Movement are durable before the
  * vault send can become live. Retrying the operation reconstructs the same

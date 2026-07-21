@@ -1,6 +1,6 @@
 # Additive and batch recovery
 
-Scope: Kaspa-x402 alpha.8 on Testnet-10.
+Scope: Kaspa-x402 alpha.9 on Testnet-10.
 
 This covers two stateful payment mechanisms:
 

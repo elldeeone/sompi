@@ -73,7 +73,7 @@ test("vault staging converges inside the complete cost cap and exposes canonical
   });
 });
 
-test("vault staging accepts an alpha.8 exact offer without an advertised payment identifier", async () => {
+test("vault staging accepts an alpha.9 exact offer without an advertised payment identifier", async () => {
   await withFixture(async (fixture) => {
     const prepared = await fixture.staging.prepare(
       fixture.prepareInput("30000000", { advertisePaymentIdentifier: false })

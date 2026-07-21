@@ -25,7 +25,7 @@ import type { BatchClaimRaceSource } from "./batch-race-source.js";
 const ADDRESS = "kaspatest:qq2n2shqkghczyel57af242ffs50x5uj07w7ezg7kwm8frwt5xhljqa3d68et";
 const DEPOSIT_TXID = "55".repeat(32);
 
-test("batch refund is prepared from public alpha.8 covenant primitives only after strict DAA unlock", async () => {
+test("batch refund is prepared from public alpha.9 covenant primitives only after strict DAA unlock", async () => {
   const fixture = await channelFixture();
   try {
     const movementId = `batch-refund:${fixture.channelId}`;

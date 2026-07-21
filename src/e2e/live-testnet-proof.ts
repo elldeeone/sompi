@@ -1286,8 +1286,8 @@ export async function createLivePurchaseIngress(
   if (mode === "http-api") {
     return Object.freeze({ application: apiClient, close: closeApi });
   }
-  const server = createSompiMcpServer(apiClient, "alpha8-live-proof");
-  const client = new Client({ name: "sompi-alpha8-live-proof", version: "1" });
+  const server = createSompiMcpServer(apiClient, "alpha9-live-proof");
+  const client = new Client({ name: "sompi-alpha9-live-proof", version: "1" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport);
   await client.connect(clientTransport);

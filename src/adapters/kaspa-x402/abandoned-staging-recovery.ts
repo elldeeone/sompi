@@ -1350,7 +1350,7 @@ function validateExactCandidate(
   const outputs = requireArray(document.outputs, "immutable exact payment outputs");
   const expectedInputCount = value.profile === "standard-native" ? 1 : 2;
   if (inputs.length !== expectedInputCount || outputs.length !== 1) {
-    throw adapterError("profile_mismatch", "immutable exact payment is outside the pinned alpha.8 shape");
+    throw adapterError("profile_mismatch", "immutable exact payment is outside the pinned alpha.9 shape");
   }
   const stagingOutpoint = outpointString(staging.outpoint);
   const matchingInputs = inputs.filter((candidate) => {

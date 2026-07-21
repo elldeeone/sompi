@@ -37,6 +37,7 @@ import { ExactTransactionBuilder } from "./exact-transaction-builder.js";
 import { StagingKeyStore } from "./staging-key-store.js";
 
 const NOW = Date.parse("2030-01-01T00:00:00.000Z");
+const EXACT_EXPIRES_AT = new Date(NOW + 60_000).toISOString();
 const PURCHASE_ID = assertPurchaseId("pur_AAAAAAAAAAAAAAAAAAAAAA");
 const PAYMENT_IDENTIFIER = createPaymentIdentifier(PURCHASE_ID, 1);
 const MERCHANT_ID = "merchant:test";
@@ -53,7 +54,7 @@ const STAGING_FEE = "50000";
 const ADDITIONAL_COST = "2050000";
 const REQUEST_BODY = Buffer.from('{"query":"transaction profile"}', "utf8");
 
-test("Settlement verifier binds alpha.8 additive safe JSON, successor output, and Treasury cost", async () => {
+test("Settlement verifier binds alpha.9 additive safe JSON, successor output, and Treasury cost", async () => {
   const fixture = await makeFixture();
   const calls: string[] = [];
   const verifier = fixture.verifier({
@@ -92,7 +93,7 @@ test("Settlement verifier binds alpha.8 additive safe JSON, successor output, an
   const result = await verifier.verify(fixture.verificationInput());
   assert.equal(result.additionalCostAtomic, ADDITIONAL_COST);
   assert.equal(result.outpoint, `${fixture.transactionId}:0`);
-  assert.equal(result.verification.profile, "kaspa-x402-0.1.0-alpha.8-exact-settlement");
+  assert.equal(result.verification.profile, "kaspa-x402-0.1.0-alpha.9-exact-settlement");
   assert.match(result.verification.detailDigest, /^sha256:[A-Za-z0-9_-]{43}$/);
   assert.deepEqual(calls, ["staging", "chain"]);
 });
@@ -104,6 +105,29 @@ test("Settlement verifier accepts Sompi-bound idempotency when the Merchant did 
   assert.equal(
     fixture.paymentPayload.extensions?.["payment-identifier"]?.info.id,
     PAYMENT_IDENTIFIER
+  );
+});
+
+test("alpha.9 exact authorization expiry fails closed before settlement and remains recovery-observable", async () => {
+  const fixture = await makeFixture();
+  await assert.rejects(
+    fixture.verifier({ authorizationNowMs: NOW + 60_001 }).verify(fixture.verificationInput()),
+    /expired_authorization/
+  );
+  const recovered = await fixture.verifier({
+    authorizationNowMs: NOW + 60_001,
+    merchant: async () => fixture.paymentResponseHeader,
+  }).observe(fixture.recoveryInput());
+  assert.equal(recovered.status, "payment_response");
+
+  const overlong = fixture.verificationInput();
+  overlong.paymentRequired = structuredClone(overlong.paymentRequired);
+  overlong.paymentPayload = structuredClone(overlong.paymentPayload);
+  (overlong.paymentRequired.accepts[0] as any).maxTimeoutSeconds = 30;
+  (overlong.paymentPayload.accepted as any).maxTimeoutSeconds = 30;
+  await assert.rejects(
+    fixture.verifier().verify(overlong),
+    /authorization_exceeds_max_timeout/
   );
 });
 
@@ -314,7 +338,7 @@ test("recovery rejects malformed Merchant evidence rather than falling back to c
   assert.equal(chainCalls, 0);
 });
 
-test("alpha.8 Merchant-store lookup returns only the response durably bound to the payment identifier", async () => {
+test("alpha.9 Merchant-store lookup returns only the response durably bound to the payment identifier", async () => {
   const fixture = await makeFixture();
   const settlement = structuredClone(fixture.response);
   const responseHeader = Buffer.from(fixture.paymentResponseHeader).toString("ascii");
@@ -391,6 +415,7 @@ interface VerifierOverrides {
   chain?: (request: ChainObservationRequest) => Promise<ChainObservation>;
   merchant?: (request: any) => Promise<Uint8Array | undefined>;
   observationTimeoutMs?: number;
+  authorizationNowMs?: number;
 }
 
 async function makeFixture(options: FixtureOptions = {}): Promise<Fixture> {
@@ -447,7 +472,7 @@ async function makeFixture(options: FixtureOptions = {}): Promise<Fixture> {
         headScriptPublicKey,
         headRedeemScript,
         challengeId: "56".repeat(32),
-        challengeExpiresAt: "2099-01-01T00:00:00.000Z",
+        challengeExpiresAt: EXACT_EXPIRES_AT,
         additiveThresholdSompi: THRESHOLD,
         assetKind: "native" as const,
         assetDecimals: 8 as const,
@@ -476,7 +501,7 @@ async function makeFixture(options: FixtureOptions = {}): Promise<Fixture> {
         paymentOutputIndex: 0,
         requestHash,
         paymentRequirementsHash: sha256Hex(stableStringify(accepted)),
-        authorizationExpiresAt: "2099-01-01T00:00:00.000Z",
+        authorizationExpiresAt: EXACT_EXPIRES_AT,
         requiredFinality: "accepted",
         fundingSource: "vault-treasury",
         head: {
@@ -679,6 +704,7 @@ async function makeFixture(options: FixtureOptions = {}): Promise<Fixture> {
           },
           observationTimeoutMs: overrides.observationTimeoutMs,
           now: () => NOW,
+          authorizationNow: () => overrides.authorizationNowMs ?? NOW,
         });
       },
       chainObservation(finality) {

@@ -151,7 +151,7 @@ export class BatchRefundTreasuryOperationAdapter implements TreasuryOperationAda
     const transaction = sdkBatchTransaction(artifact);
     try {
       const transactionId = String(transaction.finalize()).toLowerCase();
-      if (transactionId !== artifact.transactionId) throw new Error("batch refund SDK transaction ID disagrees with the alpha.8 builder");
+      if (transactionId !== artifact.transactionId) throw new Error("batch refund SDK transaction ID disagrees with the alpha.9 builder");
       const envelope: RefundEnvelope = Object.freeze({
         version: 1,
         profile: PROFILE,

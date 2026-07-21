@@ -5,7 +5,7 @@ import type {
 
 /**
  * The one concrete Kaspa-x402 execution adapter. It routes the two real
- * alpha.8 mechanisms without widening Sompi into a generic payment-rail API.
+ * alpha.9 mechanisms without widening Sompi into a generic payment-rail API.
  */
 export class KaspaX402PaymentModule implements KaspaPaymentModule {
   constructor(

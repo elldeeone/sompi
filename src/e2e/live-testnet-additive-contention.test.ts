@@ -176,7 +176,7 @@ function fixture(): LiveAdditiveContentionReport {
     protocol: Object.freeze({
       binding: "kaspa-exact-v2",
       exactProfile: "additive",
-      packageVersion: "0.1.0-alpha.8",
+      packageVersion: "0.1.0-alpha.9",
       transactionEncoding: "kaspa-sdk-safe-json-v2.0.0",
     }),
     initialHead: Object.freeze({

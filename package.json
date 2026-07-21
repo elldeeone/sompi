@@ -1,6 +1,6 @@
 {
   "name": "@elldeeone/sompi",
-  "version": "0.11.11",
+  "version": "0.12.0",
   "description": "Operator-controlled KAS wallet, transfers, and x402 purchases for local agents on Testnet-10.",
   "license": "MIT",
   "repository": {
@@ -61,7 +61,7 @@
     "scripts/verify-packed-artifact.mjs",
     "test/conformance",
     "vendor/ap2-v0.2-schemas",
-    "vendor/kaspa-x402-alpha.8-conformance",
+    "vendor/kaspa-x402-alpha.9-conformance",
     "vendor/kaspa-wasm"
   ],
   "engines": {
@@ -89,10 +89,10 @@
     "prepack": "npm run build && node scripts/prepare-package.mjs"
   },
   "dependencies": {
-    "@kaspa-x402/client": "0.1.0-alpha.8",
-    "@kaspa-x402/core": "0.1.0-alpha.8",
-    "@kaspa-x402/covenant": "0.1.0-alpha.8",
-    "@kaspa-x402/server": "0.1.0-alpha.8",
+    "@kaspa-x402/client": "0.1.0-alpha.9",
+    "@kaspa-x402/core": "0.1.0-alpha.9",
+    "@kaspa-x402/covenant": "0.1.0-alpha.9",
+    "@kaspa-x402/server": "0.1.0-alpha.9",
     "@modelcontextprotocol/sdk": "1.29.0",
     "@noble/curves": "2.2.0",
     "ajv": "8.20.0",

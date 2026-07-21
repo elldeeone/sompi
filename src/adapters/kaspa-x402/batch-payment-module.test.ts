@@ -338,8 +338,8 @@ test("batch module coordinates the real Journal authorization, channel epoch, an
       commitmentId,
       evidenceBytes,
       verification: {
-        verifierId: "sompi-kaspa-x402-alpha8-batch",
-        profile: "kaspa-x402-0.1.0-alpha.8-batch-settlement",
+        verifierId: "sompi-kaspa-x402-alpha9-batch",
+        profile: "kaspa-x402-0.1.0-alpha.9-batch-settlement",
         detailDigest: evidenceDigest(evidenceBytes),
       },
     });

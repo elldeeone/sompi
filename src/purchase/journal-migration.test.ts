@@ -20,6 +20,10 @@ import {
   JOURNAL_SCHEMA_V11_SQL,
   JOURNAL_SCHEMA_V12_SQL,
   JOURNAL_SCHEMA_V13_SQL,
+  JOURNAL_SCHEMA_V15_SQL,
+  JOURNAL_SCHEMA_V16_SQL,
+  JOURNAL_SCHEMA_V17_SQL,
+  JOURNAL_SCHEMA_V18_SQL,
   JOURNAL_SCHEMA_V1_SQL,
   JOURNAL_SCHEMA_VERSION,
 } from "./journal-schema.js";
@@ -28,26 +32,18 @@ test("clean cutover rejects every superseded journal schema without mutation", (
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-journal-migrate-"));
   fs.chmodSync(directory, 0o700);
   try {
-    const schemas = [
-      JOURNAL_SCHEMA_V1_SQL,
-      JOURNAL_SCHEMA_V2_SQL,
-      JOURNAL_SCHEMA_V3_SQL,
-      JOURNAL_SCHEMA_V4_SQL,
-      JOURNAL_SCHEMA_V5_SQL,
-      JOURNAL_SCHEMA_V6_SQL,
-      JOURNAL_SCHEMA_V7_SQL,
-      JOURNAL_SCHEMA_V8_SQL,
-      JOURNAL_SCHEMA_V9_SQL,
-      JOURNAL_SCHEMA_V10_SQL,
-      JOURNAL_SCHEMA_V11_SQL,
-      JOURNAL_SCHEMA_V12_SQL,
-      JOURNAL_SCHEMA_V13_SQL,
+    const schemas: ReadonlyArray<readonly [number, string]> = [
+      [1, JOURNAL_SCHEMA_V1_SQL], [2, JOURNAL_SCHEMA_V2_SQL], [3, JOURNAL_SCHEMA_V3_SQL],
+      [4, JOURNAL_SCHEMA_V4_SQL], [5, JOURNAL_SCHEMA_V5_SQL], [6, JOURNAL_SCHEMA_V6_SQL],
+      [7, JOURNAL_SCHEMA_V7_SQL], [8, JOURNAL_SCHEMA_V8_SQL], [9, JOURNAL_SCHEMA_V9_SQL],
+      [10, JOURNAL_SCHEMA_V10_SQL], [11, JOURNAL_SCHEMA_V11_SQL], [12, JOURNAL_SCHEMA_V12_SQL],
+      [13, JOURNAL_SCHEMA_V13_SQL], [14, JOURNAL_SCHEMA_V15_SQL], [15, JOURNAL_SCHEMA_V15_SQL],
+      [16, JOURNAL_SCHEMA_V16_SQL], [17, JOURNAL_SCHEMA_V17_SQL], [18, JOURNAL_SCHEMA_V18_SQL],
     ];
-    for (let index = 0; index < schemas.length; index += 1) {
-      const version = index + 1;
+    for (const [version, schema] of schemas) {
       const filename = path.join(directory, `v${version}.sqlite`);
       const db = new Database(filename);
-      db.exec(schemas[index]);
+      db.exec(schema);
       db.pragma(`application_id = ${JOURNAL_APPLICATION_ID}`);
       db.pragma(`user_version = ${version}`);
       db.close();

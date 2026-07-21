@@ -43,7 +43,7 @@ const SETTLEMENT_DETAIL_DIGEST = digest("settlement-verified");
 const EXECUTION_PLAN_DIGEST = digest("standard-native-execution-plan");
 const NOW = Date.parse("2030-01-01T00:00:00.000Z");
 
-test("alpha.8 standard-native exact module uses official lower-level flow and durable staging seams", async () => {
+test("alpha.9 standard-native exact module uses official lower-level flow and durable staging seams", async () => {
   const fixture = makeFixture();
 
   const preparedStaging = await fixture.treasuryStaging.prepareStaging({
@@ -782,7 +782,7 @@ function makeFixture(
             : { outpoint: options.settlementOutpoint ?? `${EXACT_TX}:0` }),
           verification: {
             verifierId: "kaspa-chain-observer:test",
-            profile: "kaspa-x402-0.1.0-alpha.8-exact-settlement",
+            profile: "kaspa-x402-0.1.0-alpha.9-exact-settlement",
             detailDigest: SETTLEMENT_DETAIL_DIGEST,
           },
         };

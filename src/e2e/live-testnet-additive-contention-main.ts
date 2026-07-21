@@ -24,10 +24,10 @@ process.stdout.write(`${JSON.stringify({
 }, null, 2)}\n`);
 
 function parseArgs(args: string[]) {
-  let directory = path.join(os.homedir(), ".local", "state", "sompi", "alpha8-additive-contention-live-proof");
+  let directory = path.join(os.homedir(), ".local", "state", "sompi", "alpha9-additive-contention-live-proof");
   let sourceWalletDirectory = path.join(os.homedir(), ".sompi", "testnet-10");
   let reportFilename = path.join(
-    os.homedir(), ".local", "state", "sompi", "reports", "alpha8-additive-contention-report.json"
+    os.homedir(), ".local", "state", "sompi", "reports", "alpha9-additive-contention-report.json"
   );
   for (let index = 0; index < args.length; index++) {
     const argument = args[index];

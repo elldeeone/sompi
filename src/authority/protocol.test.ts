@@ -49,10 +49,10 @@ test("request envelopes are canonical, deterministic, authenticated, and replay 
   assert.equal(first.wire, second.wire);
   assert.equal(first.requestDigest, second.requestDigest);
   assert.equal(first.factsDigest, authorityFactsDigest(request.facts));
-  assert.equal(first.requestDigest, "sha256:ANK9helphGTbE2ZGT98cvBlc77SgO07zfoV_OKVpBqA");
+  assert.equal(first.requestDigest, "sha256:ql5ZVz5N9idQdNsUmA_vD-2zLUr2H7n7bjl_02R0hyA");
   assert.equal(first.factsDigest, "sha256:G80XhoCA-C3sth-rFuLa-DI6YfwSxsjJ1aoLLXpK4a0");
   assert.equal(first.nonceDigest, "sha256:rPcvkLHhzeSiKxzypYz1ZjonDwweFIQ-VUjqZcc6cZo");
-  assert.equal(JSON.parse(first.wire).mac, "9_EybcMdV7wp0CB6bI3DO7HoxyE4SfVni7wswfoG8yY");
+  assert.equal(JSON.parse(first.wire).mac, "1iAvvZ3S7Mcu0CJevzLOSW7T0uR6NF5X4w7Mv-xe01M");
   assert.deepEqual(Buffer.from(KEY), keyBefore, "caller-owned MAC key must not be zeroed or mutated");
   assert(Object.isFrozen(first));
   assert(Object.isFrozen(first.message));
@@ -664,7 +664,7 @@ function makeRequest(overrides: Partial<AuthorityApprovalRequest> = {}): Authori
     artifact: "checkout",
     digest: facts.checkoutDigest,
     mediaType: "application/x402-payment-required",
-    profile: "kaspa-x402-0.1.0-alpha.8-payment-required",
+    profile: "kaspa-x402-0.1.0-alpha.9-payment-required",
     issuer: facts.merchantId,
   } as const;
   return {

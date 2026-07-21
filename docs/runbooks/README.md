@@ -1,6 +1,6 @@
 # Operator runbooks
 
-These procedures apply to the Testnet-10 alpha.8 runtime. They do not enable
+These procedures apply to the Testnet-10 alpha.9 runtime. They do not enable
 mainnet.
 
 Start with:

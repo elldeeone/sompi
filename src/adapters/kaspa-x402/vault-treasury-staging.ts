@@ -410,7 +410,7 @@ export class VaultTreasuryStaging implements TreasuryStagingDriver {
     }
 
     // `VaultManager.prepareSend` performs its own bounded fee-convergence
-    // loop. Stage only the amount required by the immutable alpha.8 exact
+    // loop. Stage only the amount required by the immutable alpha.9 exact
     // transaction; an authorization ceiling is a bound, not spare value that
     // should be moved out of the vault into an ephemeral change address.
     const prepared = await this.vault.prepareSend(

@@ -1043,7 +1043,7 @@ class FakeDependencies {
       };
       const checkoutEvidence = artifact(
         requirementsBytes,
-        "kaspa-x402-0.1.0-alpha.8-payment-required",
+        "kaspa-x402-0.1.0-alpha.9-payment-required",
         "https://merchant.example",
         checkoutTermsFactsDigest(terms)
       );
@@ -1496,7 +1496,7 @@ async function verifiedAuthorityResult(
       artifact: `requirements:${request.purchaseId}`,
       digest: purchaseFacts.checkoutDigest,
       mediaType: "application/x402-payment-required",
-      profile: "kaspa-x402-0.1.0-alpha.8-payment-required",
+      profile: "kaspa-x402-0.1.0-alpha.9-payment-required",
       issuer: purchaseFacts.merchantId,
     },
   };

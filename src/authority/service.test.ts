@@ -264,7 +264,7 @@ function makeRequest(seed = 1): AuthorityApprovalRequest {
       artifact: "checkout",
       digest: facts.checkoutDigest,
       mediaType: "application/x402-payment-required",
-      profile: "kaspa-x402-0.1.0-alpha.8-payment-required",
+      profile: "kaspa-x402-0.1.0-alpha.9-payment-required",
       issuer: facts.merchantId,
     },
   };

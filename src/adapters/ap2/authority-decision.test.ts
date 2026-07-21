@@ -181,7 +181,7 @@ async function verifiedRequest(
       artifact: checkoutArtifact,
       digest: checkoutDigest,
       mediaType: "application/x402-payment-required",
-      profile: "kaspa-x402-0.1.0-alpha.8-payment-required",
+      profile: "kaspa-x402-0.1.0-alpha.9-payment-required",
       issuer: checkout.terms.merchant.origin,
     },
   }, { keyId: "authority-ipc:test", keyBytes: KEY });

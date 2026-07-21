@@ -32,7 +32,7 @@ export interface BatchClaimFeeSource {
 }
 
 /**
- * Merchant-side adapter for the alpha.8 public claim contract. Kaspa-x402 owns
+ * Merchant-side adapter for the alpha.9 public claim contract. Kaspa-x402 owns
  * claim eligibility, durable attempts, broadcast, continuation verification,
  * and recovery; Sompi supplies only key custody and SDK-safe serialization.
  */
@@ -101,7 +101,7 @@ export class KaspaX402BatchClaimBuilder implements ClaimTransactionBuilder {
     try {
       const transactionId = String(transaction.finalize()).toLowerCase();
       if (transactionId !== artifact.transactionId) {
-        throw new Error("batch claim SDK transaction ID disagrees with the alpha.8 builder");
+        throw new Error("batch claim SDK transaction ID disagrees with the alpha.9 builder");
       }
       return Object.freeze({
         transaction: transaction.serializeToSafeJSON(),

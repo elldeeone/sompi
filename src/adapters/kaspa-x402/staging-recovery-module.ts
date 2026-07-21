@@ -316,7 +316,7 @@ function exactCandidate(
   }
   const profile = payload.value.accepted.extra.profile;
   if (profile !== "standard-native" && profile !== "additive") {
-    throw new Error("exact payment envelope has an unsupported alpha.8 profile");
+    throw new Error("exact payment envelope has an unsupported alpha.9 profile");
   }
   return Object.freeze({
     profile,
