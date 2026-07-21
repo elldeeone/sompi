@@ -922,8 +922,8 @@ Acceptance evidence (2026-07-21): 538 tests run, with 537 passing and one
 root-only ownership test skipped. The focused continuation suite, three Hermes
 plugin tests, Kaspa-x402 alpha.8 conformance, deterministic local E2E,
 OpenAPI/Arazzo checks, build, smoke, and a verified 219-file package artifact
-pass. This is source-only evidence; no version was cut, published, or deployed
-as part of this phase.
+pass. This work is cut as the `0.11.10` release candidate; publication and
+Terah deployment remain separate release gates.
 
 ## Deferred tracks (not part of the alpha.8 clean cutover)
 

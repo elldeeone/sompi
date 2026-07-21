@@ -1,6 +1,6 @@
 {
   "name": "@elldeeone/sompi",
-  "version": "0.11.9",
+  "version": "0.11.10",
   "description": "Operator-controlled KAS wallet, transfers, and x402 purchases for local agents on Testnet-10.",
   "license": "MIT",
   "repository": {
