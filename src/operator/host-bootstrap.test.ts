@@ -17,6 +17,7 @@ import {
 } from "./host-bootstrap.js";
 import {
   installHermesCompatibilityCheckout,
+  installHermesCompatibilityVenvLink,
   renderApiUnit,
   renderAuthorityUnit,
   renderTmpfiles,
@@ -180,6 +181,7 @@ test("Hermes compatibility stays in an independently updateable Git checkout", (
     runner.run("git", ["add", "callback.py"], { cwd: checkout });
     runner.run("git", ["commit", "-m", "fixture"], { cwd: checkout });
     runner.run("git", ["remote", "add", "origin", "https://example.invalid/hermes-agent.git"], { cwd: checkout });
+    fs.mkdirSync(path.join(checkout, "venv"));
     fs.writeFileSync(patch, [
       "diff --git a/callback.py b/callback.py",
       "--- a/callback.py",
@@ -191,12 +193,15 @@ test("Hermes compatibility stays in an independently updateable Git checkout", (
     ].join("\n"));
 
     installHermesCompatibilityCheckout(checkout, compatRoot, patch, runner);
+    installHermesCompatibilityVenvLink(checkout, compatRoot);
 
     assert.ok(fs.existsSync(path.join(compatRoot, ".git")));
     assert.equal(runner.run("git", ["remote", "get-url", "origin"], { cwd: compatRoot }).trim(), "https://example.invalid/hermes-agent.git");
     assert.equal(runner.run("git", ["branch", "--show-current"], { cwd: compatRoot }).trim(), "main");
     assert.equal(fs.readFileSync(path.join(compatRoot, "callback.py"), "utf8"), "HOOKS = [\"gateway_callback_query\"]\n");
     assert.match(runner.run("git", ["status", "--short"], { cwd: compatRoot }), /^ M callback\.py$/m);
+    assert.equal(fs.realpathSync(path.join(compatRoot, "venv")), path.join(checkout, "venv"));
+    assert.doesNotMatch(runner.run("git", ["status", "--short"], { cwd: compatRoot }), /venv/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

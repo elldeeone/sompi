@@ -469,7 +469,10 @@ function installHermesIntegration(packageRoot: string, request: HostBootstrapReq
   }
   chownTree(skillTarget, ids.agentUid, ids.agentGid, 0o700, 0o600);
   chownTree(pluginTarget, ids.agentUid, ids.agentGid, 0o700, 0o600);
-  if (pythonPath !== checkout) chownTree(pythonPath, ids.agentUid, ids.agentGid, 0o700, 0o600, true);
+  if (pythonPath !== checkout) {
+    chownTree(pythonPath, ids.agentUid, ids.agentGid, 0o700, 0o600, true);
+    installHermesCompatibilityVenvLink(checkout, pythonPath);
+  }
   return pythonPath;
 }
 
@@ -490,6 +493,18 @@ export function installHermesCompatibilityCheckout(
   if (!fs.existsSync(path.join(compatRoot, ".git"))) {
     throw new HostBootstrapError("Hermes compatibility checkout lost its update metadata");
   }
+}
+
+export function installHermesCompatibilityVenvLink(checkout: string, compatRoot: string): void {
+  const source = path.join(checkout, "venv");
+  const target = path.join(compatRoot, "venv");
+  const sourceStat = fs.lstatSync(source);
+  if (!sourceStat.isDirectory() || sourceStat.isSymbolicLink() || fs.existsSync(target)) {
+    throw new HostBootstrapError("Hermes compatibility runtime link is unsafe");
+  }
+  fs.symlinkSync(source, target, "dir");
+  const exclude = path.join(compatRoot, ".git", "info", "exclude");
+  fs.appendFileSync(exclude, "\n/venv\n", { encoding: "utf8" });
 }
 
 function installHermesServiceDropIn(request: HostBootstrapRequest, ids: PrincipalIds, pythonPath: string): void {
