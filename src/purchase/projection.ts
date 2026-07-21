@@ -57,11 +57,11 @@ interface StateProjection {
 
 const STATE_PROJECTIONS = {
   created: {
-    summary: () => "Purchase request recorded. Merchant terms have not been bound yet.",
+    summary: () => "Starting purchase.",
     userAction: "none",
   },
   terms_bound: {
-    summary: (snapshot) => `Purchase terms are bound${termsSubject(snapshot)}.`,
+    summary: (snapshot) => `Purchase ready${termsSubject(snapshot)}.`,
     userAction: "none",
   },
   awaiting_authority: {
@@ -69,31 +69,31 @@ const STATE_PROJECTIONS = {
     userAction: "Approve or deny the exact purchase in the trusted authority.",
   },
   authorised: {
-    summary: (snapshot) => `Purchase approved${termsSubject(snapshot)}. Payment has not been submitted.`,
+    summary: (snapshot) => `Purchase approved${termsSubject(snapshot)}. Preparing payment.`,
     userAction: "none",
   },
   execution_prepared: {
-    summary: (snapshot) => `Payment is prepared${termsSubject(snapshot)} but has not been submitted.`,
+    summary: (snapshot) => `Payment prepared${termsSubject(snapshot)}. Sending now.`,
     userAction: "none",
   },
   submitted: {
-    summary: () => "Payment was submitted. Waiting for verified settlement before continuing.",
+    summary: () => "Payment sent. Waiting for confirmation.",
     userAction: "none",
   },
   settled: {
-    summary: () => "Payment settlement is verified. Waiting for merchant fulfilment.",
+    summary: () => "Payment confirmed. Waiting for the merchant response.",
     userAction: "none",
   },
   fulfilled: {
-    summary: () => "The merchant fulfilled the purchase. Receipt finalization is pending.",
+    summary: () => "Purchase completed. Finishing the receipt.",
     userAction: "none",
   },
   receipted: {
-    summary: () => "Purchase complete. Settlement, fulfilment, and receipt evidence are recorded.",
+    summary: () => "Purchase completed successfully.",
     userAction: "none",
   },
   denied: {
-    summary: () => "Purchase denied. No payment was authorized by this decision.",
+    summary: () => "Purchase denied. No payment was made.",
     userAction: "Start a new purchase only if the terms or operator decision change.",
   },
   cancelled: {
@@ -101,15 +101,15 @@ const STATE_PROJECTIONS = {
     userAction: "none",
   },
   expired: {
-    summary: () => "Purchase expired. Its terms or authorization cannot be used for payment.",
+    summary: () => "Purchase offer expired. No payment was made.",
     userAction: "Start a new purchase to obtain fresh merchant terms and authorization.",
   },
   failed_recoverable: {
-    summary: () => "Purchase needs recovery. Existing external effects must be reconciled before any retry.",
+    summary: () => "Sompi is checking the original payment. Do not pay again.",
     userAction: "Run purchase_recover for this Purchase; do not submit another payment.",
   },
   failed_terminal: {
-    summary: () => "Purchase stopped after a terminal failure and cannot continue automatically.",
+    summary: () => "Purchase stopped safely. Operator review is required.",
     userAction: "Ask the operator to review the Purchase record; do not retry or pay again.",
   },
 } satisfies Readonly<Record<PurchaseState, StateProjection>>;
@@ -131,7 +131,7 @@ export function projectPurchaseView(snapshot: PurchaseProjectionSnapshot): Proje
     state: snapshot.state,
     summary: boundSummary(
       recoveryPending
-        ? "Purchase needs recovery. An existing external effect must be reconciled before any retry."
+        ? "Sompi is checking the original payment. Do not pay again."
         : stateProjection.summary(snapshot)
     ),
     userAction: recoveryPending
@@ -166,7 +166,7 @@ export function projectPurchaseSummary(snapshot: PurchaseProjectionSnapshot): st
   if (!stateProjection) throw new PurchaseProjectionError("unsupported Purchase state");
   if (snapshot.recoveryRequired === true) {
     return boundSummary(
-      "Purchase needs recovery. An existing external effect must be reconciled before any retry."
+      "Sompi is checking the original payment. Do not pay again."
     );
   }
   return boundSummary(stateProjection.summary(snapshot));

@@ -124,9 +124,9 @@ When the user explicitly asks to send an exact amount of KAS to an exact Testnet
 sompi-agent transfer --request-key TASK_KEY --to KASPATEST_ADDRESS --amount-kas KAS
 ```
 
-Sompi sends a separate exact approval prompt to the trusted human surface. Wait for the command. Do not treat the user's original chat instruction, an MCP call, or a shell-command approval as the cryptographic approval. Report success only when the returned Transfer is `receipted`, including its tKAS/KAS display amount, recipient, display fee, and transaction ID.
+Sompi sends a separate exact approval prompt to the trusted human surface. Wait for the command. Do not treat the user's original chat instruction, an MCP call, or a shell-command approval as the cryptographic approval.
 
-If the Transfer is `funds_reserved`, `prepared`, `submitted`, or `settled`, keep the same Transfer ID and use `sompi-agent transfer-recover TRANSFER_ID` to observe and finish it. If `userAction` says `recover`, do the same. Bound the polling time, report an unresolved status honestly, and never create a replacement send.
+The command continues the same durable Transfer through bounded settlement and receipt recovery. Do not add sleeps, polling, a second transfer command, or a manual recovery loop while it runs. Report success only when the returned Transfer is `receipted`.
 
 ## Procedure
 
@@ -149,6 +149,25 @@ If the Transfer is `funds_reserved`, `prepared`, `submitted`, or `settled`, keep
    or agent-managed retries while it runs.
 4. Read the returned Purchase view. Use the fulfilled content only when the state is `fulfilled` or `receipted`. Report amounts in tKAS/KAS, and report denials, policy failures, and recovery instructions plainly.
 
+## User-facing replies
+
+Keep the normal reply short. Lead with what happened, not Sompi's internal
+state machine.
+
+- Successful purchase: say it was purchased, the price in tKAS/KAS, and return
+  the requested content.
+- Successful transfer: say the amount was sent successfully. Repeat the exact
+  recipient only when useful for confirmation.
+- Denial or expiry: say plainly that nothing was paid or sent.
+- Unresolved work: say Sompi is still checking the original payment or transfer
+  and that no replacement was created.
+
+Do not dump fees, ceilings, request keys, Purchase/Transfer IDs, profiles,
+digests, finality, funding sources, transaction IDs, or raw state names in the
+default reply. Provide those fields when the user asks for details, when an
+operator must recover the operation, or when a transaction ID is needed to
+verify a disputed result.
+
 ## Recovery
 
 ```sh
@@ -156,11 +175,11 @@ sompi-agent status PURCHASE_ID
 sompi-agent recover PURCHASE_ID
 ```
 
-The normal `purchase` command already performs bounded recovery. Use `recover`
-only if its final returned view still explicitly marks the Purchase recoverable.
-That command also continues the same Purchase through a bounded recovery loop.
-Never add a manual sleep/poll loop or create a replacement purchase to escape
-recovery.
+The normal `purchase` and `transfer` commands already perform bounded recovery. Use `recover` or `transfer-recover`
+only if the final returned view still explicitly marks that operation recoverable.
+Those commands continue the same durable operation through a bounded recovery
+loop. Never add a manual sleep/poll loop or create a replacement operation to
+escape recovery.
 
 ## Pitfalls
 

@@ -310,7 +310,7 @@ test("caller cancellation after a possible Treasury effect preserves reconciliat
 
     const view = await coordinator.purchase(intent, cancellation.signal);
     assert.equal(view.state, "failed_recoverable");
-    assert.match(view.summary, /needs recovery/i);
+    assert.match(view.summary, /checking the original payment/i);
     assert.match(view.userAction ?? "", /recover/i);
     const reservation = journal.findReservationForPurchase(view.id);
     assert.equal(reservation?.state, "in_flight");

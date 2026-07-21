@@ -228,7 +228,7 @@ index 000000000..e4f271969
 +
 +    with patch(
 +        "gateway.plugin_callbacks.dispatch_plugin_callback_query",
-+        return_value=PluginCallbackResult(status="approved", message="Sompi Purchase approved."),
++        return_value=PluginCallbackResult(status="approved", message="Approved. Sompi is completing the purchase."),
 +    ) as dispatch:
 +        await TelegramAdapter._handle_callback_query(adapter, update, MagicMock())
 +
@@ -240,9 +240,9 @@ index 000000000..e4f271969
 +        thread_id=None,
 +        chat_type="private",
 +    )
-+    query.answer.assert_awaited_once_with(text="Sompi Purchase approved.")
++    query.answer.assert_awaited_once_with(text="Approved. Sompi is completing the purchase.")
 +    query.edit_message_text.assert_awaited_once_with(
-+        text="Sompi Purchase approved.",
++        text="Approved. Sompi is completing the purchase.",
 +        reply_markup=None,
 +    )
 +

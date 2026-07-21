@@ -21,6 +21,7 @@ import {
 
 export interface AuthorityApprovalDisplay {
   readonly kind?: "purchase";
+  readonly profile: "sompi.purchase-approval.1";
   readonly authorityRequestDigest: string;
   readonly purchaseId: string;
   readonly merchant: Readonly<{ id: string; name: string; origin: string }>;
@@ -33,6 +34,9 @@ export interface AuthorityApprovalDisplay {
   }>;
   readonly price: Readonly<{ amountAtomic: string; asset: string; network: string; payTo: string }>;
   readonly checkoutDigest: string;
+  readonly purchaseAuthorizationRequestDigest: string;
+  readonly purchaseAuthorizationNonceDigest: string;
+  readonly purchaseAuthorizationFactsDigest: string;
   readonly termsExpiresAt: string;
   readonly additionalCostCeilingAtomic: string;
   readonly effectiveFinalityFloor: "accepted" | "depth-confirmed";
@@ -50,6 +54,7 @@ export interface AuthorityApprovalDisplay {
 
 export interface TransferAuthorityApprovalDisplay {
   readonly kind: "transfer";
+  readonly profile: "sompi.transfer.1";
   readonly authorityRequestDigest: string;
   readonly transferId: string;
   readonly requestKey: string;
@@ -61,6 +66,7 @@ export interface TransferAuthorityApprovalDisplay {
   readonly network: "kaspa:testnet-10";
   readonly feeCeilingAtomic: string;
   readonly maximumTotalAtomic: string;
+  readonly issuedAt: string;
   readonly termsExpiresAt: string;
   readonly policyDigest: string;
   readonly operatorManifestRevision: number;
@@ -71,15 +77,21 @@ export interface TransferAuthorityApprovalDisplay {
 
 export interface PolicyChangeAuthorityApprovalDisplay {
   readonly kind: "policy-change";
+  readonly profile: "sompi.policy-change.1";
   readonly authorityRequestDigest: string;
   readonly policyChangeId: string;
   readonly requestKey: string;
+  readonly expectedPolicyDigest: string;
+  readonly expectedPolicyVersion: number;
+  readonly expectedPolicyGeneration: number;
+  readonly expectedVaultDigest: string;
   readonly previousMaximumPerPaymentAtomic: string;
   readonly previousMaximumPerHourAtomic: string;
   readonly proposedMaximumPerPaymentAtomic: string;
   readonly proposedMaximumPerHourAtomic: string;
   readonly vaultMaximumOutflowAtomic: string;
   readonly everyPaymentRequiresApproval: true;
+  readonly issuedAt: string;
   readonly termsExpiresAt: string;
   readonly operatorManifestRevision: number;
   readonly operatorManifestDigest: string;
@@ -87,13 +99,22 @@ export interface PolicyChangeAuthorityApprovalDisplay {
 
 export interface VaultMigrationAuthorityApprovalDisplay {
   readonly kind: "vault-migration";
+  readonly profile: "sompi.vault-migration.1";
   readonly authorityRequestDigest: string;
   readonly vaultMigrationId: string;
   readonly requestKey: string;
+  readonly oldVaultDigest: string;
+  readonly expectedPolicyDigest: string;
+  readonly expectedPolicyGeneration: number;
   readonly oldMaximumOutflowAtomic: string;
   readonly newMaximumOutflowAtomic: string;
+  readonly windowSizeDaa: string;
+  readonly windowStartDaa: string;
+  readonly spentInWindowAtomic: string;
+  readonly stableReceiveAddress: string;
   readonly stableReceiveAddressWillNotChange: true;
   readonly requiresOfflineOwnerKey: true;
+  readonly issuedAt: string;
   readonly termsExpiresAt: string;
   readonly operatorManifestRevision: number;
   readonly operatorManifestDigest: string;
@@ -334,6 +355,7 @@ function displayFacts(
   recoveryRetry: boolean,
 ): AuthorityApprovalDisplay {
   return Object.freeze({
+    profile: "sompi.purchase-approval.1",
     authorityRequestDigest,
     purchaseId: facts.purchaseId,
     merchant: Object.freeze({
@@ -355,6 +377,9 @@ function displayFacts(
       payTo: facts.payTo,
     }),
     checkoutDigest: facts.checkoutDigest,
+    purchaseAuthorizationRequestDigest: facts.purchaseAuthorizationRequestDigest,
+    purchaseAuthorizationNonceDigest: facts.purchaseAuthorizationNonceDigest,
+    purchaseAuthorizationFactsDigest: facts.purchaseAuthorizationFactsDigest,
     termsExpiresAt: facts.termsExpiresAt,
     additionalCostCeilingAtomic: facts.additionalCostCeilingAtomic,
     effectiveFinalityFloor: facts.effectiveFinalityFloor,

@@ -201,18 +201,18 @@ export class TelegramAuthorityApprovalPrompt implements AuthorityApprovalPrompt 
 
   resolveCallback(input: TelegramCallbackInput): TelegramCallbackResult {
     const parsed = parseCallback(input);
-    if (!parsed) return result("invalid", "This Sompi approval is invalid.");
+    if (!parsed) return result("invalid", "This Sompi button is invalid or expired.");
     if (
       !safeEqual(input.userId, this.options.config.userId) ||
       !safeEqual(input.chatId, this.options.config.chatId)
     ) {
-      return result("unauthorized", "You are not authorized to decide this request.");
+      return result("unauthorized", "This approval belongs to another user or chat.");
     }
     const now = this.timestamp();
     const tokenDigest = tokenHash(parsed.token);
     const waiter = this.pending.get(tokenDigest);
     if (!waiter) {
-      return result("replayed", "This Sompi approval is no longer active.");
+      return result("replayed", "This approval is no longer active.");
     }
     const consumed = this.options.store.consume({
       tokenDigest,
@@ -221,10 +221,10 @@ export class TelegramAuthorityApprovalPrompt implements AuthorityApprovalPrompt 
       nowMs: now,
     });
     if (consumed === "expired") {
-      return result("expired", "This Sompi approval has expired.");
+      return result("expired", "This approval has expired. Nothing was approved.");
     }
     if (consumed !== "approved" && consumed !== "denied") {
-      return result("replayed", "This Sompi approval has already been resolved.");
+      return result("replayed", "This approval was already decided.");
     }
     this.deletePending(waiter);
     waiter.resolve(consumed === "approved");
@@ -528,13 +528,13 @@ async function handleCallbackRequest(
     const body = await readBoundedBody(request);
     const input = parseCallbackEnvelope(body);
     if (!input) {
-      writeResponse(response, 400, result("invalid", "This Sompi approval is invalid."));
+      writeResponse(response, 400, result("invalid", "This Sompi button is invalid or expired."));
       return;
     }
     const output = options.handle(input);
     writeResponse(response, output.status === "approved" || output.status === "denied" ? 200 : 409, output);
   } catch {
-    writeResponse(response, 500, result("invalid", "Sompi could not process this approval safely."));
+    writeResponse(response, 500, result("invalid", "Couldn't confirm your choice safely. Nothing was approved."));
   }
 }
 
@@ -564,23 +564,31 @@ export class TelegramBotApi implements TelegramBotTransport {
     denyData: string,
     signal: AbortSignal,
   ): Promise<string> {
-    const text = telegramApprovalText(display);
-    const output = await this.call("sendMessage", {
-      chat_id: this.config.chatId,
-      text,
-      parse_mode: "HTML",
-      disable_web_page_preview: true,
-      reply_markup: {
-        inline_keyboard: [[
-          { text: "Approve", callback_data: approveData },
-          { text: "Deny", callback_data: denyData },
-        ]],
-      },
-    }, signal);
-    const resultValue = record(output.result);
-    const messageId = String(resultValue.message_id ?? "");
-    if (!/^[1-9][0-9]{0,19}$/.test(messageId)) throw new Error("Telegram did not return a message ID");
-    return messageId;
+    const messages = telegramApprovalMessages(display);
+    let decisionMessageId: string | undefined;
+    for (const [index, text] of messages.entries()) {
+      const decisionMessage = index === messages.length - 1;
+      const output = await this.call("sendMessage", {
+        chat_id: this.config.chatId,
+        text,
+        parse_mode: "HTML",
+        disable_web_page_preview: true,
+        ...(decisionMessage ? {
+          reply_markup: {
+            inline_keyboard: [[
+              { text: "Approve", callback_data: approveData },
+              { text: "Deny", callback_data: denyData },
+            ]],
+          },
+        } : {}),
+      }, signal);
+      const resultValue = record(output.result);
+      const messageId = String(resultValue.message_id ?? "");
+      if (!/^[1-9][0-9]{0,19}$/.test(messageId)) throw new Error("Telegram did not return a message ID");
+      if (decisionMessage) decisionMessageId = messageId;
+    }
+    if (decisionMessageId === undefined) throw new Error("Telegram approval message was not sent");
+    return decisionMessageId;
   }
 
   close(): void {
@@ -614,79 +622,233 @@ export class TelegramBotApi implements TelegramBotTransport {
   }
 }
 
-function telegramApprovalText(display: AnyAuthorityApprovalDisplay): string {
+function telegramApprovalMessages(display: AnyAuthorityApprovalDisplay): readonly string[] {
+  const content = telegramApprovalContent(display);
+  const combined = [...content.summary, expandableDetails(content.details)].join("\n");
+  if (telegramVisibleLength(combined) <= TELEGRAM_MESSAGE_LIMIT) return [combined];
+
+  const detailPages = paginateDetails(content.details, approvalBinding(display));
+  const summary = [
+    ...content.summary,
+    "",
+    `<i>Advanced details are in the ${detailPages.length} collapsed message${detailPages.length === 1 ? "" : "s"} immediately above.</i>`,
+  ].join("\n");
+  assertTelegramMessageFits(summary);
+  return [
+    ...detailPages.map((lines, index) => expandableDetails(
+      lines,
+      `Advanced details ${index + 1}/${detailPages.length}`,
+    )),
+    summary,
+  ];
+}
+
+function telegramApprovalContent(display: AnyAuthorityApprovalDisplay): Readonly<{
+  summary: readonly string[];
+  details: readonly string[];
+}> {
   if (display.kind === "transfer") {
-    const text = [
-      "<b>Sompi KAS transfer approval</b>",
-      "",
-      `<b>Recipient:</b> <code>${html(display.destination)}</code>`,
-      `<b>Amount:</b> ${html(displayKas(display.amountAtomic))}`,
-      `<b>Maximum total:</b> ${html(displayKas(display.maximumTotalAtomic))}`,
-      `<b>Expires:</b> ${html(display.termsExpiresAt)}`,
-      `<b>Transfer:</b> <code>${html(display.transferId)}</code>`,
-      "",
-      "The agent proposed this transfer. Only your button press authorizes it.",
-    ].join("\n");
-    if (Buffer.byteLength(text, "utf8") > TELEGRAM_MESSAGE_LIMIT) {
-      throw new Error("Transfer facts exceed the Telegram approval display limit");
-    }
-    return text;
+    return {
+      summary: [
+        "<b>Approve transfer?</b>", "",
+        `<b>Send:</b> ${html(displayKas(display.amountAtomic))}`,
+        `<b>To:</b> <code>${html(display.destination)}</code>`,
+        `<b>Maximum total:</b> ${html(displayKas(display.maximumTotalAtomic))}`,
+        `<b>Network:</b> ${networkLabel(display.network)}`,
+      ],
+      details: [
+        exactFact("Profile", display.profile),
+        exactFact("Transfer ID", display.transferId),
+        exactFact("Request key", display.requestKey),
+        exactFact("Source wallet", display.sourceVaultAddress),
+        exactFact("Source vault digest", display.sourceVaultDigest),
+        exactFact("Destination", display.destination),
+        exactFact("Amount atomic", display.amountAtomic),
+        exactFact("Asset", display.asset),
+        exactFact("Network", display.network),
+        exactFact("Fee ceiling atomic", display.feeCeilingAtomic),
+        exactFact("Maximum total atomic", display.maximumTotalAtomic),
+        exactFact("Issued", display.issuedAt),
+        exactFact("Expires", display.termsExpiresAt),
+        exactFact("Policy digest", display.policyDigest),
+        exactFact("Operator manifest revision", String(display.operatorManifestRevision)),
+        exactFact("Operator manifest digest", display.operatorManifestDigest),
+        exactFact("Finality floor", display.finalityFloor),
+        exactFact("Authority request digest", display.authorityRequestDigest),
+        exactFact("Recovery retry", display.recoveryRetry ? "true — same Transfer" : "false"),
+      ],
+    };
   }
   if (display.kind === "policy-change") {
-    const text = [
-      "<b>Change Sompi spending limits?</b>",
-      "",
-      `<b>Maximum per payment:</b> ${html(displayKas(display.proposedMaximumPerPaymentAtomic))}`,
-      `<b>Maximum per hour:</b> ${html(displayKas(display.proposedMaximumPerHourAtomic))}`,
-      `<b>Vault protection maximum:</b> ${html(displayKas(display.vaultMaximumOutflowAtomic))}`,
-      "<b>Payment approval:</b> You still approve every payment.",
-      `<b>Expires:</b> ${html(display.termsExpiresAt)}`,
-      `<b>Change:</b> <code>${html(display.policyChangeId)}</code>`,
-    ].join("\n");
-    if (Buffer.byteLength(text, "utf8") > TELEGRAM_MESSAGE_LIMIT) {
-      throw new Error("Policy Change facts exceed the Telegram approval display limit");
-    }
-    return text;
+    return {
+      summary: [
+        "<b>Change Sompi spending limits?</b>", "",
+        `<b>Per payment:</b> ${html(displayKas(display.previousMaximumPerPaymentAtomic))} → ${html(displayKas(display.proposedMaximumPerPaymentAtomic))}`,
+        `<b>Per hour:</b> ${html(displayKas(display.previousMaximumPerHourAtomic))} → ${html(displayKas(display.proposedMaximumPerHourAtomic))}`,
+        "Every payment will still need your approval.",
+      ],
+      details: [
+        exactFact("Profile", display.profile),
+        exactFact("Change ID", display.policyChangeId),
+        exactFact("Request key", display.requestKey),
+        exactFact("Expected policy digest", display.expectedPolicyDigest),
+        exactFact("Expected policy version", String(display.expectedPolicyVersion)),
+        exactFact("Expected policy generation", String(display.expectedPolicyGeneration)),
+        exactFact("Expected vault digest", display.expectedVaultDigest),
+        exactFact("Previous per-payment atomic", display.previousMaximumPerPaymentAtomic),
+        exactFact("Previous per-hour atomic", display.previousMaximumPerHourAtomic),
+        exactFact("Proposed per-payment atomic", display.proposedMaximumPerPaymentAtomic),
+        exactFact("Proposed per-hour atomic", display.proposedMaximumPerHourAtomic),
+        exactFact("Vault maximum atomic", display.vaultMaximumOutflowAtomic),
+        exactFact("Every payment requires approval", "true"),
+        exactFact("Operator manifest revision", String(display.operatorManifestRevision)),
+        exactFact("Operator manifest digest", display.operatorManifestDigest),
+        exactFact("Issued", display.issuedAt),
+        exactFact("Expires", display.termsExpiresAt),
+        exactFact("Authority request digest", display.authorityRequestDigest),
+      ],
+    };
   }
   if (display.kind === "vault-migration") {
-    const text = [
-      "<b>Change Sompi vault protection?</b>",
-      "",
-      `<b>Current maximum:</b> ${html(displayKas(display.oldMaximumOutflowAtomic))}`,
-      `<b>New maximum:</b> ${html(displayKas(display.newMaximumOutflowAtomic))}`,
-      "<b>Your receive address:</b> Will not change.",
-      "<b>Next step:</b> Offline owner-key execution is still required.",
-      `<b>Expires:</b> ${html(display.termsExpiresAt)}`,
-      `<b>Change:</b> <code>${html(display.vaultMigrationId)}</code>`,
-    ].join("\n");
-    if (Buffer.byteLength(text, "utf8") > TELEGRAM_MESSAGE_LIMIT) {
-      throw new Error("Vault Migration facts exceed the Telegram approval display limit");
+    return {
+      summary: [
+        "<b>Change Sompi vault protection?</b>", "",
+        `<b>Maximum:</b> ${html(displayKas(display.oldMaximumOutflowAtomic))} → ${html(displayKas(display.newMaximumOutflowAtomic))}`,
+        "Your receive address will not change.",
+        "Approval creates the plan; owner execution is still required.",
+      ],
+      details: [
+        exactFact("Profile", display.profile),
+        exactFact("Change ID", display.vaultMigrationId),
+        exactFact("Request key", display.requestKey),
+        exactFact("Old vault digest", display.oldVaultDigest),
+        exactFact("Expected policy digest", display.expectedPolicyDigest),
+        exactFact("Expected policy generation", String(display.expectedPolicyGeneration)),
+        exactFact("Old maximum atomic", display.oldMaximumOutflowAtomic),
+        exactFact("New maximum atomic", display.newMaximumOutflowAtomic),
+        exactFact("Window size DAA", display.windowSizeDaa),
+        exactFact("Window start DAA", display.windowStartDaa),
+        exactFact("Spent in window atomic", display.spentInWindowAtomic),
+        exactFact("Stable receive address", display.stableReceiveAddress),
+        exactFact("Receive address unchanged", "true"),
+        exactFact("Offline owner key required", "true"),
+        exactFact("Operator manifest revision", String(display.operatorManifestRevision)),
+        exactFact("Operator manifest digest", display.operatorManifestDigest),
+        exactFact("Issued", display.issuedAt),
+        exactFact("Expires", display.termsExpiresAt),
+        exactFact("Authority request digest", display.authorityRequestDigest),
+      ],
+    };
+  }
+  const maximumTotalAtomic = (
+    BigInt(display.price.amountAtomic) + BigInt(display.additionalCostCeilingAtomic)
+  ).toString();
+  return {
+    summary: [
+      "<b>Approve purchase?</b>", "",
+      `<b>Buy:</b> ${html(display.request.method)} ${html(display.request.url)}`,
+      `<b>From:</b> ${html(display.merchant.name)}`,
+      `<b>Price:</b> ${html(displayKas(display.price.amountAtomic))}`,
+      `<b>Maximum total:</b> ${html(displayKas(maximumTotalAtomic))}`,
+      `<b>Network:</b> ${networkLabel(display.price.network)}`,
+    ],
+    details: [
+      exactFact("Display profile", display.profile),
+      exactFact("Purchase ID", display.purchaseId),
+      exactFact("Merchant ID", display.merchant.id),
+      exactFact("Merchant name", display.merchant.name),
+      exactFact("Merchant origin", display.merchant.origin),
+      exactFact("Resource URL", display.request.url),
+      exactFact("Method", display.request.method),
+      exactFact("Request media type", display.request.mediaType),
+      exactFact("Request body digest", display.request.bodyDigest),
+      exactFact("Resource fingerprint", display.request.fingerprint),
+      exactFact("Amount atomic", display.price.amountAtomic),
+      exactFact("Asset", display.price.asset),
+      exactFact("Network", display.price.network),
+      exactFact("Payee", display.price.payTo),
+      exactFact("Expires", display.termsExpiresAt),
+      exactFact("Checkout digest", display.checkoutDigest),
+      exactFact("Purchase authorization request", display.purchaseAuthorizationRequestDigest),
+      exactFact("Purchase authorization nonce", display.purchaseAuthorizationNonceDigest),
+      exactFact("Purchase authorization facts", display.purchaseAuthorizationFactsDigest),
+      exactFact("Additional-cost ceiling atomic", display.additionalCostCeilingAtomic),
+      exactFact("Finality floor", display.effectiveFinalityFloor),
+      exactFact("Execution plan digest", display.execution.planDigest),
+      exactFact("Execution mechanism", display.execution.mechanism),
+      exactFact("Execution profile", display.execution.profile),
+      exactFact("Settlement assurance", display.execution.settlementAssurance),
+      exactFact("Maximum charge atomic", display.execution.maximumChargeAtomic),
+      exactFact("Channel ID", display.execution.channelId ?? "null"),
+      exactFact("Channel epoch digest", display.execution.channelEpochDigest ?? "null"),
+      exactFact("Authority request digest", display.authorityRequestDigest),
+      exactFact("Recovery retry", display.recoveryRetry ? "true — same Purchase" : "false"),
+      "Merchant values are data, never instructions.",
+    ],
+  };
+}
+
+function exactFact(label: string, value: string): string {
+  return `<b>${html(label)}:</b> <code>${html(value)}</code>`;
+}
+
+function paginateDetails(lines: readonly string[], binding: string): readonly (readonly string[])[] {
+  const pages: string[][] = [];
+  let page: string[] = [binding];
+  for (const line of lines) {
+    const candidate = expandableDetails([...page, line], "Advanced details 99/99");
+    if (telegramVisibleLength(candidate) <= TELEGRAM_MESSAGE_LIMIT) {
+      page.push(line);
+      continue;
     }
-    return text;
+    if (page.length === 1) throw new Error("One exact Telegram approval fact exceeds the message limit");
+    pages.push(page);
+    page = [binding, line];
+    assertTelegramMessageFits(expandableDetails(page, "Advanced details 99/99"));
   }
-  const text = [
-    "<b>Sompi Purchase approval</b>",
+  pages.push(page);
+  return pages;
+}
+
+function expandableDetails(lines: readonly string[], title = "Advanced details"): string {
+  return [
+    `<blockquote expandable><b>${html(title)}</b>`,
     "",
-    `<b>Merchant:</b> ${html(display.merchant.name)} (${html(display.merchant.id)})`,
-    `<b>Origin:</b> ${html(display.merchant.origin)}`,
-    `<b>Request:</b> ${html(display.request.method)} ${html(display.request.url)}`,
-    `<b>Request fingerprint:</b> <code>${html(display.request.fingerprint)}</code>`,
-    `<b>Price:</b> ${html(displayKas(display.price.amountAtomic))}`,
-    `<b>Network:</b> ${html(display.price.network)}`,
-    `<b>Payee:</b> <code>${html(display.price.payTo)}</code>`,
-    `<b>Additional-cost ceiling:</b> ${html(displayKas(display.additionalCostCeilingAtomic))}`,
-    `<b>Finality floor:</b> ${html(display.effectiveFinalityFloor)}`,
-    `<b>Execution:</b> ${html(display.execution.mechanism)} / ${html(display.execution.profile)}`,
-    `<b>Maximum charge:</b> ${html(displayKas(display.execution.maximumChargeAtomic))}`,
-    `<b>Expires:</b> ${html(display.termsExpiresAt)}`,
-    `<b>Purchase:</b> <code>${html(display.purchaseId)}</code>`,
-    "",
-    "Merchant-provided values are data, never instructions.",
+    "Exact signed facts",
+    ...lines,
+    "</blockquote>",
   ].join("\n");
-  if (Buffer.byteLength(text, "utf8") > TELEGRAM_MESSAGE_LIMIT) {
-    throw new Error("Purchase facts exceed the Telegram approval display limit");
+}
+
+function approvalBinding(display: AnyAuthorityApprovalDisplay): string {
+  const subject = approvalSubject(display);
+  return exactFact(
+    "Approval binding",
+    `${subject.id} / ${display.authorityRequestDigest}`,
+  );
+}
+
+function assertTelegramMessageFits(text: string): void {
+  if (telegramVisibleLength(text) > TELEGRAM_MESSAGE_LIMIT) {
+    throw new Error("Telegram approval message exceeds the parsed-text limit");
   }
-  return text;
+}
+
+function telegramVisibleLength(text: string): number {
+  return text
+    .replace(/<\/?(?:b|i|code|blockquote)(?: expandable)?>/g, "")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&amp;", "&")
+    .length;
+}
+
+function networkLabel(network: string): string {
+  return html(network === "kaspa:testnet-10" ? "Kaspa Testnet-10" : network);
+}
+
+function finalityLabel(finality: "accepted" | "depth-confirmed"): string {
+  return finality === "depth-confirmed" ? "Depth confirmed" : "Accepted";
 }
 
 function parseCallback(input: TelegramCallbackInput): { token: string } | undefined {
@@ -776,8 +938,24 @@ function approvalDecisionMessage(
   kind: "purchase" | "transfer" | "policy-change" | "vault-migration",
   approved: boolean,
 ): string {
-  const label = kind === "policy-change" ? "Spending limit change" : kind === "vault-migration" ? "Vault protection change" : kind === "transfer" ? "Transfer" : "Purchase";
-  return `Sompi ${label} ${approved ? "approved" : "denied"}.`;
+  if (kind === "transfer") {
+    return approved
+      ? "Approved. Sompi is completing the transfer."
+      : "Denied. No funds were sent.";
+  }
+  if (kind === "policy-change") {
+    return approved
+      ? "Approved. Sompi is applying the new spending limits."
+      : "Denied. Spending limits were not changed.";
+  }
+  if (kind === "vault-migration") {
+    return approved
+      ? "Approved. No funds moved; owner execution is still required."
+      : "Denied. Vault protection was not changed.";
+  }
+  return approved
+    ? "Approved. Sompi is completing the purchase."
+    : "Denied. No payment was made.";
 }
 
 function validatePromptInput(input: Readonly<Record<string, unknown>>): void {

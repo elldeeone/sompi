@@ -52,8 +52,10 @@ test("Transfer Authority signs exact non-AP2 facts and replays one durable decis
   assert.equal(prompt.calls, 1);
   assert.equal(prompt.display?.kind, "transfer");
   if (prompt.display?.kind === "transfer") {
+    assert.equal(prompt.display.profile, facts.profile);
     assert.equal(prompt.display.destination, facts.destination);
     assert.equal(prompt.display.maximumTotalAtomic, facts.maximumTotalAtomic);
+    assert.equal(prompt.display.issuedAt, facts.issuedAt);
   }
 });
 
@@ -109,8 +111,14 @@ test("Owner Authority signs and displays exact Policy Change facts", async (t) =
   assert.equal(decision.factsDigest, digestJson(facts));
   assert.equal(prompt.display?.kind, "policy-change");
   if (prompt.display?.kind === "policy-change") {
+    assert.equal(prompt.display.profile, facts.profile);
+    assert.equal(prompt.display.expectedPolicyDigest, facts.expectedPolicyDigest);
+    assert.equal(prompt.display.expectedPolicyVersion, facts.expectedPolicyVersion);
+    assert.equal(prompt.display.expectedPolicyGeneration, facts.expectedPolicyGeneration);
+    assert.equal(prompt.display.expectedVaultDigest, facts.expectedVaultDigest);
     assert.equal(prompt.display.proposedMaximumPerPaymentAtomic, "200000000");
     assert.equal(prompt.display.everyPaymentRequiresApproval, true);
+    assert.equal(prompt.display.issuedAt, facts.issuedAt);
   }
 });
 
@@ -167,9 +175,18 @@ test("Owner Authority signs the exact vault protection change and keeps the rece
   assert.equal(decision.factsDigest, digestJson(facts));
   assert.equal(prompt.display?.kind, "vault-migration");
   if (prompt.display?.kind === "vault-migration") {
+    assert.equal(prompt.display.profile, facts.profile);
+    assert.equal(prompt.display.oldVaultDigest, facts.oldVaultDigest);
+    assert.equal(prompt.display.expectedPolicyDigest, facts.expectedPolicyDigest);
+    assert.equal(prompt.display.expectedPolicyGeneration, facts.expectedPolicyGeneration);
     assert.equal(prompt.display.newMaximumOutflowAtomic, "1000000000");
+    assert.equal(prompt.display.windowSizeDaa, facts.windowSizeDaa);
+    assert.equal(prompt.display.windowStartDaa, facts.windowStartDaa);
+    assert.equal(prompt.display.spentInWindowAtomic, facts.spentInWindowAtomic);
+    assert.equal(prompt.display.stableReceiveAddress, facts.stableReceiveAddress);
     assert.equal(prompt.display.stableReceiveAddressWillNotChange, true);
     assert.equal(prompt.display.requiresOfflineOwnerKey, true);
+    assert.equal(prompt.display.issuedAt, facts.issuedAt);
   }
 });
 

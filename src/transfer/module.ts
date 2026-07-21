@@ -292,17 +292,17 @@ export class TransferModule {
 function transferSummary(record: TransferRecord): string {
   const amount = kasAmountView(record.amountAtomic).display;
   switch (record.state) {
-    case "created": return `Transfer request recorded for ${amount} to ${record.destination}.`;
+    case "created": return `Preparing to send ${amount} to ${record.destination}.`;
     case "awaiting_authority": return `Waiting for approval to send ${amount} to ${record.destination}.`;
-    case "authorised": return `Transfer approved for ${amount}; Treasury execution has not started.`;
+    case "authorised": return `Transfer approved for ${amount}. Preparing the send.`;
     case "denied": return `Transfer of ${amount} was denied. No funds were sent.`;
-    case "funds_reserved": return `${amount} is reserved for this transfer.`;
-    case "prepared": return `Transfer of ${amount} is prepared but has not been submitted.`;
-    case "submitted": return `Transfer of ${amount} was submitted and is waiting for settlement.`;
-    case "settled": return `Transfer of ${amount} settled; receipt finalization is pending.`;
+    case "funds_reserved": return `Transfer approved for ${amount}. Preparing the send.`;
+    case "prepared": return `Transfer prepared for ${amount}. Sending now.`;
+    case "submitted": return `Transfer sent for ${amount}. Waiting for confirmation.`;
+    case "settled": return `Transfer confirmed for ${amount}. Finishing the receipt.`;
     case "receipted": return `${amount} sent successfully to ${record.destination}.`;
-    case "failed_recoverable": return `Transfer of ${amount} needs recovery; do not create a replacement transfer.`;
-    case "failed_terminal": return `Transfer of ${amount} stopped safely and cannot continue automatically.`;
+    case "failed_recoverable": return `Sompi is checking the original ${amount} transfer. Do not send again.`;
+    case "failed_terminal": return `Transfer of ${amount} stopped safely. Operator review is required.`;
   }
 }
 

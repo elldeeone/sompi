@@ -47,7 +47,7 @@ test("amount summaries lead with deterministic testnet KAS projections", () => {
 
   assert.equal(
     summary,
-    "Purchase approved for 0.2 tKAS, with additional costs capped at 0.02 tKAS, from Test Merchant with whitespace. Payment has not been submitted."
+    "Purchase approved for 0.2 tKAS, with additional costs capped at 0.02 tKAS, from Test Merchant with whitespace. Preparing payment."
   );
   assert.equal(summary.includes("20000000 KAS"), false);
   assert.equal(summary.includes("2000000 KAS"), false);
@@ -64,7 +64,7 @@ test("an external effect awaiting reconciliation overrides an otherwise passive 
   assert.equal(view.state, "authorised");
   assert.equal(
     view.summary,
-    "Purchase needs recovery. An existing external effect must be reconciled before any retry."
+    "Sompi is checking the original payment. Do not pay again."
   );
   assert.equal(
     view.userAction,

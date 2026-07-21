@@ -422,7 +422,7 @@ function writeView(response: http.ServerResponse, value: unknown): void {
 
 function writeMappedError(response: http.ServerResponse, error: unknown, timedOut: boolean): void {
   if (timedOut || (error instanceof DOMException && error.name === "TimeoutError")) {
-    writeError(response, 504, "DEADLINE_EXCEEDED", "The request deadline elapsed; inspect the durable Purchase before retrying.", true);
+    writeError(response, 504, "DEADLINE_EXCEEDED", "Sompi is still checking the original operation. Retry only with the same request key or operation ID.", true);
   } else if (error instanceof HttpBoundaryError) {
     writeError(response, error.status, error.code, error.message, error.retryable);
   } else if (error instanceof SompiApiContractError) {
@@ -435,9 +435,9 @@ function writeMappedError(response: http.ServerResponse, error: unknown, timedOu
   } else if (error instanceof PurchaseAdmissionError || error instanceof EvidenceAdmissionError) {
     writeError(response, 429, "PURCHASE_ADMISSION_SATURATED", "Purchase admission is saturated.", true);
   } else if (error instanceof Error && error.name === "AbortError") {
-    writeError(response, 504, "REQUEST_CANCELLED", "The request was cancelled; inspect the durable Purchase before retrying.", true);
+    writeError(response, 504, "REQUEST_CANCELLED", "The request stopped, but the original operation remains safe. Retry only with the same request key or operation ID.", true);
   } else {
-    writeError(response, 500, "INTERNAL_ERROR", "Sompi failed safely; ask the operator to inspect the local service.", false);
+    writeError(response, 500, "INTERNAL_ERROR", "Sompi stopped safely. Ask the operator to check the local service.", false);
   }
 }
 

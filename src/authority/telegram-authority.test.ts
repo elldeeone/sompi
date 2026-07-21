@@ -5,7 +5,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 
-import type { AnyAuthorityApprovalDisplay, AuthorityApprovalDisplay, TransferAuthorityApprovalDisplay, VaultMigrationAuthorityApprovalDisplay } from "../adapters/ap2/human-authority.js";
+import type { AnyAuthorityApprovalDisplay, AuthorityApprovalDisplay, PolicyChangeAuthorityApprovalDisplay, TransferAuthorityApprovalDisplay, VaultMigrationAuthorityApprovalDisplay } from "../adapters/ap2/human-authority.js";
+import { requestFingerprintFromBodyDigest } from "../purchase/identity.js";
+import type { Sha256Digest } from "../purchase/types.js";
 import {
   TelegramAuthorityApprovalPrompt,
   TelegramAuthorityPromptStore,
@@ -36,7 +38,7 @@ test("Telegram Authority approves one exact prompt and rejects its replay", asyn
 
   assert.deepEqual(fixture.prompt.resolveCallback(callback), {
     status: "approved",
-    message: "Sompi Purchase approved.",
+    message: "Approved. Sompi is completing the purchase.",
   });
   assert.equal(await pending, true);
   assert.equal(fixture.prompt.resolveCallback(callback).status, "replayed");
@@ -68,7 +70,7 @@ test("Telegram Authority shows and resolves exact direct-Transfer facts", async 
   await until(() => fixture.bot.sent.length === 1);
   const sent = fixture.bot.sent[0]!;
   assert.equal(sent.text.kind, "transfer");
-  assert.equal(fixture.prompt.resolveCallback(envelope(sent.approveData)).message, "Sompi Transfer approved.");
+  assert.equal(fixture.prompt.resolveCallback(envelope(sent.approveData)).message, "Approved. Sompi is completing the transfer.");
   assert.equal(await pending, true);
 });
 
@@ -78,7 +80,7 @@ test("Telegram Authority clearly separates vault approval from offline owner exe
   await until(() => fixture.bot.sent.length === 1);
   const sent = fixture.bot.sent[0]!;
   assert.equal(sent.text.kind, "vault-migration");
-  assert.equal(fixture.prompt.resolveCallback(envelope(sent.approveData)).message, "Sompi Vault protection change approved.");
+  assert.equal(fixture.prompt.resolveCallback(envelope(sent.approveData)).message, "Approved. No funds moved; owner execution is still required.");
   assert.equal(await pending, true);
 });
 
@@ -226,7 +228,7 @@ test("Telegram callback server makes a shared callback directory traversable by 
   );
 });
 
-test("Telegram Bot API verifies the pinned bot and sends escaped exact facts", async (t) => {
+test("Telegram Bot API sends concise escaped facts with native expandable details", async (t) => {
   const directory = temporaryDirectory(t);
   const tokenFile = path.join(directory, "telegram-bot-token");
   fs.writeFileSync(tokenFile, `${CONFIG.botId}:${"A".repeat(40)}\n`, { mode: 0o600 });
@@ -254,12 +256,132 @@ test("Telegram Bot API verifies the pinned bot and sends escaped exact facts", a
   assert.equal(await bot.sendApproval(hostile, `sp:a:${TOKEN_A}`, `sp:d:${TOKEN_A}`, new AbortController().signal), "42");
   assert.equal(calls.length, 2);
   assert.match(String(calls[1]!.body.text), /&lt;Admin&gt; &amp; merchant/);
+  assert.match(String(calls[1]!.body.text), /^<b>Approve purchase\?<\/b>/);
+  assert.match(String(calls[1]!.body.text), /<blockquote expandable><b>Advanced details<\/b>/);
+  assert.match(String(calls[1]!.body.text), /<b>Maximum total:<\/b> 0\.000011 tKAS/);
   assert.deepEqual(calls[1]!.body.reply_markup, {
     inline_keyboard: [[
       { text: "Approve", callback_data: `sp:a:${TOKEN_A}` },
       { text: "Deny", callback_data: `sp:d:${TOKEN_A}` },
     ]],
   });
+});
+
+test("all Telegram approval kinds lead with simple decision facts and retain advanced evidence", async (t) => {
+  const directory = temporaryDirectory(t);
+  const tokenFile = path.join(directory, "telegram-bot-token");
+  fs.writeFileSync(tokenFile, `${CONFIG.botId}:${"A".repeat(40)}\n`, { mode: 0o600 });
+  const messages: string[] = [];
+  const fetcher: typeof fetch = async (input, init) => {
+    const method = String(input).split("/").at(-1);
+    if (method === "sendMessage") {
+      const body = JSON.parse(String(init?.body)) as { text: string };
+      messages.push(body.text);
+    }
+    return new Response(JSON.stringify(method === "getMe"
+      ? { ok: true, result: { id: Number(CONFIG.botId), is_bot: true } }
+      : { ok: true, result: { message_id: messages.length } }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  const bot = new TelegramBotApi(tokenFile, CONFIG, fetcher);
+  t.after(() => bot.close());
+
+  await bot.sendApproval(transferDisplay(), `sp:${TOKEN_A}`, `sp:${TOKEN_B}`, new AbortController().signal);
+  await bot.sendApproval(policyChangeDisplay(), `sp:${TOKEN_A}`, `sp:${TOKEN_B}`, new AbortController().signal);
+  await bot.sendApproval(vaultMigrationDisplay(), `sp:${TOKEN_A}`, `sp:${TOKEN_B}`, new AbortController().signal);
+
+  assert.match(messages[0]!, /^<b>Approve transfer\?<\/b>/);
+  assert.match(messages[0]!, /<b>Send:<\/b> 0\.2 tKAS/);
+  assert.match(messages[0]!, /<b>Source wallet:<\/b>/);
+  assert.match(messages[1]!, /^<b>Change Sompi spending limits\?<\/b>/);
+  assert.match(messages[1]!, /0\.1 tKAS → 0\.2 tKAS/);
+  assert.match(messages[1]!, /Expected policy generation:<\/b> <code>2<\/code>/);
+  assert.match(messages[1]!, /Expected vault digest:<\/b> <code>sha256:BBBB/);
+  assert.match(messages[2]!, /^<b>Change Sompi vault protection\?<\/b>/);
+  assert.match(messages[2]!, /owner execution is still required/);
+  assert.match(messages[2]!, /Window size DAA:<\/b> <code>36000<\/code>/);
+  assert.match(messages[2]!, /Spent in window atomic:<\/b> <code>100000000<\/code>/);
+  assert.match(messages[2]!, /Stable receive address:<\/b> <code>kaspatest:/);
+  for (const message of messages) {
+    assert.match(message, /<blockquote expandable><b>Advanced details<\/b>/);
+  }
+});
+
+test("maximum contract-shaped Purchase facts are paginated before the decision card", async (t) => {
+  const directory = temporaryDirectory(t);
+  const tokenFile = path.join(directory, "telegram-bot-token");
+  fs.writeFileSync(tokenFile, `${CONFIG.botId}:${"A".repeat(40)}\n`, { mode: 0o600 });
+  const calls: Array<Record<string, unknown>> = [];
+  const fetcher: typeof fetch = async (_input, init) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    calls.push(body);
+    return new Response(JSON.stringify({ ok: true, result: { message_id: calls.length } }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  const bot = new TelegramBotApi(tokenFile, CONFIG, fetcher);
+  t.after(() => bot.close());
+  const urlPrefix = "https://merchant.example/";
+  const resourceUrl = `${urlPrefix}${"a".repeat(2_048 - urlPrefix.length)}`;
+  const mediaType = `application/${"a".repeat(188)}`;
+  const bodyDigest = display().request.bodyDigest as Sha256Digest;
+  const maximum = Object.freeze({
+    ...display(),
+    merchant: Object.freeze({
+      ...display().merchant,
+      id: "m".repeat(160),
+      name: "&".repeat(160),
+    }),
+    request: Object.freeze({
+      ...display().request,
+      url: resourceUrl,
+      mediaType,
+      fingerprint: requestFingerprintFromBodyDigest({
+        method: "GET",
+        url: resourceUrl,
+        mediaType,
+        bodyDigest,
+      }),
+    }),
+    execution: Object.freeze({
+      ...display().execution,
+      profile: "kaspa-escrow-v1:batch-settlement",
+      mechanism: "channel-voucher" as const,
+      settlementAssurance: "channel-commitment" as const,
+      channelId: "c".repeat(160),
+      channelEpochDigest: "sha256:IIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIIII",
+    }),
+  }) satisfies AuthorityApprovalDisplay;
+
+  assert.equal(
+    await bot.sendApproval(maximum, `sp:${TOKEN_A}`, `sp:${TOKEN_B}`, new AbortController().signal),
+    String(calls.length),
+  );
+  assert.ok(calls.length > 1, "maximum accepted facts must use multiple bounded messages");
+  for (const call of calls) {
+    assert.ok(parsedTelegramLength(String(call.text)) <= 4_096);
+  }
+  for (const call of calls.slice(0, -1)) {
+    assert.equal(call.reply_markup, undefined, "detail pages cannot carry decision capabilities");
+    assert.match(String(call.text), /^<blockquote expandable>/);
+    assert.match(String(call.text), new RegExp(maximum.authorityRequestDigest));
+  }
+  const decision = calls.at(-1)!;
+  assert.match(String(decision.text), /^<b>Approve purchase\?<\/b>/);
+  assert.deepEqual(decision.reply_markup, {
+    inline_keyboard: [[
+      { text: "Approve", callback_data: `sp:${TOKEN_A}` },
+      { text: "Deny", callback_data: `sp:${TOKEN_B}` },
+    ]],
+  });
+  const completeDisplay = calls.map((call) => String(call.text)).join("\n");
+  assert.match(completeDisplay, /Purchase authorization request:<\/b>/);
+  assert.match(completeDisplay, /Purchase authorization nonce:<\/b>/);
+  assert.match(completeDisplay, /Purchase authorization facts:<\/b>/);
+  assert.match(completeDisplay, new RegExp("&amp;".repeat(8)));
 });
 
 class FakeBot implements TelegramBotTransport {
@@ -315,6 +437,7 @@ function envelope(callbackData: string): TelegramCallbackInput {
 
 function display(): AuthorityApprovalDisplay {
   return Object.freeze({
+    profile: "sompi.purchase-approval.1",
     authorityRequestDigest: "sha256:EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",
     purchaseId: "pur_AAAAAAAAAAAAAAAAAAAAAA",
     merchant: Object.freeze({
@@ -333,9 +456,12 @@ function display(): AuthorityApprovalDisplay {
       amountAtomic: "1000",
       asset: "KAS",
       network: "kaspa:testnet-10",
-      payTo: "kaspatest:qtest",
+      payTo: "kaspatest:qq2n2shqkghczyel57af242ffs50x5uj07w7ezg7kwm8frwt5xhljqa3d68et",
     }),
     checkoutDigest: "sha256:CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+    purchaseAuthorizationRequestDigest: "sha256:FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF",
+    purchaseAuthorizationNonceDigest: "sha256:GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG",
+    purchaseAuthorizationFactsDigest: "sha256:HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH",
     termsExpiresAt: "2026-07-18T05:05:00.000Z",
     additionalCostCeilingAtomic: "100",
     effectiveFinalityFloor: "accepted",
@@ -355,6 +481,7 @@ function display(): AuthorityApprovalDisplay {
 function transferDisplay(): TransferAuthorityApprovalDisplay {
   return Object.freeze({
     kind: "transfer",
+    profile: "sompi.transfer.1",
     authorityRequestDigest: "sha256:EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",
     transferId: "trf_AAAAAAAAAAAAAAAAAAAAAA",
     requestKey: "send:one",
@@ -366,6 +493,7 @@ function transferDisplay(): TransferAuthorityApprovalDisplay {
     network: "kaspa:testnet-10",
     feeCeilingAtomic: "2500000",
     maximumTotalAtomic: "22500000",
+    issuedAt: "2026-07-18T04:59:00.000Z",
     termsExpiresAt: "2026-07-18T05:01:00.000Z",
     policyDigest: "sha256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
     operatorManifestRevision: 1,
@@ -375,20 +503,52 @@ function transferDisplay(): TransferAuthorityApprovalDisplay {
   });
 }
 
-function vaultMigrationDisplay(): VaultMigrationAuthorityApprovalDisplay {
+function policyChangeDisplay(): PolicyChangeAuthorityApprovalDisplay {
   return Object.freeze({
-    kind: "vault-migration",
+    kind: "policy-change",
+    profile: "sompi.policy-change.1",
     authorityRequestDigest: "sha256:EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",
-    vaultMigrationId: "vmg_AAAAAAAAAAAAAAAAAAAAAA",
-    requestKey: "vault:protection:one",
-    oldMaximumOutflowAtomic: "500000000",
-    newMaximumOutflowAtomic: "1000000000",
-    stableReceiveAddressWillNotChange: true,
-    requiresOfflineOwnerKey: true,
+    policyChangeId: "pcg_AAAAAAAAAAAAAAAAAAAAAA",
+    requestKey: "limits:one",
+    expectedPolicyDigest: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    expectedPolicyVersion: 1,
+    expectedPolicyGeneration: 2,
+    expectedVaultDigest: "sha256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    previousMaximumPerPaymentAtomic: "10000000",
+    previousMaximumPerHourAtomic: "50000000",
+    proposedMaximumPerPaymentAtomic: "20000000",
+    proposedMaximumPerHourAtomic: "100000000",
+    vaultMaximumOutflowAtomic: "500000000",
+    everyPaymentRequiresApproval: true,
+    issuedAt: "2026-07-18T04:59:00.000Z",
     termsExpiresAt: "2026-07-18T05:01:00.000Z",
     operatorManifestRevision: 1,
     operatorManifestDigest: "sha256:CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
-    recoveryRetry: false,
+  });
+}
+
+function vaultMigrationDisplay(): VaultMigrationAuthorityApprovalDisplay {
+  return Object.freeze({
+    kind: "vault-migration",
+    profile: "sompi.vault-migration.1",
+    authorityRequestDigest: "sha256:EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",
+    vaultMigrationId: "vmg_AAAAAAAAAAAAAAAAAAAAAA",
+    requestKey: "vault:protection:one",
+    oldVaultDigest: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    expectedPolicyDigest: "sha256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+    expectedPolicyGeneration: 2,
+    oldMaximumOutflowAtomic: "500000000",
+    newMaximumOutflowAtomic: "1000000000",
+    windowSizeDaa: "36000",
+    windowStartDaa: "123000",
+    spentInWindowAtomic: "100000000",
+    stableReceiveAddress: "kaspatest:qq2n2shqkghczyel57af242ffs50x5uj07w7ezg7kwm8frwt5xhljqa3d68et",
+    stableReceiveAddressWillNotChange: true,
+    requiresOfflineOwnerKey: true,
+    issuedAt: "2026-07-18T04:59:00.000Z",
+    termsExpiresAt: "2026-07-18T05:01:00.000Z",
+    operatorManifestRevision: 1,
+    operatorManifestDigest: "sha256:CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
   });
 }
 
@@ -398,6 +558,15 @@ async function until(predicate: () => boolean): Promise<void> {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
   throw new Error("Telegram Authority test timed out");
+}
+
+function parsedTelegramLength(text: string): number {
+  return text
+    .replace(/<\/?(?:b|i|code|blockquote)(?: expandable)?>/g, "")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&amp;", "&")
+    .length;
 }
 
 async function unixRequest(socketPath: string, body: string): Promise<{ status: number; body: string }> {

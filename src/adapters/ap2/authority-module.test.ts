@@ -68,6 +68,7 @@ test("the human display is exactly the independently signed Purchase decision", 
     if (result.status !== "decision") return;
     const facts = result.decision.facts;
     assert.deepEqual(fixture.displayed, {
+      profile: "sompi.purchase-approval.1",
       authorityRequestDigest: result.decision.evidence.requestDigest,
       purchaseId: facts.purchaseId,
       merchant: {
@@ -89,6 +90,9 @@ test("the human display is exactly the independently signed Purchase decision", 
         payTo: facts.payTo,
       },
       checkoutDigest: facts.checkoutDigest,
+      purchaseAuthorizationRequestDigest: facts.purchaseAuthorizationRequestDigest,
+      purchaseAuthorizationNonceDigest: facts.purchaseAuthorizationNonceDigest,
+      purchaseAuthorizationFactsDigest: facts.purchaseAuthorizationFactsDigest,
       termsExpiresAt: facts.termsExpiresAt,
       additionalCostCeilingAtomic: facts.additionalCostCeilingAtomic,
       effectiveFinalityFloor: "accepted",

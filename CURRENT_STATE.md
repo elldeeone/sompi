@@ -4,6 +4,26 @@ Last updated: **2026-07-21**
 
 ## Status
 
+The current unreleased source completes the user-interaction follow-up to
+`0.11.10`. `sompi-agent transfer` now continues the same durable Transfer
+through routine settlement and receipt recovery, using the same 75-second
+bounded, identity-checked, progress-sensitive model as Purchase. The original
+request key, Transfer ID, authorization, and transaction remain fixed; no
+replacement send is created.
+
+Telegram approval cards are now concise by default. Purchase, Transfer,
+spending-limit, and vault-protection prompts lead with only the action,
+human-scale amount, Merchant or exact recipient, maximum exposure, network,
+and consequence needed to decide. Every signed fact is retained in Telegram's
+native collapsed advanced details. Normal approvals use one message; oversized
+valid fact sets use request-bound detail pages followed by the only card with
+Approve and Deny. Public lifecycle
+summaries and the Hermes skill also lead with plain outcomes and keep fees,
+IDs, profiles, finality, digests, and raw states available on request.
+
+This unreleased follow-up is verified by 548 tests (547 pass and one expected
+root-only skip), offline smoke, and all three Hermes callback-plugin tests.
+
 The published `0.11.10` release removes the slow agent-managed
 purchase/recover/sleep loop. `sompi-agent purchase` waits for approval and then
 continues only the same durable Purchase through bounded recovery until it is

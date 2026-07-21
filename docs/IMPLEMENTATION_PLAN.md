@@ -927,6 +927,52 @@ pass. `0.11.10` is tagged, published with npm SHA-1
 replacing its wallet or epoch-18 runtime state. Authority, API, and Hermes are
 active after the update.
 
+## Phase 19: One-command Transfers and progressive user interaction
+
+Purpose: remove the remaining manual Transfer recovery handoff and make every
+human-facing approval easy to understand without hiding its exact evidence.
+
+- [x] Accept ADR-0022 for bounded Transfer continuation and progressive
+  approval presentation.
+- [x] Make `sompi-agent transfer` continue the same durable Transfer through
+  routine settlement and receipt recovery.
+- [x] Give `sompi-agent transfer-recover` the same deadline, per-call timeout,
+  recovery-call limit, unchanged-state backoff, and identity checks.
+- [x] Keep terminal, denied, and completed Transfers free of extra recovery
+  calls, and return the latest honest view when a bound is reached.
+- [x] Replace protocol-heavy Purchase, Transfer, Policy Change, and Vault
+  Migration Telegram cards with short decision summaries.
+- [x] Preserve every signed approval fact through Telegram's native collapsed
+  expandable blockquote, using request-bound detail pages only when a complete
+  valid fact set cannot fit one parsed-text message.
+- [x] Send the concise decision card last and place Approve and Deny only on
+  that card, so partial detail delivery creates no authority capability.
+- [x] Keep Approve and Deny as the only callback capabilities; expanding
+  details creates no authorization state or capability.
+- [x] Replace callback, Purchase, Transfer, timeout, and agent-response copy
+  with plain, outcome-first language.
+- [x] Make the Hermes skill omit fees, ceilings, IDs, profiles, finality,
+  digests, and raw lifecycle states unless requested or needed for recovery.
+- [x] Add focused continuation, identity, deadline, presentation, escaping,
+  and all-approval-kind regressions.
+
+Gate:
+
+- One normal Transfer command can return a receipt without LLM-managed polling
+  or a replacement spend.
+- The ordinary Telegram view is concise, while the same approval ceremony still
+  exposes every signed fact before a decision.
+- Progressive disclosure cannot approve, deny, mutate, or consume a request.
+- User-facing success, denial, expiry, and recovery language never overclaims
+  completion or hides whether funds moved.
+
+Acceptance evidence (2026-07-21): 548 tests run, with 547 passing and one
+expected root-only ownership skip. The offline smoke proof and all three Hermes
+callback-plugin tests pass. Focused tests prove one-Transfer completion,
+unchanged-state backoff, call/deadline bounds, hung-call cancellation, terminal
+short-circuiting, identity substitution rejection, concise escaped summaries,
+and collapsed exact details for all four approval kinds.
+
 ## Deferred tracks (not part of the alpha.8 clean cutover)
 
 ### Autonomous AP2

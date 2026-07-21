@@ -14,6 +14,10 @@ import {
   runPurchaseCommand,
   runPurchaseRecoveryCommand,
 } from "./cli/purchase-continuation.js";
+import {
+  runTransferCommand,
+  runTransferRecoveryCommand,
+} from "./cli/transfer-continuation.js";
 
 void main().catch((error: unknown) => {
   if (error instanceof AgentCliArgumentError || error instanceof SompiApiConfigError) {
@@ -45,15 +49,15 @@ async function main(): Promise<void> {
           : command.kind === "activity"
             ? await client.activity(command.limit)
             : command.kind === "transfer"
-              ? await client.transfer({
+              ? await runTransferCommand(client, {
                   requestKey: command.requestKey,
                   destination: command.destination,
                   amountKas: transferAmountKas(command),
                 })
               : command.kind === "transfer-status"
                 ? await client.transferStatus(command.transferId)
-                : command.kind === "transfer-recover"
-                ? await client.transferRecover(command.transferId)
+              : command.kind === "transfer-recover"
+                ? await runTransferRecoveryCommand(client, command.transferId)
                 : command.kind === "change-limits"
                   ? await client.changePolicy({ requestKey: command.requestKey, maximumPerPaymentKas: command.maximumPerPaymentKas, maximumPerHourKas: command.maximumPerHourKas })
                   : command.kind === "limit-change-status"

@@ -81,6 +81,10 @@ That one command waits for approval and continues the same durable Purchase
 through routine settlement and fulfilment recovery. The agent does not need to
 sleep, poll, or issue a second payment command.
 
+The Transfer command behaves the same way: it continues the original durable
+send through routine settlement and receipt recovery. It never creates a
+replacement transfer.
+
 Inspect or recover existing work with its ID:
 
 ```sh
@@ -90,9 +94,9 @@ sompi-agent status PURCHASE_ID
 sompi-agent recover PURCHASE_ID
 ```
 
-Explicit Purchase recovery is only for a command that reaches its bounded
-deadline while the returned view still says recovery is required. It continues
-the same Purchase and cannot authorize a replacement payment.
+Explicit recovery is only for a command that reaches its bounded deadline while
+the returned view still says recovery is required. It continues the same
+Purchase or Transfer and cannot authorize a replacement payment.
 
 Request keys identify logical actions. Reusing the same key and intent is
 idempotent. An expired offer is finished, so a new user instruction may obtain
@@ -132,9 +136,12 @@ owner key. The user's receive address does not change.
 
 ## Approval
 
-Ordinary chat proposes an action; it does not authorize one. Sompi sends the
-exact recipient or merchant, amount, fee ceiling, total ceiling, finality, and
-expiry to the separate Trusted Authority. The user approves or denies there.
+Ordinary chat proposes an action; it does not authorize one. Sompi sends a short
+decision summary to the separate Trusted Authority: action, Merchant or exact
+recipient, KAS amount, maximum total, and network. Every signed fact stays in
+native collapsed advanced details. Normal approvals use one message; unusually
+large valid requests may place request-bound collapsed detail pages immediately
+above the final decision card. Approve and Deny appear only on that card.
 
 The approval is bound to one exact Transfer or Purchase. It cannot change the
 recipient, amount, policy, source vault, or transaction. A denial spends

@@ -250,6 +250,11 @@ same operations as a compatibility projection over the API.
 
 Telegram is an Authority projection, not an Agent approval capability. Callback
 data is bound to one user, chat, prompt, Purchase, decision, and expiry.
+Decision-critical facts are visible in a concise summary. Every signed fact is
+retained in Telegram's native collapsed advanced details. Normal approvals use
+one message; oversized valid fact sets use request-bound detail pages followed
+by the only card carrying Approve and Deny. Expanding details has no
+authorization meaning.
 
 ## Protocol versioning
 

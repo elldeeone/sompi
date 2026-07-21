@@ -53,7 +53,7 @@ class PluginTests(unittest.TestCase):
                 received.append(json.loads(body[:length]))
                 response = json.dumps({
                     "status": "approved",
-                    "message": "Sompi Purchase approved.",
+                    "message": "Approved. Sompi is completing the purchase.",
                 }).encode()
                 connection.sendall(
                     b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
@@ -77,7 +77,7 @@ class PluginTests(unittest.TestCase):
             self.assertEqual(result, {
                 "action": "handled",
                 "status": "approved",
-                "message": "Sompi Purchase approved.",
+                "message": "Approved. Sompi is completing the purchase.",
             })
             self.assertEqual(received, [{
                 "profile": "sompi.telegram-authority-callback-v1",

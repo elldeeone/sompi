@@ -507,11 +507,19 @@ function ownerApprovalDisplay(
 ): TransferAuthorityApprovalDisplay | PolicyChangeAuthorityApprovalDisplay | VaultMigrationAuthorityApprovalDisplay {
   if (facts.profile === "sompi.vault-migration.1") {
     return Object.freeze({
-      kind: "vault-migration", authorityRequestDigest: requestDigest,
+      kind: "vault-migration", profile: facts.profile, authorityRequestDigest: requestDigest,
       vaultMigrationId: facts.vaultMigrationId, requestKey: facts.requestKey,
+      oldVaultDigest: facts.oldVaultDigest,
+      expectedPolicyDigest: facts.expectedPolicyDigest,
+      expectedPolicyGeneration: facts.expectedPolicyGeneration,
       oldMaximumOutflowAtomic: facts.oldMaximumOutflowAtomic,
       newMaximumOutflowAtomic: facts.newMaximumOutflowAtomic,
+      windowSizeDaa: facts.windowSizeDaa,
+      windowStartDaa: facts.windowStartDaa,
+      spentInWindowAtomic: facts.spentInWindowAtomic,
+      stableReceiveAddress: facts.stableReceiveAddress,
       stableReceiveAddressWillNotChange: true, requiresOfflineOwnerKey: true,
+      issuedAt: facts.issuedAt,
       termsExpiresAt: facts.expiresAt,
       operatorManifestRevision: facts.operatorManifestRevision,
       operatorManifestDigest: facts.operatorManifestDigest,
@@ -520,15 +528,21 @@ function ownerApprovalDisplay(
   if (facts.profile === "sompi.policy-change.1") {
     return Object.freeze({
       kind: "policy-change",
+      profile: facts.profile,
       authorityRequestDigest: requestDigest,
       policyChangeId: facts.policyChangeId,
       requestKey: facts.requestKey,
+      expectedPolicyDigest: facts.expectedPolicyDigest,
+      expectedPolicyVersion: facts.expectedPolicyVersion,
+      expectedPolicyGeneration: facts.expectedPolicyGeneration,
+      expectedVaultDigest: facts.expectedVaultDigest,
       previousMaximumPerPaymentAtomic: facts.previousMaximumPerPaymentAtomic,
       previousMaximumPerHourAtomic: facts.previousMaximumPerHourAtomic,
       proposedMaximumPerPaymentAtomic: facts.proposedMaximumPerPaymentAtomic,
       proposedMaximumPerHourAtomic: facts.proposedMaximumPerHourAtomic,
       vaultMaximumOutflowAtomic: facts.vaultMaximumOutflowAtomic,
       everyPaymentRequiresApproval: true,
+      issuedAt: facts.issuedAt,
       termsExpiresAt: facts.expiresAt,
       operatorManifestRevision: facts.operatorManifestRevision,
       operatorManifestDigest: facts.operatorManifestDigest,
@@ -536,6 +550,7 @@ function ownerApprovalDisplay(
   }
   return Object.freeze({
     kind: "transfer",
+    profile: facts.profile,
     authorityRequestDigest: requestDigest,
     transferId: facts.transferId,
     requestKey: facts.requestKey,
@@ -547,6 +562,7 @@ function ownerApprovalDisplay(
     network: facts.network,
     feeCeilingAtomic: facts.feeCeilingAtomic,
     maximumTotalAtomic: facts.maximumTotalAtomic,
+    issuedAt: facts.issuedAt,
     termsExpiresAt: facts.expiresAt,
     policyDigest: facts.policyDigest,
     operatorManifestRevision: facts.operatorManifestRevision,

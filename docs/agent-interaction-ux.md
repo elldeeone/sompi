@@ -40,19 +40,27 @@ sompi-agent transfer \
 ```
 
 The request key must be stable for that logical send. Sompi shows the user the
-exact recipient, tKAS amount, maximum fee, maximum total cost, finality, and
-expiry. The user approves or denies through the configured trusted Authority
-surface. Approval sends securely from the protected wallet; denial or expiry
+recipient, tKAS amount, maximum total cost, and network in a short prompt. Every
+signed fact stays available in collapsed advanced details. Normal approvals fit
+in one message; an unusually large valid request may put request-bound detail
+pages immediately above the decision card. Only that final card has Approve and
+Deny. Approval sends securely from the protected wallet; denial or expiry
 spends nothing.
+
+The command automatically continues that same Transfer through bounded
+settlement and receipt recovery. The Agent should wait for it instead of
+inserting sleeps or manual status calls.
 
 ```sh
 sompi-agent transfer-status TRANSFER_ID
 sompi-agent transfer-recover TRANSFER_ID
 ```
 
-Recovery observes and resumes the original transaction. It never asks for new
-authority and never creates a replacement spend. A direct transfer is not an
-x402 Purchase and is not represented as an AP2 Payment Mandate.
+Explicit recovery is only for a command that reaches its bound while the view
+still requires recovery. It observes and resumes the original transaction,
+never asks for new authority, and never creates a replacement spend. A direct
+transfer is not an x402 Purchase and is not represented as an AP2 Payment
+Mandate.
 
 ## Change limits
 
@@ -91,8 +99,10 @@ for the command rather than inserting sleeps or manual recovery calls.
 
 ## User decision
 
-Sompi shows the user the exact Merchant, resource, amount/ceiling, fees,
-profile/channel, finality, and expiry.
+Sompi shows the user the Merchant or recipient, action, amount, maximum total,
+and network first. The same Telegram message contains the exact fees, IDs,
+profiles, finality, expiry, digests, and execution facts in a native collapsed
+advanced-details section.
 
 - Approve continues that Purchase.
 - Deny spends nothing.
@@ -101,6 +111,20 @@ profile/channel, finality, and expiry.
 
 Ordinary chat text is not approval. The agent must not click or answer for the
 user.
+
+## Reply style
+
+Default replies are one or two plain sentences:
+
+- say whether the purchase or transfer completed;
+- use tKAS/KAS rather than atomic units;
+- return purchased content when available;
+- say explicitly when nothing was paid or sent.
+
+Technical evidence such as fees, ceilings, transaction IDs, durable IDs,
+profiles, digests, finality, and raw lifecycle states is available on request or
+when needed for operator recovery. It is not part of the ordinary success
+message.
 
 ## Result
 

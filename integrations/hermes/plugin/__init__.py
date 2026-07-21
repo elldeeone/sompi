@@ -123,7 +123,7 @@ def _on_gateway_callback_query(
         return {
             "action": "handled",
             "status": "invalid",
-            "message": "This Sompi approval is invalid.",
+            "message": "This Sompi button is invalid or expired.",
         }
     try:
         result = _relay({
@@ -136,7 +136,7 @@ def _on_gateway_callback_query(
         return {
             "action": "handled",
             "status": "error",
-            "message": "Sompi could not process this approval safely.",
+            "message": "Couldn't confirm your choice safely. Nothing was approved.",
         }
     return {"action": "handled", **result}
 
