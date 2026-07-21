@@ -1,6 +1,7 @@
 import { SompiApiClientError } from "../api/client.js";
 import type { PurchaseCreateRequest } from "../api/contracts.js";
 import type { PurchaseView } from "../purchase/types.js";
+import { referencedDeadline } from "./referenced-deadline.js";
 
 export const AGENT_PURCHASE_CONTINUATION_DEADLINE_MS = 75_000;
 export const AGENT_PURCHASE_MAX_RECOVERY_CALLS = 64;
@@ -94,13 +95,15 @@ async function continueRecoverablePurchase(
     }
 
     const previousProgress = view === undefined ? undefined : progressFingerprint(view);
-    const signal = AbortSignal.timeout(Math.max(1, Math.floor(remainingMs)));
+    const deadline = referencedDeadline(Math.max(1, Math.floor(remainingMs)));
     let recovered: PurchaseView;
     try {
-      recovered = await client.recover(purchaseId, signal);
+      recovered = await client.recover(purchaseId, deadline.signal);
     } catch (cause) {
-      if (signal.aborted) return viewBeforeDeadlineOrThrow(view, cause);
+      if (deadline.signal.aborted) return viewBeforeDeadlineOrThrow(view, cause);
       throw cause;
+    } finally {
+      deadline.dispose();
     }
     assertPurchaseIdentity(recovered, purchaseId, expectedRequestKey);
     expectedRequestKey ??= recovered.requestKey;

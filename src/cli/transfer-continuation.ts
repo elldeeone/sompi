@@ -1,6 +1,7 @@
 import { SompiApiClientError } from "../api/client.js";
 import type { TransferCreateRequest } from "../api/contracts.js";
 import type { TransferView } from "../transfer/types.js";
+import { referencedDeadline } from "./referenced-deadline.js";
 
 export const AGENT_TRANSFER_CONTINUATION_DEADLINE_MS = 75_000;
 export const AGENT_TRANSFER_MAX_RECOVERY_CALLS = 64;
@@ -95,13 +96,15 @@ async function continueTransfer(
     }
 
     const previousProgress = view === undefined ? undefined : progressFingerprint(view);
-    const signal = AbortSignal.timeout(Math.max(1, Math.floor(remainingMs)));
+    const deadline = referencedDeadline(Math.max(1, Math.floor(remainingMs)));
     let recovered: TransferView;
     try {
-      recovered = await client.transferRecover(transferId, signal);
+      recovered = await client.transferRecover(transferId, deadline.signal);
     } catch (cause) {
-      if (signal.aborted) return viewBeforeDeadlineOrThrow(view, cause);
+      if (deadline.signal.aborted) return viewBeforeDeadlineOrThrow(view, cause);
       throw cause;
+    } finally {
+      deadline.dispose();
     }
     assertTransferIdentity(recovered, transferId, expectedRequestKey);
     expectedRequestKey ??= recovered.requestKey;

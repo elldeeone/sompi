@@ -159,7 +159,8 @@ async function abortableDelay(delayMs: number, signal: AbortSignal): Promise<voi
   if (delayMs === 0) return;
   await new Promise<void>((resolve, reject) => {
     const timer = setTimeout(done, delayMs);
-    timer.unref();
+    // This delay is part of the awaited proof. Keep it referenced so a
+    // one-shot recovery process cannot exit before the second observation.
     signal.addEventListener("abort", aborted, { once: true });
 
     function done(): void {
