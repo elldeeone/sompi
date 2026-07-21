@@ -59,7 +59,10 @@ import {
   VaultSendTreasuryOperationAdapter,
   WalletTreasuryOperationAdapter,
 } from "../treasury/operation-adapters.js";
-import { TreasuryOperationModule } from "../treasury/operations.js";
+import {
+  TreasuryOperationModule,
+  type TreasuryOperationView,
+} from "../treasury/operations.js";
 import { VaultTreasuryModule } from "../treasury/vault-treasury.js";
 import { Transaction } from "../kaspa-wasm.js";
 import {
@@ -97,6 +100,17 @@ const PROOF_TIMEOUT_MS = 15 * 60_000;
 
 export const LIVE_BATCH_PROOF_PROFILE =
   "urn:sompi:e2e:live-testnet10-generic-x402-batch:2" as const;
+
+export async function resumeOrStartLiveBatchRefund(input: Readonly<{
+  channelId: string;
+  channelStatus: "active" | "retired" | "refundable" | "refunded" | "suspicious";
+  treasury: Pick<TreasuryOperationModule, "status">;
+  refund: Pick<KaspaX402BatchRefundModule, "refund">;
+}>): Promise<TreasuryOperationView> {
+  return input.channelStatus === "refunded"
+    ? input.treasury.status(`batch.refund.${input.channelId}`)
+    : input.refund.refund(input.channelId);
+}
 
 export interface LiveBatchProofReport {
   readonly profile: typeof LIVE_BATCH_PROOF_PROFILE;
@@ -506,7 +520,17 @@ export async function runLiveBatchProof(
       await delay(2_000);
       observedAfterBoundaryDaa = await batchChain.getVirtualDaaScore();
     }
-    const refunded = await refund.refund(refundChannel.channel.id);
+    // A prior run can commit the refund and then stop before publishing the
+    // public report (for example, because the report directory is unsafe).
+    // Resume from the durable Treasury operation instead of trying to plan a
+    // second refund against an already-refunded channel.
+    const latestRefundChannel = journal.requireBatchChannel(refundChannel.channel.id);
+    const refunded = await resumeOrStartLiveBatchRefund({
+      channelId: refundChannel.channel.id,
+      channelStatus: latestRefundChannel.status,
+      treasury,
+      refund,
+    });
     if (refunded.state !== "completed" || !refunded.transactionId) {
       throw new Error("live batch refund did not complete");
     }

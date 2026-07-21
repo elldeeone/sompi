@@ -6,6 +6,7 @@ import { evidenceDigest } from "../purchase/identity.js";
 import {
   observeAcceptedBatchClaim,
   recoverLiveBatchClaim,
+  resumeOrStartLiveBatchRefund,
   type LiveBatchClaimEvidenceChannel,
 } from "./live-testnet-batch-proof.js";
 
@@ -117,4 +118,59 @@ test("live batch claim promotion requires central accepted Chain Evidence", asyn
   assert.equal(acceptedRequest.expectedOutputs[0].amountAtomic, "10000000");
   assert.equal(acceptedRequest.expectedOutputs[1].amountAtomic, "28000000");
   assert.equal(acceptedRequest.expectedOutputs[1].scriptPublicKey, CHANNEL.activeScriptPublicKey);
+});
+
+test("live batch proof resumes a durably completed refund without submitting again", async () => {
+  let refundCalls = 0;
+  const completed = {
+    operationKey: `batch.refund.${CHANNEL.id}`,
+    state: "completed",
+    transactionId: TRANSACTION_ID,
+  };
+  const result = await resumeOrStartLiveBatchRefund({
+    channelId: CHANNEL.id,
+    channelStatus: "refunded",
+    treasury: {
+      status(operationKey: string) {
+        assert.equal(operationKey, completed.operationKey);
+        return completed as never;
+      },
+    },
+    refund: {
+      async refund() {
+        refundCalls += 1;
+        return completed as never;
+      },
+    },
+  });
+  assert.equal(result.transactionId, TRANSACTION_ID);
+  assert.equal(refundCalls, 0);
+});
+
+test("live batch proof starts a refund while the channel remains refundable", async () => {
+  let statusCalls = 0;
+  let refundCalls = 0;
+  const result = await resumeOrStartLiveBatchRefund({
+    channelId: CHANNEL.id,
+    channelStatus: "refundable",
+    treasury: {
+      status() {
+        statusCalls += 1;
+        throw new Error("unexpected status lookup");
+      },
+    },
+    refund: {
+      async refund(channelId: string) {
+        assert.equal(channelId, CHANNEL.id);
+        refundCalls += 1;
+        return {
+          state: "completed",
+          transactionId: TRANSACTION_ID,
+        } as never;
+      },
+    },
+  });
+  assert.equal(result.transactionId, TRANSACTION_ID);
+  assert.equal(statusCalls, 0);
+  assert.equal(refundCalls, 1);
 });

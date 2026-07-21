@@ -1,0 +1,164 @@
+{
+  "profile": "urn:sompi:e2e:live-testnet10-generic-x402-batch:2",
+  "generatedAt": "2026-07-21T07:59:27.116Z",
+  "network": "kaspa:testnet-10",
+  "protocolPins": {
+    "ap2": {
+      "release": "v0.2.0",
+      "gitCommit": "b4587ac1d055888a73b4b21750973cffba961793",
+      "specification": "https://github.com/google-agentic-commerce/AP2/tree/v0.2.0/docs/ap2",
+      "mode": "human-present",
+      "evidenceProfile": "urn:sompi:ap2-derived-human-present:1",
+      "signatureAlgorithms": [
+        "ES256"
+      ],
+      "interoperability": "none",
+      "sourceWatchOnly": true
+    },
+    "x402": {
+      "version": 2,
+      "scheme": "exact",
+      "network": "kaspa:testnet-10",
+      "allowMainnet": false,
+      "packages": {
+        "core": {
+          "version": "0.1.0-alpha.9",
+          "integrity": "sha512-TZtsWpFfA1FalA0XOLyEaCjtw+kJ2NoYvj+EbSZRgAvYZS3nq7Ud/fck+fgdP0fSUnl5v6HlEJr3XW2NEIJ/9Q=="
+        },
+        "covenant": {
+          "version": "0.1.0-alpha.9",
+          "integrity": "sha512-qgTSJWe5BSHPgt+kneQFjljl5Oh3xNtdKXjXuIR7mQF0W+DXhcZJBG7blVVfaAO3BufUmv3DqGq9eHJ4Ma/1Dg=="
+        },
+        "client": {
+          "version": "0.1.0-alpha.9",
+          "integrity": "sha512-+898+8dvH/U9WS8cEmghRbpy+ak+1VPnml4ga6JsXkBpzuviNbzool5SaOoa21U/g3tDUW0fZSTJwDKlMDIvNw=="
+        },
+        "server": {
+          "version": "0.1.0-alpha.9",
+          "integrity": "sha512-09tUK47TQNo9kGBubqikq/ZrUULoCCywg7MHSISs7L7Jtm0Q2cMjEn12jcLkBpFYOgiRUYhz1GhemHtKT4h5Yg=="
+        }
+      },
+      "npmGitCommit": "49977139b8200336968f38e83a8e6700a1e3a36c"
+    },
+    "sqlite": {
+      "implementation": "better-sqlite3",
+      "version": "12.11.1",
+      "integrity": "sha512-dq9AtApgg5PGFtBzPFSBl3HZQjHok5gaQCM6zh2Yk0aSmDCs1CbnVI8/HgASQkNKsWFpseIO9beg5xxpYhbIfA==",
+      "typesVersion": "7.6.13"
+    },
+    "jose": {
+      "implementation": "jose",
+      "version": "5.10.0",
+      "npmGitCommit": "839b6dad41af850ced40c7a9badf1d725259aefc",
+      "integrity": "sha512-s+3Al/p9g32Iq+oqXxkW//7jk2Vig6FF1CFqzVXoTUXt2qz89YWbL+OwS17NFYEvxC35n0FKeGO2LGYSxeM2Gg=="
+    },
+    "jsonSchema": {
+      "ajvVersion": "8.20.0",
+      "ajvIntegrity": "sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA==",
+      "formatsVersion": "3.0.1",
+      "formatsIntegrity": "sha512-8iUql50EUR+uUcdRQ3HDqa6EVyo3docL8g5WJ3FNcWmu62IbkGUue/pEyLBW8VGKKucTPgqeks4fIU1DA4yowQ=="
+    }
+  },
+  "node": {
+    "version": "2.0.0",
+    "network": "testnet-10",
+    "virtualDaaScore": "522620031",
+    "synced": true,
+    "utxoIndex": true,
+    "kaspaWasmSourceCommit": "78257f273a26c4be085bab0f79437dee99ca8835",
+    "kaspaWasmVersion": "2.0.1"
+  },
+  "authority": {
+    "mode": "in-process-local-auto-approved-test-fixture",
+    "humanPresentConformanceClaimed": false
+  },
+  "claimChannel": {
+    "channelId": "1e5bb3a6ad4e04a67239ca4ac9728fd2d77816545e81fec330e428701196a80d",
+    "deposit": {
+      "transactionId": "276d3ad96b4b804969ca0b171f37a251aadec0ad08f0eb83ad3f9bd907484ba2",
+      "outpoint": "276d3ad96b4b804969ca0b171f37a251aadec0ad08f0eb83ad3f9bd907484ba2:0",
+      "address": "kaspatest:pr5nt454zjhh5ks7hkhq8vyr5vz5glrckl6zw69cuee8wlqq0eujc2quxz099",
+      "amountAtomic": "40000000",
+      "blockDaaScore": "522617364",
+      "virtualDaaScore": "522617448",
+      "finality": "confirmed"
+    },
+    "refundTimeoutDaa": "522623346",
+    "purchases": [
+      {
+        "purchaseId": "pur_YWFhYWFhYWFhYWFhYWFhYQ",
+        "requestKey": "e2e:live-batch:3a312697808e61a2e043a30e:1",
+        "state": "receipted",
+        "paymentIdentifier": "pay_epqu0ZM_3yNHHLWEb1XVyh-PqDldIPPxZIjYjCM9-CE",
+        "maximumAuthorizedAtomic": "10000000",
+        "actualChargeAtomic": "6000000",
+        "signedCumulativeAtomic": "16000000",
+        "chargedCumulativeAtomic": "12000000",
+        "commitmentId": "d57c0e23035b8309dd26035690d7cf74452577b08e2050087131afbfd21d0d7a"
+      },
+      {
+        "purchaseId": "pur_YmJiYmJiYmJiYmJiYmJiYg",
+        "requestKey": "e2e:live-batch:3a312697808e61a2e043a30e:2",
+        "state": "receipted",
+        "paymentIdentifier": "pay_zhPRPBBtShpO5Wnbzw4v67S0Rle0uqVvyiPO4NviNzY",
+        "maximumAuthorizedAtomic": "10000000",
+        "actualChargeAtomic": "6000000",
+        "signedCumulativeAtomic": "16000000",
+        "chargedCumulativeAtomic": "12000000",
+        "commitmentId": "98a2e21e73d7d05c520f7a3ecf5e04d76cf28bedb6f3e1b235aa5a2c9dfa69a2"
+      }
+    ],
+    "authorizedCumulativeAtomic": "16000000",
+    "chargedCumulativeAtomic": "12000000",
+    "claimTransactionId": "f22eeba89bf708fa06263b62aba4b4ac7acd94b44b0f1ccb73b8a9ed7e596a03",
+    "claimAmountAtomic": "12000000",
+    "claimFeeAtomic": "2000000",
+    "payoutAmountAtomic": "10000000",
+    "continuation": {
+      "transactionId": "f22eeba89bf708fa06263b62aba4b4ac7acd94b44b0f1ccb73b8a9ed7e596a03",
+      "outpoint": "f22eeba89bf708fa06263b62aba4b4ac7acd94b44b0f1ccb73b8a9ed7e596a03:1",
+      "address": "kaspatest:pr5nt454zjhh5ks7hkhq8vyr5vz5glrckl6zw69cuee8wlqq0eujc2quxz099",
+      "amountAtomic": "28000000",
+      "blockDaaScore": "522617532",
+      "virtualDaaScore": "522620012",
+      "finality": "confirmed"
+    },
+    "chainEvidenceDigest": "sha256:zj8ttOKdHX1sbyVS0VRh5uMPPyr3EnBJGMoeiRfmXK0",
+    "chainEvidenceLevel": "depth-confirmed"
+  },
+  "refundChannel": {
+    "channelId": "a0c5ddb00d32d833625393952757d78edc46c608e249717c379cda3ed1e757b7",
+    "deposit": {
+      "transactionId": "380b74ec1755f21dd7f241c3e8d3a676bd76bc36b0cd34e6979cb2faa97eb8ee",
+      "outpoint": "380b74ec1755f21dd7f241c3e8d3a676bd76bc36b0cd34e6979cb2faa97eb8ee:0",
+      "address": "kaspatest:prvpm02d2vwcm6g5frla7773u6nt2e4ex6uutvm5u89l2688p2z7k0us7fl62",
+      "amountAtomic": "40000000",
+      "blockDaaScore": "522617475",
+      "virtualDaaScore": "522617524",
+      "finality": "confirmed"
+    },
+    "refundTimeoutDaa": "522619146",
+    "observedBeforeBoundaryDaa": "522617524",
+    "observedAfterBoundaryDaa": "522620031",
+    "strictBoundarySatisfied": true,
+    "refundTransactionId": "f71ea845e9e0a57e74c262829f772722a56117d8cc4c08d9222a45e1df526662",
+    "refundFeeAtomic": "2000000",
+    "refundOutput": {
+      "transactionId": "f71ea845e9e0a57e74c262829f772722a56117d8cc4c08d9222a45e1df526662",
+      "outpoint": "f71ea845e9e0a57e74c262829f772722a56117d8cc4c08d9222a45e1df526662:0",
+      "address": "kaspatest:qrddyy6qyvf6dyarqw47tqrhpc4gqcdpcyhz52pd7etc3xv2fdefjdnfwnv4u",
+      "amountAtomic": "38000000",
+      "blockDaaScore": "522619165",
+      "virtualDaaScore": "522620031",
+      "finality": "confirmed"
+    }
+  },
+  "invariants": {
+    "depositAuthorizedNoPurchase": true,
+    "eachVoucherSeparatelyAuthorized": true,
+    "voucherAmountsMonotonic": true,
+    "claimContinuationEqualsFundingMinusActualCharge": true,
+    "refundSubmittedOnlyAfterDaaGreaterThanTimeout": true,
+    "privateStateExcluded": true
+  }
+}

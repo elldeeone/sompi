@@ -1,0 +1,84 @@
+{
+  "profile": "urn:sompi:evidence:terah-alpha9-epoch19-canary:1",
+  "generatedAt": "2026-07-21T08:05:28Z",
+  "network": "kaspa:testnet-10",
+  "runtimeVersion": "0.12.0",
+  "journalEpoch": 19,
+  "kaspaX402": {
+    "version": "0.1.0-alpha.9",
+    "sourceCommit": "49977139b8200336968f38e83a8e6700a1e3a36c",
+    "releaseTagObject": "0387f7a27d55400274237cee3e2cc2ea73c82dc8"
+  },
+  "cleanCutover": {
+    "epoch18Archive": "epoch18-20260721T074815Z",
+    "epoch18ArchiveBytes": 1608239,
+    "epoch18ArchiveTreeSha256": "325ef570699a06567a1453cc89fc822dac8add77ac43f8f90bc02c1bf10a1c90",
+    "epoch18JournalSha256": "78c00593640e33d9c73e1725129c53af557f440403799145a986bbc69376d8e5",
+    "epoch18ManifestSha256": "cfc91e6ffe99786f2d12f3778f72fa05f7ad0efa5999dd7abd0db5436ba935aa",
+    "epoch18OwnerRecoveryRecordSha256": "9c732d964175465e64de7b0bdce76b82ab58b966432653293bde9c839971daa6",
+    "oldJournalImported": false,
+    "oldWalletImported": false,
+    "oldVaultImported": false,
+    "walletIdentityChanged": true,
+    "vaultIdentityChanged": true,
+    "ownerIdentityChanged": true,
+    "agentIdentityChanged": true
+  },
+  "funding": {
+    "epoch18VaultOwnerRecoveryTransactionId": "1b3870112f0c3d76bad9a7c4ea4b9003d435fd8993b916fa510dde7d9cc3c896",
+    "recoveredAmountAtomic": "999270488660",
+    "recoveryFeeAtomic": "681670",
+    "epoch19VaultActivationTransactionId": "0765480534797ceac663c22b838a0956ecb45ca3e5cbebdb3265a8dc115328ec",
+    "epoch19ReceiveAddress": "kaspatest:qr638u4y6wcaaefsrtl7ad2r8ptkgjxculg2uygtk2n8nvjslfglq52pjld4q",
+    "epoch19VaultAddress": "kaspatest:prwyjzhlkn5czrv2pca9mdl30a5e7thtwxayefk2ylx8jem2xnctz3xnx033h"
+  },
+  "purchase": {
+    "ingress": "authenticated-agent-cli",
+    "authorityMode": "separate-process-human-present-telegram",
+    "merchantOrigin": "https://demo.kaspa-x402.org",
+    "resourceUrl": "https://demo.kaspa-x402.org/exact/report",
+    "exactProfile": "standard-native",
+    "requestKey": "release-0.12.0-alpha9-epoch19-canary-20260721",
+    "purchaseId": "pur_l7Is5ofrod-oAsecFhxjHg",
+    "state": "receipted",
+    "amountAtomic": "20000000",
+    "paymentIdentifier": "pay_hmEqV97bh3e0gX4X8tEB1VHsWf-fTCbdlGJETevSwy0",
+    "transactionId": "5919152e6622a89dc55372fe5776118820182a2d77b51fbdb3a01201d785748d",
+    "settlementFinality": "accepted",
+    "authorityEvidenceDigest": "sha256:TqDxPu__jGD8xOzAJa1LaWbFnXSuxXGL0tXke0M6OQw",
+    "settlementEvidenceDigest": "sha256:lbvZbC5CrhmE7hSaDlXaKAiNEWyHoqdGSxVgTEJZBRM",
+    "fulfilmentDigest": "sha256:nHSNC4LLlMxqRQGfJ1FpJ7Y81ylzV0ez9srOQZM3B1k",
+    "receiptEvidenceDigest": "sha256:qehPuDMVMPKUXUsI7M75f4Q-082sts38v0uG6jZwcCU",
+    "explicitRecoveryReturnedSamePurchase": true,
+    "sameRequestReplayReturnedSamePurchase": true,
+    "paymentAttemptCountAfterRecoveryAndReplay": 1,
+    "receiptCountAfterRecoveryAndReplay": 1
+  },
+  "runtime": {
+    "journalPurchases": {
+      "receipted": 1
+    },
+    "paymentAttempts": {
+      "observed": 1
+    },
+    "effects": {
+      "observed": 3
+    },
+    "treasuryReservations": {
+      "spent": 1
+    },
+    "sompiApi": {
+      "active": true,
+      "restartCount": 0
+    },
+    "sompiAuthority": {
+      "active": true,
+      "restartCount": 0
+    },
+    "hermesGateway": {
+      "active": true,
+      "restartCount": 0
+    }
+  },
+  "privateMaterialIncluded": false
+}
