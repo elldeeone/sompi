@@ -10,6 +10,10 @@ import {
   AgentCliArgumentError,
   parseAgentArguments,
 } from "./cli/agent-arguments.js";
+import {
+  runPurchaseCommand,
+  runPurchaseRecoveryCommand,
+} from "./cli/purchase-continuation.js";
 
 void main().catch((error: unknown) => {
   if (error instanceof AgentCliArgumentError || error instanceof SompiApiConfigError) {
@@ -29,11 +33,11 @@ async function main(): Promise<void> {
   }
   const client = new SompiApiClient(sompiApiConnectionConfigFromEnv());
   const view = command.kind === "purchase"
-    ? await client.purchase(purchaseRequest(command))
+    ? await runPurchaseCommand(client, purchaseRequest(command))
     : command.kind === "status"
       ? await client.status(command.purchaseId)
       : command.kind === "recover"
-        ? await client.recover(command.purchaseId)
+        ? await runPurchaseRecoveryCommand(client, command.purchaseId)
         : command.kind === "wallet"
           ? await client.wallet()
           : command.kind === "wallet-technical"

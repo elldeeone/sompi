@@ -4,6 +4,23 @@ Last updated: **2026-07-20**
 
 ## Status
 
+An unreleased source follow-up now removes the slow agent-managed
+purchase/recover/sleep loop. `sompi-agent purchase` waits for approval and then
+continues only the same durable Purchase through bounded recovery until it is
+terminal or reaches a 75-second continuation deadline. It verifies the
+Purchase ID and request key on every response, retries immediately on durable
+progress, backs off only on unchanged state, and returns the last honest view
+if recovery remains unresolved. `sompi-agent recover` includes its first API
+request inside that same deadline and call limit; a hung first request ends in
+a bounded deadline error because no honest view exists yet. The canonical API,
+Journal, authority, payment bytes, settlement rules, and explicit MCP recovery
+operations are unchanged.
+
+This follow-up is verified locally by 538 tests (537 pass and one expected
+root-only skip), protocol conformance, deterministic E2E, generated contract
+checks, Hermes plugin tests, and package inspection. It has not been versioned,
+published, or deployed. The current public and Terah release remains `0.11.9`.
+
 The published `0.11.9` runtime on Terah is the epoch-18 clean cutover for the
 generic x402 Merchant path, Hermes onboarding, wallet visibility, direct
 native-KAS Transfers, automatic funding intake, owner-managed limits, and the

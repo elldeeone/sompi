@@ -77,6 +77,10 @@ sompi-agent purchase \
   --method GET
 ```
 
+That one command waits for approval and continues the same durable Purchase
+through routine settlement and fulfilment recovery. The agent does not need to
+sleep, poll, or issue a second payment command.
+
 Inspect or recover existing work with its ID:
 
 ```sh
@@ -85,6 +89,10 @@ sompi-agent transfer-recover TRANSFER_ID
 sompi-agent status PURCHASE_ID
 sompi-agent recover PURCHASE_ID
 ```
+
+Explicit Purchase recovery is only for a command that reaches its bounded
+deadline while the returned view still says recovery is required. It continues
+the same Purchase and cannot authorize a replacement payment.
 
 Request keys identify logical actions. Reusing the same key and intent is
 idempotent. An expired offer is finished, so a new user instruction may obtain

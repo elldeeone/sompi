@@ -83,6 +83,12 @@ After Sompi returns `expired`, a new user instruction may use a fresh key to
 obtain new Merchant terms. A denial or recoverable payment must not be bypassed
 with a new key.
 
+The command waits for the approval result and automatically continues the same
+durable Purchase through routine settlement and fulfilment recovery. This is a
+bounded local convenience over the canonical API: it never creates a second
+Purchase, request key, authorization, or payment attempt. The agent should wait
+for the command rather than inserting sleeps or manual recovery calls.
+
 ## User decision
 
 Sompi shows the user the exact Merchant, resource, amount/ceiling, fees,
@@ -106,7 +112,9 @@ sompi-agent status PURCHASE_ID
 sompi-agent recover PURCHASE_ID
 ```
 
-Use recovery only when `userAction` says it is recoverable. Recovery is
+Use explicit recovery only when the completed purchase command reaches its
+bounded deadline and `userAction` still says it is recoverable. The recovery
+command also performs bounded continuation of that same Purchase. Recovery is
 idempotent and never authorizes a replacement payment.
 
 ## Agent permissions

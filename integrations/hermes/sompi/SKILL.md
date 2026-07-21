@@ -144,6 +144,9 @@ If the Transfer is `funds_reserved`, `prepared`, `submitted`, or `settled`, keep
    For a body, write it to a bounded local file and add `--body-file /absolute/path` and `--media-type TYPE`. If the expected merchant identity is known, add `--merchant-id ID` and `--merchant-origin ORIGIN`.
 
 3. Sompi may send an exact Approve/Deny prompt into the user's trusted chat. Do not answer it for the user, infer approval from conversation, ask for credentials, or retry with altered terms. Wait for the command to finish.
+   The command continues the same durable Purchase through bounded recovery
+   internally. Do not add sleeps, polling commands, replacement request keys,
+   or agent-managed retries while it runs.
 4. Read the returned Purchase view. Use the fulfilled content only when the state is `fulfilled` or `receipted`. Report amounts in tKAS/KAS, and report denials, policy failures, and recovery instructions plainly.
 
 ## Recovery
@@ -153,7 +156,11 @@ sompi-agent status PURCHASE_ID
 sompi-agent recover PURCHASE_ID
 ```
 
-Use `recover` only when Sompi marks the Purchase recoverable. It is idempotent; do not create a replacement purchase to escape recovery.
+The normal `purchase` command already performs bounded recovery. Use `recover`
+only if its final returned view still explicitly marks the Purchase recoverable.
+That command also continues the same Purchase through a bounded recovery loop.
+Never add a manual sleep/poll loop or create a replacement purchase to escape
+recovery.
 
 ## Pitfalls
 

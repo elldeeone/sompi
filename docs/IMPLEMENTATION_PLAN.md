@@ -1,6 +1,6 @@
 # Sompi AP2 + Kaspa-x402 implementation plan
 
-Status: **Phases 0-17 verified**
+Status: **Phases 0-18 verified**
 
 Architecture: [`docs/architecture/SOMPI_ARCHITECTURE.md`](architecture/SOMPI_ARCHITECTURE.md)
 
@@ -885,6 +885,45 @@ returned the report, and now has all three staging-race Effects observed. The
 planned losing recovery transaction was not broadcast, the Treasury reservation
 is spent, and an idempotent recovery call on deployed `0.11.9` required no user
 action.
+
+## Phase 18: One-command agent purchase continuation
+
+Purpose: remove agent reasoning and tool-handoff delays from the routine
+Purchase path without weakening durable recovery or authorizing another spend.
+
+- [x] Make `sompi-agent purchase` continue a recoverable result through the
+  canonical API until the same Purchase becomes terminal or a bounded deadline
+  is reached.
+- [x] Give `sompi-agent recover` the same bounded continuation behaviour for an
+  explicitly interrupted Purchase.
+- [x] Require every recovery response to retain the original Purchase ID and
+  request key.
+- [x] Retry immediately when durable progress changes and use bounded backoff
+  only when the Purchase view is unchanged.
+- [x] Abort a stuck recovery call at the continuation deadline, returning the
+  last honest Purchase view when one exists or a bounded deadline error before
+  the first view.
+- [x] Preserve API and MCP recovery as explicit operations while removing
+  manual sleep and polling instructions from the Hermes normal path.
+- [x] Add regressions for one-Purchase completion, unchanged-state backoff,
+  deadlines, hung calls, recovery limits, transport errors, terminal results,
+  explicit recovery, and identity substitution.
+
+Gate:
+
+- One agent command can progress approval, settlement, fulfilment, and receipt
+  without an LLM-managed recovery loop.
+- Continuation never creates another Purchase, request key, authorization, or
+  payment attempt.
+- A deadline, transport failure, unsafe identity change, or unresolved state
+  cannot be projected as success.
+
+Acceptance evidence (2026-07-21): 538 tests run, with 537 passing and one
+root-only ownership test skipped. The focused continuation suite, three Hermes
+plugin tests, Kaspa-x402 alpha.8 conformance, deterministic local E2E,
+OpenAPI/Arazzo checks, build, smoke, and a verified 219-file package artifact
+pass. This is source-only evidence; no version was cut, published, or deployed
+as part of this phase.
 
 ## Deferred tracks (not part of the alpha.8 clean cutover)
 

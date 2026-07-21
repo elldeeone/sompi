@@ -11,6 +11,12 @@ Use either the canonical API or the three-tool MCP wrapper:
 Operator recovery uses its separate socket and credential. MCP cannot access
 that transport.
 
+The `sompi-agent purchase` and `sompi-agent recover` commands are an
+agent-facing convenience over this API. They perform bounded repeated recovery
+of the same Purchase while progress remains safe. Do not add an outer sleep or
+polling loop around them. The API and MCP operations remain explicit so other
+clients can choose their own bounded orchestration.
+
 ## First response
 
 1. Stop repeated calls for the Purchase.
