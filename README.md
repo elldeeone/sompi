@@ -195,7 +195,7 @@ Transfer      Purchase        Limit changes
 
 `Transfer` handles native sends. `Purchase` handles x402 commerce. AP2
 authorization and Kaspa-x402 payment execution remain separate adapters.
-Journal epoch 18 is the only supported state schema.
+Journal epoch 19 is the only supported state schema.
 
 Architecture sources:
 

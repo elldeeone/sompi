@@ -182,7 +182,7 @@ The effect then executes outside the database transaction. Its result is
 observed and committed separately. A timeout or crash after possible submission
 enters reconciliation; it never grants permission to rebuild or resend.
 
-Journal epoch 18 is the only active schema.
+Journal epoch 19 is the only active schema.
 
 ## Exact payment
 

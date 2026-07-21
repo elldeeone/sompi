@@ -184,7 +184,7 @@ Ambiguous outcomes enter recovery. Recovery observes before retrying and never
 creates replacement payment authority. Fulfilment recovery reuses the same
 settled payment and request.
 
-Journal epoch 18 is the only active schema.
+Journal epoch 19 is the only active schema.
 
 ## Authorization facts
 
