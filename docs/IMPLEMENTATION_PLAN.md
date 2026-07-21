@@ -996,9 +996,9 @@ fail-closed release, with no alpha.8 compatibility path.
   mutation, migration, compatibility reader, or fallback.
 - [x] Remove alpha.8 from active code, fixtures, commands, package contents,
   and current documentation; retain only explicitly historical records.
-- [ ] Pass the complete release verifier and clean installed-artifact proof for
+- [x] Pass the complete release verifier and clean installed-artifact proof for
   `0.12.0`.
-- [ ] Record fresh funded Testnet-10 exact and batch evidence against alpha.9.
+- [x] Record fresh funded Testnet-10 exact and batch evidence against alpha.9.
 - [ ] Publish and independently fetch/verify the exact `0.12.0` npm artifact.
 - [ ] Archive the complete Terah epoch-18 runtime, provision a fresh epoch-19
   identity, and pass authenticated Wallet, Authority, exact, and recovery
