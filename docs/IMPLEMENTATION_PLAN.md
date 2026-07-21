@@ -1049,10 +1049,10 @@ dropping Sompi's temporary callback compatibility boundary.
   --check` passes.
 - [x] Add a hermetic regression proving the compatibility target retains Git
   metadata, branch, upstream remote, and the uncommitted compatibility patch.
-- [ ] Replace Terah's compatibility copy recoverably and prove `hermes update
+- [x] Replace Terah's compatibility copy recoverably and prove `hermes update
   --check` detects upstream normally.
-- [ ] Update Hermes, retain the exact callback patch, and revalidate gateway,
-  Sompi approval, and service health.
+- [x] Update Hermes, retain the exact callback patch, and revalidate gateway,
+  Sompi callback dispatch and Authority relay, and service health.
 
 Gate:
 
@@ -1062,6 +1062,19 @@ Gate:
   importing stale copied modules.
 - The primary Hermes checkout remains unmodified by Sompi, and callback support
   remains fail-closed until Hermes provides the native hook.
+
+Acceptance evidence (2026-07-21): Terah's metadata-free compatibility copy is
+preserved under the root-owned Sompi archive. The active compatibility target
+is a Git checkout of the real Hermes `main` branch with its upstream remote,
+the exact Sompi callback patch, and an ignored link to the primary runtime
+venv. Native `hermes update --check` first reported 1,082 upstream commits,
+Hermes updated from `0.18.2` to `0.19.0`, and the same check now reports
+already current at `d604141d097eec4a49493ad1eaceb9b2ca1e496d`. The primary
+checkout remained at its original commit. The callback patch reverse-checks
+cleanly, four active-tree callback tests pass, the installed Sompi plugin is
+enabled, and a live invalid callback reached the Authority socket and failed
+closed. Hermes, Sompi API, and Sompi Authority are active with zero service
+restart failures.
 
 ## Deferred tracks (not part of the alpha.9 clean cutover)
 

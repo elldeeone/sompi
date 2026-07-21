@@ -2,6 +2,9 @@
 
 Fresh TN10 evidence for the `0.12.0` clean cutover on 2026-07-21:
 
+- [`hermes-update-fix.json`](hermes-update-fix.json) records the post-release
+  correction that restores Hermes' Git-backed updater while retaining the
+  exact Sompi callback compatibility patch and primary-checkout isolation.
 - [`release.json`](release.json) records the final source/tag identity, public
   npm registry hashes, fresh-cache byte comparison, clean consumer proof,
   GitHub Node 22 verification, and deployed-runtime health.

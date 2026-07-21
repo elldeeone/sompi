@@ -1,0 +1,50 @@
+{
+  "profile": "urn:sompi:evidence:hermes-update-fix:1",
+  "generatedAt": "2026-07-21T15:03:37Z",
+  "sompi": {
+    "version": "0.12.0",
+    "implementationCommits": [
+      "38d6d9b",
+      "4601a42"
+    ],
+    "unitTests": 554,
+    "passed": 553,
+    "expectedPrivilegedSkip": 1,
+    "offlineSmoke": "pass"
+  },
+  "hermes": {
+    "versionBefore": "0.18.2",
+    "versionAfter": "0.19.0",
+    "commitsApplied": 1082,
+    "activeCommit": "d604141d097eec4a49493ad1eaceb9b2ca1e496d",
+    "originMain": "d604141d097eec4a49493ad1eaceb9b2ca1e496d",
+    "origin": "https://github.com/NousResearch/hermes-agent.git",
+    "updateCheckAfter": "already-up-to-date"
+  },
+  "compatibility": {
+    "activeCheckout": "/home/luke/.sompi/hermes-compat/0.12.0",
+    "metadataFreePredecessorArchived": true,
+    "archive": "/var/lib/sompi-archive/hermes-compat-nongit-20260721",
+    "primaryCheckoutCommitBefore": "569b912d7d0931c7256e9f5fb326609e9deda377",
+    "primaryCheckoutCommitAfter": "569b912d7d0931c7256e9f5fb326609e9deda377",
+    "primaryCheckoutEditedBySompi": false,
+    "callbackPatchReverseCheck": "pass",
+    "activeCallbackTests": 4,
+    "activeCallbackTestsPassed": 4,
+    "pluginEnabled": true,
+    "runtimeVenvBound": true,
+    "authorityRelayProbe": {
+      "effect": "none",
+      "httpStatus": 400,
+      "status": "invalid",
+      "failClosed": true
+    }
+  },
+  "services": {
+    "hermesGateway": "active",
+    "sompiApi": "active",
+    "sompiAuthority": "active",
+    "restartCount": 0
+  },
+  "privateMaterialIncluded": false
+}

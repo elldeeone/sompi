@@ -70,6 +70,27 @@ TN10 state. Every active Sompi command targets the `0.12.0` release tree;
 `sompi-api`, `sompi-authority`, and the Hermes gateway are active with zero
 post-start restarts.
 
+## Hermes update correction
+
+The `0.12.0` bootstrap had copied the complete Hermes source into a temporary
+callback-compatibility tree without `.git`. Because `PYTHONPATH` made that copy
+the code Hermes actually imported, `/update` inspected the copy, reported that
+it was not a Git repository, and could not update.
+
+The corrected installer creates an isolated Git checkout instead. It preserves
+Hermes' selected branch and upstream remote, applies the exact callback patch
+only after `git apply --check`, and binds its ignored `venv` path to the primary
+runtime environment. Sompi still does not edit the user's primary Hermes
+checkout.
+
+Terah's old metadata-free tree is recoverably operator-archived. The active
+compatibility checkout updated Hermes from `0.18.2` to `0.19.0` and is exactly
+current with upstream `main` at
+`d604141d097eec4a49493ad1eaceb9b2ca1e496d`. The exact Sompi patch remains
+applied, its active callback tests pass, the plugin is enabled, a live
+fail-closed callback reached the Authority socket, and `hermes update --check`
+now reports that Hermes is already up to date.
+
 ## Fresh funded evidence
 
 [`evidence/alpha9-clean-cutover/`](evidence/alpha9-clean-cutover/README.md)
