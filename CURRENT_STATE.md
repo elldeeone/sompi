@@ -277,7 +277,7 @@ Terah remains the private operator-controlled Hermes deployment.
 - Hermes is active.
 - Sompi `0.8.2` was quiesced, backed up, and owner-recovered. The old runtime
   was removed to a plain-Hermes baseline, then the current installation was
-  built through the public bootstrap workflow. The byte-verified `0.11.10`
+  built through the public bootstrap workflow. The byte-verified `0.11.11`
   package now runs without replacing epoch-18 state.
 - The installed Sompi skill, callback plugin, isolated compatibility overlay,
   systemd units, and package match this repository.
@@ -298,6 +298,11 @@ Terah remains the private operator-controlled Hermes deployment.
 - The `0.11.10` in-place update preserved the receive address, epoch-18 runtime
   state, and wallet balances. Authority, API, and the restarted Hermes gateway
   are active; the gateway has zero post-start restarts.
+- The `0.11.11` in-place update preserved the same epoch-18 Journal, receive
+  address, wallet, keys, and policy state. The authenticated Wallet View passed
+  through the live API socket after activation. Authority, API, and Hermes are
+  active with zero post-start restarts; the installed skill and callback plugin
+  match the verified registry package.
 - The funded 0.11.5 Vault Migration canary changed on-chain protection from
   5 tKAS to 4 tKAS, retained the public receive address, and activated
   replacement outpoint
@@ -323,7 +328,7 @@ For `0.11.11`:
 - current and historical funded evidence locks pass;
 - OpenAPI and Arazzo checks pass;
 - production dependency audit reports zero vulnerabilities;
-- the 219-file package policy, clean install, licence audit, and consumer smoke
+- the 221-file package policy, clean install, licence audit, and consumer smoke
   pass.
 
 The complete release verifier passes, including its final clean-tree assertion.
@@ -333,9 +338,9 @@ The existing audit record remains under [`security/audits/`](security/audits/).
 
 ## Release
 
-The current release candidate is `@elldeeone/sompi@0.11.11`, tagged
-`v0.11.11`. Its verified npm artifact is the deployment source for Terah.
-Wallet,
+The current published release is `@elldeeone/sompi@0.11.11`, tagged
+`v0.11.11`. The registry tarball matches the verified release artifact (npm
+SHA-1 `9aec09ea24ef907e60a7845ba49f4a910b56a9a8`) and is live on Terah. Wallet,
 automatic funding, Transfer, x402 Purchase, staging-race recovery, agent-skill,
 Vault Migration, and fresh-agent preview paths are canary proven.
 

@@ -972,7 +972,11 @@ callback-plugin tests pass. Focused tests prove one-Transfer completion,
 unchanged-state backoff, call/deadline bounds, hung-call cancellation, terminal
 short-circuiting, identity substitution rejection, concise escaped summaries,
 and collapsed exact details for all four approval kinds. The implementation is
-released as `0.11.11`.
+released as `0.11.11`, published with npm SHA-1
+`9aec09ea24ef907e60a7845ba49f4a910b56a9a8`, and deployed to Terah without
+replacing its epoch-18 Journal, wallet, keys, receive address, or policy state.
+The live authenticated Wallet View passes; Authority, API, and Hermes are
+active with zero post-start restarts.
 
 ## Deferred tracks (not part of the alpha.8 clean cutover)
 
