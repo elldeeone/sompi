@@ -4,7 +4,7 @@ Last updated: **2026-07-21**
 
 ## Status
 
-The current unreleased source completes the user-interaction follow-up to
+The current `0.11.11` release completes the user-interaction follow-up to
 `0.11.10`. `sompi-agent transfer` now continues the same durable Transfer
 through routine settlement and receipt recovery, using the same 75-second
 bounded, identity-checked, progress-sensitive model as Purchase. The original
@@ -21,7 +21,7 @@ Approve and Deny. Public lifecycle
 summaries and the Hermes skill also lead with plain outcomes and keep fees,
 IDs, profiles, finality, digests, and raw states available on request.
 
-This unreleased follow-up is verified by 548 tests (547 pass and one expected
+This release is verified by 548 tests (547 pass and one expected
 root-only skip), offline smoke, and all three Hermes callback-plugin tests.
 
 The published `0.11.10` release removes the slow agent-managed
@@ -314,9 +314,9 @@ The earlier Phase 11 and `0.8.2` evidence remains historical.
 
 ## Verification
 
-For `0.11.10`:
+For `0.11.11`:
 
-- 538 unit tests run: 537 pass and one root-only ownership test is skipped;
+- 548 unit tests run: 547 pass and one root-only ownership test is skipped;
 - the three Hermes plugin tests pass;
 - local generic-Merchant E2E and crash recovery pass;
 - x402 package/source/vector conformance passes;
@@ -333,9 +333,9 @@ The existing audit record remains under [`security/audits/`](security/audits/).
 
 ## Release
 
-The current published release is `@elldeeone/sompi@0.11.10`, tagged `v0.11.10`.
-The registry tarball matches the verified release artifact (npm SHA-1
-`9d707dd45ed7d25a1089623298364681dd2e7240`) and is live on Terah. Wallet,
+The current release candidate is `@elldeeone/sompi@0.11.11`, tagged
+`v0.11.11`. Its verified npm artifact is the deployment source for Terah.
+Wallet,
 automatic funding, Transfer, x402 Purchase, staging-race recovery, agent-skill,
 Vault Migration, and fresh-agent preview paths are canary proven.
 

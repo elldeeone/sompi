@@ -14,7 +14,7 @@ and spending limits, then preview it:
 
 ```bash
 npm exec --yes --allow-scripts=better-sqlite3@12.11.1 \
-  --package=@elldeeone/sompi@0.11.10 -- \
+  --package=@elldeeone/sompi@0.11.11 -- \
   sompi-operator bootstrap-preview REQUEST.json
 ```
 

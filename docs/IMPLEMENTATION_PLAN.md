@@ -971,7 +971,8 @@ expected root-only ownership skip. The offline smoke proof and all three Hermes
 callback-plugin tests pass. Focused tests prove one-Transfer completion,
 unchanged-state backoff, call/deadline bounds, hung-call cancellation, terminal
 short-circuiting, identity substitution rejection, concise escaped summaries,
-and collapsed exact details for all four approval kinds.
+and collapsed exact details for all four approval kinds. The implementation is
+released as `0.11.11`.
 
 ## Deferred tracks (not part of the alpha.8 clean cutover)
 

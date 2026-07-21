@@ -29,7 +29,7 @@ interoperability or send AP2 artifacts to ordinary x402 merchants.
 Tell Hermes:
 
 > Install the Sompi skill from
-> https://raw.githubusercontent.com/elldeeone/sompi/v0.11.10/integrations/hermes/sompi/SKILL.md
+> https://raw.githubusercontent.com/elldeeone/sompi/v0.11.11/integrations/hermes/sompi/SKILL.md
 > and set up Sompi for this host.
 
 Hermes gathers non-secret setup facts and gives you one command to run locally.
