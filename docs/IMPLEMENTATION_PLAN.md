@@ -1035,6 +1035,34 @@ operator-archived without import; its tree hash remains
 All active commands target the byte-verified `0.12.0` installation, and API,
 Authority, and Hermes are active with zero post-start restarts.
 
+## Phase 21: Hermes compatibility-update correction
+
+Purpose: restore Hermes' native update lifecycle without weakening or silently
+dropping Sompi's temporary callback compatibility boundary.
+
+- [x] Reproduce the Telegram `/update` failure and prove the gateway resolves
+  its repository root from Sompi's metadata-free compatibility copy.
+- [x] Amend ADR-0018 so the isolated compatibility target is an updateable Git
+  checkout with the real selected branch and upstream remote.
+- [x] Replace the copied compatibility tree with a shared local Git checkout,
+  then apply the exact fail-closed callback patch only after `git apply
+  --check` passes.
+- [x] Add a hermetic regression proving the compatibility target retains Git
+  metadata, branch, upstream remote, and the uncommitted compatibility patch.
+- [ ] Replace Terah's compatibility copy recoverably and prove `hermes update
+  --check` detects upstream normally.
+- [ ] Update Hermes, retain the exact callback patch, and revalidate gateway,
+  Sompi approval, and service health.
+
+Gate:
+
+- `/update` operates on the isolated compatibility checkout that Hermes
+  actually imports, not the inactive primary checkout or a metadata-free copy.
+- An upstream update cannot silently claim success while the gateway continues
+  importing stale copied modules.
+- The primary Hermes checkout remains unmodified by Sompi, and callback support
+  remains fail-closed until Hermes provides the native hook.
+
 ## Deferred tracks (not part of the alpha.9 clean cutover)
 
 ### Autonomous AP2

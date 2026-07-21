@@ -2,6 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-07-19
+- Amended: 2026-07-21 (the compatibility tree is an independently updateable
+  Git checkout rather than a metadata-free copy)
 - Amends: ADR-0011 and ADR-0016
 
 ## Context
@@ -65,7 +67,9 @@ Hermes Telegram approval additionally requires the generic authorized plugin
 callback hook recorded by ADR-0016. Bootstrap detects the native hook. During
 the alpha period it may install a bundled compatibility patch only when
 `git apply --check` proves the exact required hook patch applies cleanly to an
-isolated copy. It never applies fuzz or edits the user's Hermes checkout. The
+isolated Git checkout. That checkout preserves the selected branch and real
+upstream remote so Hermes updates the exact tree the gateway executes. It
+never applies fuzz or edits the user's primary Hermes checkout. The
 compatibility step is removed once supported Hermes releases provide the hook.
 
 The agent-facing skill does not run the privileged command, answer its prompt,

@@ -1,4 +1,5 @@
 import * as assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -14,7 +15,14 @@ import {
   parseHostBootstrapRequest,
   previewHostBootstrap,
 } from "./host-bootstrap.js";
-import { renderApiUnit, renderAuthorityUnit, renderTmpfiles, renderVaultActivationUnit } from "./host-install.js";
+import {
+  installHermesCompatibilityCheckout,
+  renderApiUnit,
+  renderAuthorityUnit,
+  renderTmpfiles,
+  renderVaultActivationUnit,
+  type HostCommandRunner,
+} from "./host-install.js";
 
 const REQUEST = {
   schema: HOST_BOOTSTRAP_SCHEMA,
@@ -145,4 +153,51 @@ test("host bootstrap renders least-authority systemd and socket assets without s
   assert.match(activation, /Conflicts=sompi-api.service/);
   assert.match(tmpfiles, /sompi-api luke/);
   assert.doesNotMatch(`${authority}${api}${activation}${tmpfiles}`, /telegram-bot-token|ownerPrivate|987654321/);
+});
+
+test("Hermes compatibility stays in an independently updateable Git checkout", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-hermes-compat-"));
+  const checkout = path.join(root, "hermes-agent");
+  const compatRoot = path.join(root, "hermes-compat");
+  const patch = path.join(root, "callback.patch");
+  const runner: HostCommandRunner = {
+    run(command, args, options = {}) {
+      const result = spawnSync(command, [...args], {
+        cwd: options.cwd,
+        encoding: "utf8",
+        env: { ...process.env, PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" },
+      });
+      assert.equal(result.status, 0, result.stderr || `${command} failed`);
+      return result.stdout ?? "";
+    },
+  };
+  try {
+    fs.mkdirSync(checkout);
+    runner.run("git", ["init", "--initial-branch", "main"], { cwd: checkout });
+    runner.run("git", ["config", "user.name", "Sompi Test"], { cwd: checkout });
+    runner.run("git", ["config", "user.email", "sompi@example.invalid"], { cwd: checkout });
+    fs.writeFileSync(path.join(checkout, "callback.py"), "HOOKS = []\n");
+    runner.run("git", ["add", "callback.py"], { cwd: checkout });
+    runner.run("git", ["commit", "-m", "fixture"], { cwd: checkout });
+    runner.run("git", ["remote", "add", "origin", "https://example.invalid/hermes-agent.git"], { cwd: checkout });
+    fs.writeFileSync(patch, [
+      "diff --git a/callback.py b/callback.py",
+      "--- a/callback.py",
+      "+++ b/callback.py",
+      "@@ -1 +1 @@",
+      "-HOOKS = []",
+      "+HOOKS = [\"gateway_callback_query\"]",
+      "",
+    ].join("\n"));
+
+    installHermesCompatibilityCheckout(checkout, compatRoot, patch, runner);
+
+    assert.ok(fs.existsSync(path.join(compatRoot, ".git")));
+    assert.equal(runner.run("git", ["remote", "get-url", "origin"], { cwd: compatRoot }).trim(), "https://example.invalid/hermes-agent.git");
+    assert.equal(runner.run("git", ["branch", "--show-current"], { cwd: compatRoot }).trim(), "main");
+    assert.equal(fs.readFileSync(path.join(compatRoot, "callback.py"), "utf8"), "HOOKS = [\"gateway_callback_query\"]\n");
+    assert.match(runner.run("git", ["status", "--short"], { cwd: compatRoot }), /^ M callback\.py$/m);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

@@ -460,11 +460,8 @@ function installHermesIntegration(packageRoot: string, request: HostBootstrapReq
   const pluginManager = path.join(checkout, "hermes_cli", "plugins.py");
   if (!fileContains(adapter, "gateway_callback_query") || !fileContains(pluginManager, '"gateway_callback_query"')) {
     const compatRoot = path.join(ids.agentHome, ".sompi", "hermes-compat", request.packageVersion);
-    if (fs.existsSync(compatRoot)) throw new HostBootstrapError("Hermes compatibility target already exists");
-    copyTree(checkout, compatRoot, (entry) => ![".git", ".venv", "venv", "node_modules", "__pycache__"].includes(entry));
     const patch = path.join(packageRoot, "integrations", "hermes", "compat", "callback-hook.patch");
-    runner.run("git", ["apply", "--check", patch], { cwd: compatRoot });
-    runner.run("git", ["apply", patch], { cwd: compatRoot });
+    installHermesCompatibilityCheckout(checkout, compatRoot, patch, runner);
     if (!fileContains(path.join(compatRoot, "plugins", "platforms", "telegram", "adapter.py"), "dispatch_plugin_callback_query")) {
       throw new HostBootstrapError("Hermes callback compatibility profile did not install");
     }
@@ -474,6 +471,25 @@ function installHermesIntegration(packageRoot: string, request: HostBootstrapReq
   chownTree(pluginTarget, ids.agentUid, ids.agentGid, 0o700, 0o600);
   if (pythonPath !== checkout) chownTree(pythonPath, ids.agentUid, ids.agentGid, 0o700, 0o600, true);
   return pythonPath;
+}
+
+export function installHermesCompatibilityCheckout(
+  checkout: string,
+  compatRoot: string,
+  patch: string,
+  runner: HostCommandRunner,
+): void {
+  if (fs.existsSync(compatRoot)) throw new HostBootstrapError("Hermes compatibility target already exists");
+  const branch = runner.run("git", ["branch", "--show-current"], { cwd: checkout }).trim();
+  const origin = runner.run("git", ["remote", "get-url", "origin"], { cwd: checkout }).trim();
+  if (!branch || !origin) throw new HostBootstrapError("Hermes compatibility source is not an updateable checkout");
+  runner.run("git", ["clone", "--shared", "--single-branch", "--branch", branch, checkout, compatRoot]);
+  runner.run("git", ["remote", "set-url", "origin", origin], { cwd: compatRoot });
+  runner.run("git", ["apply", "--check", patch], { cwd: compatRoot });
+  runner.run("git", ["apply", patch], { cwd: compatRoot });
+  if (!fs.existsSync(path.join(compatRoot, ".git"))) {
+    throw new HostBootstrapError("Hermes compatibility checkout lost its update metadata");
+  }
 }
 
 function installHermesServiceDropIn(request: HostBootstrapRequest, ids: PrincipalIds, pythonPath: string): void {
