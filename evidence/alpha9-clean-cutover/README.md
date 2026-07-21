@@ -2,6 +2,9 @@
 
 Fresh TN10 evidence for the `0.12.0` clean cutover on 2026-07-21:
 
+- [`release.json`](release.json) records the final source/tag identity, public
+  npm registry hashes, fresh-cache byte comparison, clean consumer proof,
+  GitHub Node 22 verification, and deployed-runtime health.
 - [`terah-epoch19-standard-native.json`](terah-epoch19-standard-native.json)
   records the recoverable epoch-18 archive, distinct fresh epoch-19 identities,
   one owner-authorized vault recovery into the new funding wallet, fresh vault

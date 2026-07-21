@@ -999,8 +999,8 @@ fail-closed release, with no alpha.8 compatibility path.
 - [x] Pass the complete release verifier and clean installed-artifact proof for
   `0.12.0`.
 - [x] Record fresh funded Testnet-10 exact and batch evidence against alpha.9.
-- [ ] Publish and independently fetch/verify the exact `0.12.0` npm artifact.
-- [ ] Archive the complete Terah epoch-18 runtime, provision a fresh epoch-19
+- [x] Publish and independently fetch/verify the exact `0.12.0` npm artifact.
+- [x] Archive the complete Terah epoch-18 runtime, provision a fresh epoch-19
   identity, and pass authenticated Wallet, Authority, exact, and recovery
   canaries without importing old state.
 
@@ -1014,6 +1014,26 @@ Gate:
   operator archive.
 - Release and deployment claims are backed by clean-install, funded TN10, and
   fresh-runtime evidence.
+
+Acceptance evidence (2026-07-21): the clean release verifier and GitHub's Node
+22 runner pass 553 tests (552 pass and one expected privileged-only skip),
+offline smoke, three Hermes plugin tests, five alpha.9 conformance checks,
+deterministic local E2E, generated contract checks, production audit, package
+inspection, and a clean scriptless consumer install. The source is tagged
+`v0.12.0` at `09b6887dc62ea5e0f42164d90531e553660261b0`. npm `latest` is
+`0.12.0`; a fresh-cache registry fetch is byte-identical to the release tarball
+with SHA-1 `f0052f4f8dcbb12f8a8753479e1b29dbbf427504` and 225 entries, and
+passes a second package verification, native rebuild, and smoke proof.
+
+Funded TN10 evidence records two separately authorized alpha.9 batch charges,
+an independently depth-confirmed claim and continuation, a strict-boundary
+refund, and one Telegram-approved standard-native Purchase on the fresh Terah
+epoch-19 identity. Explicit recovery and exact request-key replay retained its
+single accepted payment attempt and receipt. The complete epoch-18 runtime is
+operator-archived without import; its tree hash remains
+`325ef570699a06567a1453cc89fc822dac8add77ac43f8f90bc02c1bf10a1c90`.
+All active commands target the byte-verified `0.12.0` installation, and API,
+Authority, and Hermes are active with zero post-start restarts.
 
 ## Deferred tracks (not part of the alpha.9 clean cutover)
 

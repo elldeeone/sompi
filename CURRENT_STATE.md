@@ -4,10 +4,10 @@ Last updated: **2026-07-21**
 
 ## Status
 
-Sompi `0.12.0` is the Kaspa-x402 `0.1.0-alpha.9` clean cutover defined by
-ADR-0023. The source, conformance suite, funded TN10 proofs, and fresh Terah
-runtime have passed. The npm release and final registry-byte verification are
-the remaining release steps.
+Sompi `0.12.0` is the completed Kaspa-x402 `0.1.0-alpha.9` clean cutover
+defined by ADR-0023. It is tagged, published as npm `latest`, independently
+byte-verified from a fresh registry fetch, and deployed on Terah with a fresh
+epoch-19 identity.
 
 All four Kaspa-x402 packages are pinned exactly to `0.1.0-alpha.9`, including
 npm integrity, source commit `49977139b8200336968f38e83a8e6700a1e3a36c`,
@@ -32,7 +32,9 @@ The full release verifier passes from a clean committed tree:
   checks pass;
 - a packed `0.12.0` artifact passes scriptless clean installation, the reviewed
   `better-sqlite3` native rebuild, package boundary checks, production audit,
-  and consumer smoke.
+  and consumer smoke;
+- GitHub's Node 22 runner passes the same complete verifier. Its audit exposed
+  and closed an unreferenced one-shot deadline-timer edge before publication.
 
 ## Alpha.9 protocol boundary
 
@@ -64,8 +66,9 @@ into the new funding wallet; the temporary extracted owner key was shredded.
 The new vault was then activated through the normal bootstrap lifecycle.
 
 The authenticated Wallet View reports the new receive identity and observed
-TN10 state. `sompi-api`, `sompi-authority`, and the Hermes gateway are active
-with zero post-start restarts.
+TN10 state. Every active Sompi command targets the `0.12.0` release tree;
+`sompi-api`, `sompi-authority`, and the Hermes gateway are active with zero
+post-start restarts.
 
 ## Fresh funded evidence
 
@@ -115,10 +118,20 @@ contains the public, secret-free evidence:
 - Direct Transfers, Policy Changes, and Vault Migrations use distinct signed
   facts and the same durable Journal and effect-fencing rules.
 
-## Release boundary
+## Release identity
 
-The final release gate is to tag the verified source, publish its exact packed
-artifact as `@elldeeone/sompi@0.12.0`, fetch it independently from npm, compare
-registry integrity and bytes, replace the Terah candidate installation with
-those exact bytes without replacing epoch-19 state, rerun authenticated
-Wallet/exact/recovery checks, and record the final hashes.
+- Source commit: `09b6887dc62ea5e0f42164d90531e553660261b0`.
+- Annotated tag: `v0.12.0`, tag object
+  `89f5170305cd5d96733400a3bd79e1bcaf4f172b`.
+- npm package: `@elldeeone/sompi@0.12.0`, dist-tag `latest`.
+- Registry tarball SHA-1:
+  `f0052f4f8dcbb12f8a8753479e1b29dbbf427504`.
+- Registry integrity:
+  `sha512-LLBC/witTt1iE5LH+TYqmXqQgz4dFSnzAY1SeLsos+E5mDCVJlRnTIS/fn+4jw6juuKC0r9AR6ypXcG12bmWZA==`.
+- The fresh-cache registry tarball is byte-identical to the locally verified
+  release artifact: 225 entries, 5,143,717 packed bytes, and 15,033,365
+  unpacked file bytes.
+- The public artifact independently passes package verification, scriptless
+  clean install, the exact reviewed native rebuild, and offline smoke.
+- Terah runs those exact release bytes without replacing its proven epoch-19
+  state; authenticated Wallet and Purchase recovery remain healthy.

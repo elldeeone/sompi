@@ -1,0 +1,57 @@
+{
+  "profile": "urn:sompi:evidence:alpha9-release:1",
+  "generatedAt": "2026-07-21T10:06:15Z",
+  "release": {
+    "name": "@elldeeone/sompi",
+    "version": "0.12.0",
+    "sourceCommit": "09b6887dc62ea5e0f42164d90531e553660261b0",
+    "tag": "v0.12.0",
+    "tagObject": "89f5170305cd5d96733400a3bd79e1bcaf4f172b"
+  },
+  "registry": {
+    "distTag": "latest",
+    "tarball": "https://registry.npmjs.org/@elldeeone/sompi/-/sompi-0.12.0.tgz",
+    "sha1": "f0052f4f8dcbb12f8a8753479e1b29dbbf427504",
+    "sha512Hex": "2cb042ff08ad4edd621392c7f9362a997a90833e1d1529f3018d5278bb28b3e1399830952654674c84bf7e7fb88f0ea3bae282d2bf4047aca95dc1b5d9b99664",
+    "integrity": "sha512-LLBC/witTt1iE5LH+TYqmXqQgz4dFSnzAY1SeLsos+E5mDCVJlRnTIS/fn+4jw6juuKC0r9AR6ypXcG12bmWZA==",
+    "entries": 225,
+    "packedBytes": 5143717,
+    "unpackedFileBytes": 15033365,
+    "freshCacheFetch": true,
+    "byteIdenticalToVerifiedReleaseArtifact": true,
+    "packedArtifactVerification": "pass",
+    "scriptlessCleanInstall": "pass",
+    "reviewedNativeRebuild": "better-sqlite3@12.11.1",
+    "consumerSmoke": "pass"
+  },
+  "verification": {
+    "unitTests": 553,
+    "passed": 552,
+    "expectedPrivilegedSkip": 1,
+    "protocolConformanceChecks": 5,
+    "githubNode22Run": "https://github.com/elldeeone/sompi/actions/runs/29813611132",
+    "githubNode22Conclusion": "success",
+    "completeReleaseVerifier": "pass"
+  },
+  "deployment": {
+    "host": "terah",
+    "journalEpoch": 19,
+    "allActiveCommandsTargetVersion": "0.12.0",
+    "registryArtifactMatchesDeployedSourceArtifact": true,
+    "sompiApi": {
+      "active": true,
+      "restartCount": 0
+    },
+    "sompiAuthority": {
+      "active": true,
+      "restartCount": 0
+    },
+    "hermesGateway": {
+      "active": true,
+      "restartCount": 0
+    },
+    "authenticatedWalletCanary": "pass",
+    "purchaseRecoveryCanary": "pass"
+  },
+  "privateMaterialIncluded": false
+}
