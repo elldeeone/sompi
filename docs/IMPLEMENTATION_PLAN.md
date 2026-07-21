@@ -922,8 +922,10 @@ Acceptance evidence (2026-07-21): 538 tests run, with 537 passing and one
 root-only ownership test skipped. The focused continuation suite, three Hermes
 plugin tests, Kaspa-x402 alpha.8 conformance, deterministic local E2E,
 OpenAPI/Arazzo checks, build, smoke, and a verified 219-file package artifact
-pass. This work is cut as the `0.11.10` release candidate; publication and
-Terah deployment remain separate release gates.
+pass. `0.11.10` is tagged, published with npm SHA-1
+`9d707dd45ed7d25a1089623298364681dd2e7240`, and deployed to Terah without
+replacing its wallet or epoch-18 runtime state. Authority, API, and Hermes are
+active after the update.
 
 ## Deferred tracks (not part of the alpha.8 clean cutover)
 

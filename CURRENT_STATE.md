@@ -1,10 +1,10 @@
 # Current state
 
-Last updated: **2026-07-20**
+Last updated: **2026-07-21**
 
 ## Status
 
-The `0.11.10` release candidate removes the slow agent-managed
+The published `0.11.10` release removes the slow agent-managed
 purchase/recover/sleep loop. `sompi-agent purchase` waits for approval and then
 continues only the same durable Purchase through bounded recovery until it is
 terminal or reaches a 75-second continuation deadline. It verifies the
@@ -16,12 +16,13 @@ a bounded deadline error because no honest view exists yet. The canonical API,
 Journal, authority, payment bytes, settlement rules, and explicit MCP recovery
 operations are unchanged.
 
-This release candidate is verified locally by 538 tests (537 pass and one expected
-root-only skip), protocol conformance, deterministic E2E, generated contract
-checks, Hermes plugin tests, and package inspection. It has not been versioned,
-published or deployed yet. The current public and Terah release remains `0.11.9`.
+This release is verified by 538 tests (537 pass and one expected root-only
+skip), protocol conformance, deterministic E2E, generated contract checks,
+Hermes plugin tests, package inspection, and a clean consumer install. It is
+tagged `v0.11.10`, published, and deployed on Terah from the byte-verified npm
+artifact.
 
-The published `0.11.9` runtime on Terah is the epoch-18 clean cutover for the
+The published `0.11.10` runtime on Terah is the epoch-18 clean cutover for the
 generic x402 Merchant path, Hermes onboarding, wallet visibility, direct
 native-KAS Transfers, automatic funding intake, owner-managed limits, and the
 one-wallet UX. Its funded direct-Transfer and generic exact-purchase canaries
@@ -256,7 +257,7 @@ Terah remains the private operator-controlled Hermes deployment.
 - Hermes is active.
 - Sompi `0.8.2` was quiesced, backed up, and owner-recovered. The old runtime
   was removed to a plain-Hermes baseline, then the current installation was
-  built through the public bootstrap workflow. The byte-verified `0.11.9`
+  built through the public bootstrap workflow. The byte-verified `0.11.10`
   package now runs without replacing epoch-18 state.
 - The installed Sompi skill, callback plugin, isolated compatibility overlay,
   systemd units, and package match this repository.
@@ -274,6 +275,9 @@ Terah remains the private operator-controlled Hermes deployment.
   Before the later migration, that transaction's output `0` held
   `10000.9490244 tKAS` with nothing incoming or pending.
 - Authority, API, Hermes gateway, and all local sockets remain healthy.
+- The `0.11.10` in-place update preserved the receive address, epoch-18 runtime
+  state, and wallet balances. Authority, API, and the restarted Hermes gateway
+  are active; the gateway has zero post-start restarts.
 - The funded 0.11.5 Vault Migration canary changed on-chain protection from
   5 tKAS to 4 tKAS, retained the public receive address, and activated
   replacement outpoint
@@ -290,16 +294,16 @@ The earlier Phase 11 and `0.8.2` evidence remains historical.
 
 ## Verification
 
-For `0.11.9`:
+For `0.11.10`:
 
-- 525 unit tests run: 524 pass and one root-only ownership test is skipped;
+- 538 unit tests run: 537 pass and one root-only ownership test is skipped;
 - the three Hermes plugin tests pass;
 - local generic-Merchant E2E and crash recovery pass;
 - x402 package/source/vector conformance passes;
 - current and historical funded evidence locks pass;
 - OpenAPI and Arazzo checks pass;
 - production dependency audit reports zero vulnerabilities;
-- the 218-file package policy, clean install, licence audit, and consumer smoke
+- the 219-file package policy, clean install, licence audit, and consumer smoke
   pass.
 
 The complete release verifier passes, including its final clean-tree assertion.
@@ -309,9 +313,9 @@ The existing audit record remains under [`security/audits/`](security/audits/).
 
 ## Release
 
-The current published release is `@elldeeone/sompi@0.11.9`, tagged `v0.11.9`.
+The current published release is `@elldeeone/sompi@0.11.10`, tagged `v0.11.10`.
 The registry tarball matches the verified release artifact (npm SHA-1
-`e114261cf7030a7a4402f6719f233056862e59d1`) and is live on Terah. Wallet,
+`9d707dd45ed7d25a1089623298364681dd2e7240`) and is live on Terah. Wallet,
 automatic funding, Transfer, x402 Purchase, staging-race recovery, agent-skill,
 Vault Migration, and fresh-agent preview paths are canary proven.
 
