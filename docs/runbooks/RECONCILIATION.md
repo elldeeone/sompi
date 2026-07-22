@@ -1,91 +1,51 @@
 # Purchase reconciliation
 
-Reconciliation resolves one interrupted Purchase from durable evidence. It
-never creates a replacement payment.
+Reconciliation continues one interrupted Purchase from durable evidence.
+It does not create a replacement payment.
 
-Use either the canonical API or the three-tool MCP wrapper:
-
-- `status` / `purchase_status` is read-only;
-- `recover` / `purchase_recover` advances only the same Purchase.
-
-Operator recovery uses its separate socket and credential. MCP cannot access
-that transport.
-
-The `sompi-agent purchase` and `sompi-agent recover` commands are an
-agent-facing convenience over this API. They perform bounded repeated recovery
-of the same Purchase while progress remains safe. Do not add an outer sleep or
-polling loop around them. The API and MCP operations remain explicit so other
-clients can choose their own bounded orchestration.
+`sompi-agent purchase` already performs bounded continuation.
+Use explicit recovery only when its final view requests recovery.
 
 ## First response
 
-1. Stop repeated calls for the Purchase.
-2. Preserve the Purchase ID, request key, Sompi version, Operator Manifest
-   identity, and projected error code.
-3. Read status before calling recover.
-4. If recovery is requested, call it once with the same Purchase ID.
-5. Read status again. Repeat only when the projection explicitly says to
-   observe or recover the same Purchase.
+1. Stop repeated calls.
+2. Preserve the Purchase ID, request key, version, manifest identity, and error code.
+3. Read status.
+4. Call recovery once for the same Purchase ID when the view requests it.
+5. Read status again.
 
-Do not change the request key, amount, Merchant, profile, fee ceiling, channel,
-or payment bytes. Do not submit a transaction manually.
+Do not change the request key, Merchant, amount, profile, fee limit, channel, or payment bytes.
+Do not submit a transaction manually.
 
 ## State guide
 
-| State | Meaning | Action |
-|---|---|---|
-| `created`, `terms_bound` | No authorization or payment | Follow the displayed action |
-| `awaiting_authority` | Human decision pending | Approve only in the Authority terminal |
-| `authorised` | Authorized; payment not yet settled | Do not create a second Purchase |
-| `execution_prepared` | Immutable execution material exists | Recover the same Purchase if requested |
-| `submitted` | Submission may have succeeded | Observe; never repay |
-| `settled` | Payment verified | Recover fulfilment or the receipt only |
-| `fulfilled` | Resource is durable | Recover the receipt only |
-| `receipted` | Complete | No action |
-| `expired` | No new payment execution may begin | Resolve any existing staging output |
-| `failed_recoverable` | Durable evidence requires work | Recover once, then read status |
-| `failed_terminal` or conflict | Automation is unsafe | Stop and inspect preserved evidence |
+| State | Action |
+|---|---|
+| `created`, `terms_bound` | Follow the displayed action. |
+| `awaiting_authority` | Wait for the exact human decision. |
+| `authorised` | Keep the same Purchase. |
+| `execution_prepared`, `submitted` | Observe and recover the same effect. |
+| `settled` | Recover fulfillment or receipt only. |
+| `fulfilled` | Recover receipt only. |
+| `receipted` | Stop. The Purchase is complete. |
+| `expired` | Do not start new payment execution. Resolve any existing staging output. |
+| `failed_recoverable` | Recover once and read status. |
+| terminal failure or conflict | Stop automation and preserve evidence. |
 
-`not found`, an explorer miss, an RPC exception, or one empty UTXO view is not
-proof that a transaction did not execute.
+An explorer miss, RPC error, or empty UTXO result does not prove non-execution.
 
-## What recover may do
+## Permitted recovery
 
-Recovery may:
+Recovery can observe saved payment effects and reuse saved immutable bytes when the durable state permits it.
+It can replay idempotent fulfillment and receipt lookups.
 
-- reacquire the same Authority request without repeating a completed human
-  decision;
-- query the exact Merchant payment identity;
-- observe the saved staging, exact, claim, refund, or continuation transaction;
-- adopt a proven accepted winner;
-- replay the same idempotent fulfilment or receipt lookup;
-- submit the exact saved bytes only when the durable proof contract permits it.
+Recovery cannot rebuild, re-sign, change terms, reduce finality, or increase a fee limit.
+It cannot treat timeout as proof of non-execution.
 
-Recovery may not rebuild, re-sign, change terms, lower finality, increase a
-fee ceiling, or treat a timeout as non-execution.
-
-## Mechanism-specific recovery
-
-- Staged exact funds: [`STAGING_RECOVERY.md`](STAGING_RECOVERY.md)
-- Additive heads and batch channels: [`CHANNEL_RECOVERY.md`](CHANNEL_RECOVERY.md)
-- Corrupt or missing state: [`JOURNAL.md`](JOURNAL.md)
-
-Expiry blocks new authorization, staging, exact preparation, signing, and
-first submission. It does not erase an already-created staging UTXO. The
-staging recovery path may return that exact value to the configured wallet only
-within the original authorized additional-cost ceiling.
+Use the mechanism-specific runbooks for [staging](STAGING_RECOVERY.md) and [channels](CHANNEL_RECOVERY.md).
+Use the [Journal runbook](JOURNAL.md) for corrupt or missing state.
 
 ## Escalation record
 
-Preserve these public facts:
-
-- Sompi version and Git commit;
-- UTC time and Testnet-10 identity;
-- Purchase ID and projected state;
-- payment, transaction, outpoint, and evidence identifiers;
-- manifest, policy, Authority, and Merchant key identities;
-- observed finality and bounded error code.
-
-Do not copy private keys, Authority MAC material, raw signed headers, prepared
-transactions, fulfilment bodies, node URLs, local secret paths, or raw
-exceptions into chat or an issue.
+Keep public versions, times, IDs, states, finality, manifest identity, and evidence digests.
+Do not copy secrets, signed headers, prepared transactions, content, node URLs, secret paths, or raw exceptions.

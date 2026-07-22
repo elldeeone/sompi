@@ -1,31 +1,27 @@
 # Mainnet is not supported
 
-Status: explicit v0.9 release boundary
+Status: explicit `0.12.0` release boundary.
 
-Sompi supports only Kaspa Testnet-10. Configuration rejects every other
-network before opening the Purchase Journal or creating signing material.
+Sompi supports only Kaspa Testnet-10.
+It rejects each other network before it opens the Journal or creates signing material.
 There is no mainnet override.
 
-Do not patch around this check or point a testnet-configured runtime at a
-mainnet node. Authorization is software-key based, Kaspa-x402 remains alpha
-software, and all release evidence is testnet evidence.
+Do not remove this check or connect a testnet runtime to a mainnet node.
+Kaspa-x402 is alpha software and all release evidence is from Testnet-10.
 
-## Preconditions for a future mainnet decision
+## Required work before mainnet
 
-Mainnet would require a separate ADR and release profile covering at least:
+A mainnet proposal needs a separate ADR and release profile.
+It must include:
 
-- independent review of Purchase, Transfer, authority, x402, wallet, vault, staging
-  recovery, and shared policy-accounting paths;
-- live Testnet-10 evidence across every ambiguous crash edge over an extended
-  soak period;
-- reproducible Kaspa-x402 conformance and an explicitly reviewed AP2 profile;
-- production Merchant-origin/payee policy, revocation, and evidence retention;
-- hardware-backed or otherwise production-grade authority-key custody,
-  rotation, backup, and lost-access recovery;
-- audited operator deployment with separate OS users and monitoring;
-- fee/additional-cost limits calibrated to real network economics;
-- tested journal backup, corruption recovery, and disaster restoration;
-- explicit limits, incident response, and a staged-value launch plan.
+- independent security review of all authority and money paths
+- extended Testnet-10 evidence for every ambiguous crash and recovery edge
+- reproducible protocol conformance and reviewed authorization
+- production Merchant, payee, revocation, and retention policy
+- production key custody, rotation, backup, and recovery
+- separate OS identities, audited deployment, monitoring, and incident response
+- tested Journal backup, corruption recovery, and disaster restoration
+- fee and additional-cost limits calibrated to production network economics
+- staged value limits and launch controls
 
-Until a later profile satisfies those gates, the correct response to any
-mainnet request is: “This Sompi release cannot use real KAS; use testnet-10.”
+Until these gates pass, use Testnet-10 only.

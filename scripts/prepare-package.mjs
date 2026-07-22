@@ -26,6 +26,7 @@ const requiredFileRules = [
   "!dist/e2e/**",
   "!dist/e2e-main.js",
   "!dist/adapters/ap2/authority-test-fixtures.js",
+  "!docs/IMPLEMENTATION_PLAN_THROUGH_V0.12.0.md",
   "integrations",
   "host-bootstrap.example.json",
   "!integrations/**/__pycache__/**",

@@ -1,56 +1,64 @@
 # Trusted Authority
 
-Scope: human-present AP2 on Kaspa Testnet-10.
+Scope: human-present authorization on Kaspa Testnet-10.
 
-`sompi-authority` is a separate deterministic process. It owns the AP2 signing
-key, displays the exact Purchase facts, and signs only after the human types
-the displayed Purchase ID.
+`sompi-authority` is a separate deterministic process.
+It displays exact decision facts and signs one human decision.
 
-The agent, MCP process, and API process must not hold the Authority signing
-key. Only `sompi-api` receives the Authority client MAC copy and public trust
-store. `sompi-mcp` talks only to the Sompi API.
+Telegram is the normal decision surface.
+A protected local terminal can be an operator-controlled alternative.
+Ordinary chat text and agent actions are never approval.
 
-## Principals
+## Access boundary
 
-| Principal | Owns | Must not access |
+| Principal | Owns | Cannot access |
 |---|---|---|
-| operator/root | manifest and API credentials | live agent session |
-| `sompi-authority` | signer, decision/replay stores, server MAC copy | wallet and Journal |
-| `sompi-api` | Journal, wallet/vault, protocol adapters, Authority client copy | Authority signer |
-| `sompi-mcp` | agent API credential and stdio transport | Journal, wallet, Authority IPC, recovery credential |
+| Operator | manifest and credentials | live agent session |
+| `sompi-authority` | signer, decision store, replay store | wallet and Journal |
+| `sompi-api` | Journal, Treasury, adapters | Authority signer |
+| Agent or MCP | Agent API credential | Authority, wallet, recovery |
 
-Use distinct non-root UIDs for the three services. Use three different groups:
+Use separate non-root service accounts.
+Use one group for Authority IPC and one group for operator recovery.
+The bootstrap uses the selected agent's primary group for both the Agent API
+and Telegram callback sockets.
 
-- an Authority IPC group shared only by Authority and API;
-- an Agent API group shared by API and MCP;
-- an operator-recovery group shared by API and the operator only.
+## Required paths
 
-## Suggested layout
+| Path | Owner and mode |
+|---|---|
+| `/var/lib/sompi-authority/private` | Authority, directory `0700`, files `0600` |
+| `/var/lib/sompi-authority-client` | Authority during initialization; API after handoff; directory `0700`, files `0600` |
+| `/run/sompi-authority/authority.sock` | Authority and IPC group, `0660` |
+| `/run/sompi-telegram-callback/telegram-callback.sock` | Authority and agent integration group, `0660` |
+| `/run/sompi-api/sompi.sock` | API and agent integration group, `0660` |
+| `/run/sompi-recovery/recovery.sock` | API and recovery group, `0660` |
 
-| Path | Owner | Mode |
-|---|---|---|
-| `/var/lib/sompi-authority/private` | `sompi-authority` | directory `0700`, files `0600` |
-| `/var/lib/sompi-api/authority-client` | `sompi-api` | directory `0700`, files `0600` |
-| API data directory from the Operator Manifest | `sompi-api` | directory `0700`, files `0600` |
-| `/run/sompi-authority` | `sompi-authority:AUTHORITY_IPC_GROUP` | `0710` |
-| `/run/sompi-authority/authority.sock` | `sompi-authority:AUTHORITY_IPC_GROUP` | `0660` |
-| `/run/sompi-telegram-callback` | `sompi-authority:TELEGRAM_CALLBACK_GROUP` | `0710` |
-| `/run/sompi-telegram-callback/telegram-callback.sock` | `sompi-authority:TELEGRAM_CALLBACK_GROUP` | `0660` |
-| `/run/sompi-api` | `sompi-api:AGENT_API_GROUP` | `0710` |
-| `/run/sompi-recovery` | `sompi-api:RECOVERY_GROUP` | `0710` |
-
-The Authority private directory, API client directory, and socket directory
-must be disjoint canonical paths. Do not use symlinks or hard links.
+Use disjoint canonical paths.
+Do not use links.
 
 ## Initialize
 
-Create the private, client, and runtime directories as the Authority owner.
-Then initialize once:
+Create the private, client, and runtime directories before initialization:
+
+```bash
+sudo install -d -o sompi-authority -g sompi-authority -m 0700 \
+  /var/lib/sompi-authority \
+  /var/lib/sompi-authority/private
+sudo install -d -o sompi-authority -g sompi-authority -m 0700 \
+  /var/lib/sompi-authority-client
+sudo install -d -o sompi-authority -g AUTHORITY_IPC_GROUP -m 0710 \
+  /run/sompi-authority
+sudo install -d -o sompi-authority -g AGENT_INTEGRATION_GROUP -m 0710 \
+  /run/sompi-telegram-callback
+```
+
+Then, run initialization once as the Authority account:
 
 ```bash
 sudo -u sompi-authority env \
   SOMPI_AUTHORITY_PRIVATE_DIR=/var/lib/sompi-authority/private \
-  SOMPI_AUTHORITY_CLIENT_DIR=/var/lib/sompi-api/authority-client \
+  SOMPI_AUTHORITY_CLIENT_DIR=/var/lib/sompi-authority-client \
   SOMPI_AUTHORITY_RUNTIME_DIR=/run/sompi-authority \
   SOMPI_AUTHORITY_CALLBACK_RUNTIME_DIR=/run/sompi-telegram-callback \
   SOMPI_AUTHORITY_SOCKET=/run/sompi-authority/authority.sock \
@@ -59,115 +67,80 @@ sudo -u sompi-authority env \
   sompi-authority init
 ```
 
-Initialization refuses to overwrite credentials. It prints public trust
-material only.
+Initialization does not overwrite credentials.
+It prints public trust material only.
 
-Install the final trusted public keys in both trust stores:
+After initialization, transfer the client directory and its files to the API
+account. Keep directory mode `0700` and file mode `0600`.
+The directory contains `ipc-mac.key`, `trust.json`, and
+`authority-public-trust-entry.json`.
+Never give the API or agent access to the private Authority directory.
 
-- Authority private trust store: owned by `sompi-authority`;
-- Authority client trust store: owned by `sompi-api`.
+## Start
 
-The only trusted signing role is `authority`. Install its public key only
-through an authenticated operator channel. Never trust a key embedded in
-Merchant content.
+Start services in this order:
 
-After initialization, transfer only `ipc-mac.key` and `trust.json` in the
-client directory to `sompi-api`. The API must not be able to traverse the
-Authority private directory. MCP must not be able to traverse either Authority
-directory.
+1. `sompi-authority`
+2. `sompi-api`
+3. Hermes or `sompi-mcp`
 
-## Start order
-
-### 1. Authority
-
-Run the Authority in a dedicated foreground terminal:
+The generated systemd unit is the primary start configuration.
+For a manual start, provide the complete installed environment:
 
 ```bash
 sudo -u sompi-authority env \
   SOMPI_AUTHORITY_PRIVATE_DIR=/var/lib/sompi-authority/private \
-  SOMPI_AUTHORITY_CLIENT_DIR=/var/lib/sompi-api/authority-client \
+  SOMPI_AUTHORITY_CLIENT_DIR=/var/lib/sompi-authority-client \
   SOMPI_AUTHORITY_RUNTIME_DIR=/run/sompi-authority \
   SOMPI_AUTHORITY_CALLBACK_RUNTIME_DIR=/run/sompi-telegram-callback \
   SOMPI_AUTHORITY_SOCKET=/run/sompi-authority/authority.sock \
   SOMPI_AUTHORITY_SOCKET_GID=AUTHORITY_IPC_GID \
-  SOMPI_AUTHORITY_ISSUER=urn:sompi:authority:local \
+  SOMPI_AUTHORITY_CALLBACK_SOCKET_GID=CALLBACK_GID \
+  SOMPI_AUTHORITY_ISSUER=INSTALLED_AUTHORITY_ISSUER \
   SOMPI_AUTHORITY_SIGNING_KID=authority-signing-key-1 \
   SOMPI_AUTHORITY_IPC_KEY_ID=authority-ipc-key-1 \
   SOMPI_AUTHORITY_INSTRUMENT_ID=kaspa:testnet-10:vault-treasury \
+  SOMPI_OPERATOR_MANIFEST=/etc/sompi-authority/operator-manifest.json \
+  SOMPI_OPERATOR_UID=0 \
+  SOMPI_RUNTIME_GID=AUTHORITY_IPC_GID \
   sompi-authority
 ```
 
-Do not pipe stdin or expose this terminal to the agent.
+Keep its terminal and Telegram token outside agent access.
 
-### 2. Sompi API
+Give MCP only the Agent socket and Agent credential.
+Hermes uses the agent integration group for the Agent and callback sockets.
+Neither process receives Authority IPC, recovery, wallet, or operator access.
 
-Start `sompi-api` as the trusted API UID. It receives:
+## Decide
 
-- the Operator Manifest and its operator/runtime identities;
-- the Agent and recovery socket/credential configuration;
-- the Authority client directory, socket, issuer, and key identifiers.
+Before approval, check the Merchant or recipient, action, amount, maximum cost, network, and expiry.
+Open advanced details when you must verify fees, identifiers, profiles, or finality.
 
-The API refuses root, same-UID Authority, unsafe state, missing recovery
-transport, and every network except Testnet-10.
+Select Approve or Deny only on the exact bound Telegram decision card.
+For local terminal mode, enter only the exact displayed identifier.
 
-### 3. MCP compatibility
+A denial spends nothing.
+No response expires safely.
+A second callback is rejected as replay.
 
-Start `sompi-mcp` as a different non-root UID with only:
+## Backup and compromise
 
-```text
-SOMPI_API_SOCKET
-SOMPI_AGENT_API_CREDENTIAL
-SOMPI_OPERATOR_UID
-SOMPI_API_UID
-SOMPI_RUNTIME_GID
-```
+Stop the Authority before backup.
+Back up its complete private directory as one encrypted, offline set.
+Back up API state separately.
 
-Do not give MCP the Operator Manifest, recovery socket, recovery credential,
-Authority paths, wallet paths, node configuration, or protocol credentials.
+If a boundary is compromised, stop the affected services and preserve evidence.
+Rotate that boundary with a coordinated stop:
 
-## Approval
+1. Stop Hermes or MCP, API, and Authority.
+2. Back up Authority and API state separately.
+3. Initialize a new Authority path and key ID.
+4. Keep old public keys while retained evidence needs them.
+5. Transfer only the new client MAC copy and trust store to the API.
+6. Restart Authority, API, and the agent integration.
 
-For every request:
+Reconcile every possible external effect.
+Do not delete state or submit a payment manually.
 
-1. Read the Merchant, URL, method, request fingerprint, amount, payee, network,
-   expiry, profile/channel facts, finality floor, and additional-cost ceiling.
-2. Type the exact displayed Purchase ID only if every fact is intended.
-3. Any other input denies the request.
-
-An approval in chat, MCP, HTTP, or Merchant content has no authority.
-
-After interruption, read Purchase status first. Use `recover` only with the
-same Purchase ID. Never create a replacement payment to clear ambiguity.
-
-## Backup and rotation
-
-Stop Authority before backing up its complete private directory. Preserve the
-signer, server MAC copy, trust store, replay database, and decision database in
-one encrypted offline backup. Back up API runtime state separately using
-[`JOURNAL.md`](JOURNAL.md).
-
-Rotation is a coordinated stop:
-
-1. stop MCP, API, and Authority;
-2. back up Authority and API state separately;
-3. initialize a new Authority path and key ID;
-4. retain old public keys while old evidence must remain verifiable;
-5. transfer only the new client MAC copy and trust store to API;
-6. restart in Authority -> API -> MCP order.
-
-Do not overwrite credentials in place or combine private Authority state with
-API backups.
-
-## Compromise
-
-- MCP compromise exposes only the least-authority Agent API credential.
-- API compromise exposes payment keys and the Authority client MAC copy, but
-  not the Authority signer.
-- Authority compromise invalidates trust in decisions from that key.
-
-Stop affected services, preserve evidence, rotate the compromised boundary,
-and reconcile every possible external effect. Do not delete state or resubmit
-payments manually.
-
-This runbook does not claim hardware-backed signing, passkey security, mainnet
-readiness, or protection from host-root compromise.
+This design does not protect against host-root compromise.

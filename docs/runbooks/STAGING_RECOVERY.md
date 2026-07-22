@@ -1,77 +1,51 @@
 # Exact-payment staging recovery
 
-Scope: an observed Testnet-10 staging UTXO created for one Purchase.
+Scope: one observed Testnet-10 staging UTXO for one Purchase.
 
-Staging value is not temporary. Its key and recovery plan are bound to the
-Purchase, payment identity, Operator Manifest, and API data directory. Deleting
-the Journal or `staging-keys/` can make it unrecoverable.
+The staging key and recovery plan belong to that Purchase and runtime.
+Loss of the Journal or staging keys can make the value unrecoverable.
 
-## Candidate model
+## Supported cases
 
-Recovery supports exactly two cases:
+Recovery supports two cases:
 
-1. An immutable exact-payment candidate already exists. That transaction and
-   the saved recovery sweep compete for the same staging outpoint.
-2. No exact candidate was created before expiry/failure. The durable plan says
-   so explicitly, and recovery must never create one later.
+1. An immutable exact-payment candidate exists.
+2. Durable state proves that no exact candidate was created.
 
-The recovery output is the manifest-bound Sompi wallet. Agent, MCP, and
-Merchant input cannot choose another destination.
+The exact-payment candidate and saved recovery sweep can spend the same staging output.
+The recovery destination is the manifest-bound Sompi wallet.
 
-## Before recovery
+## Procedure
 
-1. Stop repeated calls for the Purchase.
-2. Preserve its Purchase ID, request key, version, manifest, API data directory,
-   and node/witness configuration.
-3. Read status. If Settlement exists, recover fulfilment or the receipt instead.
-4. Confirm the same synced Testnet-10 evidence sources are available.
-5. Back up the complete API state using [`JOURNAL.md`](JOURNAL.md).
+1. Stop repeated Purchase calls.
+2. Preserve the Purchase ID, request key, version, manifest, state path, node, and witness settings.
+3. Read status.
+4. If settlement exists, recover fulfillment or receipt instead.
+5. Back up the complete API state.
+6. Recover the original Purchase once.
+7. Read status again.
 
-Do not import the staging key into a wallet, edit SQLite, replace prepared
-bytes, or construct a manual sweep.
-
-## Recovery loop
-
-1. Read status for the original Purchase ID.
-2. Call recover once for that ID.
-3. Read status again.
-4. If still pending, wait for evidence to change and repeat the same recovery
-   call.
-
-The operation observes the exact staging outpoint, exact-payment candidate,
-recovery candidate, mempool/accepted history, and required finality. A timeout,
-RPC error, or missing explorer entry never grants retry permission.
+Do not import the staging key, edit SQLite, replace bytes, or create a manual sweep.
 
 ## Outcomes
 
 | Outcome | Action |
 |---|---|
-| exact payment won | Stop sweeping; continue Settlement and fulfilment recovery |
-| recovery sweep won but is not final enough | Wait and observe |
-| recovery sweep won at the required floor | Retain recovery accounting and close without payment |
-| neither candidate is proven | Remain pending; do not submit manually |
-| unknown spender or contradictory evidence | Stop and escalate |
+| Exact payment won | Continue settlement and fulfillment recovery. |
+| Recovery sweep is not final | Wait and observe. |
+| Recovery sweep reached finality | Close without payment. |
+| No winner is proven | Keep the operation pending. |
+| Unknown spender or conflict | Stop and escalate. |
 
-If a saved submission is retried, Sompi reuses the same bytes only under its
-single-use durable readiness proof. It never rebuilds the transaction.
+When trusted evidence changes, call recovery again for the same Purchase ID.
+Read status after each bounded call.
+Never create a new sweep or payment.
 
-## Expiry and cost
+Sompi reuses saved bytes only under its single-use durable proof.
+It never rebuilds the transaction.
 
-Expiry forbids new authorization, staging, exact preparation, signing, and
-first payment submission. It does not erase staged value.
+The total staging and recovery fee must stay within the original additional-cost limit.
+The agent cannot increase this limit.
 
-The recovery sweep is allowed only when:
-
-```text
-observed staging fee + saved recovery fee
-<= original authorized additional-cost ceiling
-```
-
-The agent cannot raise this ceiling. If it no longer fits, stop and require an
-explicit operator recovery procedure; do not edit the Journal.
-
-## Evidence
-
-Preserve public identifiers, amounts, fees, finality, evidence digests, and the
-projected action. Never publish staging keys, signed transaction bytes, wallet
-or Authority credentials, raw payment headers, local paths, or node URLs.
+Keep public identifiers, values, fees, finality, and evidence digests.
+Do not publish keys, transaction bytes, credentials, headers, paths, or node URLs.

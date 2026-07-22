@@ -1,29 +1,23 @@
 # Operator runbooks
 
-These procedures apply to the Testnet-10 alpha.9 runtime. They do not enable
-mainnet.
+These runbooks apply to the Testnet-10 alpha.9 runtime.
+They do not enable mainnet.
 
-Start with:
+## Start and operate
 
-1. [`OPERATOR_PROVISIONING.md`](OPERATOR_PROVISIONING.md) — install the
-   manifest, API credentials, runtime identity, and vault configuration.
-2. [`AUTHORITY.md`](AUTHORITY.md) — isolate and operate the human-present
-   signer.
-3. [`HERMES.md`](HERMES.md) — connect the API-first agent skill and Telegram
-   callback plugin.
-4. [`JOURNAL.md`](JOURNAL.md) — back up and restore API-owned state.
-5. [`RECONCILIATION.md`](RECONCILIATION.md) — recover one interrupted Purchase.
+1. [Provision the runtime](OPERATOR_PROVISIONING.md).
+2. [Start the Trusted Authority](AUTHORITY.md).
+3. [Connect Hermes](HERMES.md).
+4. [Back up the Journal](JOURNAL.md).
 
-Mechanism-specific procedures:
+## Recover
 
-- [`STAGING_RECOVERY.md`](STAGING_RECOVERY.md) — recover an already-created
-  exact-payment staging output.
-- [`CHANNEL_RECOVERY.md`](CHANNEL_RECOVERY.md) — recover additive-head and batch
-  channel state.
-- [`TESTNET_RESET.md`](TESTNET_RESET.md) — start a new isolated testnet runtime
-  without mutating the old one.
+| Condition | Runbook |
+|---|---|
+| Interrupted Purchase | [Reconciliation](RECONCILIATION.md) |
+| Exact-payment staging output | [Staging recovery](STAGING_RECOVERY.md) |
+| Additive head or batch channel | [Channel recovery](CHANNEL_RECOVERY.md) |
+| New isolated testnet runtime | [Testnet reset](TESTNET_RESET.md) |
 
-MCP is not an operator surface. It is an optional stateless compatibility
-wrapper over the same Agent API used by `sompi-agent`; it has no wallet key,
-Authority key, owner key, Journal, or operator credential. Use the separate
-operator recovery socket for privileged recovery work.
+MCP is not an operator interface.
+Use the separate operator recovery socket for privileged recovery.

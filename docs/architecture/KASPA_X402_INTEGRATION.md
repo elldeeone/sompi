@@ -1,141 +1,107 @@
 # Kaspa-x402 integration
 
-## Pin
+## Supported profile
 
 Sompi supports Kaspa-x402 `0.1.0-alpha.9` on `kaspa:testnet-10`.
+It pins the core, covenant, client, and server packages exactly.
 
-Packages are pinned exactly:
+`npm run test:conformance` checks package integrity, source identity, HTTP vectors, and consensus vectors.
 
-- `@kaspa-x402/core`
-- `@kaspa-x402/covenant`
-- `@kaspa-x402/client`
-- `@kaspa-x402/server`
-
-The package tarballs, source commit, exact HTTP vector, and full-consensus
-profile vectors are checked by `npm run test:conformance`.
-
-## Boundary
-
-Kaspa-x402 is the payment execution adapter. Sompi owns authorization, policy,
-Treasury, Purchase state, fulfilment, receipt, and recovery.
-
-A Merchant implements the supported x402 contract. It does not need Sompi or
-AP2 integration.
+Kaspa-x402 owns payment execution.
+Sompi owns authorization, policy, Treasury, Purchase state, fulfillment, receipt, and recovery.
 
 ## Common flow
 
-1. Make the canonical bounded HTTP request.
-2. Accept one `402` with one supported `PAYMENT-REQUIRED` offer.
-3. Verify network, scheme, profile, payee, request binding, amount/ceiling,
-   finality, expiry, and transaction encoding.
-4. Persist the exact offer as evidence and derive canonical Checkout Terms.
-5. Obtain signed human authorization and reserve policy capacity.
-6. Persist prepared funding/payment material and the effect fence.
-7. Send one immutable `PAYMENT-SIGNATURE` retry.
-8. Verify `PAYMENT-RESPONSE`, settlement, authoritative chain evidence, and
-   bounded resource content.
-9. Record fulfilment and one receipt.
+1. Send the canonical bounded HTTP request.
+2. Verify one supported `PAYMENT-REQUIRED` offer.
+3. Store the offer and derive canonical Checkout Terms.
+4. Obtain human approval and reserve policy capacity.
+5. Store the prepared payment and effect fence.
+6. Send one immutable `PAYMENT-SIGNATURE` retry.
+7. Verify payment response, settlement, chain evidence, and content.
+8. Record fulfillment and one receipt.
 
-Paid redirects are forbidden. Automatic corrective re-signing is forbidden.
-A changed offer requires a new Purchase decision.
+Sompi rejects paid redirects.
+It does not make a corrective payment automatically.
+A changed offer needs a new Purchase decision.
 
-## Exact: standard-native
+## Standard-native
 
-Binding: `kaspa-exact-v2`, profile `standard-native`.
+Binding: `kaspa-exact-v2` with profile `standard-native`.
 
-The payer constructs a version-0 transaction with an exact Merchant output and
-optional change. Sompi verifies:
+The payer creates a version-0 transaction with one exact Merchant output.
+The transaction can also contain payer change.
 
-- canonical safe JSON and txid;
-- trusted input UTXOs;
-- Schnorr signatures;
-- Merchant output equals the advertised amount;
-- no unexpected Merchant benefit;
-- value conservation, mass, fee, and configured fee cap;
-- native subnetwork, gas/payload, and supported transaction fields;
-- payer-signed request authorization;
-- accepted/confirmed settlement under the effective finality floor.
+Sompi verifies:
 
-For the current proof shape:
+- canonical safe JSON and transaction identity
+- authoritative input UTXOs and signatures
+- the exact Merchant output and no extra Merchant benefit
+- value conservation, mass, fee, and configured fee limit
+- native subnetwork, gas, payload, and supported transaction fields
+- request authorization, settlement, and Chain Evidence
 
 ```text
 Merchant gain = advertised amount
 Payer cost = advertised amount + explicit fee
 ```
 
-## Exact: additive
+## Additive
 
-Binding: `kaspa-exact-v2`, profile `additive`.
-
-The KIP-10-based head is a reusable Merchant UTXO chain:
+Binding: `kaspa-exact-v2` with profile `additive`.
 
 ```text
-input[0]  = current head
+input[0]  = current Merchant head
 input[1+] = payer funding
-output[0] = same-script successor at old amount + advertised amount
+output[0] = same-script successor with the advertised increase
 ```
 
-Rules:
+The successor increase is the only Merchant payment.
+An unpaid offer does not reserve or retire a head.
 
-- successor and head use the same index and script;
-- the successor delta equals the advertised amount exactly;
-- there is no separate Merchant payment output;
-- the payment amount is at least the script threshold;
-- unpaid offers do not claim, reserve, or retire heads;
-- one signed conflicting transaction claims a head by compare-and-swap;
-- a loser obtains a fresh offer and separate authorization;
-- unknown external advancement requires proven lineage or the head is disabled;
-- public selection/reconciliation work is bounded.
+The head and successor must use the same index and script.
+The Merchant amount must meet the KIP-10 additive threshold.
+The transaction must not give the Merchant another benefit.
 
-KIP-10 supplies introspection primitives; this additive payment profile is a
-Kaspa-x402 construction, not a claim that KIP-10 standardizes the wire scheme.
+One valid conflicting transaction wins the head.
+A losing Purchase needs a new offer and separate approval.
+Unknown lineage disables that head until trusted recovery proves its state.
 
 ## Batch settlement
 
-Binding: `kaspa-escrow-v1`, scheme `batch-settlement`.
+Binding: `kaspa-escrow-v1` with scheme `batch-settlement`.
 
-Channel funding is a separate operator-capital operation. Each Purchase then:
+The operator funds a channel before Purchases use it.
+Each Purchase authorizes one maximum charge and exact channel epoch.
 
-1. selects a route-bound active channel;
-2. obtains authorization for a maximum charge and exact channel epoch;
-3. signs one monotonic cumulative voucher;
-4. records the accepted actual charge separately;
-5. records fulfilment and one receipt for that Purchase.
+The voucher contains a monotonic cumulative value.
+The Merchant claim must preserve exact continuation accounting.
+The claim fee cannot reduce the client continuation.
 
-The Merchant claim must preserve exact continuation accounting. Fees come from
-the Merchant payout or another Merchant input, never by silently reducing the
-client continuation. The refund branch is valid only after the chain DAA is
-strictly greater than the absolute timeout.
+A refund is valid only when chain DAA is greater than the absolute timeout.
 
-## Treasury and staging
+## Treasury boundary
 
-The payment adapter never receives unrestricted vault authority. Treasury
-reserves the amount plus bounded staging/payment fees and creates one
-attempt-bound capability.
+The adapter has no unrestricted vault authority.
+Treasury gives it one attempt-bound capability for the reserved amount and bounded fees.
 
-Prepared staging and payment bytes or secure key references are durable before
-submission. A possible broadcast consumes the capability until authoritative
-observation resolves it.
+Prepared staging and payment data is durable before submission.
+After possible submission, Sompi holds the capability until authoritative observation resolves the effect.
 
 ## Recovery
 
-Recovery order:
+1. Check durable Merchant and payment evidence.
+2. Check chain evidence for the exact expected effect.
+3. Require authoritative protocol and Chain Evidence for safe reuse.
+4. Reuse only the same immutable paid request and payload.
+5. Never create a replacement payment to escape ambiguity.
 
-1. Check durable Merchant/payment evidence.
-2. Check authoritative chain evidence for the exact expected output/spend.
-3. Reuse the same immutable paid request only when the protocol state proves it
-   safe.
-4. Never create a replacement signed payment to escape ambiguity.
+An accepted payment can recover fulfillment without a second payment.
+Contradictory or unavailable evidence fails closed for operator review.
 
-An accepted payment can recover fulfilment without paying again. Contradictory
-evidence, unavailable history, unknown head lineage, or a finality downgrade
-fails closed for operator review.
+## Evidence
 
-## Current evidence
+See the [alpha.9 clean-cutover evidence](https://github.com/elldeeone/sompi/blob/c8fd02fa403b7e4f43dfa91653c0c232867d8ed8/evidence/alpha9-clean-cutover/README.md).
+It covers funded Testnet-10 standard-native and batch lifecycles.
 
-Fresh standard-native, additive, and batch TN10 summaries are in
-[`../../evidence/generic-x402-cutover/`](../../evidence/generic-x402-cutover/README.md).
-
-The evidence proves these exact transaction shapes and lifecycle paths. It does
-not claim universal wallet compatibility, universal fees, mainnet readiness, or
-general Kaspa payment support.
+The evidence does not prove mainnet readiness or general wallet compatibility.
