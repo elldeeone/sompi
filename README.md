@@ -1,65 +1,103 @@
-# Sompi
+```text
+                                                                                iiii
+                                                                               i::::i
+                                                                                iiii
 
-Sompi is a local Testnet-10 wallet for agents. It lets an agent:
+    ssssssssss      ooooooooooo      mmmmmmm    mmmmmmm   ppppp   ppppppppp   iiiiiii
+  ss::::::::::s   oo:::::::::::oo  mm:::::::m  m:::::::mm p::::ppp:::::::::p  i:::::i
+ss:::::::::::::s o:::::::::::::::om::::::::::mm::::::::::mp:::::::::::::::::p  i::::i
+s::::::ssss:::::so:::::ooooo:::::om::::::::::::::::::::::mpp::::::ppppp::::::p i::::i
+ s:::::s  ssssss o::::o     o::::om:::::mmm::::::mmm:::::m p:::::p     p:::::p i::::i
+   s::::::s      o::::o     o::::om::::m   m::::m   m::::m p:::::p     p:::::p i::::i
+      s::::::s   o::::o     o::::om::::m   m::::m   m::::m p:::::p     p:::::p i::::i
+ssssss   s:::::s o::::o     o::::om::::m   m::::m   m::::m p:::::p    p::::::p i::::i
+s:::::ssss::::::so:::::ooooo:::::om::::m   m::::m   m::::m p:::::ppppp:::::::pi::::::i
+s::::::::::::::s o:::::::::::::::om::::m   m::::m   m::::m p::::::::::::::::p i::::::i
+ s:::::::::::ss   oo:::::::::::oo m::::m   m::::m   m::::m p::::::::::::::pp  i::::::i
+  sssssssssss       ooooooooooo   mmmmmm   mmmmmm   mmmmmm p::::::pppppppp    iiiiiiii
+                                                           p:::::p
+                                                           p:::::p
+                                                          p:::::::p
+                                                          p:::::::p
+                                                          p:::::::p
+                                                          ppppppppp
+```
 
-- check its KAS balance, addresses, limits, and recent activity;
-- send KAS to a Kaspa address;
-- buy x402-protected HTTP resources.
+<h1 align="center">Sompi</h1>
 
-The agent never receives a wallet key or approval credential. Sompi keeps funds
-in an operator-controlled SilverScript vault, applies fixed spending limits,
-asks the user to approve exact actions, and records every effect before it can
-reach the chain or a merchant.
+<p align="center"><strong>A local KAS wallet for agents.</strong></p>
+
+<p align="center">
+  <code>Testnet-10</code> ·
+  <code>Human-present approval</code> ·
+  <code>Kaspa-x402 alpha.9</code>
+</p>
+
+---
+
+Sompi is a local Testnet-10 wallet for agents. An agent can do these tasks:
+
+- Read its KAS balance, receive address, limits, and recent activity.
+- Send KAS to a Kaspa address.
+- Buy an HTTP resource that uses x402.
+
+The agent does not receive a wallet key or an approval credential. Sompi keeps
+funds in an operator-controlled SilverScript vault. Sompi applies fixed limits
+and records each effect before an external action occurs.
 
 ## Status
 
-- Kaspa Testnet-10 only.
-- Human-present approval only.
-- Kaspa-x402 `0.1.0-alpha.9`.
-- Exact `standard-native` and `additive` purchases.
-- Kaspa-x402 batch settlement with approval for every charge increase.
-- Local authenticated API and CLI.
-- Optional MCP compatibility wrapper.
+- Network: Kaspa Testnet-10 only.
+- Authorization: Human-present approval for each outgoing action.
+- Payment: Kaspa-x402 `0.1.0-alpha.9`.
+- Exact profiles: `standard-native` and `additive`.
+- Batch: Kaspa-x402 batch settlement with approval for each charge increase.
+- Interface: Authenticated local API and `sompi-agent`.
+- Compatibility: Optional `sompi-mcp` wrapper.
 
-Sompi uses AP2-derived internal authorization evidence. It does not claim AP2
-interoperability or send AP2 artifacts to ordinary x402 merchants.
+Sompi uses internal authorization evidence that comes from AP2 concepts. Sompi
+does not claim AP2 interoperability. Sompi does not send AP2 artifacts to an
+ordinary x402 Merchant.
 
 ## Install with Hermes
 
-Tell Hermes:
+Use the Sompi skill from this exact checkout. Give this instruction to Hermes:
 
-> Install the Sompi skill from
-> https://raw.githubusercontent.com/elldeeone/sompi/v0.12.0/integrations/hermes/sompi/SKILL.md
-> and set up Sompi for this host.
+> Install the Sompi skill from `integrations/hermes/sompi/SKILL.md` in this
+> checkout. Then, set up Sompi for this host.
 
-Hermes gathers non-secret setup facts and gives you one command to run locally.
-That command asks for the Telegram bot token with hidden input, installs the
-isolated services, and returns one Testnet-10 receive address.
+Hermes collects non-secret host data. It then gives you one local command.
 
-Fund the displayed address, then run the returned `activateCommand` once to
-create the protected vault. After that, the same receive address remains the
-only address a user needs: new deposits are detected and secured automatically.
-Hermes never receives
-sudo, wallet keys, API credentials, the recovery key, or the Telegram token.
+Run that command in a local terminal. The command requests the Telegram bot
+token with hidden input. It installs the isolated services and returns one
+Testnet-10 receive address.
 
-See [the Hermes skill](integrations/hermes/sompi/SKILL.md) and
-[operator runbook](docs/runbooks/OPERATOR_PROVISIONING.md).
+Send funds to the receive address. Then, run the returned `activateCommand`
+one time. Sompi will use the same receive address for future deposits.
 
-## Use
+The Hermes service receives the Agent API credential locator.
+The model and agent must not read or receive the credential contents.
+Hermes does not receive sudo, wallet keys, the recovery key, or the Telegram token.
 
-An agent can answer normal wallet questions through:
+Read the [Hermes skill](integrations/hermes/sompi/SKILL.md) and the
+[operator runbook](docs/runbooks/OPERATOR_PROVISIONING.md) for more information.
+
+## Wallet
+
+Use these commands to read the wallet:
 
 ```sh
 sompi-agent wallet
 sompi-agent activity --limit 20
 ```
 
-The wallet view leads with `total`, `available`, `incoming`, and `pending`
-amounts in tKAS. It also returns the receive address, QR payload, deposit status,
-limits, and recent incoming, transfer, and purchase activity. Technical wallet
-details are returned only when explicitly requested.
+The wallet view shows `total`, `available`, `incoming`, and `pending` amounts
+in tKAS. It also shows the receive address, limits, deposit status, and recent
+activity. Use the technical wallet command only when you need technical data.
 
-Send native KAS:
+## Transfer
+
+Use this command to send native KAS:
 
 ```sh
 sompi-agent transfer \
@@ -68,7 +106,20 @@ sompi-agent transfer \
   --amount-kas 0.1
 ```
 
-Buy an x402 resource:
+Sompi requests approval for the exact recipient, amount, and network. The
+command continues the same durable Transfer through settlement and receipt
+recovery. It does not create a replacement Transfer.
+
+Use these commands only for existing work:
+
+```sh
+sompi-agent transfer-status TRANSFER_ID
+sompi-agent transfer-recover TRANSFER_ID
+```
+
+## Purchase
+
+Use this command to buy an x402 resource:
 
 ```sh
 sompi-agent purchase \
@@ -77,43 +128,39 @@ sompi-agent purchase \
   --method GET
 ```
 
-That one command waits for approval and continues the same durable Purchase
-through routine settlement and fulfilment recovery. The agent does not need to
-sleep, poll, or issue a second payment command.
+Sompi requests approval and continues the same durable Purchase. The command
+does routine settlement, fulfillment, and receipt recovery. Do not add a sleep
+loop or a second payment command.
 
-The Transfer command behaves the same way: it continues the original durable
-send through routine settlement and receipt recovery. It never creates a
-replacement transfer.
-
-Inspect or recover existing work with its ID:
+Use these commands only for existing work:
 
 ```sh
-sompi-agent transfer-status TRANSFER_ID
-sompi-agent transfer-recover TRANSFER_ID
 sompi-agent status PURCHASE_ID
 sompi-agent recover PURCHASE_ID
 ```
 
-Explicit recovery is only for a command that reaches its bounded deadline while
-the returned view still says recovery is required. It continues the same
-Purchase or Transfer and cannot authorize a replacement payment.
+A request key identifies one logical action. Use the same key for a retry of
+the same action. A new key does not bypass a denial, limit, or unresolved
+payment.
 
-Request keys identify logical actions. Reusing the same key and intent is
-idempotent. An expired offer is finished, so a new user instruction may obtain
-fresh terms with a new key. A new key does not bypass a denial, unresolved
-payment, recovery requirement, or spending limit.
+After `expired`, only a new user instruction can start a new Purchase with a
+fresh key. Do not change the URL, method, body, Merchant, amount, network, or
+request key after the approval prompt appears.
 
 ## Limits
 
-Sompi shows two everyday limits and one stronger vault limit:
+Sompi shows these limits:
 
-- maximum for one payment;
-- maximum total in roughly one hour; and
-- vault protection: the on-chain ceiling enforced by SilverScript.
+- Maximum amount for one payment.
+- Maximum total amount for one rolling hour.
+- Maximum on-chain outflow from the SilverScript vault.
 
-Every payment still needs approval.
+Each outgoing payment also requires approval.
 
-Change the everyday limits:
+For a Transfer, the per-payment limit applies to the recipient amount.
+The fee has a separate ceiling. The rolling-hour limit counts both values.
+
+Use this command to change the first two limits:
 
 ```sh
 sompi-agent change-limits \
@@ -122,8 +169,7 @@ sompi-agent change-limits \
   --per-hour-kas 5
 ```
 
-The exact change is approved or denied in the trusted chat and then applies to
-new work. Changing vault protection is deliberately stronger:
+Use this command to change vault protection:
 
 ```sh
 sompi-agent change-vault-protection \
@@ -131,29 +177,26 @@ sompi-agent change-vault-protection \
   --maximum-kas 10
 ```
 
-After chat approval, the operator finishes the change locally with the offline
-owner key. The user's receive address does not change.
+After approval, the operator must complete the vault change locally. This
+action requires the offline owner key. The receive address does not change.
 
 ## Approval
 
-Ordinary chat proposes an action; it does not authorize one. Sompi sends a short
-decision summary to the separate Trusted Authority: action, Merchant or exact
-recipient, KAS amount, maximum total, and network. Every signed fact stays in
-native collapsed advanced details. Normal approvals use one message; unusually
-large valid requests may place request-bound collapsed detail pages immediately
-above the final decision card. Approve and Deny appear only on that card.
+Ordinary chat can propose an action. It cannot authorize an action.
 
-The approval is bound to one exact Transfer or Purchase. It cannot change the
-recipient, amount, policy, source vault, or transaction. A denial spends
-nothing. A crash or ambiguous broadcast stays attached to the original signed
-effect and must be recovered rather than replaced.
+The Trusted Authority shows a short summary in Telegram. The user can expand
+the message to read each signed fact. Only the final decision card has the
+Approve and Deny controls.
 
-For direct Transfers, the per-transfer limit applies to the amount received.
-The network fee has its own ceiling, and the rolling spend limit counts both.
+The approval applies to one exact Transfer, Purchase, or change. It cannot
+change the recipient, amount, policy, source vault, or transaction.
+
+A denial does not spend funds. An uncertain submission stays attached to the
+original effect and enters recovery.
 
 ## Interfaces
 
-The canonical interface is the authenticated local API:
+The authenticated local API is the canonical interface:
 
 - `GET /wallet`
 - `GET /wallet/activity`
@@ -170,34 +213,34 @@ The canonical interface is the authenticated local API:
 - `POST /vault-migrations`
 - `GET /vault-migrations/{vaultMigrationId}`
 
-`sompi-agent` and `sompi-mcp` are thin clients of the same API. Removing MCP
-does not change wallet, authorization, payment, transfer, or recovery logic.
+`sompi-agent` and `sompi-mcp` are clients of the same API. They do not own
+wallet, authorization, payment, Transfer, Purchase, or recovery logic.
 
-Schemas: [OpenAPI](docs/openapi/sompi.openapi.json) and
+The API schemas are [OpenAPI](docs/openapi/sompi.openapi.json) and
 [Arazzo](docs/openapi/sompi.arazzo.json).
 
 ## Architecture
 
 ```text
-Agent / CLI / optional MCP
-          |
-    authenticated local API
-          |
-   +------+------+----------------+
-   |             |                |
-Transfer      Purchase        Limit changes
-   |             |                |
-   +------ Trusted Authority -----+
-   +------ active policy snapshots
-   +------ Funding Intake / protected wallet / Treasury
-   +------ chain evidence and recovery
+Agent / CLI / optional MCP -> authenticated local API
+  |
+  +-> Purchase / Transfer -> Trusted Authority -> Journal -> Treasury / SompiVault
+  +-> Policy Change -> Trusted Authority -> Journal policy revision
+  +-> Vault Migration -> Trusted Authority -> Journal migration
+  |                                            |
+  |                                            +-> offline owner step
+  |                                                     |
+  |                                                     +-> replacement vault
+  +-> Funding Intake -> Journal -> Treasury / SompiVault
+
+Treasury / SompiVault -> Chain Evidence and recovery
 ```
 
-`Transfer` handles native sends. `Purchase` handles x402 commerce. AP2
-authorization and Kaspa-x402 payment execution remain separate adapters.
-Journal epoch 19 is the only supported state schema.
+`Transfer` controls native sends. `Purchase` controls x402 commerce. The AP2
+adapter and the Kaspa-x402 adapter are separate. Journal epoch 19 is the only
+supported state schema.
 
-Architecture sources:
+Read these current sources:
 
 - [Context](CONTEXT.md)
 - [Architecture](docs/architecture/SOMPI_ARCHITECTURE.md)
@@ -206,7 +249,7 @@ Architecture sources:
 
 ## Verify
 
-Requires Linux, Node.js 22 or newer, and native build tools.
+Use Linux, Node.js 22 or a later version, and native build tools.
 
 ```sh
 npm ci
@@ -215,17 +258,16 @@ npm run test:conformance
 node scripts/verify-release.mjs
 ```
 
-The release verifier tests the runtime, protocol pins, funded evidence, local
-end-to-end flow, schemas, dependency audit, tarball, and clean consumer install.
+The release verifier checks the runtime, schemas, protocol pins, package, and
+clean consumer installation. It also checks local and funded test evidence.
 
 ## Boundaries
 
-Sompi is a testnet alpha. It is not a hosted wallet, does not enable mainnet,
-and does not yet support autonomous authorization, recipient grants, passkeys,
-UCP, or general AP2/x402 interoperability.
+Sompi is a testnet alpha. It does not support mainnet, autonomous
+authorization, recipient grants, passkeys, UCP, or general AP2 interoperability.
 
-Mainnet gates are in [mainnet-readiness.md](docs/mainnet-readiness.md).
+Read [mainnet-readiness.md](docs/mainnet-readiness.md) for the mainnet gates.
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. Read [LICENSE](LICENSE).

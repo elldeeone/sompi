@@ -1,94 +1,81 @@
 # Sompi Journal
 
-The SQLite Journal is Sompi's durable source of truth. Epoch **18** is the only
-active schema.
+The SQLite Journal is Sompi's durable source of truth.
+Epoch **19** is the only active schema.
 
 ## Rules
 
-- WAL mode with explicit durability settings.
-- One writer/recovery coordinator.
-- Foreign keys and integrity checks enabled.
-- Owner-only database, WAL, SHM, and evidence paths.
-- Raw evidence stored as content-addressed 0600 files, not SQLite blobs.
-- Unknown schema epoch fails closed.
-- Protocol SDK objects never become schema.
+- Use WAL mode and explicit durability settings.
+- Use one writer and recovery coordinator.
+- Enable foreign keys and integrity checks.
+- Use owner-only paths for the database and evidence.
+- Store raw evidence as content-addressed files with mode `0600`.
+- Reject an unknown schema epoch.
+- Keep protocol SDK objects out of the schema.
 
 ## Records
 
-The Journal stores:
+The Journal stores Purchases, Transfers, Policy Changes, Vault Migrations, and their transition history.
+It also stores authorization, policy, Treasury, settlement, channel, fulfillment, receipt, and recovery records.
 
-- Purchase and transition history;
-- Transfer intent, authorization, transition, Treasury, and receipt history;
-- owner-approved Policy Changes and immutable activated policy snapshots;
-- Vault Migration approval, execution, reconciliation, and receipt state;
-- Checkout Terms and evidence attachments;
-- Authority decisions and verification facts;
-- policy reservations and Admission Leases;
-- Treasury Movements and effect generations;
-- staging/payment plans and secure key references;
-- settlements and Chain Evidence;
-- batch Channels, vouchers, claims, continuations, and refunds;
-- fulfilment and one receipt per Purchase;
-- reconciliation and operator actions.
+Raw protocol data stays in immutable Evidence Attachments.
+Stable records store only canonical facts, references, and digests.
+Each attachment records its kind, media type, profile, issuer, digest, storage reference, and verification history.
+Every read verifies the saved length and digest.
+Modified or incomplete evidence fails closed.
 
-## Transaction boundaries
+## Effect transaction
 
-State that grants authority or precedes an irreversible effect is committed in
-one transaction:
+Before an irreversible effect, one transaction records:
 
-- canonical intent;
-- exact authorization;
-- policy reservation;
-- prepared bytes or secure reference;
-- idempotency and payment identity;
-- expected outputs/effects;
-- lease/fencing generation;
-- next recovery action.
+- canonical intent
+- exact authorization
+- policy reservation
+- prepared bytes or secure reference
+- idempotency and payment identity
+- expected effects
+- lease generation and recovery action
 
-The external effect then runs. Observation and state promotion occur in a later
-transaction. A crash cannot leave an effect without a durable identity and
-recovery path.
+The external effect runs after that transaction commits.
+Observation and state promotion occur in a later transaction.
 
-## Evidence
+## Admission Leases
 
-Evidence Attachment metadata records digest, media type, profile, issuer, kind,
-storage reference, and verification history. Content files are immutable and
-verified on read.
+Each module that consumes a scarce resource owns its Admission Lease.
+Authority owns sockets and prompts. Purchase and Journal own Purchase count
+and evidence bytes. Treasury owns retries and its execution slot.
+Admission occurs before expensive parsing, evidence storage, Authority prompts, chain reads, or signing.
 
-Raw AP2-derived authority evidence, x402 headers/payloads, transaction bytes,
-settlement responses, and Merchant responses remain attachments. Canonical
-Purchase state stores only stable facts and digests.
+Cancellation releases capacity only when no external effect can exist.
+Possible invocation keeps the lease and effect fence until authoritative observation resolves it.
+Operator recovery uses separate credentials, sockets, pools, and budgets.
 
 ## Idempotency
 
-- Caller request key identifies one logical Purchase.
-- Purchase ID, payment identifier, transaction/commitment ID, Movement ID, and
-  effect generation have unique constraints.
-- A duplicate request returns the same Purchase.
-- A changed request cannot reuse an existing key.
-- A possible submission keeps its effect fence until observation resolves it.
+One caller request key identifies one logical operation.
+A duplicate request returns the same record.
+A changed request cannot reuse that key.
 
-## Recovery
+Possible submission keeps its effect fence until observation resolves it.
+Recovery never creates a new signed payment artifact.
 
-Startup recovery:
+## Startup recovery
 
-1. acquires the single-writer lease;
-2. validates schema and integrity;
-3. finds non-terminal Purchases and Movements;
-4. expires only leases whose recovery rules permit takeover;
-5. observes external effects before any retry;
-6. applies the next idempotent transition.
+1. Acquire the single-writer lease.
+2. Validate schema and integrity.
+3. Find non-terminal operations.
+4. Expire only eligible leases.
+5. Observe external effects before retry.
+6. Apply the next idempotent transition.
 
-Payment recovery never creates a new signed artifact. Fulfilment recovery never
-repays. Unknown or contradictory evidence remains recoverable/blocked for the
-operator.
+Unknown or contradictory evidence stays blocked for operator review.
 
 ## Operations
 
-Back up the database, WAL/SHM when present, evidence directory, secure key
-references, and Operator Manifest as one consistent set. Never edit Journal
-rows manually. Use `sompi-agent status`, `sompi-agent recover`, or the operator
-runbooks.
+Back up the complete API runtime state as one set.
+This set includes the database, WAL, SHM, evidence, prepared data, staging keys, and secure key references.
+Include the exact Operator Manifest with that set.
+Keep private Authority state in a separate backup.
 
-See [`../runbooks/JOURNAL.md`](../runbooks/JOURNAL.md) and
-[`../runbooks/RECONCILIATION.md`](../runbooks/RECONCILIATION.md).
+Never edit Journal rows manually.
+Use the [Journal](../runbooks/JOURNAL.md) and [reconciliation](../runbooks/RECONCILIATION.md) runbooks.

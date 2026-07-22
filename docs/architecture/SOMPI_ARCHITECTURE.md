@@ -1,281 +1,240 @@
 # Sompi architecture
 
-Status: accepted target and current implementation.
+Status: accepted and implemented.
 
-## Shape
+## System shape
 
-Sompi is a modular monolith centred on deep `Purchase` and `Transfer` modules.
+Sompi is a modular monolith with deep `Purchase` and `Transfer` modules.
 
 ```text
-Agent skill / sompi-agent / MCP compatibility
-                    |
-                    v
-          authenticated local API
-              /             \
-             v               v
-      Purchase module   Transfer module
-             \               /
-              v             v
-         Trusted Authority and Treasury
-                    |
-                    v
-             Chain Evidence
+Agent skill / sompi-agent / sompi-mcp
+                  |
+                  v
+       authenticated local API
+          /               \
+         v                 v
+ Purchase module     Transfer module
+          \               /
+           v             v
+      Trusted Authority and Treasury
+                  |
+                  v
+           Chain Evidence
 
-stable receive address -> Funding Intake -> Treasury -> SilverScript vault
-
-Agent proposal -> Policy Change module -> Trusted Authority -> policy revision
-Operator owner signature -> Vault Migration module -> replacement vault
+receive address -> Funding Intake -> Treasury -> SompiVault
 ```
 
-API, CLI, skill, and MCP do not own purchasing or transfer behavior. They
-project the same Purchase and Transfer interfaces.
+The CLI, skill, and MCP wrapper project the same API interfaces.
+They do not own payment or recovery behavior.
 
-## Stable domain
+## Stable records
 
-`Purchase` is protocol-neutral. It records:
+`Purchase` is the stable record for a paid resource lifecycle.
+It contains the canonical request, verified terms, authorization, payment, settlement, fulfillment, and receipt.
 
-- identity and caller request key;
-- canonical HTTP resource request;
-- verified Merchant and Checkout Terms;
-- authorization decision and evidence references;
-- policy reservation and total cost ceiling;
-- payment attempt and Treasury movement references;
-- settlement and chain evidence;
-- fulfilled content digest/reference;
-- one receipt;
-- current state, transitions, and recovery action.
+`Transfer` is the stable record for a direct KAS send.
+It has no Merchant, x402, AP2 Payment Mandate, or fulfillment meaning.
 
-AP2-derived/x402 bytes remain immutable Evidence Attachments. SDK types never
-become Journal schema.
+Protocol bytes are immutable Evidence Attachments.
+Protocol SDK types do not become Journal schema.
 
-## Deep modules and seams
+## Deep modules
 
 ### Purchase module
 
-Owns orchestration, idempotency, effect fencing, state transitions, recovery,
-and the public Purchase view.
+The Purchase module owns orchestration, idempotency, effect fencing, recovery, fulfillment, and the public Purchase view.
 
 ### Transfer module
 
-Owns canonical recipient/amount intent, idempotency, exact Authority approval,
-policy reservation, one vault-backed Treasury Movement, settlement, receipt,
-and recovery. It has no Merchant, Checkout, x402, or fulfilment semantics.
+The Transfer module owns direct-send intent, approval, policy reservation, Treasury movement, settlement, receipt, and recovery.
 
-### Wallet View module
+### Wallet modules
 
-Projects the stable receive identity, KAS-first total/available/incoming/
-protected/pending balances, automatic-securing status, operator hard limits,
-chain status, and bounded Sompi-recorded activity. Technical vault identity is
-nested security detail. It exposes no mutation or signing capability.
+The Wallet View module shows the stable receive address and bounded Sompi activity.
+It also shows KAS-first balances, limits, deposit state, and chain status.
+It has no mutation or signing function.
 
-### Funding Intake module
+The Funding Intake module detects eligible receive-address UTXOs.
+It moves them into the exact vault in the immutable Operator Manifest.
+It uses one deterministic Treasury operation, the operator fee ceiling, and
+the full Chain Evidence recovery lifecycle.
 
-Observes bounded receive-address UTXOs and drives one deterministic,
-idempotent vault deposit through the existing Treasury and Chain Evidence
-modules. Its public interface is reconcile and status; UTXO selection,
-idempotency, fee thresholds, execution serialization, and recovery stay inside
-the implementation. A read-only Wallet View never triggers this mutation.
+The Wallet Experience module hides vault addresses, DAA, atomic values, and protocol details by default.
 
-### Policy Change module
+### Protection modules
 
-Owns proposal idempotency, exact before/after facts, owner decision evidence,
-generation-and-vault-bound compare-and-swap activation, immutable policy
-revisions, restart recovery, and the public change view. Existing operations
-retain their original policy snapshot. The Agent interface can propose but
-cannot activate a change.
+The Policy Change module owns exact before-and-after policy facts.
+It records owner approval and activates immutable policy revisions.
+Existing work keeps its original policy snapshot.
 
-### Vault Migration module
+Activation uses compare-and-swap against the expected policy digest, generation, and vault digest.
+Policy activation and vault migration share one Journal transition gate.
+Stale, substituted, replayed, or concurrent changes fail closed.
 
-Owns the durable protection-change state machine: outward-work fencing,
-window-accounting preservation, owner-signing handoff, old-vault recovery,
-replacement launch, Chain Evidence, atomic activation, resume, and receipt.
-The offline owner signer is an operator-only adapter at this seam.
+The Vault Migration module owns a change to the on-chain protection limit.
+It pauses outward work and preserves window accounting.
+It requires an offline owner signature before it activates the replacement vault.
 
-Policy activation and vault execution share one Journal protection-transition
-gate. Migration admission counts both direct Treasury operations and Purchase
-staging Effects, and a prepared vault spend rechecks the local migration fence
-before submission. Replacement launch requires independently accepted recovery
-evidence.
+Before owner execution, one Journal transaction proves that no Treasury or staging effect can conflict.
+A prepared vault spend checks the local migration fence before submission.
+Replacement launch needs independently accepted recovery evidence at the configured finality floor.
 
-### Wallet Experience module
+Migration carries the current window start and spent value forward.
+It does not create new capacity.
+Unknown submission evidence stays in reconciliation and cannot start a replacement transaction.
 
-Projects the one-wallet user model used by every presentation adapter. It
-keeps vault addresses, DAA, atomic accounting, policy/manifest digests, and
-protocol profiles behind explicit technical details.
+### Protocol seams
 
-### Checkout Terms seam
+The Checkout Terms seam verifies one supported x402 offer.
+The AP2 adapter creates internal human-present authorization evidence.
+The Kaspa-x402 adapter executes the payment.
 
-Makes a bounded address-pinned request, accepts one supported x402 offer, and
-projects canonical Merchant/request/payment facts. It does not require Merchant
-AP2 support.
+The Treasury seam owns policy capacity, vault funding, fee limits, and ambiguous-effect recovery.
+It gives a payment adapter only an attempt-bound capability.
 
-### Authority seam
+The Chain Evidence seam checks the operator node and independent witness.
+The Fulfillment seam accepts content only after verified settlement.
+It binds the response to the authorized request, Payment Identifier, and x402 response.
+It also checks the bounded body and each precommitted resource digest.
 
-Sends the exact canonical decision facts to a separate deterministic process.
-The Authority displays them, obtains one human decision, signs it, and persists
-the decision before replying.
+## SompiVault
 
-### Treasury seam
+SompiVault is a stateful KIP-16 covenant on Testnet-10.
+The capped Agent path funds Purchases and Transfers.
+The offline owner path can recover the vault.
 
-Owns policy capacity, vault funding, staging, signing capability, fee ceilings,
-and ambiguous-effect recovery. Payment adapters receive only a Purchase-bound
-capability.
+The vault limit and the software policy are independent controls.
+A stolen Agent payment key cannot exceed the on-chain rolling-window limit.
+The API cannot loosen the operator-owned manifest policy.
 
-### Kaspa-x402 seam
+The hot wallet is setup and top-up float.
+It is not an alternative payment path.
 
-Uses the pinned public packages for exact transaction construction, payment
-transport, settlement verification, reusable additive heads, batch vouchers,
-claims, continuation, and refunds.
+## Agent permissions
 
-### Chain Evidence seam
+The agent can:
 
-Combines the configured operator node with the independent witness and records
-the exact observation used by each privileged transition.
+- create, inspect, and recover its Purchases
+- inspect the read-only wallet view and bounded activity
+- propose, inspect, and recover exact Transfers
+- propose and inspect protection changes
+- receive fulfilled content
+- report denials and required operator actions
 
-### Fulfilment seam
+The agent cannot:
 
-Accepts content only after settlement. It binds the final response to the
-authorized request, payment identifier, x402 response, bounded body, and any
-precommitted resource digest. The receipt is a Sompi lifecycle fact, not a
-Merchant protocol.
+- read wallet, vault, Authority, bot, API, or recovery secrets
+- approve a Purchase, Transfer, or policy change
+- execute a vault replacement or use the offline owner key
+- call Kaspa or x402 directly
+- use a new request key to bypass denial or recovery
+- use operator recovery
 
-## Process and privilege layout
+## Process boundaries
 
-```text
-agent account
-  -> sompi-agent
-  -> agent API socket + agent credential
+| Principal | Permitted access |
+|---|---|
+| Agent account | Agent API socket and Agent credential |
+| `sompi-api` | Journal, Treasury, protocol adapters, Authority client socket |
+| `sompi-authority` | Authority key, decision store, replay store, Telegram token |
+| Operator | Manifest, recovery transport, backup, offline-owner actions |
 
-sompi-api account
-  -> Purchase Journal
-  -> wallet/vault runtime
-  -> Authority decision socket (client only)
-  -> Merchant and chain egress under Operator Manifest policy
+The agent account has no wallet, Authority, operator, or recovery group access.
+`sompi-mcp` has no capability beyond the Agent API.
 
-sompi-authority account
-  -> Authority signing key
-  -> decision/replay store
-  -> Telegram bot token when Telegram is enabled
-
-operator
-  -> immutable manifest installation
-  -> recovery socket/credential
-  -> backup and explicit recovery commands
-```
-
-The agent account is not a member of wallet, Authority, operator, or recovery
-groups. MCP runs with no additional capability.
+Telegram is an Authority display and input surface.
+It is not an agent approval capability.
 
 ## Journal-first effects
 
-Before any irreversible blockchain or Merchant action, one transaction commits:
+Before an irreversible effect, the Journal records:
 
-- canonical intent and selected terms;
-- verified authorization;
-- policy reservation;
-- prepared bytes or secure reference;
-- idempotency and payment identities;
-- expected outputs/effects;
-- lease generation and recovery state.
+- canonical intent and terms
+- verified authorization
+- policy reservation
+- prepared bytes or secure reference
+- idempotency and payment identities
+- expected effects
+- recovery fence and next action
 
-The effect then executes outside the database transaction. Its result is
-observed and committed separately. A timeout or crash after possible submission
-enters reconciliation; it never grants permission to rebuild or resend.
+The effect runs after this transaction commits.
+Sompi then observes and records the result in a separate transaction.
 
+A timeout after possible submission is ambiguous.
+Recovery checks the original effect before it permits another action.
 Journal epoch 19 is the only active schema.
 
-## Exact payment
+## Bounded lifecycles
+
+Each module that consumes a scarce resource owns its Admission Lease.
+Authority owns socket and prompt admission. Purchase and Journal own Purchase
+count and evidence-byte admission. Treasury owns retries and execution slots.
+Admission limits apply before untrusted work consumes expensive resources.
+
+Cancellation before an external effect can release capacity.
+Cancellation after possible invocation keeps the effect fenced.
+Operator recovery has independent admission capacity that an agent cannot consume.
+
+| Effect | Durable facts required before execution |
+|---|---|
+| Vault or staging submission | intent, reservation, prepared data, expected outputs, fence |
+| Exact payment | verified offer, approval, cost reservation, immutable payment, fence |
+| Batch voucher | channel epoch, charge ceiling, accepted-actual-charge rule, cumulative value, Movement |
+| Claim or refund | prepared transaction, expected continuation, DAA rule, fence |
+| Paid Merchant request | exact request, signature, Payment Identifier, settlement expectation |
+| Fulfillment | settled payment, authorized request, Payment Identifier, bounded resource facts |
+| Direct Transfer | Transfer intent, exact approval, policy capacity, Treasury operation key, prepared bytes, exact recipient, vault continuation, fence |
+
+## Payment profiles
 
 ### Standard-native
 
-```text
-payer input(s) -> Merchant output == advertised amount
-               -> optional payer change
-```
-
-The initial supported proof shape uses a version-0 transaction. Sompi verifies
-the authoritative input UTXOs, signatures, txid, amount, fee, mass, request
-authorization, settlement, and chain evidence.
+The transaction pays the exact Merchant amount and can return payer change.
+Sompi verifies inputs, signatures, txid, value, fee, mass, settlement, and chain evidence.
 
 ### Additive
 
-```text
-input[0]  = current Merchant head
-input[1+] = payer funding
-output[0] = same-script successor, old amount + advertised amount
-```
+The transaction spends one Merchant head and creates its exact successor.
+The successor value increases by the advertised amount.
 
-The successor delta is the only Merchant payment. Offers are read-only. A
-valid signed candidate atomically claims a selected head; one conflict wins and
-the loser requires a new offer and a separately authorized attempt. Unknown
-lineage marks only that head unavailable until trusted recovery proves it.
+Unpaid offers do not reserve a head.
+One valid conflicting transaction wins.
+Unknown lineage disables only that head until trusted recovery proves its state.
 
-## Batch settlement
+### Batch settlement
 
-Batch is a separate lifecycle:
+The operator funds a channel before Purchases use it.
+Each charge needs a separate Purchase and human authorization.
 
-1. Operator-capitalized escrow channel.
-2. Purchase-specific human authorization for a maximum charge.
-3. Monotonic signed cumulative voucher.
-4. Merchant claim with exact continuation accounting.
-5. Client refund only after the strict absolute DAA boundary.
+A voucher increases the authorized cumulative value.
+The Merchant claim must preserve exact continuation value.
+The client refund is valid only after the strict absolute DAA boundary.
 
-Deposit/top-up authorization is never treated as Purchase authorization. Every
-charge increment has its own Purchase, policy reservation, Authority evidence,
-Movement, settlement, fulfilment, and receipt.
+## Interfaces
 
-## API and agent integration
+The Agent API provides wallet, activity, Purchase, Transfer, Policy Change, and Vault Migration views.
+It also provides bounded create and recovery operations.
 
-The canonical operations are:
+The operator interface provisions the runtime and completes approved vault migrations.
+See [the runbook index](../runbooks/README.md) for operator procedures.
 
-- `POST /purchases`
-- `GET /purchases/{purchaseId}`
-- `POST /purchases/{purchaseId}/recover`
-- `GET /wallet`
-- `GET /wallet/activity`
-- `POST /transfers`
-- `GET /transfers/{transferId}`
-- `POST /transfers/{transferId}/recover`
-- `POST /policy-changes`
-- `GET /policy-changes/{policyChangeId}`
-- `POST /policy-changes/{policyChangeId}/recover`
-- `POST /vault-migrations`
-- `GET /vault-migrations/{vaultMigrationId}`
+## Version rules
 
-The operator-only interface executes and recovers an approved Vault Migration.
+Sompi pins unstable protocol dependencies exactly.
+Unknown networks, schemes, profiles, algorithms, encodings, and finality rules fail closed.
 
-`sompi-agent` is the normal agent integration. The packaged skill instructs an
-agent to use only this CLI and to reuse stable request keys. MCP provides the
-same operations as a compatibility projection over the API.
+An upgrade replaces the active adapter and Journal epoch after conformance passes.
+It does not keep permanent dual-version paths.
 
-Telegram is an Authority projection, not an Agent approval capability. Callback
-data is bound to one user, chat, prompt, Purchase, decision, and expiry.
-Decision-critical facts are visible in a concise summary. Every signed fact is
-retained in Telegram's native collapsed advanced details. Normal approvals use
-one message; oversized valid fact sets use request-bound detail pages followed
-by the only card carrying Approve and Deny. Expanding details has no
-authorization meaning.
+## Excluded scope
 
-## Protocol versioning
+- mainnet
+- autonomous authorization
+- passkeys and phone applications
+- UCP
+- AP2 interoperability
+- hosted multi-user custody
+- a general payment-rail interface
 
-Pre-1.0 dependencies are pinned exactly. Unknown network, scheme, profile,
-algorithm, transaction encoding, finality, or evidence profile fails closed.
-
-An upgrade replaces the active adapter and Journal epoch after conformance; it
-does not accumulate permanent dual-version paths.
-
-## Out of scope
-
-- Mainnet.
-- Autonomous/open authorization.
-- Passkeys and phone applications.
-- UCP.
-- Official AP2/x402 interoperability.
-- Hosted multi-user custody.
-- A generic payment-rail plugin framework.
-
-## Decision records
-
-Accepted decisions are in [`../adr/`](../adr/README.md). The current cutover is
-defined by ADR-0015, ADR-0016, and ADR-0017 together with the earlier Journal,
-Authority, provisioning, chain-evidence, and lifecycle records.
+Accepted decisions are in the [ADR index](../adr/README.md).
+ADR-0023 defines the current alpha.9 cutover and Journal epoch.

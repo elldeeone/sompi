@@ -1,49 +1,53 @@
 # Hermes integration
 
-Hermes calls the local Sompi API through `sompi-agent`. MCP is not required.
-Purchase, Transfer, and owner-limit approval stay in the separate
-`sompi-authority` process.
+Hermes uses `sompi-agent` to call the local Sompi API.
+It does not need MCP.
+
+The separate Authority process owns Purchase, Transfer, and policy decisions.
 
 ## Install
 
-For a clean host, use the pinned Sompi skill and host bootstrap described in
-the README. It installs these files and settings together and verifies the
-gateway after restart. The steps below are the manual recovery path.
-
-Complete operator and Authority provisioning first. Then, as the Hermes OS
-user:
+Use the pinned host bootstrap in the [README](../../README.md) for a new host.
+Use this manual procedure only for recovery or inspection.
 
 1. Copy `integrations/hermes/sompi/` to `~/.hermes/skills/sompi/`.
-2. Copy `integrations/hermes/plugin/` to
-   `~/.hermes/plugins/sompi-approval/`.
-3. Add this plugin entry to Hermes configuration:
+2. Copy `integrations/hermes/plugin/` to `~/.hermes/plugins/sompi-approval/`.
+3. Check the selected Hermes checkout for native authorized callback support.
+4. If native support exists, use the selected checkout without a patch.
+5. If native support is absent, create an isolated Git compatibility checkout.
+6. Run `git apply --check` before you apply `callback-hook.patch` there.
+7. Bind the selected or compatibility checkout to the primary Hermes runtime.
+8. Add the plugin configuration below.
+9. Give Hermes only the Agent API environment.
+10. Add the Hermes user to the agent integration group.
+11. Restart the Hermes user manager.
 
-   ```yaml
-   plugins:
-     entries:
-       sompi-approval:
-         allow_tool_override: false
-         callback_socket: /run/sompi-telegram-callback/telegram-callback.sock
-         timeout_ms: 2000
-   ```
+Native support requires `gateway_callback_query` in the Telegram adapter and
+plugin manager. Do not apply the compatibility patch when both checks pass.
 
-4. Give the Hermes service only:
+Do not copy a metadata-free Hermes tree.
+The compatibility checkout must keep its upstream remote and selected branch.
+If the exact patch does not apply, stop and use the host bootstrap recovery path.
 
-   ```text
-   SOMPI_API_SOCKET=/run/sompi-api/sompi.sock
-   SOMPI_AGENT_API_CREDENTIAL=/etc/sompi/agent-api.json
-   SOMPI_OPERATOR_UID=<operator uid>
-   SOMPI_API_UID=<sompi-api uid>
-   SOMPI_RUNTIME_GID=<agent API group gid>
-   ```
+```yaml
+plugins:
+  entries:
+    sompi-approval:
+      allow_tool_override: false
+      callback_socket: /run/sompi-telegram-callback/telegram-callback.sock
+      timeout_ms: 2000
+```
 
-5. Add the Hermes OS user to the agent-API and Telegram-callback groups. Do
-   not add it to the Authority IPC, recovery, wallet, or operator groups.
-6. Restart the Hermes user manager so the gateway receives its new groups.
+```text
+SOMPI_API_SOCKET=/run/sompi-api/sompi.sock
+SOMPI_AGENT_API_CREDENTIAL=/etc/sompi/agent-api.json
+SOMPI_OPERATOR_UID=<operator uid>
+SOMPI_API_UID=<sompi-api uid>
+SOMPI_RUNTIME_GID=<agent API group gid>
+```
 
-The Hermes checkout also needs the generic authorized callback hook. Keep the
-Sompi behavior in the packaged plugin; do not add Sompi wallet or protocol code
-to Hermes.
+Do not add Hermes to Authority IPC, recovery, wallet, or operator groups.
+Keep Sompi behavior in the packaged plugin and skill.
 
 ## Verify
 
@@ -51,23 +55,25 @@ to Hermes.
 sompi-agent status pur_AAAAAAAAAAAAAAAAAAAAAA
 ```
 
-A structured `PURCHASE_NOT_FOUND` response proves the authenticated API hop.
-Then ask the agent to purchase an allowed test resource. Verify that:
+A `fatal: PURCHASE_NOT_FOUND: ...` message proves the authenticated API connection.
 
-- the exact facts arrive as an inline Telegram prompt;
-- Approve completes the original Purchase;
-- Deny produces no payment;
-- a second tap is rejected as replay;
-- the agent cannot read the Authority key, bot token, wallet, or recovery
-  credential.
+Then verify these cases:
 
-Also verify normal wallet questions, one direct Transfer, and one everyday-limit
-change. A vault-protection change should stop at the offline-owner handoff; the
-Hermes process must never receive that key or execute the replacement.
+- Approve completes the original Purchase.
+- Deny makes no payment.
+- A second callback fails as replay.
+- A direct Transfer needs its own approval.
+- A vault change stops at the offline-owner handoff.
+
+For each prompt, verify the Merchant or recipient, action, amount, maximum cost, network, and expiry.
+Confirm that advanced details contain the exact signed identifiers, profiles, fees, and finality facts.
+
+Confirm that Hermes cannot read Authority, wallet, bot, or recovery secrets.
 
 ## Roll back
 
-Stop the gateway, remove the plugin and skill entries, restore the prior Hermes
-checkout, and restart its user service. This does not change Sompi Purchase or
-wallet state. Never remove unresolved Sompi state; use `sompi-agent status` or
-operator recovery first.
+Stop the gateway and restore the prior skill, plugin, and Hermes checkout.
+Then restart the user service.
+
+This action does not change Sompi state.
+Resolve incomplete Sompi work before you remove the integration.

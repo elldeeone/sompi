@@ -2,142 +2,113 @@
 
 ## Protected assets
 
-- wallet, vault, staging, Authority, bot, API, and recovery credentials;
-- KAS and policy capacity;
-- exact user decision and displayed facts;
-- Purchase/Transfer/Movement/Channel/Journal integrity;
-- prepared transactions, vouchers, and idempotency identities;
-- settlement, chain, fulfilment, and receipt evidence;
-- paid resource content;
-- service availability.
+- wallet, vault, Authority, bot, API, and recovery credentials
+- KAS and policy capacity
+- exact user decisions
+- Journal and lifecycle integrity
+- prepared transactions and idempotency identities
+- settlement, chain, fulfillment, and receipt evidence
+- paid content and service availability
 
 ## Trust boundaries
 
-Untrusted:
+The agent, Merchant, x402 data, callback data, chain responses, and caller input are untrusted.
+Sompi verifies and bounds this data before use.
 
-- agent output and MCP requests;
-- Merchant HTTP responses and redirects;
-- x402 headers/artifacts until verified;
-- Telegram callback data before exact validation;
-- raw node, witness, and indexer responses;
-- caller-provided paths, IDs, URLs, bodies, and recovery requests.
+The Operator Manifest, Authority, Treasury, Journal, and pinned protocol code have narrow trusted roles.
+No trusted role can silently take another role's authority.
 
-Trusted only within their narrow role:
+## Required properties
 
-- Operator Manifest and provisioned credentials;
-- separate Trusted Authority;
-- Treasury and secure local state;
-- Journal transactions and effect fences;
-- Chain Evidence after configured corroboration;
-- exact pinned protocol implementations and algorithms.
-
-## Required security properties
-
-1. An agent cannot authorize or loosen policy.
-2. User approval covers every payment-relevant fact.
+1. An agent cannot approve work or loosen policy.
+2. Human approval covers every payment fact.
 3. A Merchant receives exactly the approved amount or batch charge.
-4. No irreversible effect occurs before durable intent and recovery state.
-5. Ambiguous effects cannot be repeated with new authority.
-6. A settled payment can recover fulfilment without paying again.
-7. Protocol, request, Merchant, payee, profile, channel, and finality cannot be
-   substituted across a Purchase.
-8. Secrets never enter agent-visible output, reports, package artifacts, or the
-   Journal.
-9. Untrusted work is bounded before expensive parsing, chain reads, or signing.
-10. A direct Transfer moves exactly the approved amount to the approved Kaspa
-    address and is never represented as an x402 Purchase or AP2 Payment Mandate.
+4. Durable intent exists before an irreversible effect.
+5. Ambiguous effects cannot gain new authority.
+6. Fulfilment recovery cannot make a second payment.
+7. Request, Merchant, profile, channel, and finality facts cannot be substituted.
+8. Secrets do not enter agent output, packages, evidence reports, or the Journal.
+9. Sompi bounds untrusted work before expensive processing.
+10. A Transfer sends only the approved amount to the approved address.
 
-## Main attack classes
+## Main controls
 
-| Attack | Control |
+| Threat | Control |
 |---|---|
-| Agent fabricates approval | Authority is a separate process with an unavailable signing key |
-| Chat text treated as approval | Only exact Authority terminal input or bound Telegram callback is accepted |
-| Merchant/resource substitution | Canonical request, origin, resource and requirements digests are signed and rechecked |
-| Paid redirect leaks payment | Redirects are rejected before signing and during paid transport |
-| Multiple spendable corrective retries | One immutable artifact per authorization; changed offer requires a new decision |
-| Cross-resource replay | Payer and Authority signatures bind the exact request and audience |
-| Fake UTXO or transaction | Trusted input lookup, canonical txid, signature, mass, fee and output verification |
-| Extra Merchant benefit | Exact economic equality; additive delta is the sole Merchant payment |
-| Unpaid additive-head exhaustion | Offers are read-only; claims occur only for valid signed candidates |
-| Additive lineage grief | Follow only proven spend/successor lineage; otherwise disable one head |
-| Batch overcharge | Signed ceiling, actual-charge check, monotonic voucher, route/channel binding |
-| Continuation value theft | Exact active funding minus accepted claim accounting |
-| Early refund | Absolute DAA timeout and strict `current DAA > timeout` check |
-| Crash after broadcast | Prepared bytes and effect fence are durable; recovery observes first |
-| Handler rerun after payment | Fulfilment result and recovery state are durable and idempotent |
-| Finality downgrade | Required floor is persisted and cannot be weakened during recovery |
-| Chain-source spoofing | Operator node plus independent witness under one Chain Evidence module |
-| API/MCP exhaustion | Bounded bodies, evidence, connections, concurrency, deadlines, and result size |
-| REST/index amplification | Entry/byte/input caps, duplicate rejection, memoized reads, bounded scans |
-| Callback replay | Exact bot/user/chat/prompt/decision binding and one-time durable state |
-| Secret path/package leak | Owner-only no-follow reads, exact package allowlist, tarball inspection |
-| Agent fabricates a direct send | Agent proposes intent only; isolated Authority signs exact `sompi.transfer.1` facts |
-| Recipient or amount substitution | Transfer intent, approval, policy reservation, prepared outputs, observation, and receipt must match |
-| Direct-send retry double spends | One Transfer ID and Treasury operation key; observe the original transaction before any retry |
-| Wallet view leaks authority | Projection is read-only, bounded, public-fact only, and contains no mutation or recovery credentials |
+| Agent fabricates approval | A separate Authority owns the signing key. |
+| Chat text becomes approval | Only exact Authority input or a bound Telegram callback is valid. |
+| Merchant or resource changes | Signed request and requirement digests must match. |
+| Paid redirect leaks payment | Sompi rejects redirects on paid transport. |
+| Corrective retry spends twice | One immutable artifact exists for each authorization. |
+| Fake transaction data | Sompi verifies inputs, signatures, txid, value, fee, and mass. |
+| Extra Merchant value | Exact economic equality checks reject the transaction. |
+| Additive head conflict | One compare-and-swap winner advances the head. |
+| Batch overcharge | Ceiling, actual charge, voucher, route, and channel must match. |
+| Early refund | The current DAA must be greater than the absolute timeout. |
+| Crash after broadcast | Prepared data and the effect fence are durable. |
+| Finality downgrade | Recovery cannot reduce the stored finality floor. |
+| Chain-source spoofing | The operator node and independent witness must corroborate privileged transitions. |
+| Callback replay | Bot, user, chat, prompt, decision, and expiry must match once. |
+| Secret file leak | Reads use owner-only, no-follow, single-link files. Release checks inspect the exact tarball allowlist. |
+| Transfer substitution | Intent, approval, policy, prepared outputs, exact observation, and receipt must match. |
+| Wallet view leaks authority | The view is read-only and contains no secret or mutation capability. |
 
-## Authorization join
+## Authorization joins
 
-The following values must match across intent, verified terms, Authority
-evidence, prepared payment, settlement, fulfilment, and receipt:
+For a Purchase, these facts must match across intent, approval, payment, settlement, fulfillment, and receipt:
 
-- Purchase ID and request key;
-- Merchant identity/origin;
-- URL, method, body digest, and resource identity;
-- x402 requirements/request hashes;
-- network, scheme, profile or channel epoch;
-- payee and amount/ceiling/actual charge;
-- fee and total cost ceilings;
-- finality floor and expiry;
-- payment identifier and transaction/commitment identity.
+- Purchase ID and request key
+- Merchant, URL, method, body digest, and resource identity
+- x402 requirement and request hashes
+- network, scheme, profile, payee, and channel epoch
+- amount, charge, fee, and total-cost limits
+- finality floor, expiry, Payment Identifier, and transaction identity
 
-No component may infer missing equality from another component's successful
-return.
+For a Transfer, these facts must match:
 
-For a direct Transfer the corresponding join is Transfer ID and request key,
-source vault identity, recipient, amount, network, fee/total ceilings, expiry,
-policy and manifest identities, finality floor, Treasury operation key, and
-transaction ID. Direct transfers have no Merchant, Checkout, x402 profile, or
-fulfilment.
+- Transfer ID and request key
+- source vault, recipient, amount, and network
+- fee and total ceilings, expiry, and finality floor
+- policy identity and Operator Manifest identity
+- Treasury operation key and transaction ID
+- exact output observation
 
-## Effect boundaries
+A Transfer is not x402 or an AP2 Payment Mandate. It has no Merchant,
+Checkout, x402 profile, or fulfillment facts.
 
-| Effect | Durable state required first | Recovery rule |
-|---|---|---|
-| Vault/staging submission | intent, policy reservation, prepared bytes/key reference, expected outputs, fence | observe exact outputs/spenders before retry |
-| Exact payment | verified offer, authorization, total-cost reservation, immutable payment artifact, fence | Merchant evidence then chain evidence; same artifact only |
-| Batch voucher | channel epoch, ceiling, actual-charge rule, cumulative state, Movement | never sign a sibling cumulative value |
-| Claim/refund | prepared transaction, expected continuation/output, absolute DAA rule, fence | observe claim/refund race before action |
-| Paid Merchant request | exact request, payment signature, payment identifier, settlement expectation | reuse only the same durable request |
-| Fulfilment | settled payment and bounded expected resource facts | recover content; never repay |
-| Direct Transfer | exact Authority evidence, policy capacity, Treasury intent, prepared bytes, expected recipient/vault continuation, fence | observe the original transaction and exact outputs; never create replacement authority |
+## Effect rules
 
-## Availability and limits
+Every external effect needs durable identity, authorization, expected results, and a recovery fence.
+Recovery observes the exact original effect before it takes another action.
 
-Admission limits exist before authentication, parsing, evidence storage,
-Authority prompts, Purchase execution, REST/UTXO reads, and operator recovery.
-Operator recovery has separate credentials, sockets, pools, and budgets so an
-agent cannot starve it.
+| Effect | Recovery rule |
+|---|---|
+| Vault or staging submission | Observe exact outputs and spenders before retry. |
+| Exact payment | Check Merchant evidence, then Chain Evidence. Reuse the same artifact only. |
+| Batch voucher | Never sign a sibling cumulative value. |
+| Claim or refund | Observe the race before another action. |
+| Paid Merchant request | Reuse only the exact durable request. |
+| Fulfillment | Recover content without another payment. |
+| Direct Transfer | Observe the original transaction and exact outputs. Never create replacement authority. |
 
-Timeout does not imply no side effect. Any timeout after possible invocation is
-ambiguous until authoritative observation proves otherwise.
+A timeout does not prove that no effect occurred.
+Unavailable or contradictory evidence stops recovery.
+
+## Availability
+
+Admission limits apply before authentication, parsing, evidence storage, prompts, chain reads, and signing.
+Agent work has bounded connections, concurrency, deadlines, bytes, and result sizes.
+
+Operator recovery has separate credentials, sockets, pools, and budgets.
+Agent saturation cannot consume its capacity.
 
 ## Residual risks
 
-- AP2-derived authorization is not third-party AP2 interoperability.
-- Kaspa-x402 and SilverScript remain pre-1.0/experimental dependencies.
-- External node/witness availability can pause recovery.
-- Telegram account/device security remains part of the user's trust boundary.
-- Wallet activity is Sompi-recorded history, not a complete third-party chain
-  index.
-- The current deployment is testnet-only and operator-controlled.
-- Mainnet, autonomous authorization, passkeys, UCP, and hosted multi-user
-  custody need new threat models and acceptance gates.
+- AP2-derived authorization is not AP2 interoperability.
+- Kaspa-x402 and SilverScript are experimental dependencies.
+- Node or witness failure can pause recovery.
+- Telegram account security remains part of the trust boundary.
+- Wallet activity is not a complete chain index.
+- This release is testnet-only and operator-controlled.
 
-## Verification
-
-The repository includes substitution, replay, redirect, malformed artifact,
-fee/mass, head contention, batch race, crash/restart, admission, callback, path,
-package, and clean-install tests. Funded TN10 evidence is under
-[`../../evidence/`](../../evidence/).
+See the [funded evidence](https://github.com/elldeeone/sompi/blob/c8fd02fa403b7e4f43dfa91653c0c232867d8ed8/evidence/alpha9-clean-cutover/README.md) and [mainnet boundary](../mainnet-readiness.md).

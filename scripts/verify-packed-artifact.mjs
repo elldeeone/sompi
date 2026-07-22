@@ -74,6 +74,8 @@ for (const entry of entries) {
   }
 }
 
+verifyMarkdownLinks(entries, byName);
+
 const manifestEntry = byName.get("package/package.json");
 if (!manifestEntry || manifestEntry.type !== "file") fail("package.json is unavailable");
 const manifest = JSON.parse(manifestEntry.bytes.toString("utf8"));
@@ -125,6 +127,25 @@ function executable(name) {
     "package/scripts/verify-authority-isolation.js",
     "package/scripts/verify-packed-artifact.mjs",
   ]).has(name);
+}
+
+function verifyMarkdownLinks(allEntries, entryMap) {
+  for (const entry of allEntries) {
+    if (entry.type !== "file" || !entry.name.endsWith(".md")) continue;
+    const source = entry.bytes.toString("utf8");
+    for (const match of source.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)) {
+      const rawTarget = match[1]?.split("#", 1)[0];
+      if (!rawTarget || /^(?:https?:|mailto:)/.test(rawTarget)) continue;
+      const target = path.posix.normalize(
+        path.posix.join(path.posix.dirname(entry.name), rawTarget)
+      );
+      if (
+        entryMap.has(target) ||
+        allEntries.some((candidate) => candidate.name.startsWith(`${target}/`))
+      ) continue;
+      fail(`${entry.name} contains a broken package-local link to ${rawTarget}`);
+    }
+  }
 }
 
 function readTar(bytes) {

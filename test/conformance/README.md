@@ -1,9 +1,11 @@
 # Packaged conformance fixtures
 
-`provenance.json` pins the exact AP2 source and schema bytes watched for a future
-official AP2/x402 integration. Sompi does not ship the superseded bilateral AP2
-Merchant profile or claim AP2 interoperability.
+`provenance.json` pins the watched AP2 source and schema bytes.
+Sompi does not ship the old bilateral AP2 Merchant profile.
+It does not claim AP2 interoperability.
 
-The same record pins Kaspa-x402 package integrity and the alpha.9 exact HTTP,
-consensus, exact-interoperability, and batch-interoperability vectors. The
-conformance result is offline evidence, not a live-network or mainnet claim.
+The record also pins Kaspa-x402 package integrity and alpha.9 vectors.
+These vectors cover exact HTTP, consensus, exact interoperability, and batch interoperability.
+
+This is offline conformance evidence.
+It is not live-network or mainnet evidence.

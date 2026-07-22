@@ -8,6 +8,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 test("package manifest exposes only supported executables and no import side effect", () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")) as {
+    version?: unknown;
     main?: unknown;
     exports?: unknown;
     bin?: unknown;
@@ -36,8 +37,16 @@ test("package manifest exposes only supported executables and no import side eff
   assert.ok(manifest.files.includes("!dist/e2e/**"));
   assert.ok(manifest.files.includes("!dist/e2e-main.js"));
   assert.ok(manifest.files.includes("!dist/adapters/ap2/authority-test-fixtures.js"));
+  assert.ok(
+    manifest.files.includes("!docs/IMPLEMENTATION_PLAN_THROUGH_V0.12.0.md")
+  );
   assert.equal(manifest.files.includes("scripts/run-live-testnet-e2e.mjs"), false);
   assert.equal(manifest.files.includes("scripts/compile-vault-fixtures.js"), false);
+
+  const bootstrap = JSON.parse(
+    fs.readFileSync(path.join(ROOT, "host-bootstrap.example.json"), "utf8"),
+  ) as { packageVersion?: unknown };
+  assert.equal(bootstrap.packageVersion, manifest.version);
 
   assert.match(manifest.scripts?.prepack ?? "", /^npm run build && /);
   assert.match(manifest.scripts?.build ?? "", /^node scripts\/require-source-tree\.mjs build && /);
@@ -133,22 +142,24 @@ test("current documentation exposes the API-first wallet and alpha.9 payment cut
     "CURRENT_STATE.md",
     "README.md",
     "contracts/README.md",
-    "docs/agent-interaction-ux.md",
-    "docs/vault-poc.md",
+    "docs/IMPLEMENTATION_PLAN.md",
     "docs/architecture/AP2_PROFILE.md",
     "docs/architecture/KASPA_X402_INTEGRATION.md",
     "docs/architecture/PURCHASE_JOURNAL.md",
     "docs/architecture/SOMPI_ARCHITECTURE.md",
     "docs/architecture/THREAT_MODEL.md",
     "docs/conformance/PROTOCOL_CONFORMANCE.md",
+    "docs/mainnet-readiness.md",
     "docs/runbooks/AUTHORITY.md",
     "docs/runbooks/CHANNEL_RECOVERY.md",
+    "docs/runbooks/HERMES.md",
     "docs/runbooks/JOURNAL.md",
     "docs/runbooks/OPERATOR_PROVISIONING.md",
     "docs/runbooks/README.md",
     "docs/runbooks/RECONCILIATION.md",
     "docs/runbooks/STAGING_RECOVERY.md",
     "docs/runbooks/TESTNET_RESET.md",
+    "integrations/hermes/sompi/SKILL.md",
   ];
   const forbidden = [
     "MCP-owned",
@@ -193,7 +204,7 @@ test("current documentation exposes the API-first wallet and alpha.9 payment cut
     path.join(ROOT, "docs", "architecture", "PURCHASE_JOURNAL.md"),
     "utf8",
   );
-  assert.match(journal, /Epoch \*\*18\*\* is the only\s+active schema/);
+  assert.match(journal, /Epoch \*\*19\*\* is the only\s+active schema/);
 });
 
 function sourceFiles(directory: string): string[] {
