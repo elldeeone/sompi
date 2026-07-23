@@ -8,18 +8,20 @@ Use separate operator, API, Authority, Agent, and recovery access boundaries.
 ## Host bootstrap
 
 Edit the non-secret `host-bootstrap.example.json` template.
-Set `packageVersion` to `0.12.0`.
+Set `packageVersion` to `0.12.1`.
 Set the Hermes user, Telegram IDs, Testnet-10 node, Merchant rules, and limits.
 
 Preview the request:
 
 ```bash
 npm exec --yes --allow-scripts=better-sqlite3@12.11.1 \
-  --package=@elldeeone/sompi@0.12.0 -- \
+  --package=@elldeeone/sompi@0.12.1 -- \
   sompi-operator bootstrap-preview REQUEST.json
 ```
 
 Review all output.
+The `nextCommand` must start with the pinned `sudo npm exec` invocation.
+Do not use a bare `sudo sompi-operator` command on a clean host.
 Run the exact returned `nextCommand` in a local terminal.
 
 The command reads the Telegram token with hidden input.

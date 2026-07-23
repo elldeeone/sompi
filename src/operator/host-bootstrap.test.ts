@@ -89,7 +89,13 @@ test("host bootstrap request is canonical, previewable, and creates the existing
   assert.equal(preview.package, "@elldeeone/sompi@0.11.4");
   assert.equal(preview.minimumFundingSompi, "85000000");
   assert.deepEqual(preview.merchants, ["demo.kaspa-x402.org:443"]);
-  assert.match(preview.nextCommand, /^sudo sompi-operator bootstrap/);
+  assert.equal(
+    preview.nextCommand,
+    "sudo npm exec --yes --allow-scripts=better-sqlite3@12.11.1 " +
+      "--package=@elldeeone/sompi@0.11.4 -- sompi-operator bootstrap " +
+      `'/tmp/request.json' '${digest}'`,
+  );
+  assert.doesNotMatch(preview.nextCommand, /^sudo sompi-operator/);
   const spec = operatorSpecForHostBootstrap(request, "c6047f9441ed7d6d3045406e95c07cd85a64464a7416f88167e739c72b27e7dd");
   assert.equal(spec.dataDirectory, "/var/lib/sompi-api/runtime");
   assert.equal(spec.ownerPublic, "c6047f9441ed7d6d3045406e95c07cd85a64464a7416f88167e739c72b27e7dd");

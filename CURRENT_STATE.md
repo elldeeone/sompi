@@ -1,8 +1,16 @@
 # Current state
 
-Last updated: **2026-07-22**
+Last updated: **2026-07-23**
 
-## Release
+## Source candidate
+
+Sompi `0.12.1` repairs the clean-host Hermes onboarding path.
+The README points to one versioned remote skill.
+The skill, request template, preview, and privileged command use the same version.
+
+This candidate is not yet a Git tag, npm package, or deployed runtime.
+
+## Published release
 
 Sompi `0.12.0` is the completed Kaspa-x402 `0.1.0-alpha.9` clean cutover.
 ADR-0023 defines this release.

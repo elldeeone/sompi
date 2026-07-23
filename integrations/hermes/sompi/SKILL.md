@@ -1,14 +1,11 @@
 ---
 name: sompi
-description: Install Sompi, inspect its wallet, send approved Testnet-10 KAS, and buy paid HTTP resources.
-version: 0.12.0
-author: Sompi contributors
+description: Install and configure Sompi with Hermes, inspect its wallet, send approved Testnet-10 KAS, and buy paid HTTP resources. Use when the user asks to install, set up, configure, or use Sompi.
 license: MIT
-platforms: [linux]
+compatibility: Requires a clean Linux systemd host, Node.js 22 or later, npm, curl, Git, sudo, internet access, and a working Hermes gateway.
 metadata:
-  hermes:
-    tags: [kaspa, payments, api]
-    category: blockchain
+  author: Sompi contributors
+  version: "0.12.1"
 ---
 
 # Sompi skill
@@ -41,44 +38,82 @@ You cannot:
 
 Use this procedure when the user asks to install Sompi.
 
-1. Require Linux, systemd, Node.js 22 or later, and a working Hermes gateway.
-2. Copy the non-secret request template from the same pinned Sompi checkout.
+1. Require a clean Linux host with all these items:
+
+   - systemd and a working Hermes gateway
+   - the Hermes checkout at `~/.hermes/hermes-agent`
+   - Node.js 22 or later, npm, curl, Git, and sudo
+   - npm available to the local root session
+   - access to GitHub and the npm registry
+
+   If a requirement is absent, name the missing item.
+   Give the user the exact manual command or action that is required.
+   Wait until the user confirms that the requirement is available.
+
+2. Download the pinned non-secret request template.
 
 ```sh
 install -d -m 700 ~/.sompi
-install -m 600 \
-  /absolute/path/to/pinned-sompi/host-bootstrap.example.json \
-  ~/.sompi/bootstrap-request.json
+curl --proto '=https' --tlsv1.2 --fail --location --max-time 30 \
+  https://raw.githubusercontent.com/elldeeone/sompi/v0.12.1/host-bootstrap.example.json \
+  -o ~/.sompi/bootstrap-request.json
+chmod 0600 ~/.sompi/bootstrap-request.json
 ```
 
-3. Set `packageVersion` to `0.12.0`.
-4. Set only the Hermes user, Telegram IDs, Testnet-10 node, Merchant rules, and limits.
+3. Keep `packageVersion` set to `0.12.1`.
+4. Set only these non-secret values:
+
+   - the Hermes OS user
+   - the Telegram bot, user, and chat IDs
+   - the trusted Testnet-10 operator node and independent HTTPS witness
+   - the Merchant allow rules
+   - the funding and spending limits
+
+   Read values from the host when possible.
+   Ask the user for a non-secret value that you cannot find.
+   Do not guess a value.
+   Do not keep the local operator-node default unless that node is available.
+
 5. Preview the request.
 
 ```sh
 npm exec --yes --allow-scripts=better-sqlite3@12.11.1 \
-  --package=@elldeeone/sompi@0.12.0 -- \
+  --package=@elldeeone/sompi@0.12.1 -- \
   sompi-operator bootstrap-preview ~/.sompi/bootstrap-request.json
 ```
 
-6. Show the complete preview and exact `nextCommand`.
-7. Tell the user to run that command in a local terminal.
+6. Show the complete preview.
+7. Use its exact `requestDigest` in this command:
+
+```sh
+sudo npm exec --yes --allow-scripts=better-sqlite3@12.11.1 \
+  --package=@elldeeone/sompi@0.12.1 -- \
+  sompi-operator bootstrap ~/.sompi/bootstrap-request.json REQUEST_DIGEST
+```
+
+8. Show the complete command with `REQUEST_DIGEST` replaced.
+   Do not show or use a bare `sudo sompi-operator` command.
+9. Tell the user to run the command in a local terminal.
 
 Do not run the privileged command.
 Do not request sudo, the Telegram token, wallet keys, or Authority keys.
 
 The local command writes the owner recovery record under `/root`.
 It returns one Testnet-10 receive address and one `activateCommand`.
+Ask the user to paste its complete non-secret JSON result.
 
 Divide `minimumFundingSompi` by `100,000,000` before you report tKAS or KAS.
 Keep the exact atomic value as supporting evidence.
 Never tell the user to fund the internal vault address.
 
-After funding, show the exact `activateCommand`.
+Tell the user to fund only the returned receive address.
+After the user confirms the funds are visible, show the exact `activateCommand`.
 The user must run it locally one time.
+Ask the user to paste its complete non-secret JSON result.
 Continue only after activation returns `ready`.
 
 Future deposits use the same receive address and are secured automatically.
+Run `sompi-agent wallet` after activation and confirm that the local API works.
 
 ## Commands
 

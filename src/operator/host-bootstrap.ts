@@ -199,7 +199,12 @@ export function previewHostBootstrap(
       BigInt(request.operator.treasury.operationFeeCeilingAtomic)
     ).toString(),
     secretInput: "root-only Telegram bot-token file",
-    nextCommand: `sudo sompi-operator bootstrap ${shellQuote(path.resolve(requestFilename))} ${shellQuote(digest)}`,
+    nextCommand: [
+      "sudo npm exec --yes --allow-scripts=better-sqlite3@12.11.1",
+      `--package=@elldeeone/sompi@${request.packageVersion} -- sompi-operator bootstrap`,
+      shellQuote(path.resolve(requestFilename)),
+      shellQuote(digest),
+    ].join(" "),
   });
 }
 

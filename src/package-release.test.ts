@@ -57,6 +57,56 @@ test("package manifest exposes only supported executables and no import side eff
   }
 });
 
+test("Hermes onboarding uses a short prompt and a self-contained remote skill", () => {
+  const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+  const skill = fs.readFileSync(
+    path.join(ROOT, "integrations", "hermes", "sompi", "SKILL.md"),
+    "utf8",
+  );
+  const manifest = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")) as {
+    version?: unknown;
+  };
+  const version = String(manifest.version);
+  const templateUrl =
+    `https://raw.githubusercontent.com/elldeeone/sompi/v${version}/host-bootstrap.example.json`;
+  const skillUrl =
+    `https://raw.githubusercontent.com/elldeeone/sompi/v${version}/integrations/hermes/sompi/SKILL.md`;
+  const installSection = readme
+    .split("## Install with Hermes")[1]
+    ?.split("## Wallet")[0] ?? "";
+
+  assert.match(version, /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/);
+  assert.ok(installSection.includes("Copy this prompt to your agent:"));
+  assert.ok(installSection.includes(skillUrl));
+  assert.match(installSection, /Read and follow every instruction at:/);
+  assert.doesNotMatch(
+    installSection,
+    /bootstrap-preview|host-bootstrap\.example\.json|nextCommand|activateCommand|^\d+\.\s/m,
+  );
+  assert.ok(skill.includes(templateUrl));
+  assert.ok(skill.includes(`--package=@elldeeone/sompi@${String(manifest.version)}`));
+  for (const required of [
+    "Require a clean Linux host with all these items:",
+    "Give the user the exact manual command or action that is required.",
+    "Download the pinned non-secret request template.",
+    "Use its exact `requestDigest` in this command:",
+    "sudo npm exec --yes --allow-scripts=better-sqlite3@12.11.1",
+    "Do not show or use a bare `sudo sompi-operator` command.",
+    "Ask the user to paste its complete non-secret JSON result.",
+    "fund the internal vault address",
+    "show the exact `activateCommand`",
+    "Continue only after activation returns `ready`.",
+    "Run `sompi-agent wallet` after activation",
+  ]) {
+    assert.ok(skill.includes(required), `Hermes skill is missing ${required}`);
+  }
+  assert.doesNotMatch(skill, /^sudo sompi-operator bootstrap/m);
+  assert.doesNotMatch(
+    `${readme}\n${skill}`,
+    /this exact checkout|same pinned Sompi checkout|absolute\/path\/to\/pinned-sompi/i,
+  );
+});
+
 test("npm ignore and package preparation retain defence-in-depth exclusions", () => {
   const npmIgnore = fs.readFileSync(path.join(ROOT, ".npmignore"), "utf8").split(/\r?\n/);
   assert.ok(npmIgnore.includes("dist/**/*.test.js"));
