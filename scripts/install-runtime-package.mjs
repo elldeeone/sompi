@@ -7,6 +7,7 @@ import path from "node:path";
 const NATIVE_PACKAGE = "better-sqlite3";
 const NATIVE_VERSION = "12.11.1";
 const NATIVE_INSTALL = "prebuild-install || node-gyp rebuild --release";
+const NPM_REGISTRY = "https://registry.npmjs.org/";
 
 const options = parseArguments(process.argv.slice(2));
 fs.mkdirSync(options.prefix, { recursive: true, mode: 0o755 });
@@ -18,6 +19,7 @@ runNpm([
   "--no-audit",
   "--no-fund",
   "--package-lock=false",
+  "--registry", NPM_REGISTRY,
   ...(options.omitDev ? ["--omit=dev"] : []),
   options.package,
 ]);

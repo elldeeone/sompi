@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -18,6 +19,10 @@ try {
     "utf8",
   );
   const manifest = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+  const sourceInstaller = fs.readFileSync(
+    path.join(root, "scripts", "install-runtime-package.mjs"),
+  );
+  const installerSha256 = createHash("sha256").update(sourceInstaller).digest("hex");
   const installSection = readme
     .split("## Install with Hermes")[1]
     ?.split("## Wallet")[0] ?? "";
@@ -48,6 +53,36 @@ try {
   if (!templateMatch || templateMatch[1] !== manifest.version) {
     fail("skill does not pin the request template to its package release");
   }
+  const installerUrl =
+    `https://raw.githubusercontent.com/elldeeone/sompi/v${manifest.version}/scripts/install-runtime-package.mjs`;
+  if (!skill.includes(installerUrl) || !skill.includes(installerSha256)) {
+    fail("skill does not pin the scriptless installer URL and SHA-256");
+  }
+  let installerBytes;
+  if (packageSource) {
+    installerBytes = readArchiveEntry(
+      packageSource,
+      "package/scripts/install-runtime-package.mjs",
+    );
+    if (!installerBytes.equals(sourceInstaller)) {
+      fail("candidate package scriptless installer differs from the source installer");
+    }
+  } else {
+    const installerResponse = await fetch(installerUrl, { redirect: "follow" });
+    if (!installerResponse.ok) {
+      fail(`scriptless installer returned HTTP ${installerResponse.status}`);
+    }
+    installerBytes = Buffer.from(await installerResponse.arrayBuffer());
+    if (!installerBytes.equals(sourceInstaller)) {
+      fail("remote scriptless installer differs from the source installer");
+    }
+  }
+  if (createHash("sha256").update(installerBytes).digest("hex") !== installerSha256) {
+    fail("scriptless installer does not match its pinned SHA-256");
+  }
+  const installerFile = path.join(temporary, "install-runtime-package.mjs");
+  fs.writeFileSync(installerFile, installerBytes, { mode: 0o600 });
+
   const localTemplate = fs.readFileSync(path.join(root, "host-bootstrap.example.json"));
   let templateBytes;
   if (packageSource) {
@@ -69,39 +104,57 @@ try {
 
   const packageSpec = `@elldeeone/sompi@${manifest.version}`;
   const npmPackage = packageSource ?? packageSpec;
-  const preview = runJson("npm", [
-    "exec",
-    "--yes",
-    "--allow-scripts=better-sqlite3@12.11.1",
-    `--package=${npmPackage}`,
-    "--",
-    "sompi-operator",
+  const previewPrefix = path.join(temporary, "preview-runtime");
+  const installReceipt = runJson(process.execPath, [
+    installerFile,
+    "--prefix", previewPrefix,
+    "--package", npmPackage,
+    "--expected-version", manifest.version,
+    "--omit-dev",
+  ], temporary);
+  if (
+    installReceipt.status !== "pass" ||
+    installReceipt.scriptsDuringInstall !== false ||
+    installReceipt.rebuilt !== "better-sqlite3@12.11.1" ||
+    installReceipt.packageVersion !== manifest.version
+  ) {
+    fail("scriptless installer returned an invalid receipt");
+  }
+  const operatorBin = path.join(previewPrefix, "node_modules", ".bin", "sompi-operator");
+  const preview = runJson(operatorBin, [
     "bootstrap-preview",
     requestFile,
   ], temporary);
   if (
     preview.package !== packageSpec ||
     typeof preview.requestDigest !== "string" ||
-    !/^sha256:[A-Za-z0-9_-]{43}$/.test(preview.requestDigest)
+    !/^sha256:[A-Za-z0-9_-]{43}$/.test(preview.requestDigest) ||
+    typeof preview.nextCommand !== "string"
   ) {
     fail("published package returned an invalid bootstrap preview");
   }
   if (
-    !skill.includes(`--package=${packageSpec}`) ||
-    !skill.includes("sompi-operator bootstrap ~/.sompi/bootstrap-request.json REQUEST_DIGEST") ||
-    skill.includes("\nsudo sompi-operator bootstrap")
+    !skill.includes(`--package ${packageSpec}`) ||
+    !skill.includes("Show the exact `nextCommand` from the preview.") ||
+    /^\s*(?:sudo\s+)?npm exec\b|--allow-scripts/m.test(skill)
   ) {
-    fail("skill does not contain the package-resolving manual bootstrap command");
+    fail("skill does not use the scriptless package installation flow");
+  }
+  if (
+    !preview.nextCommand.startsWith("sudo sh -eu -c ") ||
+    !preview.nextCommand.includes(installerUrl) ||
+    !preview.nextCommand.includes(installerSha256) ||
+    !preview.nextCommand.includes(`/opt/sompi/releases/${manifest.version}`) ||
+    !preview.nextCommand.includes(packageSpec) ||
+    !preview.nextCommand.includes(path.resolve(requestFile)) ||
+    !preview.nextCommand.includes(preview.requestDigest) ||
+    /npm exec|allow-scripts/.test(preview.nextCommand)
+  ) {
+    fail("preview did not return the pinned scriptless privileged command");
   }
 
   if (typeof process.getuid === "function" && process.getuid() !== 0) {
-    const result = run("npm", [
-      "exec",
-      "--yes",
-      "--allow-scripts=better-sqlite3@12.11.1",
-      `--package=${npmPackage}`,
-      "--",
-      "sompi-operator",
+    const result = run(operatorBin, [
       "bootstrap",
       requestFile,
       preview.requestDigest,
@@ -120,6 +173,7 @@ try {
     templateRelease: `v${templateMatch[1]}`,
     package: packageSpec,
     packageSource: packageSource ? "candidate-archive" : "published-package",
+    installer: "sha256-pinned-scriptless",
     preview: "pass",
     privilegedBoundary: typeof process.getuid === "function" && process.getuid() !== 0
       ? "reached"

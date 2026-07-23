@@ -6,6 +6,7 @@ import * as path from "node:path";
 import test from "node:test";
 
 import {
+  HOST_BOOTSTRAP_INSTALLER_SHA256,
   HOST_BOOTSTRAP_SCHEMA,
   HostBootstrapError,
   canonicalHostBootstrapBytes,
@@ -89,17 +90,63 @@ test("host bootstrap request is canonical, previewable, and creates the existing
   assert.equal(preview.package, "@elldeeone/sompi@0.11.4");
   assert.equal(preview.minimumFundingSompi, "85000000");
   assert.deepEqual(preview.merchants, ["demo.kaspa-x402.org:443"]);
-  assert.equal(
-    preview.nextCommand,
-    "sudo npm exec --yes --allow-scripts=better-sqlite3@12.11.1 " +
-      "--package=@elldeeone/sompi@0.11.4 -- sompi-operator bootstrap " +
-      `'/tmp/request.json' '${digest}'`,
-  );
+  assert.match(preview.nextCommand, /^sudo sh -eu -c /);
+  assert.ok(preview.nextCommand.includes(
+    "https://raw.githubusercontent.com/elldeeone/sompi/v0.11.4/scripts/install-runtime-package.mjs",
+  ));
+  assert.ok(preview.nextCommand.includes(HOST_BOOTSTRAP_INSTALLER_SHA256));
+  assert.ok(preview.nextCommand.includes("'/opt/sompi/releases/0.11.4'"));
+  assert.ok(preview.nextCommand.includes("'@elldeeone/sompi@0.11.4'"));
+  assert.ok(preview.nextCommand.includes("'/tmp/request.json'"));
+  assert.ok(preview.nextCommand.includes(`'${digest}'`));
+  assert.doesNotMatch(preview.nextCommand, /npm exec|allow-scripts/);
   assert.doesNotMatch(preview.nextCommand, /^sudo sompi-operator/);
   const spec = operatorSpecForHostBootstrap(request, "c6047f9441ed7d6d3045406e95c07cd85a64464a7416f88167e739c72b27e7dd");
   assert.equal(spec.dataDirectory, "/var/lib/sompi-api/runtime");
   assert.equal(spec.ownerPublic, "c6047f9441ed7d6d3045406e95c07cd85a64464a7416f88167e739c72b27e7dd");
   assert.equal(spec.authority.provider, "telegram");
+});
+
+test("privileged bootstrap rejects a changed installer before Node executes it", (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-bootstrap-command-"));
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const bin = path.join(directory, "bin");
+  const nodeMarker = path.join(directory, "node-ran");
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, "sudo"), "#!/bin/sh\nexec \"$@\"\n", { mode: 0o700 });
+  fs.writeFileSync(path.join(bin, "curl"), `#!/bin/sh
+output=
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--output" ]; then
+    shift
+    output=$1
+  fi
+  shift
+done
+printf '%s\\n' tampered-installer > "$output"
+`, { mode: 0o700 });
+  fs.writeFileSync(path.join(bin, "node"), `#!/bin/sh
+: > "$SOMPI_TEST_NODE_MARKER"
+exit 0
+`, { mode: 0o700 });
+
+  const preview = previewHostBootstrap(
+    parseHostBootstrapRequest(REQUEST),
+    "0.11.4",
+    "/tmp/request.json",
+  );
+  const result = spawnSync("sh", ["-c", preview.nextCommand], {
+    cwd: directory,
+    env: {
+      ...process.env,
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+      SOMPI_TEST_NODE_MARKER: nodeMarker,
+    },
+    encoding: "utf8",
+  });
+  assert.notEqual(result.status, 0);
+  assert.equal(fs.existsSync(nodeMarker), false);
+  assert.match(`${result.stdout}\n${result.stderr}`, /FAILED|did NOT match/);
 });
 
 test("host bootstrap stable-loads a regular request and rejects links", () => {
