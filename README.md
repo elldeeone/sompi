@@ -65,7 +65,7 @@ Copy this prompt to your agent:
 
 ```text
 Install and set up Sompi. Read and follow every instruction at:
-https://raw.githubusercontent.com/elldeeone/sompi/v0.12.1/integrations/hermes/sompi/SKILL.md
+https://raw.githubusercontent.com/elldeeone/sompi/v0.12.2/integrations/hermes/sompi/SKILL.md
 ```
 
 The linked skill contains the complete installation procedure and all manual

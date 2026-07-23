@@ -8,20 +8,45 @@ Use separate operator, API, Authority, Agent, and recovery access boundaries.
 ## Host bootstrap
 
 Edit the non-secret `host-bootstrap.example.json` template.
-Set `packageVersion` to `0.12.1`.
+Set `packageVersion` to `0.12.2`.
 Set the Hermes user, Telegram IDs, Testnet-10 node, Merchant rules, and limits.
+
+Download and verify the scriptless installer:
+
+```bash
+install -d -m 700 ~/.sompi
+curl --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --location --max-time 30 \
+  https://raw.githubusercontent.com/elldeeone/sompi/v0.12.2/scripts/install-runtime-package.mjs \
+  -o ~/.sompi/install-runtime-package-v0.12.2.mjs
+chmod 0600 ~/.sompi/install-runtime-package-v0.12.2.mjs
+printf '%s  %s\n' \
+  5636810d34f3c253fef8d503b7829b8f4518eefa31b591184be515cca6840411 \
+  ~/.sompi/install-runtime-package-v0.12.2.mjs |
+  sha256sum --check --strict -
+```
+
+Stop if the checksum fails.
+Install the preview runtime:
+
+```bash
+node ~/.sompi/install-runtime-package-v0.12.2.mjs \
+  --prefix ~/.sompi/preview-runtime-v0.12.2 \
+  --package @elldeeone/sompi@0.12.2 \
+  --expected-version 0.12.2 \
+  --omit-dev
+```
 
 Preview the request:
 
 ```bash
-npm exec --yes --allow-scripts=better-sqlite3@12.11.1 \
-  --package=@elldeeone/sompi@0.12.1 -- \
-  sompi-operator bootstrap-preview REQUEST.json
+~/.sompi/preview-runtime-v0.12.2/node_modules/.bin/sompi-operator \
+  bootstrap-preview REQUEST.json
 ```
 
 Review all output.
-The `nextCommand` must start with the pinned `sudo npm exec` invocation.
-Do not use a bare `sudo sompi-operator` command on a clean host.
+The `nextCommand` must start with `sudo sh -eu -c`.
+It must contain the pinned installer URL and SHA-256.
+It must not contain `npm exec`.
 Run the exact returned `nextCommand` in a local terminal.
 
 The command reads the Telegram token with hidden input.

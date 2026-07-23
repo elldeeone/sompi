@@ -4,9 +4,16 @@ Last updated: **2026-07-23**
 
 ## Current release
 
-Sompi `0.12.1` repairs the clean-host Hermes onboarding path.
+Sompi `0.12.2` repairs the clean-host Hermes onboarding trust boundary.
 The README points to one versioned remote skill.
-The skill, request template, preview, and privileged command use the same version.
+The skill, request template, scriptless installer, preview, and privileged command use the same version.
+
+The installer disables all package lifecycle scripts during installation.
+It verifies and runs only the required native dependency install script.
+The privileged command downloads the installer into a root-owned temporary directory and verifies its pinned SHA-256 before execution.
+
+Do not use `0.12.1` for clean-host onboarding.
+That release can run unreviewed package lifecycle scripts before privileged bootstrap.
 
 The Git tag, npm package, and source contain the same release tree.
 This release does not change the deployed Terah runtime.
@@ -67,17 +74,17 @@ Hermes reports that it is current at `d604141d097eec4a49493ad1eaceb9b2ca1e496d`.
 The complete release verifier passed on the release commit and GitHub Node 22 runner.
 The current documentation tree produced these local results:
 
-- 554 unit tests ran.
-- 553 tests passed.
+- 556 unit tests ran.
+- 555 tests passed.
 - One root-only ownership test was skipped as expected.
 - Offline smoke passed.
 - All five alpha.9 conformance checks passed.
 - The npm package boundary check passed.
 
 The release artifact also passed local E2E, Hermes, OpenAPI, Arazzo, clean-install, audit, and consumer checks.
+The clean-host candidate test used the SHA-256-pinned scriptless installer and reached the privileged boundary.
 
 The registry package is byte-identical to the verified local artifact.
-It has 225 entries and 5,143,717 packed bytes.
 
 ## Funded evidence
 

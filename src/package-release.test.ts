@@ -1,4 +1,5 @@
 import * as assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -57,7 +58,7 @@ test("package manifest exposes only supported executables and no import side eff
   }
 });
 
-test("Hermes onboarding uses a short prompt and a self-contained remote skill", () => {
+test("Hermes onboarding uses a short prompt and the tested scriptless installer", () => {
   const readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
   const skill = fs.readFileSync(
     path.join(ROOT, "integrations", "hermes", "sompi", "SKILL.md"),
@@ -69,8 +70,20 @@ test("Hermes onboarding uses a short prompt and a self-contained remote skill", 
   const version = String(manifest.version);
   const templateUrl =
     `https://raw.githubusercontent.com/elldeeone/sompi/v${version}/host-bootstrap.example.json`;
+  const installerUrl =
+    `https://raw.githubusercontent.com/elldeeone/sompi/v${version}/scripts/install-runtime-package.mjs`;
   const skillUrl =
     `https://raw.githubusercontent.com/elldeeone/sompi/v${version}/integrations/hermes/sompi/SKILL.md`;
+  const installer = fs.readFileSync(path.join(ROOT, "scripts", "install-runtime-package.mjs"));
+  const installerSha256 = createHash("sha256").update(installer).digest("hex");
+  const runbook = fs.readFileSync(
+    path.join(ROOT, "docs", "runbooks", "OPERATOR_PROVISIONING.md"),
+    "utf8",
+  );
+  const hostBootstrapSource = fs.readFileSync(
+    path.join(ROOT, "src", "operator", "host-bootstrap.ts"),
+    "utf8",
+  );
   const installSection = readme
     .split("## Install with Hermes")[1]
     ?.split("## Wallet")[0] ?? "";
@@ -84,14 +97,21 @@ test("Hermes onboarding uses a short prompt and a self-contained remote skill", 
     /bootstrap-preview|host-bootstrap\.example\.json|nextCommand|activateCommand|^\d+\.\s/m,
   );
   assert.ok(skill.includes(templateUrl));
-  assert.ok(skill.includes(`--package=@elldeeone/sompi@${String(manifest.version)}`));
+  assert.ok(skill.includes(installerUrl));
+  assert.ok(skill.includes(installerSha256));
+  assert.ok(skill.includes(`--package @elldeeone/sompi@${String(manifest.version)}`));
+  assert.ok(runbook.includes(installerUrl));
+  assert.ok(runbook.includes(installerSha256));
+  assert.ok(hostBootstrapSource.includes(installerSha256));
   for (const required of [
     "Require a clean Linux host with all these items:",
     "Give the user the exact manual command or action that is required.",
-    "Download the pinned non-secret request template.",
-    "Use its exact `requestDigest` in this command:",
-    "sudo npm exec --yes --allow-scripts=better-sqlite3@12.11.1",
-    "Do not show or use a bare `sudo sompi-operator` command.",
+    "Download the pinned non-secret request template and scriptless installer.",
+    "Install the exact preview runtime without package lifecycle scripts.",
+    "Show the exact `nextCommand` from the preview.",
+    "Do not change or reconstruct the command.",
+    "It verifies the pinned SHA-256 before Node.js executes the installer.",
+    "It does not use `npm exec`.",
     "Ask the user to paste its complete non-secret JSON result.",
     "fund the internal vault address",
     "show the exact `activateCommand`",
@@ -100,7 +120,11 @@ test("Hermes onboarding uses a short prompt and a self-contained remote skill", 
   ]) {
     assert.ok(skill.includes(required), `Hermes skill is missing ${required}`);
   }
-  assert.doesNotMatch(skill, /^sudo sompi-operator bootstrap/m);
+  assert.doesNotMatch(
+    `${readme}\n${skill}\n${runbook}\n${hostBootstrapSource}`,
+    /^\s*(?:sudo\s+)?npm exec\b|--allow-scripts/mu,
+  );
+  assert.doesNotMatch(skill, /^sudo (?:sompi-operator|npm)\b/m);
   assert.doesNotMatch(
     `${readme}\n${skill}`,
     /this exact checkout|same pinned Sompi checkout|absolute\/path\/to\/pinned-sompi/i,

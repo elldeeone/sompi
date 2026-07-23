@@ -10,10 +10,23 @@ import {
 } from "./provisioning.js";
 
 export const HOST_BOOTSTRAP_SCHEMA = "sompi-host-bootstrap-v1" as const;
+export const HOST_BOOTSTRAP_INSTALLER_SHA256 =
+  "5636810d34f3c253fef8d503b7829b8f4518eefa31b591184be515cca6840411" as const;
 const MAX_REQUEST_BYTES = 64 * 1024;
+const PACKAGE_NAME = "@elldeeone/sompi";
+const RELEASE_ROOT = "/opt/sompi/releases";
 const VERSION_PATTERN = /^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?$/;
 const USER_PATTERN = /^[a-z_][a-z0-9_-]{0,31}$/;
 const PLACEHOLDER_OWNER_PUBLIC = "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798";
+const PRIVILEGED_BOOTSTRAP_SCRIPT = [
+  "umask 077",
+  "work=$(mktemp -d)",
+  "trap 'rm -rf -- \"$work\"' EXIT HUP INT TERM",
+  "curl --proto \"=https\" --proto-redir \"=https\" --tlsv1.2 --fail --location --max-time 30 --output \"$work/install-runtime-package.mjs\" \"$1\"",
+  "printf \"%s  %s\\n\" \"$2\" \"$work/install-runtime-package.mjs\" | sha256sum --check --strict -",
+  "node \"$work/install-runtime-package.mjs\" --prefix \"$3\" --package \"$4\" --expected-version \"$5\" --omit-dev",
+  "exec \"$3/node_modules/.bin/sompi-operator\" bootstrap \"$6\" \"$7\"",
+].join("; ");
 
 export interface HostBootstrapRequest {
   readonly schema: typeof HOST_BOOTSTRAP_SCHEMA;
@@ -185,7 +198,7 @@ export function previewHostBootstrap(
   return deepFreeze({
     schema: HOST_BOOTSTRAP_SCHEMA,
     requestDigest: digest,
-    package: `@elldeeone/sompi@${request.packageVersion}`,
+    package: `${PACKAGE_NAME}@${request.packageVersion}`,
     agent: request.agent,
     network: "kaspa:testnet-10",
     vaultCapSompi: request.operator.maxOutflowSompi,
@@ -199,12 +212,7 @@ export function previewHostBootstrap(
       BigInt(request.operator.treasury.operationFeeCeilingAtomic)
     ).toString(),
     secretInput: "root-only Telegram bot-token file",
-    nextCommand: [
-      "sudo npm exec --yes --allow-scripts=better-sqlite3@12.11.1",
-      `--package=@elldeeone/sompi@${request.packageVersion} -- sompi-operator bootstrap`,
-      shellQuote(path.resolve(requestFilename)),
-      shellQuote(digest),
-    ].join(" "),
+    nextCommand: privilegedBootstrapCommand(request.packageVersion, requestFilename, digest),
   });
 }
 
@@ -250,6 +258,24 @@ function exactKeys(value: Record<string, unknown>, expected: readonly string[], 
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`;
+}
+
+function privilegedBootstrapCommand(version: string, requestFilename: string, digest: string): string {
+  const installerUrl =
+    `https://raw.githubusercontent.com/elldeeone/sompi/v${version}/scripts/install-runtime-package.mjs`;
+  const releasePrefix = path.join(RELEASE_ROOT, version);
+  return [
+    "sudo sh -eu -c",
+    shellQuote(PRIVILEGED_BOOTSTRAP_SCRIPT),
+    "sompi-bootstrap",
+    shellQuote(installerUrl),
+    shellQuote(HOST_BOOTSTRAP_INSTALLER_SHA256),
+    shellQuote(releasePrefix),
+    shellQuote(`${PACKAGE_NAME}@${version}`),
+    shellQuote(version),
+    shellQuote(path.resolve(requestFilename)),
+    shellQuote(digest),
+  ].join(" ");
 }
 
 function noFollowFlag(): number {

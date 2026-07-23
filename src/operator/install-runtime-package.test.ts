@@ -63,6 +63,10 @@ if (args[0] === "install") {
   assert.equal(calls.length, 2);
   assert.equal(calls[0]?.[0], "install");
   assert.ok(calls[0]?.includes("--ignore-scripts"));
+  assert.equal(
+    calls[0]?.[calls[0].indexOf("--registry") + 1],
+    "https://registry.npmjs.org/",
+  );
   assert.deepEqual(calls[1], [
     "run", "install", "--prefix",
     path.join(prefix, "node_modules", "better-sqlite3"),
