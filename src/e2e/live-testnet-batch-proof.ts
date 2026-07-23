@@ -315,12 +315,14 @@ export async function runLiveBatchProof(
     }
     const claimDeposit = acceptedOperationOutpoint({
       journal,
+      operationKey: claimChannel.treasury.operationKey,
       address: claimChannel.channel.escrowAddress,
       outpoint: `${claimChannel.treasury.transactionId}:0`,
       amountAtomic: BATCH_DEPOSIT_ATOMIC,
     });
     const refundDeposit = acceptedOperationOutpoint({
       journal,
+      operationKey: refundChannel.treasury.operationKey,
       address: refundChannel.channel.escrowAddress,
       outpoint: `${refundChannel.treasury.transactionId}:0`,
       amountAtomic: BATCH_DEPOSIT_ATOMIC,
@@ -727,6 +729,7 @@ function composeBatchCoordinator(input: {
 
 function acceptedOperationOutpoint(input: {
   readonly journal: PurchaseJournal;
+  readonly operationKey: string;
   readonly address: string;
   readonly outpoint: string;
   readonly amountAtomic: string;
@@ -737,7 +740,9 @@ function acceptedOperationOutpoint(input: {
   if (!/^[a-f0-9]{64}$/.test(transactionId) || !Number.isSafeInteger(index) || index < 0) {
     throw new Error("live batch durable outpoint is invalid");
   }
-  const evidence = input.journal.findAcceptedChainEvidence(transactionId);
+  const evidence = input.journal.findCompletedTreasuryOperationChainEvidence(
+    input.operationKey
+  );
   if (
     !evidence ||
     evidence.transactionId !== transactionId ||

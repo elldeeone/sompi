@@ -110,7 +110,16 @@ export interface OperatorChainObserver {
   ): Promise<ChainSourceEvidence>;
 }
 
+export interface AcceptedChainEvidenceQuery {
+  readonly transactionId: string;
+  readonly outputsDigest: string;
+  readonly mechanism: ChainMechanism;
+  readonly minimumLevel: FinalityFloor;
+}
+
 export interface ChainEvidenceStore {
-  findAccepted(transactionId: string): ChainEvidenceRecord | undefined;
+  findAccepted(
+    query: Readonly<AcceptedChainEvidenceQuery>
+  ): ChainEvidenceRecord | undefined;
   record(record: Readonly<ChainEvidenceRecord>): ChainEvidenceRecord;
 }

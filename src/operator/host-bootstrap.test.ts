@@ -211,6 +211,7 @@ test("host bootstrap renders least-authority systemd and socket assets without s
 
 test("Hermes compatibility stays in an independently updateable Git checkout", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-hermes-compat-"));
+  const objectStore = path.join(root, "hermes-object-store");
   const checkout = path.join(root, "hermes-agent");
   const compatRoot = path.join(root, "hermes-compat");
   const patch = path.join(root, "callback.patch");
@@ -226,14 +227,19 @@ test("Hermes compatibility stays in an independently updateable Git checkout", (
     },
   };
   try {
-    fs.mkdirSync(checkout);
-    runner.run("git", ["init", "--initial-branch", "main"], { cwd: checkout });
-    runner.run("git", ["config", "user.name", "Sompi Test"], { cwd: checkout });
-    runner.run("git", ["config", "user.email", "sompi@example.invalid"], { cwd: checkout });
-    fs.writeFileSync(path.join(checkout, "callback.py"), "HOOKS = []\n");
-    runner.run("git", ["add", "callback.py"], { cwd: checkout });
-    runner.run("git", ["commit", "-m", "fixture"], { cwd: checkout });
-    runner.run("git", ["remote", "add", "origin", "https://example.invalid/hermes-agent.git"], { cwd: checkout });
+    fs.mkdirSync(objectStore);
+    runner.run("git", ["init", "--initial-branch", "main"], { cwd: objectStore });
+    runner.run("git", ["config", "user.name", "Sompi Test"], { cwd: objectStore });
+    runner.run("git", ["config", "user.email", "sompi@example.invalid"], { cwd: objectStore });
+    fs.writeFileSync(path.join(objectStore, "callback.py"), "HOOKS = []\n");
+    runner.run("git", ["add", "callback.py"], { cwd: objectStore });
+    runner.run("git", ["commit", "-m", "fixture"], { cwd: objectStore });
+    runner.run("git", ["clone", "--shared", objectStore, checkout]);
+    runner.run("git", ["remote", "set-url", "origin", "https://example.invalid/hermes-agent.git"], { cwd: checkout });
+    assert.equal(
+      fs.existsSync(path.join(checkout, ".git", "objects", "info", "alternates")),
+      true,
+    );
     fs.mkdirSync(path.join(checkout, "venv"));
     fs.writeFileSync(patch, [
       "diff --git a/callback.py b/callback.py",
@@ -255,6 +261,16 @@ test("Hermes compatibility stays in an independently updateable Git checkout", (
     assert.match(runner.run("git", ["status", "--short"], { cwd: compatRoot }), /^ M callback\.py$/m);
     assert.equal(fs.realpathSync(path.join(compatRoot, "venv")), path.join(checkout, "venv"));
     assert.doesNotMatch(runner.run("git", ["status", "--short"], { cwd: compatRoot }), /venv/);
+    assert.equal(
+      fs.existsSync(path.join(compatRoot, ".git", "objects", "info", "alternates")),
+      false,
+    );
+
+    fs.renameSync(checkout, `${checkout}-moved`);
+    fs.renameSync(objectStore, `${objectStore}-moved`);
+    assert.match(runner.run("git", ["status", "--short"], { cwd: compatRoot }), /^ M callback\.py$/m);
+    runner.run("git", ["cat-file", "-e", "HEAD^{tree}"], { cwd: compatRoot });
+    runner.run("git", ["fsck", "--full"], { cwd: compatRoot });
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

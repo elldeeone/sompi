@@ -486,7 +486,7 @@ export function installHermesCompatibilityCheckout(
   const branch = runner.run("git", ["branch", "--show-current"], { cwd: checkout }).trim();
   const origin = runner.run("git", ["remote", "get-url", "origin"], { cwd: checkout }).trim();
   if (!branch || !origin) throw new HostBootstrapError("Hermes compatibility source is not an updateable checkout");
-  runner.run("git", ["clone", "--shared", "--single-branch", "--branch", branch, checkout, compatRoot]);
+  runner.run("git", ["clone", "--no-hardlinks", "--dissociate", "--single-branch", "--branch", branch, checkout, compatRoot]);
   runner.run("git", ["remote", "set-url", "origin", origin], { cwd: compatRoot });
   runner.run("git", ["apply", "--check", patch], { cwd: compatRoot });
   runner.run("git", ["apply", patch], { cwd: compatRoot });

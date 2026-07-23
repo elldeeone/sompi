@@ -53,7 +53,12 @@ export class ChainEvidenceModule {
     request.signal.throwIfAborted();
     const effectiveFloor = strongerFloor(protocolFloor(request.protocolFinality), request.operatorFloor);
     const expectedOutputsDigest = outputsDigest(request);
-    const retained = this.store.findAccepted(request.transactionId);
+    const retained = this.store.findAccepted({
+      transactionId: request.transactionId,
+      outputsDigest: expectedOutputsDigest,
+      mechanism: request.mechanism,
+      minimumLevel: effectiveFloor,
+    });
     if (
       retained &&
       retained.status === "present" &&

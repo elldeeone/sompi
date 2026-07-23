@@ -2,6 +2,26 @@
 
 Last updated: **2026-07-23**
 
+## Architecture programme
+
+Architecture Phase 1 is complete. It started from
+`89b0f1f404ce8e5f2ded88a5b1a99d8ca1743bba`.
+
+The completed corrections now have these properties:
+
+- Retained Chain Evidence must match the transaction, outputs, expected inputs,
+  mechanism, and effective Finality Floor.
+- A matching retained record works after restart without a live source call.
+- A completed Treasury operation resolves its durable observation to the exact
+  accepted Chain Evidence used by the live batch proof.
+- The Hermes compatibility checkout has no Git alternates, even when its source
+  borrows objects, and remains valid after both source stores are removed.
+
+The phase does not change the Journal schema, AP2 or Kaspa-x402 adapters,
+release artifacts, deployment, or the live Terah host.
+
+Architecture Phase 2 is recorded but inactive.
+
 ## Current release
 
 Sompi `0.12.2` repairs the clean-host Hermes onboarding trust boundary.
@@ -72,16 +92,17 @@ Hermes reports that it is current at `d604141d097eec4a49493ad1eaceb9b2ca1e496d`.
 ## Verification
 
 The complete release verifier passed on the release commit and GitHub Node 22 runner.
-The current documentation tree produced these local results:
+The Architecture Phase 1 tree produced these local results:
 
-- 556 unit tests ran.
-- 555 tests passed.
+- 559 unit tests ran.
+- 558 tests passed.
 - One root-only ownership test was skipped as expected.
 - Offline smoke passed.
 - All five alpha.9 conformance checks passed.
 - The npm package boundary check passed.
 
-The release artifact also passed local E2E, Hermes, OpenAPI, Arazzo, clean-install, audit, and consumer checks.
+The complete release verifier also passed local E2E, Hermes, OpenAPI, Arazzo,
+clean-install, licence, audit, and consumer checks.
 The clean-host candidate test used the SHA-256-pinned scriptless installer and reached the privileged boundary.
 
 The registry package is byte-identical to the verified local artifact.
@@ -118,5 +139,5 @@ The deterministic Trusted Authority records signed human approval before an irre
 
 ## Next work
 
-There is no active implementation phase.
-See [the active implementation plan](docs/IMPLEMENTATION_PLAN.md) before you start new work.
+Architecture Phase 2 is the next recorded phase, but it is inactive.
+Do not start it without explicit user authorization.

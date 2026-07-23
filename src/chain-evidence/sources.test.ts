@@ -2,9 +2,13 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { Transaction } from "../kaspa-wasm.js";
-import { ChainEvidenceModule } from "./module.js";
+import { ChainEvidenceModule, meets } from "./module.js";
 import { HttpsAcceptedChainWitness, WrpcOperatorChainObserver } from "./sources.js";
-import type { ChainEvidenceRecord, ChainEvidenceRequest } from "./types.js";
+import type {
+  AcceptedChainEvidenceQuery,
+  ChainEvidenceRecord,
+  ChainEvidenceRequest,
+} from "./types.js";
 
 test("HTTPS accepted history and operator wRPC corroborate the exact transaction and anchor", async () => {
   const { request, transaction } = fixture();
@@ -368,7 +372,14 @@ function acceptedWitness(request: ChainEvidenceRequest, acceptingBlockHash: stri
 function memoryStore() {
   const records: ChainEvidenceRecord[] = [];
   return {
-    findAccepted: (transactionId: string) => records.find((record) => record.transactionId === transactionId && record.status === "present" && record.level !== "provisional"),
+    findAccepted: (query: AcceptedChainEvidenceQuery) => records.find((record) =>
+      record.transactionId === query.transactionId &&
+      record.outputsDigest === query.outputsDigest &&
+      record.mechanism === query.mechanism &&
+      record.status === "present" &&
+      record.level !== undefined &&
+      meets(record.level, query.minimumLevel)
+    ),
     record: (record: ChainEvidenceRecord) => (records.push(record), record),
   };
 }

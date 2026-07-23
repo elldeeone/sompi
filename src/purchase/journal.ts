@@ -52,7 +52,10 @@ import type {
   TreasuryDriverClaim,
   TreasuryDriverLease,
 } from "../treasury/operation-journal.js";
-import type { ChainEvidenceRecord } from "../chain-evidence/types.js";
+import type {
+  AcceptedChainEvidenceQuery,
+  ChainEvidenceRecord,
+} from "../chain-evidence/types.js";
 import {
   validateAdmissionBudgets,
   type AdmissionBudgetProjection,
@@ -2078,15 +2081,44 @@ export class PurchaseJournal {
     return Object.freeze({ ...record });
   }
 
-  findAcceptedChainEvidence(transactionId: string): ChainEvidenceRecord | undefined {
-    if (!/^[a-f0-9]{64}$/.test(transactionId)) throw new JournalInvariantError("Chain Evidence transaction ID is invalid");
+  private findChainEvidence(detailDigest: string): ChainEvidenceRecord | undefined {
+    if (!/^sha256:[A-Za-z0-9_-]{43}$/.test(detailDigest)) {
+      throw new JournalInvariantError("Chain Evidence detail digest is invalid");
+    }
+    const row = this.db.prepare(
+      "SELECT * FROM chain_evidence WHERE detail_digest = ?"
+    ).get(detailDigest) as ChainEvidenceRow | undefined;
+    return row ? chainEvidenceFromRow(row) : undefined;
+  }
+
+  findAcceptedChainEvidence(
+    query: Readonly<AcceptedChainEvidenceQuery>
+  ): ChainEvidenceRecord | undefined {
+    validateAcceptedChainEvidenceQuery(query);
+    const minimumRank = query.minimumLevel === "depth-confirmed" ? 2 : 1;
     const row = this.db.prepare(
       `SELECT * FROM chain_evidence
-       WHERE transaction_id = ? AND status = 'present'
+       WHERE transaction_id = ? AND outputs_digest = ? AND mechanism = ?
+         AND status = 'present'
          AND level IN ('accepted', 'depth-confirmed', 'consensus-final')
-       ORDER BY CASE level WHEN 'consensus-final' THEN 3 WHEN 'depth-confirmed' THEN 2 ELSE 1 END DESC,
-                observed_at_ms DESC LIMIT 1`
-    ).get(transactionId) as ChainEvidenceRow | undefined;
+         AND CASE level
+               WHEN 'consensus-final' THEN 3
+               WHEN 'depth-confirmed' THEN 2
+               ELSE 1
+             END >= ?
+       ORDER BY CASE level
+                  WHEN 'consensus-final' THEN 3
+                  WHEN 'depth-confirmed' THEN 2
+                  ELSE 1
+                END DESC,
+                observed_at_ms DESC
+       LIMIT 1`
+    ).get(
+      query.transactionId,
+      query.outputsDigest,
+      query.mechanism,
+      minimumRank
+    ) as ChainEvidenceRow | undefined;
     return row ? chainEvidenceFromRow(row) : undefined;
   }
 
@@ -3918,6 +3950,39 @@ export class PurchaseJournal {
       throw new JournalInvariantError("direct Treasury observation is malformed");
     }
     return Object.freeze(parsed as Record<string, unknown>);
+  }
+
+  findCompletedTreasuryOperationChainEvidence(
+    operationKey: string
+  ): ChainEvidenceRecord | undefined {
+    const operation = this.findTreasuryOperation(operationKey);
+    if (!operation || operation.state !== "completed") return undefined;
+    const detail = this.readObservedTreasuryOperationDetail(operationKey);
+    if (
+      detail.operationKey !== operation.operationKey ||
+      detail.transactionId !== operation.transactionId ||
+      typeof detail.chainEvidenceDigest !== "string" ||
+      !/^sha256:[A-Za-z0-9_-]{43}$/.test(detail.chainEvidenceDigest) ||
+      !["accepted", "depth-confirmed", "consensus-final"].includes(
+        detail.chainEvidenceLevel as string
+      )
+    ) {
+      throw new JournalInvariantError(
+        "completed Treasury operation has invalid Chain Evidence binding"
+      );
+    }
+    const evidence = this.findChainEvidence(detail.chainEvidenceDigest);
+    if (!evidence) return undefined;
+    if (
+      evidence.transactionId !== operation.transactionId ||
+      evidence.status !== "present" ||
+      evidence.level !== detail.chainEvidenceLevel
+    ) {
+      throw new JournalInvariantError(
+        "completed Treasury operation Chain Evidence changed its durable binding"
+      );
+    }
+    return evidence;
   }
 
   planTreasuryOperationSubmission(operationKey: string, driver?: TreasuryDriverLease): boolean {
@@ -12451,6 +12516,23 @@ function validateChainEvidenceRecord(record: Readonly<ChainEvidenceRecord>): voi
   const accepted = record.level === "accepted" || record.level === "depth-confirmed" || record.level === "consensus-final";
   if (accepted !== Boolean(record.blockHash && record.acceptingBlockHash && record.acceptingBlockDaaScore && record.virtualDaaScore)) {
     throw new JournalInvariantError("accepted Chain Evidence has incomplete anchors");
+  }
+}
+
+function validateAcceptedChainEvidenceQuery(
+  query: Readonly<AcceptedChainEvidenceQuery>
+): void {
+  if (
+    !query ||
+    !/^[a-f0-9]{64}$/.test(query.transactionId) ||
+    !/^sha256:[A-Za-z0-9_-]{43}$/.test(query.outputsDigest) ||
+    !["ordinary", "native-covenant", "kip10-script-template"].includes(
+      query.mechanism
+    ) ||
+    (query.minimumLevel !== "accepted" &&
+      query.minimumLevel !== "depth-confirmed")
+  ) {
+    throw new JournalInvariantError("accepted Chain Evidence query is invalid");
   }
 }
 

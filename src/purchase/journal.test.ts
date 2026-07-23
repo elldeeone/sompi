@@ -27,6 +27,10 @@ import { PurchaseReconciler } from "./reconciliation.js";
 import { authorizationFactsDigest } from "./contracts.js";
 import { JOURNAL_SCHEMA_VERSION } from "./journal-schema.js";
 import type { PurchaseId, Sha256Digest } from "./types.js";
+import {
+  CHAIN_EVIDENCE_PROFILE,
+  type ChainEvidenceRecord,
+} from "../chain-evidence/types.js";
 
 test("journal creates a secure, verified schema and survives restart", () => {
   withJournal(({ filename, journal, reopen }) => {
@@ -43,6 +47,94 @@ test("journal creates a secure, verified schema and survives restart", () => {
     assert.equal(restarted.transitions(purchase.id).length, 1);
     assert.equal(restarted.integrityCheck(), true);
   });
+});
+
+test("completed Treasury operation resolves its accepted Chain Evidence through the Journal", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-journal-treasury-evidence-"));
+  fs.chmodSync(directory, 0o700);
+  const filename = path.join(directory, "purchase.sqlite");
+  const identity = {
+    revision: 1,
+    digest: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  };
+  const journal = new PurchaseJournal(filename, {
+    operatorManifestIdentity: identity,
+    admission: {
+      authorityPreauthSockets: 32,
+      authorityPrompts: 4,
+      prevalidationPurchases: 128,
+      evidenceBytes: 67_108_864,
+      directTreasuryRetries: 3,
+    },
+  });
+  try {
+    const policy = journal.installPolicy({
+      maxPerPaymentAtomic: "1000",
+      maxPerHourAtomic: "10000",
+      allowlist: ["kaspatest:destination"],
+    });
+    const transactionId = "11".repeat(32);
+    const operationKey = "test:treasury:evidence";
+    journal.claimTreasuryOperationIntent({
+      operationKey,
+      requestDigest: evidenceDigest("treasury-evidence-request"),
+      kind: "vault_deposit",
+      destination: "kaspatest:destination",
+      requestedAmountAtomic: "100",
+      feeCeilingAtomic: "10",
+      retryLimit: 3,
+      policyDigest: policy.digest,
+    });
+    journal.recordPreparedTreasuryOperation(operationKey, {
+      bytes: Buffer.from("prepared-treasury-operation", "utf8"),
+      transactionId,
+      amountAtomic: "100",
+      feeAtomic: "10",
+      policyDigest: policy.digest,
+    });
+    assert.equal(journal.planTreasuryOperationSubmission(operationKey), true);
+    const evidence: ChainEvidenceRecord = {
+      profile: CHAIN_EVIDENCE_PROFILE,
+      operationId: operationKey,
+      operation: "vault",
+      transactionId,
+      status: "present",
+      level: "accepted",
+      view: "historical",
+      mechanism: "native-covenant",
+      protocolFinality: "accepted",
+      operatorFloor: "accepted",
+      effectiveFloor: "accepted",
+      primaryProfile: "test-primary",
+      witnessProfile: "test-witness",
+      blockHash: "22".repeat(32),
+      acceptingBlockHash: "33".repeat(32),
+      acceptingBlockDaaScore: "100",
+      virtualDaaScore: "101",
+      outputsDigest: "sha256:BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+      detailDigest: "sha256:CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC",
+      observedAtMs: 1_800_000_000_000,
+    };
+    journal.recordChainEvidence(evidence);
+    journal.recordTreasuryOperationObservation(operationKey, "observed", {
+      profile: "urn:sompi:treasury-operation:observation:1",
+      kind: "vault_deposit",
+      status: "observed",
+      operationKey,
+      transactionId,
+      chainEvidenceDigest: evidence.detailDigest,
+      chainEvidenceLevel: evidence.level,
+    });
+    journal.completeTreasuryOperation(operationKey);
+
+    assert.deepEqual(
+      journal.findCompletedTreasuryOperationChainEvidence(operationKey),
+      evidence,
+    );
+  } finally {
+    journal.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test("Journal binds one immutable Operator Manifest identity before durable work", () => {

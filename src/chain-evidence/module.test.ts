@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { ChainEvidenceModule, digest, outputsDigest } from "./module.js";
-import type { ChainEvidenceRecord, ChainEvidenceRequest, ChainSourceEvidence } from "./types.js";
+import type {
+  AcceptedChainEvidenceQuery,
+  ChainEvidenceRecord,
+  ChainEvidenceRequest,
+  ChainSourceEvidence,
+} from "./types.js";
 
 test("two independent exact sources are required before accepted or depth evidence", async () => {
   const request = fixtureRequest();
@@ -133,7 +138,7 @@ test("fresh accepted evidence remains nonterminal below the operator finality fl
   assert.equal(result.effectiveFloor, "depth-confirmed");
 });
 
-test("retained evidence cannot be replayed for different output or mechanism facts", async () => {
+test("retained evidence refuses mismatched output, input, mechanism, or minimum floor", async () => {
   const request = fixtureRequest();
   const store = memoryStore();
   const accepted = sourceAccepted(request, "accepted");
@@ -151,12 +156,44 @@ test("retained evidence cannot be replayed for different output or mechanism fac
     store,
     () => 1_800_000_001_000
   );
-  const changedOutput = {
-    ...request,
-    expectedOutputs: [{ ...request.expectedOutputs[0], amountAtomic: "124" }],
-  };
-  assert.equal((await restarted.observe(changedOutput)).status, "unavailable");
-  assert.equal(observed, 2);
+  const cases: ReadonlyArray<{
+    readonly label: string;
+    readonly request: ChainEvidenceRequest;
+  }> = [
+    {
+      label: "different output",
+      request: {
+        ...request,
+        expectedOutputs: [
+          { ...request.expectedOutputs[0], amountAtomic: "124" },
+        ],
+      },
+    },
+    {
+      label: "different input",
+      request: {
+        ...request,
+        expectedInputs: [{ transactionId: "bb".repeat(32), index: 0 }],
+      },
+    },
+    {
+      label: "different mechanism",
+      request: { ...request, mechanism: "ordinary" },
+    },
+    {
+      label: "insufficient minimum floor",
+      request: { ...request, operatorFloor: "depth-confirmed" },
+    },
+  ];
+
+  for (const candidate of cases) {
+    assert.equal(
+      (await restarted.observe(candidate.request)).status,
+      "unavailable",
+      candidate.label
+    );
+  }
+  assert.equal(observed, cases.length * 2);
 });
 
 function fixtureRequest(): ChainEvidenceRequest {
@@ -196,14 +233,34 @@ function memoryStore() {
   const records: ChainEvidenceRecord[] = [];
   return {
     records,
-    findAccepted(transactionId: string) {
-      return [...records].reverse().find((record) => record.transactionId === transactionId && record.status === "present" && record.level !== "provisional");
+    findAccepted(query: AcceptedChainEvidenceQuery) {
+      return [...records].reverse().find((record) =>
+        record.transactionId === query.transactionId &&
+        record.outputsDigest === query.outputsDigest &&
+        record.mechanism === query.mechanism &&
+        record.status === "present" &&
+        record.level !== "provisional" &&
+        meetsFloor(record.level, query.minimumLevel)
+      );
     },
     record(record: ChainEvidenceRecord) {
       records.push(record);
       return record;
     },
   };
+}
+
+function meetsFloor(
+  level: ChainEvidenceRecord["level"],
+  floor: AcceptedChainEvidenceQuery["minimumLevel"]
+): boolean {
+  const rank = {
+    provisional: 0,
+    accepted: 1,
+    "depth-confirmed": 2,
+    "consensus-final": 3,
+  } as const;
+  return level !== undefined && rank[level] >= rank[floor];
 }
 
 function pick(record: ChainEvidenceRecord) {
