@@ -61,26 +61,15 @@ ordinary x402 Merchant.
 
 ## Install with Hermes
 
-Use the Sompi skill from this exact checkout. Give this instruction to Hermes:
+Copy this prompt to your agent:
 
-> Install the Sompi skill from `integrations/hermes/sompi/SKILL.md` in this
-> checkout. Then, set up Sompi for this host.
+```text
+Install and set up Sompi. Read and follow every instruction at:
+https://raw.githubusercontent.com/elldeeone/sompi/v0.12.1/integrations/hermes/sompi/SKILL.md
+```
 
-Hermes collects non-secret host data. It then gives you one local command.
-
-Run that command in a local terminal. The command requests the Telegram bot
-token with hidden input. It installs the isolated services and returns one
-Testnet-10 receive address.
-
-Send funds to the receive address. Then, run the returned `activateCommand`
-one time. Sompi will use the same receive address for future deposits.
-
-The Hermes service receives the Agent API credential locator.
-The model and agent must not read or receive the credential contents.
-Hermes does not receive sudo, wallet keys, the recovery key, or the Telegram token.
-
-Read the [Hermes skill](integrations/hermes/sompi/SKILL.md) and the
-[operator runbook](docs/runbooks/OPERATOR_PROVISIONING.md) for more information.
+The linked skill contains the complete installation procedure and all manual
+handoffs.
 
 ## Wallet
 

@@ -8,6 +8,9 @@ import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const temporary = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-release-"));
+const releaseVersion = JSON.parse(
+  fs.readFileSync(path.join(root, "package.json"), "utf8"),
+).version;
 
 try {
   assertExactDependencyPins();
@@ -31,7 +34,7 @@ try {
   ], root);
   run(process.execPath, [path.join(root, "dist", "openapi-main.js"), "check"], root);
   run(process.execPath, [path.join(root, "dist", "arazzo-main.js"), "check"], root);
-  run("npm", ["audit", "--omit=dev"], root);
+  const productionAudit = auditProductionDependencies();
   run("npm", ["pack", "--pack-destination", temporary], root);
 
   const archives = fs.readdirSync(temporary)
@@ -40,6 +43,11 @@ try {
   if (archives.length !== 1) fail("npm pack did not produce exactly one archive");
   const archive = archives[0];
   run(process.execPath, [path.join(root, "scripts", "verify-packed-artifact.mjs"), archive], root);
+  run(process.execPath, [
+    path.join(root, "test", "hermes-onboarding", "verify-clean-preview.mjs"),
+    "--package",
+    archive,
+  ], root);
 
   const consumer = path.join(temporary, "consumer");
   fs.mkdirSync(consumer, { mode: 0o700 });
@@ -55,7 +63,7 @@ try {
     path.join(root, "scripts", "install-runtime-package.mjs"),
     "--prefix", consumer,
     "--package", archive,
-    "--expected-version", "0.12.0",
+    "--expected-version", releaseVersion,
   ], root);
   assertInstalledPackage(consumer);
   assertInstalledLicences(consumer);
@@ -71,7 +79,7 @@ try {
     archive: path.basename(archive),
     cleanInstall: true,
     installedLicenceAudit: true,
-    productionAudit: "clean",
+    productionAudit,
   })}\n`);
 } finally {
   fs.rmSync(temporary, { recursive: true, force: true });
@@ -99,7 +107,7 @@ function assertInstalledPackage(consumer) {
   const manifest = JSON.parse(fs.readFileSync(path.join(packageRoot, "package.json"), "utf8"));
   if (
     manifest.name !== "@elldeeone/sompi" ||
-    manifest.version !== "0.12.0" ||
+    manifest.version !== releaseVersion ||
     Object.prototype.hasOwnProperty.call(manifest, "main") ||
     JSON.stringify(manifest.exports) !== JSON.stringify({ "./package.json": "./package.json" })
   ) fail("clean installation exposed an unexpected package identity or export");
@@ -136,6 +144,66 @@ function assertInstalledLicences(consumer) {
       if (fs.existsSync(nested)) roots.push(nested);
     }
   }
+}
+
+function auditProductionDependencies() {
+  const result = spawnSync("npm", ["audit", "--omit=dev", "--json"], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  if (result.error || (result.status !== 0 && result.status !== 1)) {
+    fail("npm production audit could not run");
+  }
+  let report;
+  try {
+    report = JSON.parse(result.stdout);
+  } catch {
+    fail("npm production audit did not return JSON");
+  }
+  if (result.status === 0) return "clean";
+
+  const vulnerabilities = report?.vulnerabilities;
+  const counts = report?.metadata?.vulnerabilities;
+  if (
+    !vulnerabilities || !counts ||
+    JSON.stringify(Object.keys(vulnerabilities).sort()) !==
+      JSON.stringify(["@hono/node-server", "@modelcontextprotocol/sdk"]) ||
+    counts.info !== 0 || counts.low !== 0 || counts.moderate !== 2 ||
+    counts.high !== 0 || counts.critical !== 0 || counts.total !== 2
+  ) {
+    fail("npm production audit contains a non-allowlisted advisory");
+  }
+  const hono = vulnerabilities["@hono/node-server"];
+  const sdk = vulnerabilities["@modelcontextprotocol/sdk"];
+  if (
+    hono?.severity !== "moderate" ||
+    hono?.isDirect !== false ||
+    !Array.isArray(hono.via) ||
+    hono.via.length !== 1 ||
+    hono.via[0]?.url !== "https://github.com/advisories/GHSA-frvp-7c67-39w9" ||
+    sdk?.severity !== "moderate" ||
+    sdk?.isDirect !== true ||
+    JSON.stringify(sdk.via) !== JSON.stringify(["@hono/node-server"])
+  ) {
+    fail("npm production audit allowlist no longer matches the exact advisory");
+  }
+  for (const filename of sourceFiles(path.join(root, "src"))) {
+    const source = fs.readFileSync(filename, "utf8");
+    if (/@hono\/node-server|from\s+["']hono|serveStatic/.test(source)) {
+      fail("the allowlisted Hono server dependency is now used by Sompi source");
+    }
+  }
+  return "allowlisted GHSA-frvp-7c67-39w9";
+}
+
+function sourceFiles(directory) {
+  const result = [];
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const target = path.join(directory, entry.name);
+    if (entry.isDirectory()) result.push(...sourceFiles(target));
+    else if (entry.isFile() && entry.name.endsWith(".ts")) result.push(target);
+  }
+  return result;
 }
 
 function run(command, args, cwd, extraEnv = {}) {
