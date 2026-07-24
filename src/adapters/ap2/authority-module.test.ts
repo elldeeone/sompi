@@ -33,9 +33,11 @@ import { Ap2AuthorityDecisionEvidenceVerifier } from "./authority-decision.js";
 import { Ap2AuthorityModule } from "./authority-module.js";
 import {
   Ap2HumanAuthorityDecisionProvider,
-  type AuthorityApprovalDisplay,
-  type AuthorityApprovalPrompt,
 } from "./human-authority.js";
+import type {
+  AuthorityApprovalDisplay,
+  AuthorityApprovalPrompt,
+} from "../../authority/approval-ceremony.js";
 
 const KEY = new Uint8Array(AUTHORITY_MAC_KEY_BYTES).fill(0x9d);
 
@@ -112,6 +114,16 @@ test("the human display is exactly the independently signed Purchase decision", 
       authorityFactsDigest(facts),
       "the verified signature must bind the exact facts rendered to the human",
     );
+    assert.equal(
+      result.decision.evidence.factsDigest,
+      "sha256:wI2z-LUE7vLnwWge_CSG-sUfhp1GRhgZVGBs4tjMCmg",
+      "the standard Purchase-to-Authority fact projection must remain byte stable",
+    );
+    assert.equal(
+      result.decision.evidence.requestDigest,
+      "sha256:dJAR0I6z6f1T1cmg6kBuoY24kO-pRNkevhfnnv3pPXo",
+      "the standard authenticated Authority request must remain byte stable",
+    );
     assert.equal(result.decision.evidence.purchaseId, fixture.displayed?.purchaseId);
     assert.equal(result.decision.evidence.checkoutDigest, fixture.displayed?.checkoutDigest);
   } finally {
@@ -149,6 +161,16 @@ test("batch approval displays and signs the channel epoch, charge ceiling, and a
     assert.equal(result.decision.facts.executionProfile, "kaspa-escrow-v1:batch-settlement");
     assert.equal(result.decision.facts.channelEpochDigest, channelEpochDigest);
     assert.equal(result.decision.evidence.factsDigest, authorityFactsDigest(result.decision.facts));
+    assert.equal(
+      result.decision.evidence.factsDigest,
+      "sha256:7bpYEgS-R4Ew5_d2QfNLAaWhtvOBoyJb-aoccmaO9kk",
+      "the batch Purchase-to-Authority fact projection must remain byte stable",
+    );
+    assert.equal(
+      result.decision.evidence.requestDigest,
+      "sha256:0okbhVW71ZLssJqrGytQFbqAfkCqAKCsMxzJZDLIOXI",
+      "the batch authenticated Authority request must remain byte stable",
+    );
   } finally {
     await fixture.close();
   }

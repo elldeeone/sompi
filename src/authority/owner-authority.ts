@@ -5,12 +5,10 @@ import * as path from "node:path";
 import Database from "better-sqlite3";
 import { SignJWT, decodeProtectedHeader, jwtVerify, type JWTPayload } from "jose";
 
-import type {
-  AuthorityApprovalPrompt,
-  PolicyChangeAuthorityApprovalDisplay,
-  TransferAuthorityApprovalDisplay,
-  VaultMigrationAuthorityApprovalDisplay,
-} from "../adapters/ap2/human-authority.js";
+import {
+  ownerAuthorityApprovalDisplay,
+  type AuthorityApprovalPrompt,
+} from "./approval-ceremony.js";
 import type { Ap2PublicKeyResolver, Ap2SigningIdentity } from "../adapters/ap2/types.js";
 import { importSigningKey, resolveTrustedPublicKey } from "../adapters/ap2/crypto.js";
 import type { AuthorityAuthenticationProvider } from "./key-provider.js";
@@ -272,7 +270,7 @@ export class OwnerAuthorityService {
       }
       throw error;
     }
-    const display = ownerApprovalDisplay(message.facts, requestDigest);
+    const display = ownerAuthorityApprovalDisplay(message.facts, requestDigest);
     let approved: boolean;
     try {
       approved = await this.options.prompt.approve(display, signal);
@@ -499,77 +497,6 @@ function validateVaultMigrationFacts(facts: VaultMigrationFacts): VaultMigration
     !requireDigest(facts.operatorManifestDigest, "manifest") || !validLifetime(facts.issuedAt, facts.expiresAt)
   ) throw new Error("Owner Authority Vault Migration facts are invalid");
   return Object.freeze({ ...facts });
-}
-
-function ownerApprovalDisplay(
-  facts: OwnerAuthorityFacts,
-  requestDigest: string,
-): TransferAuthorityApprovalDisplay | PolicyChangeAuthorityApprovalDisplay | VaultMigrationAuthorityApprovalDisplay {
-  if (facts.profile === "sompi.vault-migration.1") {
-    return Object.freeze({
-      kind: "vault-migration", profile: facts.profile, authorityRequestDigest: requestDigest,
-      vaultMigrationId: facts.vaultMigrationId, requestKey: facts.requestKey,
-      oldVaultDigest: facts.oldVaultDigest,
-      expectedPolicyDigest: facts.expectedPolicyDigest,
-      expectedPolicyGeneration: facts.expectedPolicyGeneration,
-      oldMaximumOutflowAtomic: facts.oldMaximumOutflowAtomic,
-      newMaximumOutflowAtomic: facts.newMaximumOutflowAtomic,
-      windowSizeDaa: facts.windowSizeDaa,
-      windowStartDaa: facts.windowStartDaa,
-      spentInWindowAtomic: facts.spentInWindowAtomic,
-      stableReceiveAddress: facts.stableReceiveAddress,
-      stableReceiveAddressWillNotChange: true, requiresOfflineOwnerKey: true,
-      issuedAt: facts.issuedAt,
-      termsExpiresAt: facts.expiresAt,
-      operatorManifestRevision: facts.operatorManifestRevision,
-      operatorManifestDigest: facts.operatorManifestDigest,
-    });
-  }
-  if (facts.profile === "sompi.policy-change.1") {
-    return Object.freeze({
-      kind: "policy-change",
-      profile: facts.profile,
-      authorityRequestDigest: requestDigest,
-      policyChangeId: facts.policyChangeId,
-      requestKey: facts.requestKey,
-      expectedPolicyDigest: facts.expectedPolicyDigest,
-      expectedPolicyVersion: facts.expectedPolicyVersion,
-      expectedPolicyGeneration: facts.expectedPolicyGeneration,
-      expectedVaultDigest: facts.expectedVaultDigest,
-      previousMaximumPerPaymentAtomic: facts.previousMaximumPerPaymentAtomic,
-      previousMaximumPerHourAtomic: facts.previousMaximumPerHourAtomic,
-      proposedMaximumPerPaymentAtomic: facts.proposedMaximumPerPaymentAtomic,
-      proposedMaximumPerHourAtomic: facts.proposedMaximumPerHourAtomic,
-      vaultMaximumOutflowAtomic: facts.vaultMaximumOutflowAtomic,
-      everyPaymentRequiresApproval: true,
-      issuedAt: facts.issuedAt,
-      termsExpiresAt: facts.expiresAt,
-      operatorManifestRevision: facts.operatorManifestRevision,
-      operatorManifestDigest: facts.operatorManifestDigest,
-    });
-  }
-  return Object.freeze({
-    kind: "transfer",
-    profile: facts.profile,
-    authorityRequestDigest: requestDigest,
-    transferId: facts.transferId,
-    requestKey: facts.requestKey,
-    sourceVaultAddress: facts.sourceVaultAddress,
-    sourceVaultDigest: facts.sourceVaultDigest,
-    destination: facts.destination,
-    amountAtomic: facts.amountAtomic,
-    asset: facts.asset,
-    network: facts.network,
-    feeCeilingAtomic: facts.feeCeilingAtomic,
-    maximumTotalAtomic: facts.maximumTotalAtomic,
-    issuedAt: facts.issuedAt,
-    termsExpiresAt: facts.expiresAt,
-    policyDigest: facts.policyDigest,
-    operatorManifestRevision: facts.operatorManifestRevision,
-    operatorManifestDigest: facts.operatorManifestDigest,
-    finalityFloor: facts.finalityFloor,
-    recoveryRetry: false,
-  });
 }
 
 async function issueDecisionEvidence(signer: Ap2SigningIdentity, message: OwnerAuthorityRequestMessage, requestDigest: string, decision: "approved" | "denied", decidedAtMs: number): Promise<Uint8Array> {

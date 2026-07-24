@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
+import { SompiOperationFailure } from "../operation-failure.js";
 import {
   PurchaseCoordinator,
   certifyVerifiedCheckoutDiscovery,
@@ -55,7 +56,12 @@ import {
 import { EgressPolicy } from "./egress-policy.js";
 import { JournalBatchVoucherAuthorizer } from "../adapters/kaspa-x402/batch-payment-module.js";
 import { evidenceDigest, assertPurchaseRequestKey, createPurchaseId } from "./identity.js";
-import { PurchaseJournal, type JournalFaultPoint } from "./journal.js";
+import {
+  EvidenceAdmissionError,
+  PurchaseAdmissionError,
+  PurchaseJournal,
+  type JournalFaultPoint,
+} from "./journal.js";
 import type { CheckoutTerms, PurchaseId, PurchaseIntent, PurchaseModule } from "./types.js";
 
 const NOW = Date.parse("2030-01-01T00:00:00.000Z");
@@ -613,14 +619,115 @@ test("same request key with changed intent conflicts and concurrent callers shar
     const final = await coordinator.status(first.id);
     assert.ok(["created", "receipted"].includes(second.state));
     assert.equal(final.state, "receipted");
-    await assert.rejects(() => coordinator.purchase({
+    await assert.rejects(
+      () => coordinator.purchase({
+        ...intent,
+        resource: { ...intent.resource, url: "https://merchant.example/other" },
+      }),
+      operationFailure("PURCHASE_CONFLICT"),
+    );
+    await assert.rejects(
+      () => coordinator.purchase({
+        ...intent,
+        resource: { ...intent.resource, mediaType: "application/json" },
+      }),
+      operationFailure("PURCHASE_CONFLICT"),
+    );
+  });
+});
+
+test("Purchase expected failures are stable and Journal faults stay internal", async () => {
+  await withFixture(async ({ coordinator, intent, journal }) => {
+    const missing = createPurchaseId(new Uint8Array(16).fill(9));
+    await assert.rejects(
+      () => coordinator.status(missing),
+      operationFailure("PURCHASE_NOT_FOUND"),
+    );
+
+    const create = journal.createPurchaseWithEvidence;
+    for (const [index, cause] of [
+      new PurchaseAdmissionError(),
+      new EvidenceAdmissionError(),
+    ].entries()) {
+      journal.createPurchaseWithEvidence = (() => {
+        throw cause;
+      }) as PurchaseJournal["createPurchaseWithEvidence"];
+      await assert.rejects(
+        () => coordinator.purchase({
+          ...intent,
+          requestKey: assertPurchaseRequestKey(`purchase:admission:${index}`),
+        }),
+        operationFailure("PURCHASE_ADMISSION_SATURATED"),
+      );
+    }
+    journal.createPurchaseWithEvidence = create;
+
+    const raceIntent = {
       ...intent,
-      resource: { ...intent.resource, url: "https://merchant.example/other" },
-    }));
-    await assert.rejects(() => coordinator.purchase({
-      ...intent,
-      resource: { ...intent.resource, mediaType: "application/json" },
-    }));
+      requestKey: assertPurchaseRequestKey("purchase:request-key-race"),
+    };
+    const winner = await coordinator.purchase(raceIntent);
+    const afterStaleRequestKeyPrelookup = async <Result>(
+      run: () => Promise<Result>,
+    ): Promise<Result> => {
+      const findPurchaseByRequestKey = journal.findPurchaseByRequestKey;
+      let lookupCount = 0;
+      journal.findPurchaseByRequestKey = ((requestKey) => {
+        lookupCount += 1;
+        if (lookupCount === 1) return undefined;
+        return findPurchaseByRequestKey.call(journal, requestKey);
+      }) as PurchaseJournal["findPurchaseByRequestKey"];
+      try {
+        const result = await run();
+        assert.equal(lookupCount, 2);
+        return result;
+      } finally {
+        journal.findPurchaseByRequestKey = findPurchaseByRequestKey;
+      }
+    };
+
+    const replay = await afterStaleRequestKeyPrelookup(
+      () => coordinator.purchase(raceIntent),
+    );
+    assert.equal(replay.id, winner.id);
+
+    await afterStaleRequestKeyPrelookup(
+      () => assert.rejects(
+        () => coordinator.purchase({
+          ...raceIntent,
+          resource: {
+            ...raceIntent.resource,
+            url: "https://merchant.example/request-key-race-other",
+          },
+        }),
+        operationFailure("PURCHASE_CONFLICT"),
+      ),
+    );
+
+    journal.createPurchaseWithEvidence = (() => {
+      throw new Error("injected Purchase creation fault");
+    }) as PurchaseJournal["createPurchaseWithEvidence"];
+    await assert.rejects(
+      () => coordinator.purchase({
+        ...intent,
+        requestKey: assertPurchaseRequestKey("purchase:create-fault"),
+      }),
+      (error: unknown) =>
+        error instanceof Error &&
+        !(error instanceof SompiOperationFailure) &&
+        error.message === "injected Purchase creation fault",
+    );
+
+    journal.findPurchase = () => {
+      throw new Error("injected Journal storage fault");
+    };
+    await assert.rejects(
+      () => coordinator.status(missing),
+      (error: unknown) =>
+        error instanceof Error &&
+        !(error instanceof SompiOperationFailure) &&
+        error.message === "injected Journal storage fault",
+    );
   });
 });
 
@@ -963,6 +1070,12 @@ function makeCoordinator(
   );
   dependencies.module = coordinator;
   return coordinator;
+}
+
+function operationFailure(code: SompiOperationFailure["code"]): (error: unknown) => boolean {
+  return (error: unknown) =>
+    error instanceof SompiOperationFailure &&
+    error.code === code;
 }
 
 let instanceCounter = 0;

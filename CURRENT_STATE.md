@@ -20,7 +20,22 @@ The completed corrections now have these properties:
 The phase does not change the Journal schema, AP2 or Kaspa-x402 adapters,
 release artifacts, deployment, or the live Terah host.
 
-Architecture Phase 2 is recorded but inactive.
+Architecture Phase 2 is complete. It started from
+`64177e16497b7279de7eca39cb144282f4e7d0f8`.
+
+The completed changes now have these properties:
+
+- One closed contract owns the current 14 local operations and drives the
+  server, client, OpenAPI, and Arazzo projections.
+- Stable operation failures are separate from HTTP status. Internal storage
+  faults remain private.
+- Trusted Authority owns approval display facts, subject rules, terminal
+  confirmation, Telegram presentation, and owner projections.
+- The AP2 adapter owns only AP2-derived verification and evidence work.
+- AP2-derived bytes and the Kaspa-x402 pin, source, fixtures, and conformance
+  provenance are unchanged.
+
+No accepted decision changes in this phase. No new ADR is required.
 
 ## Current release
 
@@ -107,6 +122,18 @@ The clean-host candidate test used the SHA-256-pinned scriptless installer and r
 
 The registry package is byte-identical to the verified local artifact.
 
+The Architecture Phase 2 tree produced these local results:
+
+- 590 unit tests ran.
+- 589 tests passed.
+- One root-only ownership test was skipped as expected.
+- Offline smoke passed.
+- All five alpha.9 conformance checks passed.
+- OpenAPI and Arazzo generated-interface checks passed.
+- The complete release verifier passed on an isolated clean copy of the exact
+  Phase 2 tree.
+- The Kaspa-x402 source, pin, fixtures, and conformance provenance did not change.
+
 ## Funded evidence
 
 The [alpha.9 clean-cutover evidence](https://github.com/elldeeone/sompi/blob/c8fd02fa403b7e4f43dfa91653c0c232867d8ed8/evidence/alpha9-clean-cutover/README.md) is public and contains no secrets.
@@ -139,5 +166,5 @@ The deterministic Trusted Authority records signed human approval before an irre
 
 ## Next work
 
-Architecture Phase 2 is the next recorded phase, but it is inactive.
-Do not start it without explicit user authorization.
+Architecture Phase 3 is the next planned phase. It is not active.
+Do not start Phase 3 without explicit user authorization.

@@ -1,7 +1,14 @@
 import { createHash, randomBytes } from "node:crypto";
 
+import { SompiOperationFailure } from "../operation-failure.js";
 import type { OperatorManifestIdentity } from "../operator/manifest.js";
-import { PurchaseJournal, type VaultMigrationJournalRecord } from "../purchase/journal.js";
+import {
+  JournalNotFoundError,
+  JournalRequestConflictError,
+  PolicyReservationError,
+  PurchaseJournal,
+  type VaultMigrationJournalRecord,
+} from "../purchase/journal.js";
 import type { Sha256Digest } from "../purchase/types.js";
 import type { VaultManager } from "../vault.js";
 import { vaultStaticConfigurationDigest } from "../vault.js";
@@ -50,39 +57,52 @@ export class VaultMigrationModule {
     const existing = this.options.journal.findVaultMigrationByRequestKey(normalized.requestKey);
     if (existing) {
       if (existing.newMaximumOutflowAtomic !== normalized.newMaximumOutflowAtomic) {
-        throw new Error("Vault Migration request key is already bound to different protection");
+        throw new SompiOperationFailure("VAULT_MIGRATION_CONFLICT");
       }
       return this.resume(existing, signal);
     }
     const config = this.options.vault.config();
     const activation = this.options.journal.requireActivePolicyActivation();
-    this.assertEverydayLimitsFit(normalized.newMaximumOutflowAtomic);
+    this.assertEverydayLimitsFit(normalized.newMaximumOutflowAtomic, true);
     const manifest = this.options.manifest();
     const now = timestamp(this.now);
-    let record = this.options.journal.createVaultMigration({
-      id: `vmg_${randomBytes(16).toString("base64url")}`,
-      requestKey: normalized.requestKey,
-      oldVaultDigest: vaultStaticConfigurationDigest(config) as Sha256Digest,
-      expectedPolicyDigest: activation.policy.digest,
-      expectedPolicyGeneration: activation.activationGeneration,
-      oldMaximumOutflowAtomic: config.maxOutflowSompi,
-      newMaximumOutflowAtomic: normalized.newMaximumOutflowAtomic,
-      windowSizeDaa: config.windowSizeDaa,
-      windowStartDaa: config.windowStartDaa,
-      spentInWindowAtomic: config.spentInWindowSompi,
-      stableReceiveAddress: this.options.wallet.address,
-      manifestRevision: manifest.revision,
-      manifestDigest: manifest.digest as Sha256Digest,
-      expiresAtMs: now + this.approvalTtlMs,
-    });
-    record = this.options.journal.markVaultMigrationAwaitingAuthority(record.id);
+    let record: VaultMigrationJournalRecord;
+    try {
+      record = this.options.journal.createVaultMigration({
+        id: `vmg_${randomBytes(16).toString("base64url")}`,
+        requestKey: normalized.requestKey,
+        oldVaultDigest: vaultStaticConfigurationDigest(config) as Sha256Digest,
+        expectedPolicyDigest: activation.policy.digest,
+        expectedPolicyGeneration: activation.activationGeneration,
+        oldMaximumOutflowAtomic: config.maxOutflowSompi,
+        newMaximumOutflowAtomic: normalized.newMaximumOutflowAtomic,
+        windowSizeDaa: config.windowSizeDaa,
+        windowStartDaa: config.windowStartDaa,
+        spentInWindowAtomic: config.spentInWindowSompi,
+        stableReceiveAddress: this.options.wallet.address,
+        manifestRevision: manifest.revision,
+        manifestDigest: manifest.digest as Sha256Digest,
+        expiresAtMs: now + this.approvalTtlMs,
+      });
+    } catch (cause) {
+      if (
+        cause instanceof JournalRequestConflictError ||
+        cause instanceof PolicyReservationError
+      ) {
+        throw new SompiOperationFailure("VAULT_MIGRATION_CONFLICT", { cause });
+      }
+      throw cause;
+    }
+    if (record.state === "created") {
+      record = this.options.journal.markVaultMigrationAwaitingAuthority(record.id);
+    }
     return this.resume(record, signal);
   }
 
   status(id: string): VaultMigrationView {
-    if (!ID.test(id)) throw new Error("Vault Migration identity is invalid");
+    if (!ID.test(id)) throw new SompiOperationFailure("INVALID_VAULT_MIGRATION");
     this.options.journal.expireStaleVaultMigration();
-    return view(this.options.journal.vaultMigration(id));
+    return view(this.requireVaultMigration(id));
   }
 
   async execute(id: string, executor: VaultMigrationExecutor, signal?: AbortSignal): Promise<VaultMigrationView> {
@@ -162,10 +182,34 @@ export class VaultMigrationModule {
     );
   }
 
-  private assertEverydayLimitsFit(newMaximumOutflowAtomic: string): void {
+  private assertEverydayLimitsFit(
+    newMaximumOutflowAtomic: string,
+    proposalFailure = false,
+  ): void {
     const everydayMaximum = this.options.everydayMaximumAtomic();
-    if (!/^[1-9][0-9]*$/.test(everydayMaximum) || BigInt(everydayMaximum) > BigInt(newMaximumOutflowAtomic)) {
+    if (
+      typeof everydayMaximum !== "string" ||
+      !/^[1-9][0-9]*$/.test(everydayMaximum) ||
+      BigInt(everydayMaximum) > UINT64_MAX
+    ) {
+      throw new Error("Vault Migration everyday maximum is invalid");
+    }
+    if (BigInt(everydayMaximum) > BigInt(newMaximumOutflowAtomic)) {
+      if (proposalFailure) {
+        throw new SompiOperationFailure("INVALID_VAULT_MIGRATION");
+      }
       throw new Error("lower the everyday hourly limit before lowering vault protection below it");
+    }
+  }
+
+  private requireVaultMigration(id: string): VaultMigrationJournalRecord {
+    try {
+      return this.options.journal.vaultMigration(id);
+    } catch (cause) {
+      if (cause instanceof JournalNotFoundError) {
+        throw new SompiOperationFailure("VAULT_MIGRATION_NOT_FOUND", { cause });
+      }
+      throw cause;
     }
   }
 
@@ -206,9 +250,11 @@ function factsFor(record: VaultMigrationJournalRecord): VaultMigrationFacts {
 }
 
 function normalizeIntent(intent: VaultMigrationIntent): VaultMigrationIntent {
-  if (!intent || !REQUEST_KEY.test(intent.requestKey)) throw new Error("Vault Migration request key is invalid");
+  if (!intent || !REQUEST_KEY.test(intent.requestKey)) {
+    throw new SompiOperationFailure("INVALID_VAULT_MIGRATION");
+  }
   if (!/^[1-9][0-9]*$/.test(intent.newMaximumOutflowAtomic) || BigInt(intent.newMaximumOutflowAtomic) > UINT64_MAX) {
-    throw new Error("new vault protection maximum must be a positive KAS atomic amount");
+    throw new SompiOperationFailure("INVALID_VAULT_MIGRATION");
   }
   return Object.freeze({ ...intent });
 }

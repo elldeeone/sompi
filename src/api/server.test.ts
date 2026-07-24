@@ -19,6 +19,11 @@ import {
   type RunningSompiApiServer,
 } from "./server.js";
 import type { PurchaseView } from "../purchase/types.js";
+import {
+  SOMPI_OPERATION_FAILURES,
+  SompiOperationFailure,
+  type SompiOperationFailureCode,
+} from "../operation-failure.js";
 import type { TransferView } from "../transfer/types.js";
 import type { WalletView } from "../wallet-view/module.js";
 
@@ -46,6 +51,79 @@ test("authenticated HTTP routes call one canonical Purchase application over the
     assert.deepEqual(calls, ["purchase", "status", "recover"]);
     const stat = fs.lstatSync(running.socketPath);
     assert.equal(stat.mode & 0o777, 0o660);
+  } finally {
+    await running.close();
+  }
+});
+
+test("HTTP projects every stable operation failure and keeps internal faults internal", async () => {
+  const credential = generateAgentApiCredential();
+  let outcome: SompiOperationFailureCode | "invalid-response" | "internal" =
+    "PURCHASE_NOT_FOUND";
+  const application = fakeApplication({
+    async status() {
+      if (outcome === "invalid-response") return {} as PurchaseView;
+      if (outcome === "internal") throw new Error("private storage detail");
+      throw new SompiOperationFailure(outcome);
+    },
+  });
+  const running = await startTestServer({ application, credential });
+  const auth = { authorization: `Bearer ${credential.token}` };
+  const expectedStatus: Readonly<Record<SompiOperationFailureCode, number>> = {
+    PURCHASE_CONFLICT: 409,
+    PURCHASE_NOT_FOUND: 404,
+    PURCHASE_ADMISSION_SATURATED: 429,
+    INVALID_TRANSFER: 400,
+    TRANSFER_CONFLICT: 409,
+    TRANSFER_DENIED: 403,
+    TRANSFER_EXPIRED: 410,
+    TRANSFER_FAILED: 500,
+    TRANSFER_NOT_FOUND: 404,
+    INVALID_POLICY_CHANGE: 400,
+    POLICY_CHANGE_CONFLICT: 409,
+    POLICY_CHANGE_NOT_FOUND: 404,
+    INVALID_VAULT_MIGRATION: 400,
+    VAULT_MIGRATION_CONFLICT: 409,
+    VAULT_MIGRATION_NOT_FOUND: 404,
+  };
+  try {
+    for (const [code, definition] of Object.entries(
+      SOMPI_OPERATION_FAILURES,
+    ) as [SompiOperationFailureCode, (typeof SOMPI_OPERATION_FAILURES)[SompiOperationFailureCode]][]) {
+      outcome = code;
+      const response = await apiRequest(
+        running.socketPath,
+        "GET",
+        `/purchases/${fakeView().id}`,
+        auth,
+      );
+      assert.equal(response.status, expectedStatus[code], code);
+      assert.deepEqual(response.json, {
+        error: {
+          code,
+          message: definition.message,
+          retryable: definition.retryable,
+        },
+      });
+    }
+
+    for (const internal of ["invalid-response", "internal"] as const) {
+      outcome = internal;
+      const response = await apiRequest(
+        running.socketPath,
+        "GET",
+        `/purchases/${fakeView().id}`,
+        auth,
+      );
+      assert.equal(response.status, 500, internal);
+      assert.deepEqual(response.json, {
+        error: {
+          code: "INTERNAL_ERROR",
+          message: "Sompi stopped safely. Ask the operator to check the local service.",
+          retryable: false,
+        },
+      });
+    }
   } finally {
     await running.close();
   }
@@ -240,7 +318,11 @@ test("operator recovery remains available while the lower-trust agent listener i
   const gid = typeof process.getgid === "function" ? process.getgid() : 0;
   fs.chownSync(directory, uid, gid);
   fs.chmodSync(directory, 0o710);
-  const application = fakeApplication();
+  const application = fakeApplication({
+    async transferStatus() { return fakeTransfer(); },
+    async transferRecover() { return fakeTransfer(); },
+    async policyChangeRecover() { return fakePolicyChange(); },
+  });
   const agentCredential = generateAgentApiCredential();
   const recoveryCredential = generateRecoveryApiCredential();
   const agent = await startSompiApiServer({
@@ -274,6 +356,12 @@ test("operator recovery remains available while the lower-trust agent listener i
     const auth = { authorization: `Bearer ${recoveryCredential.token}` };
     assert.equal((await apiRequest(recovery.socketPath, "GET", `/purchases/${fakeView().id}`, auth)).status, 200);
     assert.equal((await apiRequest(recovery.socketPath, "POST", `/purchases/${fakeView().id}/recover`, auth)).status, 200);
+    assert.equal((await apiRequest(recovery.socketPath, "GET", `/transfers/${fakeTransfer().id}`, auth)).status, 200);
+    assert.equal((await apiRequest(recovery.socketPath, "POST", `/transfers/${fakeTransfer().id}/recover`, auth)).status, 200);
+    assert.equal((await apiRequest(recovery.socketPath, "POST", `/policy-changes/${fakePolicyChange().id}/recover`, auth)).status, 200);
+    assert.equal((await apiRequest(recovery.socketPath, "GET", `/policy-changes/${fakePolicyChange().id}`, auth)).status, 405);
+    assert.equal((await apiRequest(recovery.socketPath, "GET", `/vault-migrations/${fakeVaultMigration().id}`, auth)).status, 405);
+    assert.equal((await apiRequest(recovery.socketPath, "GET", "/wallet/technical", auth)).status, 405);
     assert.equal((await apiRequest(recovery.socketPath, "POST", "/purchases", {
       ...auth,
       "content-type": "application/json",

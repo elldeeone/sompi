@@ -6,9 +6,17 @@ import * as path from "node:path";
 import test from "node:test";
 import type { TestContext } from "node:test";
 
-import { PurchaseJournal } from "../purchase/journal.js";
-import type { TreasuryOperationView } from "../treasury/operations.js";
-import { TransferModule, TransferModuleError } from "./module.js";
+import { SompiOperationFailure } from "../operation-failure.js";
+import {
+  PolicyReservationError,
+  PurchaseJournal,
+} from "../purchase/journal.js";
+import {
+  TreasuryOperationError,
+  TreasuryOperationNotFoundError,
+  type TreasuryOperationView,
+} from "../treasury/operations.js";
+import { TransferModule } from "./module.js";
 import type { TransferAuthorizationFacts, TransferAuthorityModule } from "./types.js";
 
 const ADDRESS = "kaspatest:qq2n2shqkghczyel57af242ffs50x5uj07w7ezg7kwm8frwt5xhljqa3d68et";
@@ -50,7 +58,11 @@ test("Transfer records approval before one exact vault Treasury movement and rec
   assert.equal(fixture.treasury.calls, 1);
   assert.throws(
     () => fixture.module.status("trf_invalid"),
-    (error: unknown) => error instanceof TransferModuleError && error.code === "TRANSFER_NOT_FOUND",
+    operationFailure("INVALID_TRANSFER"),
+  );
+  assert.throws(
+    () => fixture.module.status("trf_AAAAAAAAAAAAAAAAAAAAAA"),
+    operationFailure("TRANSFER_NOT_FOUND"),
   );
 });
 
@@ -94,10 +106,35 @@ test("denial is durable and cannot reach Treasury", async (t) => {
   const fixture = setup(t, "denied");
   await assert.rejects(
     fixture.module.transfer({ requestKey: "telegram:send:deny", destination: ADDRESS, amountAtomic: "1" }),
-    (error: unknown) => error instanceof TransferModuleError && error.code === "TRANSFER_DENIED",
+    operationFailure("TRANSFER_DENIED"),
   );
   const record = fixture.journal.findTransferByRequestKey("telegram:send:deny");
   assert.equal(record?.state, "denied");
+  assert.equal(fixture.treasury.calls, 0);
+});
+
+test("expired Transfer approval is one stable terminal failure", async (t) => {
+  const fixture = setup(t);
+  const timestamps = [1_000, 1_001];
+  const module = new TransferModule({
+    journal: fixture.journal,
+    authority: fixture.authority,
+    treasury: fixture.treasury,
+    source: () => ({ vaultAddress: ADDRESS, vaultDigest: digest("vault") }),
+    manifest: () => MANIFEST,
+    finalityFloor: "depth-confirmed",
+    authorityTtlMs: 1,
+    now: () => timestamps.shift() ?? 1_001,
+  });
+  await assert.rejects(
+    module.transfer({
+      requestKey: "telegram:send:expired",
+      destination: ADDRESS,
+      amountAtomic: "1",
+    }),
+    operationFailure("TRANSFER_EXPIRED"),
+  );
+  assert.equal(fixture.authority.calls, 0);
   assert.equal(fixture.treasury.calls, 0);
 });
 
@@ -109,26 +146,50 @@ test("invalid recipients and Treasury preflight rejection never reach Authority"
       destination: ADDRESS.replace("kaspatest:", "kaspa:"),
       amountAtomic: "5000",
     }),
-    (error: unknown) => error instanceof TransferModuleError && error.code === "INVALID_TRANSFER",
+    operationFailure("INVALID_TRANSFER"),
   );
   assert.equal(fixture.authority.calls, 0);
 
-  fixture.treasury.rejectPreflight = true;
+  fixture.treasury.preflightError = new TreasuryOperationError(
+    "recipient amount exceeds the per-transfer limit",
+  );
   await assert.rejects(
     fixture.module.transfer({
       requestKey: "telegram:send:policy-preflight",
       destination: ADDRESS,
       amountAtomic: "5000",
     }),
-    (error: unknown) =>
-      error instanceof TransferModuleError &&
-      error.code === "INVALID_TRANSFER" &&
-      /cannot be authorized/.test(error.message),
+    operationFailure("INVALID_TRANSFER"),
   );
   assert.equal(fixture.journal.findTransferByRequestKey("telegram:send:policy-preflight"), undefined);
   assert.equal(fixture.treasury.preflightCalls, 1);
   assert.equal(fixture.treasury.calls, 0);
   assert.equal(fixture.authority.calls, 0);
+
+  fixture.treasury.preflightError = new PolicyReservationError(
+    "Treasury capacity is unavailable",
+  );
+  await assert.rejects(
+    fixture.module.transfer({
+      requestKey: "telegram:send:capacity-preflight",
+      destination: ADDRESS,
+      amountAtomic: "5000",
+    }),
+    operationFailure("INVALID_TRANSFER"),
+  );
+
+  fixture.treasury.preflightError = new Error("injected Treasury storage fault");
+  await assert.rejects(
+    fixture.module.transfer({
+      requestKey: "telegram:send:faulted-preflight",
+      destination: ADDRESS,
+      amountAtomic: "5000",
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      !(error instanceof SompiOperationFailure) &&
+      error.message === "injected Treasury storage fault",
+  );
 });
 
 test("a post-approval Treasury race fails terminally without a retry capability", async (t) => {
@@ -144,33 +205,79 @@ test("a post-approval Treasury race fails terminally without a retry capability"
     manifest: () => MANIFEST,
     finalityFloor: "depth-confirmed",
   });
-  await assert.rejects(
-    module.transfer({
-      requestKey: "telegram:send:policy-rejected",
-      destination: ADDRESS,
-      amountAtomic: "5000",
-    }),
-    /could not start.*No funds were sent/,
-  );
+  const result = await module.transfer({
+    requestKey: "telegram:send:policy-rejected",
+    destination: ADDRESS,
+    amountAtomic: "5000",
+  });
+  assert.equal(result.state, "failed_terminal");
+  assert.equal(result.safeToRetry, false);
+  assert.equal(result.recoveryRequired, false);
   const record = fixture.journal.findTransferByRequestKey("telegram:send:policy-rejected");
   assert.equal(record?.state, "failed_terminal");
   assert.equal(rejectingTreasury.preflightCalls, 1);
   assert.equal(rejectingTreasury.calls, 1);
   assert.equal(fixture.authority.calls, 1);
+
+  const recovered = await module.recover(result.id);
+  assert.equal(recovered.id, result.id);
+  assert.equal(recovered.state, "failed_terminal");
+  assert.equal(recovered.safeToRetry, false);
+  assert.equal(recovered.recoveryRequired, false);
+  assert.equal(rejectingTreasury.calls, 1);
+});
+
+test("Transfer keeps Treasury status and recovery faults internal", async (t) => {
+  const execution = setup(t);
+  execution.treasury.executeError = new Error("injected Treasury execution fault");
+  execution.treasury.statusError = new Error("injected Treasury status fault");
+  await assert.rejects(
+    execution.module.transfer({
+      requestKey: "telegram:send:execution-status-fault",
+      destination: ADDRESS,
+      amountAtomic: "5000",
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      !(error instanceof SompiOperationFailure) &&
+      error.message === "injected Treasury status fault",
+  );
+
+  const recovery = setup(t, "approved", true);
+  await assert.rejects(
+    recovery.module.transfer({
+      requestKey: "telegram:send:recovery-status-fault",
+      destination: ADDRESS,
+      amountAtomic: "5000",
+    }),
+    operationFailure("TRANSFER_FAILED"),
+  );
+  const transfer = recovery.journal.findTransferByRequestKey(
+    "telegram:send:recovery-status-fault",
+  )!;
+  recovery.treasury.recoverError = new Error("injected Treasury recovery fault");
+  recovery.treasury.statusError = new Error("injected Treasury recovery status fault");
+  await assert.rejects(
+    recovery.module.recover(transfer.id),
+    (error: unknown) =>
+      error instanceof Error &&
+      !(error instanceof SompiOperationFailure) &&
+      error.message === "injected Treasury recovery status fault",
+  );
 });
 
 test("request keys, Authority facts, policy snapshots, and restart recovery stay exact", async (t) => {
   const fixture = setup(t, "approved", true);
   await assert.rejects(
     fixture.module.transfer({ requestKey: "telegram:send:recover", destination: ADDRESS, amountAtomic: "5000" }),
-    /requires recovery/,
+    operationFailure("TRANSFER_FAILED"),
   );
   const before = fixture.journal.findTransferByRequestKey("telegram:send:recover")!;
   assert.equal(before.state, "failed_recoverable");
   assert.equal(before.policyDigest, fixture.policyDigest);
   await assert.rejects(
     fixture.module.transfer({ requestKey: "telegram:send:recover", destination: ADDRESS, amountAtomic: "5001" }),
-    (error: unknown) => error instanceof TransferModuleError && error.code === "TRANSFER_CONFLICT",
+    operationFailure("TRANSFER_CONFLICT"),
   );
 
   fixture.journal.close();
@@ -191,6 +298,107 @@ test("request keys, Authority facts, policy snapshots, and restart recovery stay
   const view = await recovered.recover(before.id);
   assert.equal(view.state, "receipted");
   assert.equal(fixture.authority.calls, 1, "recovery must not request replacement authority");
+});
+
+test("Transfer absence is stable but Journal faults are not rewritten as not-found", (t) => {
+  const fixture = setup(t);
+  assert.throws(
+    () => fixture.module.status("trf_AAAAAAAAAAAAAAAAAAAAAA"),
+    operationFailure("TRANSFER_NOT_FOUND"),
+  );
+
+  fixture.journal.findTransfer = () => {
+    throw new Error("injected Journal storage fault");
+  };
+  assert.throws(
+    () => fixture.module.status("trf_AAAAAAAAAAAAAAAAAAAAAA"),
+    (error: unknown) =>
+      error instanceof Error &&
+      !(error instanceof SompiOperationFailure) &&
+      error.message === "injected Journal storage fault",
+  );
+});
+
+test("transactional Transfer request-key races return the same-intent winner and reject changed intent", async (t) => {
+  const fixture = setup(t);
+  const intent = Object.freeze({
+    requestKey: "telegram:send:claim-race",
+    destination: ADDRESS,
+    amountAtomic: "1",
+  });
+  const winner = await fixture.module.transfer(intent);
+  const realFind = fixture.journal.findTransferByRequestKey.bind(fixture.journal);
+  const realClaim = fixture.journal.claimTransferIntent.bind(fixture.journal);
+  const attemptedClaims: Array<
+    Parameters<PurchaseJournal["claimTransferIntent"]>[0]
+  > = [];
+  let hideNextPrelookup = false;
+  let stalePrelookups = 0;
+  let transactionalLookups = 0;
+
+  fixture.journal.findTransferByRequestKey = (requestKey) => {
+    if (hideNextPrelookup) {
+      hideNextPrelookup = false;
+      stalePrelookups += 1;
+      return undefined;
+    }
+    transactionalLookups += 1;
+    return realFind(requestKey);
+  };
+  fixture.journal.claimTransferIntent = (input) => {
+    attemptedClaims.push(input);
+    return realClaim(input);
+  };
+
+  const contender = new TransferModule({
+    journal: fixture.journal,
+    authority: fixture.authority,
+    treasury: fixture.treasury,
+    source: () => ({ vaultAddress: ADDRESS, vaultDigest: digest("vault") }),
+    manifest: () => MANIFEST,
+    finalityFloor: "depth-confirmed",
+    now: () => winner.expiresAtMs + 1,
+  });
+
+  hideNextPrelookup = true;
+  const sameIntentResult = await contender.transfer(intent);
+  assert.equal(sameIntentResult.id, winner.id);
+  assert.equal(attemptedClaims.length, 1);
+  assert.notEqual(attemptedClaims[0]?.id, winner.id);
+  assert.notEqual(attemptedClaims[0]?.expiresAtMs, winner.expiresAtMs);
+  assert.equal(attemptedClaims[0]?.requestDigest, winner.requestDigest);
+  assert.equal(attemptedClaims[0]?.destination, winner.destination);
+  assert.equal(attemptedClaims[0]?.amountAtomic, winner.amountAtomic);
+
+  hideNextPrelookup = true;
+  await assert.rejects(
+    contender.transfer({ ...intent, amountAtomic: "2" }),
+    operationFailure("TRANSFER_CONFLICT"),
+  );
+  assert.equal(attemptedClaims.length, 2);
+  assert.notEqual(attemptedClaims[1]?.requestDigest, winner.requestDigest);
+  assert.equal(stalePrelookups, 2);
+  assert.equal(transactionalLookups, 2);
+  assert.equal(fixture.authority.calls, 1);
+  assert.equal(fixture.treasury.calls, 1);
+});
+
+test("Transfer claim faults stay internal", async (t) => {
+  const fixture = setup(t);
+  fixture.journal.claimTransferIntent = () => {
+    throw new Error("injected Transfer claim fault");
+  };
+  await assert.rejects(
+    fixture.module.transfer({
+      requestKey: "telegram:send:claim-fault",
+      destination: ADDRESS,
+      amountAtomic: "1",
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      !(error instanceof SompiOperationFailure) &&
+      error.message === "injected Transfer claim fault",
+  );
 });
 
 function setup(
@@ -225,6 +433,12 @@ function setup(
   return { directory, filename, journal, policyDigest, authority, treasury, module };
 }
 
+function operationFailure(code: SompiOperationFailure["code"]): (error: unknown) => boolean {
+  return (error: unknown) =>
+    error instanceof SompiOperationFailure &&
+    error.code === code;
+}
+
 class FakeAuthority implements TransferAuthorityModule {
   calls = 0;
   constructor(private readonly result: "approved" | "denied") {}
@@ -249,7 +463,10 @@ class FakeAuthority implements TransferAuthorityModule {
 class FakeTreasury {
   calls = 0;
   preflightCalls = 0;
-  rejectPreflight = false;
+  preflightError?: Error;
+  executeError?: Error;
+  recoverError?: Error;
+  statusError?: Error;
   rejectBeforeIntent = false;
   lastAuthorization?: Readonly<{
     expectedPolicyDigest?: string;
@@ -259,7 +476,7 @@ class FakeTreasury {
   constructor(readonly policyDigest: string, private readonly failFirst: boolean) {}
   preflightHumanAuthorized() {
     this.preflightCalls += 1;
-    if (this.rejectPreflight) throw new Error("recipient amount exceeds the per-transfer limit");
+    if (this.preflightError) throw this.preflightError;
     return { policyDigest: this.policyDigest, feeCeilingAtomic: "200000" };
   }
   async executeUnderPolicy(
@@ -271,6 +488,7 @@ class FakeTreasury {
   ) {
     this.calls += 1;
     this.lastAuthorization = authorization;
+    if (this.executeError) throw this.executeError;
     if (this.rejectBeforeIntent) throw new Error("policy rejected before intent");
     if (this.failFirst && !this.failed) {
       this.failed = true;
@@ -279,11 +497,13 @@ class FakeTreasury {
     return operation(request, "completed");
   }
   status(operationKey: string) {
-    if (this.rejectBeforeIntent) throw new Error("Treasury operation does not exist");
+    if (this.statusError) throw this.statusError;
+    if (this.rejectBeforeIntent) throw new TreasuryOperationNotFoundError();
     return operation({ operationKey, destination: ADDRESS, amountAtomic: "5000" }, this.failed ? "submitted" : "completed");
   }
   async recover(operationKey: string) {
     this.calls += 1;
+    if (this.recoverError) throw this.recoverError;
     return operation({ operationKey, destination: ADDRESS, amountAtomic: "5000" }, "completed");
   }
 }

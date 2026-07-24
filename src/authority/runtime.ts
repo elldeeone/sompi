@@ -7,9 +7,9 @@ import { exportJWK, generateKeyPair } from "jose";
 
 import {
   Ap2HumanAuthorityDecisionProvider,
-  TerminalAuthorityApprovalPrompt,
-  type AuthorityApprovalPrompt,
 } from "../adapters/ap2/human-authority.js";
+import type { AuthorityApprovalPrompt } from "./approval-ceremony.js";
+import { TerminalAuthorityApprovalPrompt } from "./terminal-authority.js";
 import {
   loadAp2TrustStore,
   loadAuthoritySigningIdentity,

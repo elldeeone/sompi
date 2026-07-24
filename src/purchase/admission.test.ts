@@ -5,9 +5,11 @@ import * as path from "node:path";
 import test from "node:test";
 import Database from "better-sqlite3";
 
+import { EvidenceStore } from "./evidence-store.js";
 import { createPurchaseId, evidenceDigest, requestFingerprint } from "./identity.js";
 import {
   EvidenceAdmissionError,
+  JournalRequestConflictError,
   PurchaseAdmissionError,
   PurchaseJournal,
   type PurchaseJournalOptions,
@@ -95,6 +97,92 @@ test("concurrent Journal handles compete atomically for Purchase admission", () 
     assert.throws(() => second.createPurchase(input(21)), PurchaseAdmissionError);
     assert.equal(second.admissionStatus()?.prevalidationPurchases.used, 1);
   } finally {
+    first.close();
+    second.close();
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("overlapping compound admissions share one pending request-key owner", () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-compound-admission-race-"));
+  fs.chmodSync(directory, 0o700);
+  const filename = path.join(directory, "purchase.sqlite");
+  const first = new PurchaseJournal(filename, options());
+  const second = new PurchaseJournal(filename, options());
+  const ownerInput = input(22);
+  const replayInput = { ...ownerInput, id: input(23).id };
+  const evidence = {
+    bytes: Buffer.from("race"),
+    mediaType: "application/octet-stream",
+    profile: "test:request-body:1",
+    kind: "purchase-request-body",
+  };
+  const firstEvidenceStore = (
+    first as unknown as { evidenceStore: EvidenceStore }
+  ).evidenceStore;
+  const store = firstEvidenceStore.store;
+  let replayId: PurchaseId | undefined;
+  let overlapped = false;
+  firstEvidenceStore.store = (bytes) => {
+    const stored = store.call(firstEvidenceStore, bytes);
+    if (overlapped) return stored;
+    overlapped = true;
+
+    const database = new Database(filename, { readonly: true });
+    try {
+      assert.equal(
+        database.prepare(
+          "SELECT state FROM purchase_admission_intents WHERE request_key = ?",
+        ).pluck().get(ownerInput.requestKey),
+        "offered",
+      );
+    } finally {
+      database.close();
+    }
+    assert.deepEqual(second.admissionStatus(), {
+      prevalidationPurchases: { used: 1, budget: 2, saturated: false },
+      evidenceBytes: { used: 4, reserved: 4, budget: 10, saturated: false },
+    });
+
+    const changedUrl = "https://merchant.example/admission/changed";
+    assert.throws(
+      () => second.createPurchaseWithEvidence({
+        purchase: {
+          ...replayInput,
+          resourceUrl: changedUrl,
+          resourceFingerprint: requestFingerprint({ url: changedUrl, method: "GET" }),
+        },
+        evidence,
+      }),
+      JournalRequestConflictError,
+    );
+    replayId = second.createPurchaseWithEvidence({
+      purchase: replayInput,
+      evidence,
+    }).id;
+    return stored;
+  };
+
+  try {
+    const retained = first.createPurchaseWithEvidence({
+      purchase: ownerInput,
+      evidence,
+    });
+    assert.equal(overlapped, true);
+    assert.equal(retained.id, ownerInput.id);
+    assert.equal(replayId, retained.id);
+    assert.equal(second.findPurchase(replayInput.id), undefined);
+    assert.equal(second.requireEvidenceAttachment(
+      retained.id,
+      evidenceDigest(evidence.bytes),
+      evidence.kind,
+    ).byteLength, evidence.bytes.byteLength);
+    assert.deepEqual(second.admissionStatus(), {
+      prevalidationPurchases: { used: 1, budget: 2, saturated: false },
+      evidenceBytes: { used: 4, reserved: 0, budget: 10, saturated: false },
+    });
+  } finally {
+    firstEvidenceStore.store = store;
     first.close();
     second.close();
     fs.rmSync(directory, { recursive: true, force: true });

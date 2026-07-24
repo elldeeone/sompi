@@ -1,6 +1,6 @@
 # Sompi implementation plan
 
-Status: **Architecture Phase 1 complete; Phase 2 inactive**
+Status: **Architecture Phase 2 complete**
 
 Starting commit: `89b0f1f404ce8e5f2ded88a5b1a99d8ca1743bba`
 
@@ -90,13 +90,61 @@ Completion evidence from 2026-07-23:
 
 Do not start this phase until Phase 1 is complete.
 
-- **P2.1:** Make one owned operation contract drive the authenticated local server,
+Purpose: give the local operation and human approval boundaries one owner each,
+without changing protocol bytes, runtime authority, or durable state.
+
+- [x] **P2.1:** Make one owned operation contract drive the authenticated local server,
   client, OpenAPI, and Arazzo projections.
-- **P2.2:** Concentrate stable domain failures and remove transport knowledge of concrete
+- [x] **P2.2:** Concentrate stable domain failures and remove transport knowledge of concrete
   Journal implementations.
-- **P2.3:** Make Trusted Authority own approval ceremony facts and subject rules.
-- **P2.4:** Keep AP2-derived evidence encoding, signed facts, profiles, and digests
+- [x] **P2.3:** Make Trusted Authority own approval ceremony facts and subject rules.
+- [x] **P2.4:** Keep AP2-derived evidence encoding, signed facts, profiles, and digests
   unchanged.
+
+The operation contract is a closed catalog for the current 14 operations. It
+preserves the current Agent and operator-recovery listener audiences. It is not
+a runtime registry or a general transport framework.
+
+The failure contract contains stable Sompi operation codes and safe public
+meaning. HTTP status remains an HTTP projection. Expected module failures cross
+the application seam through this contract. Internal Journal faults remain
+internal failures.
+
+The Trusted Authority owns the four approval display shapes, their exact
+subject rules, and terminal ceremony. The AP2 adapter keeps only AP2-derived
+evidence work. This phase implements ADR-0005, ADR-0006, ADR-0015, ADR-0016,
+ADR-0017, ADR-0019, ADR-0021, and ADR-0022. It does not change an accepted
+decision, so it does not require a new ADR.
+
+Verification gate:
+
+- [x] **P2.G1:** One table-driven test proves the exact 14 operation IDs,
+  methods, paths, audiences, lanes, request schemas, and response schemas.
+- [x] **P2.G2:** Server, client, OpenAPI, and Arazzo tests prove that all
+  projections use the owned operation contract.
+- [x] **P2.G3:** Stable failure tests cover not-found, conflict, invalid,
+  denial, expiry, saturation, and internal-fault separation without transport
+  imports from Journal.
+- [x] **P2.G4:** Authority interface tests cover all four approval displays,
+  exact subject IDs, terminal confirmation, Telegram presentation, and owner
+  projections.
+- [x] **P2.G5:** Golden Purchase Authority and AP2 evidence tests prove that
+  signed facts, profiles, canonical encoding, and digests did not change.
+- [x] **P2.G6:** The complete unit suite, protocol conformance suite, generated
+  interface check, and release verifier pass.
+- [x] **P2.G7:** No Journal schema, Kaspa-x402 source or pin, release,
+  deployment, live-host, sibling-repository, or Phase 3 change is included.
+
+Completion evidence from 2026-07-23:
+
+- The exact operation matrix covers all 14 local operations.
+- Stable failure tests keep expected failures public and internal faults private.
+- Authority tests cover all four approval ceremonies and preserve AP2 evidence.
+- The complete suite ran 590 tests: 589 passed and one privileged ownership
+  test was skipped as expected.
+- Offline smoke, all five alpha.9 conformance checks, OpenAPI, Arazzo, and the
+  complete release verifier passed.
+- The Kaspa-x402 pin, source, fixtures, and conformance provenance did not change.
 
 ### Phase 3: Concentrate finality and host trust verification
 

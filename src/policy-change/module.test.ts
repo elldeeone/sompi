@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 
+import { SompiOperationFailure } from "../operation-failure.js";
 import { PolicyEngine } from "../policy.js";
 import { PurchaseJournal } from "../purchase/journal.js";
 import { PolicyChangeModule, policyChangeFactsDigest } from "./module.js";
@@ -75,7 +76,7 @@ test("Policy Change request keys are idempotent and stale policy CAS fails close
       maximumPerPaymentAtomic: "300000000",
       maximumPerHourAtomic: "400000000",
     }),
-    /request key is already bound to different limits/,
+    operationFailure("POLICY_CHANGE_CONFLICT"),
   );
   assert.equal(journal.requireActivePolicy().version, 2);
 
@@ -84,6 +85,159 @@ test("Policy Change request keys are idempotent and stale policy CAS fails close
     maxPerHourAtomic: "400000000",
     allowlist: [],
   }), /active treasury policy changed/);
+});
+
+test("Policy Change expected failures are stable and Journal faults stay internal", async (t) => {
+  const { journal, module } = fixture();
+  t.after(() => journal.close());
+
+  await assert.rejects(
+    module.propose({
+      requestKey: "telegram:update-limits:invalid",
+      maximumPerPaymentAtomic: "400000000",
+      maximumPerHourAtomic: "300000000",
+    }),
+    operationFailure("INVALID_POLICY_CHANGE"),
+  );
+  assert.throws(
+    () => module.status("pcg_AAAAAAAAAAAAAAAAAAAAAA"),
+    operationFailure("POLICY_CHANGE_NOT_FOUND"),
+  );
+
+  journal.createPolicyChange = () => {
+    throw new Error("injected Policy Change storage fault");
+  };
+  await assert.rejects(
+    module.propose({
+      requestKey: "telegram:update-limits:storage-fault",
+      maximumPerPaymentAtomic: "200000000",
+      maximumPerHourAtomic: "400000000",
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      !(error instanceof SompiOperationFailure) &&
+      error.message === "injected Policy Change storage fault",
+  );
+
+  journal.policyChange = () => {
+    throw new Error("injected Journal storage fault");
+  };
+  assert.throws(
+    () => module.status("pcg_AAAAAAAAAAAAAAAAAAAAAA"),
+    (error: unknown) =>
+      error instanceof Error &&
+      !(error instanceof SompiOperationFailure) &&
+      error.message === "injected Journal storage fault",
+  );
+});
+
+test("a same-intent Policy Change creation race returns the Journal winner", async (t) => {
+  const { journal, module } = fixture();
+  t.after(() => journal.close());
+
+  const requestKey = "telegram:update-limits:same-race";
+  const winnerId = "pcg_CCCCCCCCCCCCCCCCCCCCCC";
+  const find = journal.findPolicyChangeByRequestKey.bind(journal);
+  let hidPrelookup = false;
+  journal.findPolicyChangeByRequestKey = (candidate) => {
+    if (!hidPrelookup && candidate === requestKey) {
+      hidPrelookup = true;
+      return undefined;
+    }
+    return find(candidate);
+  };
+
+  const create = journal.createPolicyChange.bind(journal);
+  let contenderId: string | undefined;
+  journal.createPolicyChange = (input) => {
+    contenderId = input.id;
+    create({ ...input, id: winnerId });
+    return create(input);
+  };
+
+  const result = await module.propose({
+    requestKey,
+    maximumPerPaymentAtomic: "200000000",
+    maximumPerHourAtomic: "400000000",
+  });
+
+  assert.equal(hidPrelookup, true);
+  assert.notEqual(contenderId, winnerId);
+  assert.equal(result.id, winnerId);
+  assert.equal(result.state, "applied");
+  assert.equal(find(requestKey)?.id, winnerId);
+});
+
+test("a different-intent Policy Change creation race maps the Journal conflict", async (t) => {
+  const { journal, module } = fixture();
+  t.after(() => journal.close());
+
+  const requestKey = "telegram:update-limits:different-race";
+  const winnerId = "pcg_DDDDDDDDDDDDDDDDDDDDDD";
+  const find = journal.findPolicyChangeByRequestKey.bind(journal);
+  let hidPrelookup = false;
+  journal.findPolicyChangeByRequestKey = (candidate) => {
+    if (!hidPrelookup && candidate === requestKey) {
+      hidPrelookup = true;
+      return undefined;
+    }
+    return find(candidate);
+  };
+
+  const create = journal.createPolicyChange.bind(journal);
+  journal.createPolicyChange = (input) => {
+    create({
+      ...input,
+      id: winnerId,
+      proposedMaximumPerPaymentAtomic: "200000000",
+    });
+    return create(input);
+  };
+
+  await assert.rejects(
+    module.propose({
+      requestKey,
+      maximumPerPaymentAtomic: "300000000",
+      maximumPerHourAtomic: "400000000",
+    }),
+    operationFailure("POLICY_CHANGE_CONFLICT"),
+  );
+  assert.equal(hidPrelookup, true);
+  assert.equal(find(requestKey)?.id, winnerId);
+  assert.equal(find(requestKey)?.state, "created");
+});
+
+test("a policy activation race maps the Journal compare-and-swap conflict", async (t) => {
+  const { journal, module } = fixture();
+  t.after(() => journal.close());
+
+  const before = journal.requireActivePolicyActivation();
+  const create = journal.createPolicyChange.bind(journal);
+  journal.createPolicyChange = (input) => {
+    journal.activatePolicyIfCurrent(input.expectedPolicyDigest, {
+      maxPerPaymentAtomic: "150000000",
+      maxPerHourAtomic: "450000000",
+      allowlist: [],
+    });
+    return create(input);
+  };
+
+  await assert.rejects(
+    module.propose({
+      requestKey: "telegram:update-limits:policy-race",
+      maximumPerPaymentAtomic: "200000000",
+      maximumPerHourAtomic: "400000000",
+    }),
+    operationFailure("POLICY_CHANGE_CONFLICT"),
+  );
+
+  const after = journal.requireActivePolicyActivation();
+  assert.notEqual(after.policy.digest, before.policy.digest);
+  assert.equal(after.activationGeneration, before.activationGeneration + 1);
+  assert.equal(
+    journal.findPolicyChangeByRequestKey("telegram:update-limits:policy-race"),
+    undefined,
+  );
 });
 
 test("a stale approval cannot replay after an A-B-A policy activation cycle", () => {
@@ -225,4 +379,10 @@ function fixture(mode: "approved" | "denied" | "substitute" = "approved") {
 
 function digest(bytes: Uint8Array): Sha256Digest {
   return `sha256:${createHash("sha256").update(bytes).digest("base64url")}` as Sha256Digest;
+}
+
+function operationFailure(code: SompiOperationFailure["code"]): (error: unknown) => boolean {
+  return (error: unknown) =>
+    error instanceof SompiOperationFailure &&
+    error.code === code;
 }

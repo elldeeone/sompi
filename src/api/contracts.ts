@@ -6,6 +6,11 @@ import type {
 } from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 
+import {
+  SOMPI_OPERATION_FAILURES,
+  sompiOperationFailureDefinition,
+  type SompiOperationFailureCode,
+} from "../operation-failure.js";
 import { assertPurchaseId, assertPurchaseRequestKey } from "../purchase/identity.js";
 import type { PurchaseIntent, PurchaseModule, PurchaseView } from "../purchase/types.js";
 import { TRANSFER_STATES, type TransferIntent, type TransferView } from "../transfer/types.js";
@@ -31,6 +36,39 @@ const DIGEST_PATTERN = "^sha256:[A-Za-z0-9_-]{43}$";
 const POSITIVE_ATOMIC_PATTERN = "^[1-9][0-9]*$";
 const NONNEGATIVE_ATOMIC_PATTERN = "^(?:0|[1-9][0-9]*)$";
 const BASE64_PATTERN = "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$";
+
+export interface SompiApiServerErrorDefinition {
+  readonly retryable: boolean;
+}
+
+export const SOMPI_API_BOUNDARY_FAILURES = Object.freeze({
+  UNAUTHENTICATED: apiErrorDefinition(false),
+  API_BUSY: apiErrorDefinition(true),
+  API_RECOVERY_SATURATED: apiErrorDefinition(true),
+  DEADLINE_EXCEEDED: apiErrorDefinition(true),
+  INVALID_TARGET: apiErrorDefinition(false),
+  METHOD_NOT_ALLOWED: apiErrorDefinition(false),
+  NOT_FOUND: apiErrorDefinition(false),
+  INVALID_CONTENT_TYPE: apiErrorDefinition(false),
+  REQUEST_TOO_LARGE: apiErrorDefinition(false),
+  INVALID_JSON: apiErrorDefinition(false),
+  UNEXPECTED_BODY: apiErrorDefinition(false),
+  INVALID_REQUEST: apiErrorDefinition(false),
+  REQUEST_CANCELLED: apiErrorDefinition(true),
+  INTERNAL_ERROR: apiErrorDefinition(false),
+} as const);
+
+export type SompiApiBoundaryFailureCode =
+  keyof typeof SOMPI_API_BOUNDARY_FAILURES;
+export type SompiApiServerErrorCode =
+  | SompiApiBoundaryFailureCode
+  | SompiOperationFailureCode;
+
+export const SOMPI_API_SERVER_ERROR_CODES: readonly SompiApiServerErrorCode[] =
+  Object.freeze([
+    ...Object.keys(SOMPI_API_BOUNDARY_FAILURES) as SompiApiBoundaryFailureCode[],
+    ...Object.keys(SOMPI_OPERATION_FAILURES) as SompiOperationFailureCode[],
+  ]);
 
 const KAS_AMOUNT_SCHEMA = {
   type: "object",
@@ -58,7 +96,7 @@ export interface PurchaseCreateRequest {
 
 export interface SompiApiErrorBody {
   readonly error: Readonly<{
-    code: string;
+    code: SompiApiServerErrorCode;
     message: string;
     retryable: boolean;
   }>;
@@ -261,7 +299,10 @@ export const SOMPI_API_ERROR_SCHEMA: JSONSchemaType<SompiApiErrorBody> = {
       additionalProperties: false,
       required: ["code", "message", "retryable"],
       properties: {
-        code: { type: "string", pattern: "^[A-Z][A-Z0-9_]{0,79}$", maxLength: 80 },
+        code: {
+          type: "string",
+          enum: [...SOMPI_API_SERVER_ERROR_CODES],
+        },
         message: { type: "string", minLength: 1, maxLength: 512 },
         retryable: { type: "boolean" },
       },
@@ -826,7 +867,33 @@ export function assertPurchaseView(value: unknown): PurchaseView {
 
 export function assertSompiApiError(value: unknown): SompiApiErrorBody {
   if (!validateError(value)) throw new SompiApiContractError("Purchase error does not match the canonical schema");
+  const definition = sompiApiServerErrorDefinition(value.error.code);
+  if (!definition || value.error.retryable !== definition.retryable) {
+    throw new SompiApiContractError(
+      "Sompi API error does not match the server failure contract",
+    );
+  }
+  const failure = sompiOperationFailureDefinition(value.error.code);
+  if (
+    failure &&
+    value.error.message !== failure.message
+  ) {
+    throw new SompiApiContractError(
+      "Sompi operation failure does not match the stable failure contract",
+    );
+  }
   return value;
+}
+
+export function sompiApiServerErrorDefinition(
+  code: string,
+): SompiApiServerErrorDefinition | undefined {
+  const operation = sompiOperationFailureDefinition(code);
+  if (operation) return operation;
+  if (!Object.prototype.hasOwnProperty.call(SOMPI_API_BOUNDARY_FAILURES, code)) {
+    return undefined;
+  }
+  return SOMPI_API_BOUNDARY_FAILURES[code as SompiApiBoundaryFailureCode];
 }
 
 function strictBase64(value: string): Uint8Array {
@@ -868,4 +935,10 @@ function boundedText(value: string, label: string, maximum: number): string {
     throw new SompiApiContractError(`${label} is invalid`);
   }
   return value;
+}
+
+function apiErrorDefinition(
+  retryable: boolean,
+): SompiApiServerErrorDefinition {
+  return Object.freeze({ retryable });
 }

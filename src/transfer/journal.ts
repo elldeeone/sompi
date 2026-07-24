@@ -29,7 +29,6 @@ export interface TransferJournal {
   claimTransferIntent(input: TransferJournalIntent): TransferRecord;
   findTransferByRequestKey(requestKey: string): TransferRecord | undefined;
   findTransfer(id: string): TransferRecord | undefined;
-  requireTransfer(id: string): TransferRecord;
   transitionTransfer(id: string, to: TransferState, reasonCode: string, detailDigest?: string): TransferRecord;
   recordTransferAuthorization(
     id: string,

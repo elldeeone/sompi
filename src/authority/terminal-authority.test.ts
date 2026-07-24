@@ -5,8 +5,8 @@ import test from "node:test";
 import {
   AuthorityPromptBusyError,
   TerminalAuthorityApprovalPrompt,
-  type AuthorityApprovalDisplay,
-} from "./human-authority.js";
+} from "./terminal-authority.js";
+import type { AuthorityApprovalDisplay } from "./approval-ceremony.js";
 
 test("terminal authority rejects piped approval input by default", async () => {
   const input = new PassThrough();
@@ -16,6 +16,23 @@ test("terminal authority rejects piped approval input by default", async () => {
     prompt.approve(display("pur_ZZZZZZZZZZZZZZZZZZZZZZ")),
     /requires a trusted terminal/
   );
+  input.end();
+  output.end();
+});
+
+test("terminal authority rejects a subject prefix that does not match its ceremony", async () => {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const prompt = new TerminalAuthorityApprovalPrompt({
+    input,
+    output,
+    allowNonTtyForTests: true,
+  });
+  await assert.rejects(
+    prompt.approve(display("trf_AAAAAAAAAAAAAAAAAAAAAA")),
+    /does not match/,
+  );
+  assert.equal(prompt.pendingCount(), 0);
   input.end();
   output.end();
 });

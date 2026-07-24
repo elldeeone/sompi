@@ -70,6 +70,13 @@ export class TreasuryOperationError extends Error {
   }
 }
 
+export class TreasuryOperationNotFoundError extends TreasuryOperationError {
+  constructor() {
+    super("Treasury operation does not exist");
+    this.name = "TreasuryOperationNotFoundError";
+  }
+}
+
 /**
  * Deep module for non-Purchase Treasury Movements.
  *
@@ -196,7 +203,10 @@ export class TreasuryOperationModule {
   }
 
   status(operationKey: string): TreasuryOperationView {
-    return view(this.journal.requireTreasuryOperation(requireOperationKey(operationKey)));
+    const normalizedKey = requireOperationKey(operationKey);
+    const operation = this.journal.findTreasuryOperation(normalizedKey);
+    if (!operation) throw new TreasuryOperationNotFoundError();
+    return view(operation);
   }
 
   recent(kind: TreasuryOperationKind, limit = 20): readonly TreasuryOperationView[] {

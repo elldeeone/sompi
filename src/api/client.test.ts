@@ -38,6 +38,7 @@ test("API client authenticates over a verified permissioned Unix socket", async 
     const client = new SompiApiClient({ credential, ...fixture.access, socketPath: fixture.socketPath });
     assert.equal((await client.purchase({ requestKey: "api:one", url: "https://merchant.example/" })).id, fakeView().id);
     assert.equal((await client.status(fakeView().id)).id, fakeView().id);
+    assert.equal((await client.recover(fakeView().id)).id, fakeView().id);
     assert.equal((await client.wallet()).balance.available.atomic, "10000");
     assert.equal((await client.walletTechnical()).receiveAddress, ADDRESS);
     assert.deepEqual(await client.activity(5), []);
@@ -49,7 +50,7 @@ test("API client authenticates over a verified permissioned Unix socket", async 
     assert.equal((await client.policyChangeRecover(fakePolicyChange().id)).id, fakePolicyChange().id);
     assert.equal((await client.vaultMigration({ requestKey: "vault:one", vaultProtectionMaximumKas: "10" })).state, "awaiting_owner");
     assert.equal((await client.vaultMigrationStatus(fakeVaultMigration().id)).id, fakeVaultMigration().id);
-    assert.deepEqual(calls, ["purchase", "status", "wallet", "walletTechnical", "activity", "transfer", "transferStatus", "transferRecover", "changePolicy", "policyChangeStatus", "policyChangeRecover", "vaultMigration", "vaultMigrationStatus"]);
+    assert.deepEqual(calls, ["purchase", "status", "recover", "wallet", "walletTechnical", "activity", "transfer", "transferStatus", "transferRecover", "changePolicy", "policyChangeStatus", "policyChangeRecover", "vaultMigration", "vaultMigrationStatus"]);
   } finally {
     await running.close();
     fixture.close();

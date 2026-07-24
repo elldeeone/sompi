@@ -7,10 +7,13 @@ import Database from "better-sqlite3";
 
 import { displayKas } from "../amount-display.js";
 
-import type {
-  AnyAuthorityApprovalDisplay,
-  AuthorityApprovalPrompt,
-} from "../adapters/ap2/human-authority.js";
+import {
+  authorityApprovalSubject,
+  isAuthorityApprovalSubjectId,
+  type AnyAuthorityApprovalDisplay,
+  type AuthorityApprovalPrompt,
+  type AuthorityApprovalKind,
+} from "./approval-ceremony.js";
 
 const APPLICATION_ID = 0x53544741;
 const SCHEMA_VERSION = 3;
@@ -18,7 +21,6 @@ const CALLBACK_PROFILE = "sompi.telegram-authority-callback-v1" as const;
 const TOKEN_BYTES = 24;
 const TOKEN_PATTERN = /^[A-Za-z0-9_-]{32}$/;
 const DIGEST_PATTERN = /^sha256:[A-Za-z0-9_-]{43}$/;
-const SUBJECT_ID_PATTERN = /^(?:pur|trf|pcg|vmg)_[A-Za-z0-9_-]{22}$/;
 const MAX_CALLBACK_BODY_BYTES = 1_024;
 const MAX_TELEGRAM_RESPONSE_BYTES = 64 * 1024;
 const TELEGRAM_MESSAGE_LIMIT = 4_096;
@@ -98,7 +100,7 @@ export interface TelegramAuthorityApprovalPromptOptions {
 interface PendingPrompt {
   readonly approveTokenDigest: string;
   readonly denyTokenDigest: string;
-  readonly subjectKind: "purchase" | "transfer" | "policy-change" | "vault-migration";
+  readonly subjectKind: AuthorityApprovalKind;
   readonly resolve: (approved: boolean) => void;
   readonly reject: (error: Error) => void;
 }
@@ -140,7 +142,7 @@ export class TelegramAuthorityApprovalPrompt implements AuthorityApprovalPrompt 
       approveTokenDigest,
       denyTokenDigest,
       requestDigest: display.authorityRequestDigest,
-      subjectId: approvalSubject(display).id,
+      subjectId: authorityApprovalSubject(display).id,
       chatId: this.options.config.chatId,
       userId: this.options.config.userId,
       expiresAtMs,
@@ -153,7 +155,7 @@ export class TelegramAuthorityApprovalPrompt implements AuthorityApprovalPrompt 
       const entry: PendingPrompt = {
         approveTokenDigest,
         denyTokenDigest,
-        subjectKind: approvalSubject(display).kind,
+        subjectKind: authorityApprovalSubject(display).kind,
         resolve,
         reject,
       };
@@ -821,7 +823,7 @@ function expandableDetails(lines: readonly string[], title = "Advanced details")
 }
 
 function approvalBinding(display: AnyAuthorityApprovalDisplay): string {
-  const subject = approvalSubject(display);
+  const subject = authorityApprovalSubject(display);
   return exactFact(
     "Approval binding",
     `${subject.id} / ${display.authorityRequestDigest}`,
@@ -911,31 +913,17 @@ function validateTelegramAuthorityConfig(config: TelegramAuthorityConfig): void 
 }
 
 function validateDisplay(display: AnyAuthorityApprovalDisplay): void {
-  const subjectId = display ? approvalSubject(display).id : "";
+  const subjectId = display ? authorityApprovalSubject(display).id : "";
   if (
     !display ||
     !DIGEST_PATTERN.test(display.authorityRequestDigest) ||
-    !SUBJECT_ID_PATTERN.test(subjectId) ||
+    !isAuthorityApprovalSubjectId(subjectId) ||
     !Number.isFinite(Date.parse(display.termsExpiresAt))
   ) throw new Error("Telegram Authority display is invalid");
 }
 
-function approvalSubject(display: AnyAuthorityApprovalDisplay): Readonly<{
-  id: string;
-  kind: "purchase" | "transfer" | "policy-change" | "vault-migration";
-}> {
-  if (display.kind === "transfer") return Object.freeze({ id: display.transferId, kind: "transfer" });
-  if (display.kind === "policy-change") {
-    return Object.freeze({ id: display.policyChangeId, kind: "policy-change" });
-  }
-  if (display.kind === "vault-migration") {
-    return Object.freeze({ id: display.vaultMigrationId, kind: "vault-migration" });
-  }
-  return Object.freeze({ id: display.purchaseId, kind: "purchase" });
-}
-
 function approvalDecisionMessage(
-  kind: "purchase" | "transfer" | "policy-change" | "vault-migration",
+  kind: AuthorityApprovalKind,
   approved: boolean,
 ): string {
   if (kind === "transfer") {
@@ -963,7 +951,7 @@ function validatePromptInput(input: Readonly<Record<string, unknown>>): void {
   validateDigest(String(input.denyTokenDigest), "Telegram deny token digest");
   if (input.approveTokenDigest === input.denyTokenDigest) throw new Error("Telegram decision capabilities must be distinct");
   validateDigest(String(input.requestDigest), "Authority request digest");
-  if (!SUBJECT_ID_PATTERN.test(String(input.subjectId))) throw new Error("Authority subject ID is invalid");
+  if (!isAuthorityApprovalSubjectId(input.subjectId)) throw new Error("Authority subject ID is invalid");
   if (!chatId(String(input.chatId)) || !userId(String(input.userId))) throw new Error("Telegram identity is invalid");
   if (!Number.isSafeInteger(input.expiresAtMs) || !Number.isSafeInteger(input.createdAtMs) || Number(input.expiresAtMs) <= Number(input.createdAtMs)) {
     throw new Error("Telegram prompt lifetime is invalid");

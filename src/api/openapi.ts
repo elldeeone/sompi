@@ -1,18 +1,11 @@
 import {
   SOMPI_API_ERROR_SCHEMA,
   SOMPI_API_VERSION,
-  PURCHASE_CREATE_REQUEST_SCHEMA,
-  PURCHASE_VIEW_SCHEMA,
-  TRANSFER_CREATE_REQUEST_SCHEMA,
-  TRANSFER_VIEW_SCHEMA,
-  WALLET_ACTIVITY_SCHEMA,
-  WALLET_VIEW_SCHEMA,
-  WALLET_TECHNICAL_VIEW_SCHEMA,
-  POLICY_CHANGE_CREATE_REQUEST_SCHEMA,
-  POLICY_CHANGE_VIEW_SCHEMA,
-  VAULT_MIGRATION_CREATE_REQUEST_SCHEMA,
-  VAULT_MIGRATION_VIEW_SCHEMA,
 } from "./contracts.js";
+import {
+  SOMPI_OPERATIONS,
+  type SompiOperationContract,
+} from "./operation-contract.js";
 
 export const SOMPI_OPENAPI_VERSION = "3.2.0" as const;
 
@@ -30,124 +23,12 @@ export function sompiOpenApiDocument(version: string): Readonly<Record<string, u
       description: "Authenticated wallet view, direct KAS Transfer, and protocol-neutral Purchase lifecycles for Sompi.",
     },
     security: [{ AgentCredential: [] }],
-    paths: {
-      "/purchases": {
-        post: {
-          operationId: "createPurchase",
-          summary: "Create or idempotently resume a Purchase",
-          requestBody: {
-            required: true,
-            content: { "application/json": { schema: { $ref: "#/components/schemas/PurchaseCreateRequest" } } },
-          },
-          responses: purchaseResponses("Purchase state"),
-        },
-      },
-      "/purchases/{purchaseId}": {
-        get: {
-          operationId: "getPurchase",
-          summary: "Read a durable Purchase without an external side effect",
-          parameters: [purchaseIdParameter()],
-          responses: purchaseResponses("Purchase state"),
-        },
-      },
-      "/purchases/{purchaseId}/recover": {
-        post: {
-          operationId: "recoverPurchase",
-          summary: "Reconcile a Purchase without blind resubmission",
-          parameters: [purchaseIdParameter()],
-          responses: purchaseResponses("Reconciled Purchase state"),
-        },
-      },
-      "/wallet": {
-        get: {
-          operationId: "getWallet",
-          summary: "Read the receive address, useful balances, deposit status, and spending limits",
-          responses: apiResponses("Wallet state", "WalletView"),
-        },
-      },
-      "/wallet/activity": {
-        get: {
-          operationId: "listWalletActivity",
-          summary: "List recent deposits, securing operations, Purchases, and Transfers",
-          parameters: [{
-            name: "limit", in: "query", required: false,
-            schema: { type: "integer", minimum: 1, maximum: 100, default: 20 },
-          }],
-          responses: apiResponses("Wallet activity", "WalletActivity"),
-        },
-      },
-      "/wallet/technical": {
-        get: { operationId: "getWalletTechnical", summary: "Read explicitly requested technical wallet evidence", responses: apiResponses("Technical wallet evidence", "WalletTechnicalView") },
-      },
-      "/transfers": {
-        post: {
-          operationId: "createTransfer",
-          summary: "Create or idempotently resume a human-approved direct KAS Transfer",
-          requestBody: {
-            required: true,
-            content: { "application/json": { schema: { $ref: "#/components/schemas/TransferCreateRequest" } } },
-          },
-          responses: apiResponses("Transfer state", "TransferView"),
-        },
-      },
-      "/transfers/{transferId}": {
-        get: {
-          operationId: "getTransfer",
-          summary: "Read a durable Transfer without an external side effect",
-          parameters: [transferIdParameter()],
-          responses: apiResponses("Transfer state", "TransferView"),
-        },
-      },
-      "/transfers/{transferId}/recover": {
-        post: {
-          operationId: "recoverTransfer",
-          summary: "Reconcile a Transfer without replacement authorization or payment",
-          parameters: [transferIdParameter()],
-          responses: apiResponses("Reconciled Transfer state", "TransferView"),
-        },
-      },
-      "/policy-changes": {
-        post: {
-          operationId: "createPolicyChange", summary: "Propose exact everyday spending limits for owner approval",
-          requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/PolicyChangeCreateRequest" } } } },
-          responses: apiResponses("Policy Change state", "PolicyChangeView"),
-        },
-      },
-      "/policy-changes/{policyChangeId}": {
-        get: { operationId: "getPolicyChange", summary: "Read a spending-limit change", parameters: [idParameter("policyChangeId", "^pcg_[A-Za-z0-9_-]{22}$")], responses: apiResponses("Policy Change state", "PolicyChangeView") },
-      },
-      "/policy-changes/{policyChangeId}/recover": {
-        post: { operationId: "recoverPolicyChange", summary: "Resume the same owner-approved limit change", parameters: [idParameter("policyChangeId", "^pcg_[A-Za-z0-9_-]{22}$")], responses: apiResponses("Policy Change state", "PolicyChangeView") },
-      },
-      "/vault-migrations": {
-        post: {
-          operationId: "createVaultMigration", summary: "Propose a vault protection change for owner approval",
-          requestBody: { required: true, content: { "application/json": { schema: { $ref: "#/components/schemas/VaultMigrationCreateRequest" } } } },
-          responses: apiResponses("Vault Migration state", "VaultMigrationView"),
-        },
-      },
-      "/vault-migrations/{vaultMigrationId}": {
-        get: { operationId: "getVaultMigration", summary: "Read a vault protection change", parameters: [idParameter("vaultMigrationId", "^vmg_[A-Za-z0-9_-]{22}$")], responses: apiResponses("Vault Migration state", "VaultMigrationView") },
-      },
-    },
+    paths: sompiOpenApiPaths(),
     components: {
       securitySchemes: {
         AgentCredential: { type: "http", scheme: "bearer", bearerFormat: SOMPI_API_VERSION },
       },
-      schemas: {
-        PurchaseCreateRequest: withoutId(PURCHASE_CREATE_REQUEST_SCHEMA),
-        PurchaseView: withoutId(PURCHASE_VIEW_SCHEMA),
-        SompiApiError: withoutId(SOMPI_API_ERROR_SCHEMA),
-        TransferCreateRequest: withoutId(TRANSFER_CREATE_REQUEST_SCHEMA),
-        TransferView: withoutId(TRANSFER_VIEW_SCHEMA),
-        WalletView: withoutId(WALLET_VIEW_SCHEMA),
-        WalletActivity: withoutId(WALLET_ACTIVITY_SCHEMA),
-        WalletTechnicalView: withoutId(WALLET_TECHNICAL_VIEW_SCHEMA),
-        PolicyChangeCreateRequest: withoutId(POLICY_CHANGE_CREATE_REQUEST_SCHEMA),
-        PolicyChangeView: withoutId(POLICY_CHANGE_VIEW_SCHEMA),
-        VaultMigrationCreateRequest: withoutId(VAULT_MIGRATION_CREATE_REQUEST_SCHEMA),
-        VaultMigrationView: withoutId(VAULT_MIGRATION_VIEW_SCHEMA),
-      },
+      schemas: sompiOpenApiSchemas(),
     },
   });
 }
@@ -156,49 +37,83 @@ export function canonicalOpenApiBytes(version: string): Buffer {
   return Buffer.from(`${JSON.stringify(sompiOpenApiDocument(version), null, 2)}\n`, "utf8");
 }
 
-function purchaseIdParameter(): Readonly<Record<string, unknown>> {
-  return {
-    name: "purchaseId",
-    in: "path",
-    required: true,
-    schema: { type: "string", pattern: "^pur_[A-Za-z0-9_-]{22}$" },
-  };
+function sompiOpenApiPaths(): Readonly<Record<string, unknown>> {
+  const paths: Record<string, Record<string, unknown>> = {};
+  for (const operation of SOMPI_OPERATIONS) {
+    const projection: Record<string, unknown> = {
+      operationId: operation.operationId,
+      summary: operation.summary,
+      ...(operation.parameters.length === 0
+        ? {}
+        : { parameters: operation.parameters }),
+      ...(operation.requestSchemaName === undefined
+        ? {}
+        : {
+            requestBody: {
+              required: true,
+              content: {
+                "application/json": {
+                  schema: {
+                    $ref: `#/components/schemas/${operation.requestSchemaName}`,
+                  },
+                },
+              },
+            },
+          }),
+      responses: operationResponses(operation),
+    };
+    const path = paths[operation.pathTemplate] ?? {};
+    path[operation.method.toLowerCase()] = Object.freeze(projection);
+    paths[operation.pathTemplate] = path;
+  }
+  return Object.freeze(paths);
 }
 
-function purchaseResponses(description: string): Readonly<Record<string, unknown>> {
-  return apiResponses(description, "PurchaseView");
-}
-
-function transferIdParameter(): Readonly<Record<string, unknown>> {
-  return {
-    name: "transferId", in: "path", required: true,
-    schema: { type: "string", pattern: "^trf_[A-Za-z0-9_-]{22}$" },
-  };
-}
-
-function idParameter(name: string, pattern: string): Readonly<Record<string, unknown>> {
-  return { name, in: "path", required: true, schema: { type: "string", pattern } };
-}
-
-function apiResponses(description: string, schema: string): Readonly<Record<string, unknown>> {
+function operationResponses(
+  operation: SompiOperationContract,
+): Readonly<Record<string, unknown>> {
   const error = {
     description: "Bounded structured error",
     content: { "application/json": { schema: { $ref: "#/components/schemas/SompiApiError" } } },
   };
-  return {
+  const responses: Record<string, unknown> = {
     "200": {
-      description,
-      content: { "application/json": { schema: { $ref: `#/components/schemas/${schema}` } } },
+      description: operation.successDescription,
+      content: {
+        "application/json": {
+          schema: { $ref: `#/components/schemas/${operation.responseSchemaName}` },
+        },
+      },
     },
-    "400": error,
-    "401": error,
-    "404": error,
-    "409": error,
-    "413": error,
-    "429": error,
-    "500": error,
-    "504": error,
   };
+  for (const status of operation.errorStatuses) responses[String(status)] = error;
+  return Object.freeze(responses);
+}
+
+function sompiOpenApiSchemas(): Readonly<Record<string, unknown>> {
+  const schemas: Record<string, unknown> = {
+    SompiApiError: withoutId(SOMPI_API_ERROR_SCHEMA),
+  };
+  for (const operation of SOMPI_OPERATIONS) {
+    if (operation.requestSchemaName !== undefined && operation.requestSchema !== undefined) {
+      addSchema(schemas, operation.requestSchemaName, operation.requestSchema);
+    }
+    addSchema(schemas, operation.responseSchemaName, operation.responseSchema);
+  }
+  return Object.freeze(schemas);
+}
+
+function addSchema(
+  schemas: Record<string, unknown>,
+  name: string,
+  schema: Readonly<Record<string, unknown>>,
+): void {
+  const projection = withoutId(schema);
+  const existing = schemas[name];
+  if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify(projection)) {
+    throw new Error(`Sompi operation schema ${name} has conflicting definitions`);
+  }
+  schemas[name] = projection;
 }
 
 function withoutId<T extends object>(schema: T): Omit<T, "$id"> {

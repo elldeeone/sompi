@@ -5,9 +5,15 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 
-import type { AnyAuthorityApprovalDisplay, AuthorityApprovalDisplay, PolicyChangeAuthorityApprovalDisplay, TransferAuthorityApprovalDisplay, VaultMigrationAuthorityApprovalDisplay } from "../adapters/ap2/human-authority.js";
 import { requestFingerprintFromBodyDigest } from "../purchase/identity.js";
 import type { Sha256Digest } from "../purchase/types.js";
+import type {
+  AnyAuthorityApprovalDisplay,
+  AuthorityApprovalDisplay,
+  PolicyChangeAuthorityApprovalDisplay,
+  TransferAuthorityApprovalDisplay,
+  VaultMigrationAuthorityApprovalDisplay,
+} from "./approval-ceremony.js";
 import {
   TelegramAuthorityApprovalPrompt,
   TelegramAuthorityPromptStore,
@@ -62,6 +68,18 @@ test("Telegram Authority denies an exact prompt", async (t) => {
     "denied",
   );
   assert.equal(await pending, false);
+});
+
+test("Telegram Authority rejects a subject prefix from another ceremony", async (t) => {
+  const fixture = createFixture(t, TOKEN_A);
+  await assert.rejects(
+    fixture.prompt.approve({
+      ...transferDisplay(),
+      transferId: "pur_AAAAAAAAAAAAAAAAAAAAAA",
+    }),
+    /does not match/,
+  );
+  assert.equal(fixture.bot.sent.length, 0);
 });
 
 test("Telegram Authority shows and resolves exact direct-Transfer facts", async (t) => {

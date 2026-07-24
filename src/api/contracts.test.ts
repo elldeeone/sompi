@@ -3,7 +3,10 @@ import { test } from "node:test";
 
 import { assertPurchaseId, assertPurchaseRequestKey, evidenceDigest } from "../purchase/identity.js";
 import type { PurchaseModule, PurchaseView } from "../purchase/types.js";
+import { SompiOperationFailure } from "../operation-failure.js";
 import {
+  SOMPI_API_BOUNDARY_FAILURES,
+  SOMPI_API_SERVER_ERROR_CODES,
   SompiApiContractError,
   assertSompiApiError,
   assertPurchaseView,
@@ -178,6 +181,85 @@ test("canonical Purchase contract rejects unknown, ambiguous, oversized, and sec
   assert.throws(
     () => assertSompiApiError({ error: { code: "BAD", message: "safe", retryable: false }, raw: "secret" }),
     SompiApiContractError
+  );
+  assert.throws(
+    () => assertSompiApiError({
+      error: { code: "UNKNOWN_SERVER_CODE", message: "safe", retryable: false },
+    }),
+    SompiApiContractError,
+  );
+  assert.equal(
+    new Set(SOMPI_API_SERVER_ERROR_CODES).size,
+    SOMPI_API_SERVER_ERROR_CODES.length,
+  );
+  for (const [code, definition] of Object.entries(SOMPI_API_BOUNDARY_FAILURES)) {
+    assert.equal(
+      assertSompiApiError({
+        error: {
+          code,
+          message: `Context for ${code}.`,
+          retryable: definition.retryable,
+        },
+      }).error.code,
+      code,
+    );
+    assert.throws(
+      () => assertSompiApiError({
+        error: {
+          code,
+          message: `Context for ${code}.`,
+          retryable: !definition.retryable,
+        },
+      }),
+      SompiApiContractError,
+    );
+  }
+  for (const clientOnlyCode of [
+    "API_UNAVAILABLE",
+    "INVALID_API_RESPONSE",
+    "INVALID_CONFIGURATION",
+  ]) {
+    assert.throws(
+      () => assertSompiApiError({
+        error: {
+          code: clientOnlyCode,
+          message: "This failure is local to the client.",
+          retryable: false,
+        },
+      }),
+      SompiApiContractError,
+    );
+  }
+  const denied = new SompiOperationFailure("TRANSFER_DENIED");
+  assert.deepEqual(
+    assertSompiApiError({
+      error: {
+        code: denied.code,
+        message: denied.message,
+        retryable: denied.retryable,
+      },
+    }).error,
+    { code: denied.code, message: denied.message, retryable: denied.retryable },
+  );
+  assert.throws(
+    () => assertSompiApiError({
+      error: {
+        code: denied.code,
+        message: denied.message,
+        retryable: !denied.retryable,
+      },
+    }),
+    SompiApiContractError,
+  );
+  assert.throws(
+    () => assertSompiApiError({
+      error: {
+        code: denied.code,
+        message: "A transport changed the stable failure message.",
+        retryable: denied.retryable,
+      },
+    }),
+    SompiApiContractError,
   );
 });
 

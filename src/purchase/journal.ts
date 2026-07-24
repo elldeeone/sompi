@@ -230,19 +230,10 @@ function validateTransferIntent(input: TransferJournalIntent): void {
 }
 
 function sameTransferIntent(record: TransferRecord, input: TransferJournalIntent): boolean {
-  return record.id === input.id &&
+  return record.requestKey === input.requestKey &&
     record.requestDigest === input.requestDigest &&
     record.destination === input.destination &&
-    record.amountAtomic === input.amountAtomic &&
-    record.sourceVaultAddress === input.sourceVaultAddress &&
-    record.sourceVaultDigest === input.sourceVaultDigest &&
-    record.feeCeilingAtomic === input.feeCeilingAtomic &&
-    record.maximumTotalAtomic === input.maximumTotalAtomic &&
-    record.expiresAtMs === input.expiresAtMs &&
-    record.policyDigest === input.policyDigest &&
-    record.manifestRevision === input.manifestRevision &&
-    record.manifestDigest === input.manifestDigest &&
-    record.finalityFloor === input.finalityFloor;
+    record.amountAtomic === input.amountAtomic;
 }
 
 function canonicalTransferFactsJson(facts: TransferAuthorizationFacts): string {
@@ -1485,6 +1476,13 @@ export class JournalNotFoundError extends Error {
   }
 }
 
+export class JournalRequestConflictError extends JournalInvariantError {
+  constructor(message: string) {
+    super(message);
+    this.name = "JournalRequestConflictError";
+  }
+}
+
 export class JournalFencingError extends JournalInvariantError {
   constructor(message: string) {
     super(message);
@@ -1738,7 +1736,9 @@ export class PurchaseJournal {
       const byKey = this.findTransferByRequestKey(input.requestKey);
       if (byKey) {
         if (!sameTransferIntent(byKey, input)) {
-          throw new JournalInvariantError("Transfer request key is already bound to different intent");
+          throw new JournalRequestConflictError(
+            "Transfer request key is already bound to different intent",
+          );
         }
         return byKey;
       }
@@ -2211,8 +2211,32 @@ export class PurchaseJournal {
     const now = this.timestamp();
     const deadline = now + 60_000;
     const offer = this.db.transaction(() => {
-      if (this.findPurchaseByRequestKey(input.purchase.requestKey)) {
-        throw new JournalInvariantError("Purchase admission raced another request-key owner");
+      const raced = this.findPurchaseByRequestKey(input.purchase.requestKey);
+      if (raced) {
+        assertSamePurchaseIntent(raced, input.purchase);
+        return { kind: "purchase" as const, purchase: raced };
+      }
+      const pending = this.findPurchaseAdmissionIntentByRequestKey(
+        input.purchase.requestKey,
+      );
+      if (pending) {
+        assertSamePurchaseAdmissionIntent(pending, input, digest);
+        if (pending.state === "committed") {
+          return {
+            kind: "purchase" as const,
+            purchase: this.requirePurchase(pending.purchase_id as PurchaseId),
+          };
+        }
+        if (pending.state === "offered" || pending.state === "staged") {
+          return {
+            kind: "admission" as const,
+            admissionId: pending.admission_id,
+            owner: pending.owner,
+          };
+        }
+        throw new JournalInvariantError(
+          "Purchase request key is bound to a terminal admission without a Purchase",
+        );
       }
       if (this.findPurchase(input.purchase.id)) {
         throw new JournalInvariantError(`PurchaseId ${input.purchase.id} already exists`);
@@ -2292,24 +2316,68 @@ export class PurchaseJournal {
                 updated_at_ms = ?
           WHERE singleton = 1`
       ).run(quantity, now);
+      return { kind: "created" as const };
     });
+    let activeAdmissionId = admissionId;
+    let activeOwner = owner;
+    let ownsAdmission = false;
     try {
-      offer.immediate();
+      const offered = offer.immediate();
+      if (offered.kind === "purchase") {
+        if (!this.findEvidenceAttachmentForKind(
+          offered.purchase.id,
+          digest,
+          input.evidence.kind,
+          input.evidence.attempt,
+        )) {
+          this.storeEvidence(offered.purchase.id, input.evidence);
+        }
+        return offered.purchase;
+      }
+      if (offered.kind === "admission") {
+        activeAdmissionId = offered.admissionId;
+        activeOwner = offered.owner;
+      } else {
+        ownsAdmission = true;
+      }
       this.evidenceStore.store(input.evidence.bytes);
       const staged = this.db.transaction(() => {
-        const updated = this.db.prepare(
-          `UPDATE purchase_admission_intents
-              SET state = 'staged', updated_at_ms = ?
-            WHERE admission_id = ? AND state = 'offered' AND owner = ?`
-        ).run(this.timestamp(), admissionId, owner);
-        if (updated.changes !== 1) {
-          throw new JournalInvariantError("Purchase admission staging fence was lost");
+        const current = this.db.prepare(
+          "SELECT * FROM purchase_admission_intents WHERE admission_id = ?",
+        ).get(activeAdmissionId) as PurchaseAdmissionIntentRow | undefined;
+        if (!current) {
+          throw new JournalInvariantError("Purchase admission intent is missing");
         }
+        assertSamePurchaseAdmissionIntent(current, input, digest);
+        if (current.state === "committed") {
+          return this.requirePurchase(current.purchase_id as PurchaseId);
+        }
+        if (current.owner !== activeOwner) {
+          throw new JournalInvariantError("Purchase admission staging owner changed");
+        }
+        if (current.state === "offered") {
+          const updated = this.db.prepare(
+            `UPDATE purchase_admission_intents
+                SET state = 'staged', updated_at_ms = ?
+              WHERE admission_id = ? AND state = 'offered' AND owner = ?`,
+          ).run(this.timestamp(), activeAdmissionId, activeOwner);
+          if (updated.changes !== 1) {
+            throw new JournalInvariantError("Purchase admission staging fence was lost");
+          }
+          return undefined;
+        }
+        if (current.state !== "staged") {
+          throw new JournalInvariantError("Purchase admission intent is not active");
+        }
+        return undefined;
       });
-      staged.immediate();
-      return this.commitPurchaseAdmissionIntent(admissionId, owner);
+      const committed = staged.immediate();
+      if (committed) return committed;
+      return this.commitPurchaseAdmissionIntent(activeAdmissionId, activeOwner);
     } catch (error) {
-      this.cancelPurchaseAdmission(admissionId, "failed_terminal");
+      if (ownsAdmission) {
+        this.cancelPurchaseAdmission(admissionId, "failed_terminal");
+      }
       throw error;
     }
   }
@@ -2917,7 +2985,9 @@ export class PurchaseJournal {
       const existing = this.findPolicyChangeByRequestKey(input.requestKey);
       if (existing) {
         if (!policyChangeIntentMatches(existing, input)) {
-          throw new JournalInvariantError("Policy Change request key is already bound to different limits");
+          throw new JournalRequestConflictError(
+            "Policy Change request key is already bound to different limits",
+          );
         }
         return existing;
       }
@@ -2989,9 +3059,22 @@ export class PurchaseJournal {
       const existing = this.findVaultMigrationByRequestKey(input.requestKey);
       if (existing) {
         if (!vaultMigrationIntentMatches(existing, input)) {
-          throw new JournalInvariantError("Vault Migration request key is already bound to different protection");
+          throw new JournalRequestConflictError(
+            "Vault Migration request key is already bound to different protection",
+          );
         }
         return existing;
+      }
+      const activation = this.requireActivePolicyActivation();
+      if (activation.policy.digest !== input.expectedPolicyDigest) {
+        throw new PolicyReservationError(
+          "active treasury policy changed before Vault Migration creation",
+        );
+      }
+      if (activation.activationGeneration !== input.expectedPolicyGeneration) {
+        throw new PolicyReservationError(
+          "active treasury policy generation changed before Vault Migration creation",
+        );
       }
       const now = this.timestamp();
       this.db.prepare(
@@ -9555,6 +9638,14 @@ export class PurchaseJournal {
     };
   }
 
+  private findPurchaseAdmissionIntentByRequestKey(
+    requestKey: PurchaseRequestKey,
+  ): PurchaseAdmissionIntentRow | undefined {
+    return this.db.prepare(
+      "SELECT * FROM purchase_admission_intents WHERE request_key = ?",
+    ).get(requestKey) as PurchaseAdmissionIntentRow | undefined;
+  }
+
   private commitPurchaseAdmissionIntent(admissionId: string, owner: string): PurchaseRecord {
     if (!this.evidenceStore) {
       throw new JournalInvariantError("an evidence directory is required for immutable evidence storage");
@@ -11450,18 +11541,9 @@ function policyChangeIntentMatches(
   existing: PolicyChangeJournalRecord,
   input: CreatePolicyChangeJournalInput,
 ): boolean {
-  return existing.id === input.id &&
-    existing.expectedPolicyDigest === input.expectedPolicyDigest &&
-    existing.expectedPolicyGeneration === input.expectedPolicyGeneration &&
-    existing.expectedVaultDigest === input.expectedVaultDigest &&
-    existing.previousMaximumPerPaymentAtomic === input.previousMaximumPerPaymentAtomic &&
-    existing.previousMaximumPerHourAtomic === input.previousMaximumPerHourAtomic &&
+  return existing.requestKey === input.requestKey &&
     existing.proposedMaximumPerPaymentAtomic === input.proposedMaximumPerPaymentAtomic &&
-    existing.proposedMaximumPerHourAtomic === input.proposedMaximumPerHourAtomic &&
-    existing.vaultMaximumOutflowAtomic === input.vaultMaximumOutflowAtomic &&
-    existing.manifestRevision === input.manifestRevision &&
-    existing.manifestDigest === input.manifestDigest &&
-    existing.expiresAtMs === input.expiresAtMs;
+    existing.proposedMaximumPerHourAtomic === input.proposedMaximumPerHourAtomic;
 }
 
 function validatePolicyDecision(
@@ -11537,19 +11619,8 @@ function validateVaultMigrationInput(input: CreateVaultMigrationJournalInput): v
 }
 
 function vaultMigrationIntentMatches(existing: VaultMigrationJournalRecord, input: CreateVaultMigrationJournalInput): boolean {
-  return existing.id === input.id &&
-    existing.oldVaultDigest === input.oldVaultDigest &&
-    existing.expectedPolicyDigest === input.expectedPolicyDigest &&
-    existing.expectedPolicyGeneration === input.expectedPolicyGeneration &&
-    existing.oldMaximumOutflowAtomic === input.oldMaximumOutflowAtomic &&
-    existing.newMaximumOutflowAtomic === input.newMaximumOutflowAtomic &&
-    existing.windowSizeDaa === input.windowSizeDaa &&
-    existing.windowStartDaa === input.windowStartDaa &&
-    existing.spentInWindowAtomic === input.spentInWindowAtomic &&
-    existing.stableReceiveAddress === input.stableReceiveAddress &&
-    existing.manifestRevision === input.manifestRevision &&
-    existing.manifestDigest === input.manifestDigest &&
-    existing.expiresAtMs === input.expiresAtMs;
+  return existing.requestKey === input.requestKey &&
+    existing.newMaximumOutflowAtomic === input.newMaximumOutflowAtomic;
 }
 
 function assertVaultMigrationTransition(from: VaultMigrationJournalState, to: VaultMigrationJournalState): void {
@@ -11877,7 +11948,34 @@ function assertSamePurchaseIntent(existing: PurchaseRecord, input: CreatePurchas
     existing.expectedMerchantId !== input.expectedMerchantId ||
     existing.expectedMerchantOrigin !== input.expectedMerchantOrigin
   ) {
-    throw new JournalInvariantError(`request key ${input.requestKey} was reused for a different Purchase Intent`);
+    throw new JournalRequestConflictError(
+      `request key ${input.requestKey} was reused for a different Purchase Intent`,
+    );
+  }
+}
+
+function assertSamePurchaseAdmissionIntent(
+  existing: PurchaseAdmissionIntentRow,
+  input: CreatePurchaseWithEvidenceInput,
+  digest: Sha256Digest,
+): void {
+  if (
+    existing.resource_url !== input.purchase.resourceUrl ||
+    existing.method !== input.purchase.method ||
+    existing.resource_fingerprint !== input.purchase.resourceFingerprint ||
+    existing.expected_merchant_id !== (input.purchase.expectedMerchantId ?? null) ||
+    existing.expected_merchant_origin !== (input.purchase.expectedMerchantOrigin ?? null) ||
+    existing.evidence_digest !== digest ||
+    existing.evidence_byte_length !== input.evidence.bytes.byteLength ||
+    existing.evidence_storage_ref !== storageRefForDigest(digest) ||
+    existing.evidence_media_type !== input.evidence.mediaType ||
+    existing.evidence_profile !== input.evidence.profile ||
+    existing.evidence_issuer !== (input.evidence.issuer ?? null) ||
+    existing.evidence_kind !== input.evidence.kind
+  ) {
+    throw new JournalRequestConflictError(
+      `request key ${input.purchase.requestKey} was reused for a different Purchase Intent`,
+    );
   }
 }
 

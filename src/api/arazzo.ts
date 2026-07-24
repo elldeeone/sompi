@@ -6,11 +6,9 @@ import type { Ajv2020 as Ajv2020Instance, Options as AjvOptions } from "ajv/dist
 import addFormatsModule from "ajv-formats";
 
 import {
-  POLICY_CHANGE_CREATE_REQUEST_SCHEMA,
-  PURCHASE_CREATE_REQUEST_SCHEMA,
-  TRANSFER_CREATE_REQUEST_SCHEMA,
-  VAULT_MIGRATION_CREATE_REQUEST_SCHEMA,
-} from "./contracts.js";
+  sompiArazzoOperationReference,
+  sompiOperationRequestSchema,
+} from "./operation-contract.js";
 import { sompiOpenApiDocument } from "./openapi.js";
 
 export const SOMPI_ARAZZO_VERSION = "1.1.0" as const;
@@ -44,18 +42,18 @@ export function sompiArazzoDocument(version: string): Readonly<JsonObject> {
           "The scenario expects createPurchase to return a durable Purchase identity, " +
           "confirms a recoverable interruption, invokes explicit recovery once, and then " +
           "reads a terminal receipted state.",
-        inputs: withoutId(PURCHASE_CREATE_REQUEST_SCHEMA),
+        inputs: sompiOperationRequestSchema("createPurchase"),
         steps: [
           {
             stepId: "createPurchase",
-            operationId: "$sourceDescriptions.sompi.createPurchase",
+            operationId: sompiArazzoOperationReference("createPurchase"),
             requestBody: { contentType: "application/json", payload: "$inputs" },
             successCriteria: [{ condition: "$statusCode == 200" }],
             outputs: { purchaseId: "$response.body#/id" },
           },
           {
             stepId: "inspectRecoverablePurchase",
-            operationId: "$sourceDescriptions.sompi.getPurchase",
+            operationId: sompiArazzoOperationReference("getPurchase"),
             parameters: [
               {
                 name: "purchaseId",
@@ -70,7 +68,7 @@ export function sompiArazzoDocument(version: string): Readonly<JsonObject> {
           },
           {
             stepId: "recoverPurchase",
-            operationId: "$sourceDescriptions.sompi.recoverPurchase",
+            operationId: sompiArazzoOperationReference("recoverPurchase"),
             parameters: [
               {
                 name: "purchaseId",
@@ -82,7 +80,7 @@ export function sompiArazzoDocument(version: string): Readonly<JsonObject> {
           },
           {
             stepId: "readTerminalReceipt",
-            operationId: "$sourceDescriptions.sompi.getPurchase",
+            operationId: sompiArazzoOperationReference("getPurchase"),
             parameters: [
               {
                 name: "purchaseId",
@@ -117,30 +115,30 @@ export function sompiArazzoDocument(version: string): Readonly<JsonObject> {
         description:
           "Creates one durable direct Transfer, reads its status, invokes idempotent recovery when needed, " +
           "and reads the same Transfer receipt. Recovery cannot create replacement authorization or payment.",
-        inputs: withoutId(TRANSFER_CREATE_REQUEST_SCHEMA),
+        inputs: sompiOperationRequestSchema("createTransfer"),
         steps: [
           {
             stepId: "createTransfer",
-            operationId: "$sourceDescriptions.sompi.createTransfer",
+            operationId: sompiArazzoOperationReference("createTransfer"),
             requestBody: { contentType: "application/json", payload: "$inputs" },
             successCriteria: [{ condition: "$statusCode == 200" }],
             outputs: { transferId: "$response.body#/id" },
           },
           {
             stepId: "inspectTransfer",
-            operationId: "$sourceDescriptions.sompi.getTransfer",
+            operationId: sompiArazzoOperationReference("getTransfer"),
             parameters: [{ name: "transferId", in: "path", value: "$steps.createTransfer.outputs.transferId" }],
             successCriteria: [{ condition: "$statusCode == 200" }],
           },
           {
             stepId: "recoverTransfer",
-            operationId: "$sourceDescriptions.sompi.recoverTransfer",
+            operationId: sompiArazzoOperationReference("recoverTransfer"),
             parameters: [{ name: "transferId", in: "path", value: "$steps.createTransfer.outputs.transferId" }],
             successCriteria: [{ condition: "$statusCode == 200" }],
           },
           {
             stepId: "readTransferReceipt",
-            operationId: "$sourceDescriptions.sompi.getTransfer",
+            operationId: sompiArazzoOperationReference("getTransfer"),
             parameters: [{ name: "transferId", in: "path", value: "$steps.createTransfer.outputs.transferId" }],
             successCriteria: [
               { condition: "$statusCode == 200" },
@@ -162,24 +160,24 @@ export function sompiArazzoDocument(version: string): Readonly<JsonObject> {
         description:
           "Proposes the new per-payment and hourly limits, resumes the same durable change if needed, " +
           "and verifies that one approved policy version was applied.",
-        inputs: withoutId(POLICY_CHANGE_CREATE_REQUEST_SCHEMA),
+        inputs: sompiOperationRequestSchema("createPolicyChange"),
         steps: [
           {
             stepId: "createPolicyChange",
-            operationId: "$sourceDescriptions.sompi.createPolicyChange",
+            operationId: sompiArazzoOperationReference("createPolicyChange"),
             requestBody: { contentType: "application/json", payload: "$inputs" },
             successCriteria: [{ condition: "$statusCode == 200" }],
             outputs: { policyChangeId: "$response.body#/id" },
           },
           {
             stepId: "recoverPolicyChange",
-            operationId: "$sourceDescriptions.sompi.recoverPolicyChange",
+            operationId: sompiArazzoOperationReference("recoverPolicyChange"),
             parameters: [{ name: "policyChangeId", in: "path", value: "$steps.createPolicyChange.outputs.policyChangeId" }],
             successCriteria: [{ condition: "$statusCode == 200" }],
           },
           {
             stepId: "readAppliedPolicyChange",
-            operationId: "$sourceDescriptions.sompi.getPolicyChange",
+            operationId: sompiArazzoOperationReference("getPolicyChange"),
             parameters: [{ name: "policyChangeId", in: "path", value: "$steps.createPolicyChange.outputs.policyChangeId" }],
             successCriteria: [
               { condition: "$statusCode == 200" },
@@ -199,11 +197,11 @@ export function sompiArazzoDocument(version: string): Readonly<JsonObject> {
         description:
           "Proposes the exact new vault maximum and returns the durable identity used by the operator-only " +
           "offline-owner execution. The user's public receive address remains unchanged.",
-        inputs: withoutId(VAULT_MIGRATION_CREATE_REQUEST_SCHEMA),
+        inputs: sompiOperationRequestSchema("createVaultMigration"),
         steps: [
           {
             stepId: "createVaultMigration",
-            operationId: "$sourceDescriptions.sompi.createVaultMigration",
+            operationId: sompiArazzoOperationReference("createVaultMigration"),
             requestBody: { contentType: "application/json", payload: "$inputs" },
             successCriteria: [
               { condition: "$statusCode == 200" },
@@ -214,7 +212,7 @@ export function sompiArazzoDocument(version: string): Readonly<JsonObject> {
           },
           {
             stepId: "readVaultMigration",
-            operationId: "$sourceDescriptions.sompi.getVaultMigration",
+            operationId: sompiArazzoOperationReference("getVaultMigration"),
             parameters: [{ name: "vaultMigrationId", in: "path", value: "$steps.createVaultMigration.outputs.vaultMigrationId" }],
             successCriteria: [{ condition: "$statusCode == 200" }],
             outputs: { vaultMigration: "$response.body" },
@@ -359,11 +357,6 @@ function assertVersion(version: string): void {
   if (!version || version.length > 100 || /[\u0000-\u001f\u007f]/.test(version)) {
     throw new Error("Sompi workflow version is invalid");
   }
-}
-
-function withoutId<T extends object>(schema: T): Omit<T, "$id"> {
-  const { $id: _id, ...rest } = schema as T & { readonly $id?: unknown };
-  return rest;
 }
 
 function isRecord(value: unknown): value is JsonObject {

@@ -16,6 +16,53 @@ test("AP2 and Kaspa-x402 adapters have no imports of each other", () => {
   assert.deepEqual(violations, []);
 });
 
+test("stable production modules do not import Kaspa-x402 SDK packages", () => {
+  const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+  const sourceRoot = path.join(projectRoot, "src");
+  const allowedRoots = [
+    path.join(sourceRoot, "adapters", "kaspa-x402"),
+    path.join(sourceRoot, "conformance"),
+    path.join(sourceRoot, "demo"),
+    path.join(sourceRoot, "e2e"),
+  ];
+  const violations: string[] = [];
+
+  for (const filename of sourceFiles(sourceRoot)) {
+    if (
+      filename.endsWith(".test.ts") ||
+      allowedRoots.some((directory) => filename.startsWith(`${directory}${path.sep}`))
+    ) {
+      continue;
+    }
+    const text = fs.readFileSync(filename, "utf8");
+    for (const specifier of moduleSpecifiers(text)) {
+      if (specifier.startsWith("@kaspa-x402/")) {
+        violations.push(`${path.relative(sourceRoot, filename)} -> ${specifier}`);
+      }
+    }
+  }
+
+  assert.deepEqual(violations.sort(), []);
+});
+
+test("API transport modules do not import concrete Journal implementations", () => {
+  const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+  const apiRoot = path.join(projectRoot, "src", "api");
+  const violations: string[] = [];
+
+  for (const filename of sourceFiles(apiRoot)) {
+    if (filename.endsWith(".test.ts")) continue;
+    const text = fs.readFileSync(filename, "utf8");
+    for (const specifier of moduleSpecifiers(text)) {
+      if (/(?:^|\/)(?:purchase|transfer)\/journal\.js$/.test(specifier)) {
+        violations.push(`${path.relative(apiRoot, filename)} -> ${specifier}`);
+      }
+    }
+  }
+
+  assert.deepEqual(violations.sort(), []);
+});
+
 function forbiddenImports(
   directory: string,
   forbidden: (specifier: string) => boolean

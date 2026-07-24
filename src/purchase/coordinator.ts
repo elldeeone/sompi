@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { SompiOperationFailure } from "../operation-failure.js";
 import {
   assertVerifiedAuthorityDecision,
   type VerifiedAuthorityDecision,
@@ -38,8 +39,11 @@ import {
   type PurchaseExecutionPlan,
 } from "./execution-plan.js";
 import {
+  EvidenceAdmissionError,
   JournalNotFoundError,
   JournalEffectBusyError,
+  JournalRequestConflictError,
+  PurchaseAdmissionError,
   PurchaseJournal,
   TREASURY_STAGING_EFFECT_KIND,
   TREASURY_STAGING_EVIDENCE_KIND,
@@ -561,6 +565,23 @@ export class PurchaseCoordinator implements PurchaseModule {
   }
 
   async purchase(intent: PurchaseIntent, signal?: AbortSignal): Promise<PurchaseView> {
+    try {
+      return await this.coordinatePurchase(intent, signal);
+    } catch (cause) {
+      if (cause instanceof JournalRequestConflictError) {
+        throw new SompiOperationFailure("PURCHASE_CONFLICT", { cause });
+      }
+      if (cause instanceof PurchaseAdmissionError || cause instanceof EvidenceAdmissionError) {
+        throw new SompiOperationFailure("PURCHASE_ADMISSION_SATURATED", { cause });
+      }
+      throw cause;
+    }
+  }
+
+  private async coordinatePurchase(
+    intent: PurchaseIntent,
+    signal?: AbortSignal,
+  ): Promise<PurchaseView> {
     signal?.throwIfAborted();
     const canonicalIntent = canonicalIntentCopy(intent);
     // Egress policy is reversible local admission. It must run before the
@@ -651,13 +672,33 @@ export class PurchaseCoordinator implements PurchaseModule {
 
   async status(id: PurchaseId, signal?: AbortSignal): Promise<PurchaseView> {
     signal?.throwIfAborted();
-    const purchase = this.journal.requirePurchase(id);
+    const purchase = this.journal.findPurchase(id);
+    if (!purchase) throw new SompiOperationFailure("PURCHASE_NOT_FOUND");
     return projectPurchaseView(this.snapshot(purchase));
   }
 
   async recover(id: PurchaseId, signal?: AbortSignal): Promise<PurchaseView> {
+    try {
+      return await this.recoverPurchase(id, signal);
+    } catch (cause) {
+      if (cause instanceof JournalRequestConflictError) {
+        throw new SompiOperationFailure("PURCHASE_CONFLICT", { cause });
+      }
+      if (cause instanceof PurchaseAdmissionError || cause instanceof EvidenceAdmissionError) {
+        throw new SompiOperationFailure("PURCHASE_ADMISSION_SATURATED", { cause });
+      }
+      throw cause;
+    }
+  }
+
+  private async recoverPurchase(
+    id: PurchaseId,
+    signal?: AbortSignal,
+  ): Promise<PurchaseView> {
     signal?.throwIfAborted();
-    this.journal.requirePurchase(id);
+    if (!this.journal.findPurchase(id)) {
+      throw new SompiOperationFailure("PURCHASE_NOT_FOUND");
+    }
     const reconciler = new PurchaseReconciler(
       this.journal,
       new Map([

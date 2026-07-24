@@ -1,8 +1,12 @@
 import { createHash, randomBytes } from "node:crypto";
 
+import { SompiOperationFailure } from "../operation-failure.js";
 import type { OperatorManifestIdentity } from "../operator/manifest.js";
 import { PolicyEngine, type Policy } from "../policy.js";
 import {
+  JournalNotFoundError,
+  JournalRequestConflictError,
+  PolicyReservationError,
   PurchaseJournal,
   type PolicyChangeJournalRecord,
   type PolicySnapshotRecord,
@@ -61,7 +65,7 @@ export class PolicyChangeModule {
         existing.proposedMaximumPerPaymentAtomic !== normalized.maximumPerPaymentAtomic ||
         existing.proposedMaximumPerHourAtomic !== normalized.maximumPerHourAtomic
       ) {
-        throw new Error("Policy Change request key is already bound to different limits");
+        throw new SompiOperationFailure("POLICY_CHANGE_CONFLICT");
       }
       return this.resume(existing, signal);
     }
@@ -76,32 +80,41 @@ export class PolicyChangeModule {
     validateProposedLimits(normalized, vaultMaximumOutflowAtomic);
     const manifest = this.options.manifest();
     const now = timestamp(this.now);
-    const record = this.options.journal.createPolicyChange({
-      id: createPolicyChangeId(),
-      requestKey: normalized.requestKey,
-      expectedPolicyDigest: active.digest,
-      expectedPolicyGeneration: activation.activationGeneration,
-      expectedVaultDigest: requireDigest(vault.digest, "vault protection digest"),
-      previousMaximumPerPaymentAtomic: active.maxPerPaymentAtomic,
-      previousMaximumPerHourAtomic: active.maxPerHourAtomic,
-      proposedMaximumPerPaymentAtomic: normalized.maximumPerPaymentAtomic,
-      proposedMaximumPerHourAtomic: normalized.maximumPerHourAtomic,
-      vaultMaximumOutflowAtomic,
-      manifestRevision: manifest.revision,
-      manifestDigest: requireDigest(manifest.digest, "Operator Manifest digest"),
-      expiresAtMs: now + this.approvalTtlMs,
-    });
+    let record: PolicyChangeJournalRecord;
+    try {
+      record = this.options.journal.createPolicyChange({
+        id: createPolicyChangeId(),
+        requestKey: normalized.requestKey,
+        expectedPolicyDigest: active.digest,
+        expectedPolicyGeneration: activation.activationGeneration,
+        expectedVaultDigest: requireDigest(vault.digest, "vault protection digest"),
+        previousMaximumPerPaymentAtomic: active.maxPerPaymentAtomic,
+        previousMaximumPerHourAtomic: active.maxPerHourAtomic,
+        proposedMaximumPerPaymentAtomic: normalized.maximumPerPaymentAtomic,
+        proposedMaximumPerHourAtomic: normalized.maximumPerHourAtomic,
+        vaultMaximumOutflowAtomic,
+        manifestRevision: manifest.revision,
+        manifestDigest: requireDigest(manifest.digest, "Operator Manifest digest"),
+        expiresAtMs: now + this.approvalTtlMs,
+      });
+    } catch (cause) {
+      if (
+        cause instanceof JournalRequestConflictError ||
+        cause instanceof PolicyReservationError
+      ) {
+        throw new SompiOperationFailure("POLICY_CHANGE_CONFLICT", { cause });
+      }
+      throw cause;
+    }
     return this.resume(record, signal);
   }
 
   status(id: string): PolicyChangeView {
-    if (!ID.test(id)) throw new Error("Policy Change identity is invalid");
-    return view(this.options.journal.policyChange(id));
+    return view(this.requirePolicyChange(id));
   }
 
   recover(id: string, signal?: AbortSignal): Promise<PolicyChangeView> {
-    if (!ID.test(id)) throw new Error("Policy Change identity is invalid");
-    return this.resume(this.options.journal.policyChange(id), signal);
+    return this.resume(this.requirePolicyChange(id), signal);
   }
 
   private async resume(record: PolicyChangeJournalRecord, signal?: AbortSignal): Promise<PolicyChangeView> {
@@ -118,27 +131,47 @@ export class PolicyChangeModule {
     }
     const currentPolicy = this.options.policy.policy;
     const currentVault = this.options.vaultProtection();
-    const applied = this.options.journal.authorizeAndActivatePolicyChange(
-      record.id,
-      decision,
-      {
-        maxPerPaymentAtomic: record.proposedMaximumPerPaymentAtomic,
-        maxPerHourAtomic: record.proposedMaximumPerHourAtomic,
-        allowlist: currentPolicy.allowlist,
-      },
-      {
-        expectedPolicyGeneration: record.expectedPolicyGeneration,
-        expectedVaultDigest: record.expectedVaultDigest,
-        currentVaultDigest: requireDigest(currentVault.digest, "current vault protection digest"),
-        currentVaultMaximumOutflowAtomic: atomic(
-          currentVault.maximumOutflowAtomic,
-          "current vault protection maximum",
-        ),
-      },
-    );
+    let applied: PolicyChangeJournalRecord;
+    try {
+      applied = this.options.journal.authorizeAndActivatePolicyChange(
+        record.id,
+        decision,
+        {
+          maxPerPaymentAtomic: record.proposedMaximumPerPaymentAtomic,
+          maxPerHourAtomic: record.proposedMaximumPerHourAtomic,
+          allowlist: currentPolicy.allowlist,
+        },
+        {
+          expectedPolicyGeneration: record.expectedPolicyGeneration,
+          expectedVaultDigest: record.expectedVaultDigest,
+          currentVaultDigest: requireDigest(currentVault.digest, "current vault protection digest"),
+          currentVaultMaximumOutflowAtomic: atomic(
+            currentVault.maximumOutflowAtomic,
+            "current vault protection maximum",
+          ),
+        },
+      );
+    } catch (cause) {
+      if (cause instanceof PolicyReservationError) {
+        throw new SompiOperationFailure("POLICY_CHANGE_CONFLICT", { cause });
+      }
+      throw cause;
+    }
     const active = this.options.journal.requireActivePolicy();
     this.options.policy.activate(policyFromSnapshot(active));
     return view(applied);
+  }
+
+  private requirePolicyChange(id: string): PolicyChangeJournalRecord {
+    if (!ID.test(id)) throw new SompiOperationFailure("INVALID_POLICY_CHANGE");
+    try {
+      return this.options.journal.policyChange(id);
+    } catch (cause) {
+      if (cause instanceof JournalNotFoundError) {
+        throw new SompiOperationFailure("POLICY_CHANGE_NOT_FOUND", { cause });
+      }
+      throw cause;
+    }
   }
 }
 
@@ -148,10 +181,10 @@ function factsFor(
 ): PolicyChangeFacts {
   const active = activation.policy;
   if (active.digest !== record.expectedPolicyDigest) {
-    throw new Error("Policy Change no longer matches the active policy");
+    throw new SompiOperationFailure("POLICY_CHANGE_CONFLICT");
   }
   if (activation.activationGeneration !== record.expectedPolicyGeneration) {
-    throw new Error("Policy Change no longer matches the active policy generation");
+    throw new SompiOperationFailure("POLICY_CHANGE_CONFLICT");
   }
   return Object.freeze({
     profile: PROFILE,
@@ -197,22 +230,26 @@ function policyFromSnapshot(snapshot: PolicySnapshotRecord): Policy {
 
 function normalizeIntent(intent: PolicyChangeIntent): PolicyChangeIntent {
   if (!intent || !REQUEST_KEY.test(intent.requestKey)) {
-    throw new Error("Policy Change request key is invalid");
+    throw new SompiOperationFailure("INVALID_POLICY_CHANGE");
   }
-  return Object.freeze({
-    requestKey: intent.requestKey,
-    maximumPerPaymentAtomic: atomic(intent.maximumPerPaymentAtomic, "per-payment limit"),
-    maximumPerHourAtomic: atomic(intent.maximumPerHourAtomic, "hourly limit"),
-  });
+  try {
+    return Object.freeze({
+      requestKey: intent.requestKey,
+      maximumPerPaymentAtomic: atomic(intent.maximumPerPaymentAtomic, "per-payment limit"),
+      maximumPerHourAtomic: atomic(intent.maximumPerHourAtomic, "hourly limit"),
+    });
+  } catch (cause) {
+    throw new SompiOperationFailure("INVALID_POLICY_CHANGE", { cause });
+  }
 }
 
 function validateProposedLimits(intent: PolicyChangeIntent, vaultMaximumOutflowAtomic: string): void {
   const perPayment = BigInt(intent.maximumPerPaymentAtomic);
   const perHour = BigInt(intent.maximumPerHourAtomic);
   const vaultMaximum = BigInt(vaultMaximumOutflowAtomic);
-  if (perPayment > perHour) throw new Error("per-payment limit cannot exceed the hourly limit");
+  if (perPayment > perHour) throw new SompiOperationFailure("INVALID_POLICY_CHANGE");
   if (perPayment > vaultMaximum || perHour > vaultMaximum) {
-    throw new Error("requested everyday limits exceed the current vault protection maximum");
+    throw new SompiOperationFailure("INVALID_POLICY_CHANGE");
   }
 }
 

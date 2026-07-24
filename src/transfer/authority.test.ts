@@ -9,8 +9,12 @@ import Database from "better-sqlite3";
 import { exportJWK, generateKeyPair } from "jose";
 
 import { LocalAp2TrustStore } from "../adapters/ap2/crypto.js";
-import type { AnyAuthorityApprovalDisplay, AuthorityApprovalPrompt } from "../adapters/ap2/human-authority.js";
 import type { Ap2SigningIdentity } from "../adapters/ap2/types.js";
+import {
+  ownerAuthorityApprovalDisplay,
+  type AnyAuthorityApprovalDisplay,
+  type AuthorityApprovalPrompt,
+} from "../authority/approval-ceremony.js";
 import type { AuthorityAuthenticationProvider } from "../authority/key-provider.js";
 import {
   OwnerAuthorityClient,
@@ -52,6 +56,10 @@ test("Transfer Authority signs exact non-AP2 facts and replays one durable decis
   assert.equal(prompt.calls, 1);
   assert.equal(prompt.display?.kind, "transfer");
   if (prompt.display?.kind === "transfer") {
+    assert.deepEqual(
+      prompt.display,
+      ownerAuthorityApprovalDisplay(facts, prompt.display.authorityRequestDigest),
+    );
     assert.equal(prompt.display.profile, facts.profile);
     assert.equal(prompt.display.destination, facts.destination);
     assert.equal(prompt.display.maximumTotalAtomic, facts.maximumTotalAtomic);
@@ -111,6 +119,10 @@ test("Owner Authority signs and displays exact Policy Change facts", async (t) =
   assert.equal(decision.factsDigest, digestJson(facts));
   assert.equal(prompt.display?.kind, "policy-change");
   if (prompt.display?.kind === "policy-change") {
+    assert.deepEqual(
+      prompt.display,
+      ownerAuthorityApprovalDisplay(facts, prompt.display.authorityRequestDigest),
+    );
     assert.equal(prompt.display.profile, facts.profile);
     assert.equal(prompt.display.expectedPolicyDigest, facts.expectedPolicyDigest);
     assert.equal(prompt.display.expectedPolicyVersion, facts.expectedPolicyVersion);
@@ -175,6 +187,10 @@ test("Owner Authority signs the exact vault protection change and keeps the rece
   assert.equal(decision.factsDigest, digestJson(facts));
   assert.equal(prompt.display?.kind, "vault-migration");
   if (prompt.display?.kind === "vault-migration") {
+    assert.deepEqual(
+      prompt.display,
+      ownerAuthorityApprovalDisplay(facts, prompt.display.authorityRequestDigest),
+    );
     assert.equal(prompt.display.profile, facts.profile);
     assert.equal(prompt.display.oldVaultDigest, facts.oldVaultDigest);
     assert.equal(prompt.display.expectedPolicyDigest, facts.expectedPolicyDigest);

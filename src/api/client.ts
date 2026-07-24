@@ -4,20 +4,6 @@ import {
   MAX_SOMPI_API_RESPONSE_BYTES,
   SompiApiContractError,
   assertSompiApiError,
-  assertPurchaseView,
-  assertTransferId,
-  assertTransferView,
-  assertWalletActivity,
-  assertWalletView,
-  assertPolicyChangeId,
-  assertPolicyChangeView,
-  assertVaultMigrationId,
-  assertVaultMigrationView,
-  assertWalletTechnicalView,
-  parsePurchaseCreateRequest,
-  parseTransferCreateRequest,
-  parsePolicyChangeCreateRequest,
-  parseVaultMigrationCreateRequest,
   type SompiApplication,
   type PurchaseCreateRequest,
   type TransferCreateRequest,
@@ -32,9 +18,14 @@ import {
 import type { PurchaseView } from "../purchase/types.js";
 import type { TransferView } from "../transfer/types.js";
 import type { WalletActivityItem, WalletTechnicalView, WalletView } from "../wallet-view/module.js";
-import { assertPurchaseId } from "../purchase/identity.js";
 import type { PolicyChangeView } from "../policy-change/types.js";
 import type { VaultMigrationView } from "../vault-migration/types.js";
+import {
+  buildSompiOperationRequest,
+  type SompiOperationId,
+  type SompiOperationInputMap,
+  type SompiOperationOutputMap,
+} from "./operation-contract.js";
 
 export interface SompiApiClientOptions extends SompiApiSocketAccess {
   readonly socketPath: string;
@@ -67,74 +58,74 @@ export class SompiApiClient implements SompiApplication {
   }
 
   purchase(input: PurchaseCreateRequest, signal?: AbortSignal): Promise<PurchaseView> {
-    return this.request("POST", "/purchases", parsePurchaseCreateRequest(input), assertPurchaseView, signal);
+    return this.operation("createPurchase", input, signal);
   }
 
   status(purchaseId: string, signal?: AbortSignal): Promise<PurchaseView> {
-    return this.request("GET", `/purchases/${assertPurchaseId(purchaseId)}`, undefined, assertPurchaseView, signal);
+    return this.operation("getPurchase", { purchaseId }, signal);
   }
 
   recover(purchaseId: string, signal?: AbortSignal): Promise<PurchaseView> {
-    return this.request("POST", `/purchases/${assertPurchaseId(purchaseId)}/recover`, undefined, assertPurchaseView, signal);
+    return this.operation("recoverPurchase", { purchaseId }, signal);
   }
 
   wallet(signal?: AbortSignal): Promise<WalletView> {
-    return this.request("GET", "/wallet", undefined, assertWalletView, signal);
+    return this.operation("getWallet", undefined, signal);
   }
 
   walletTechnical(signal?: AbortSignal): Promise<WalletTechnicalView> {
-    return this.request("GET", "/wallet/technical", undefined, assertWalletTechnicalView, signal);
+    return this.operation("getWalletTechnical", undefined, signal);
   }
 
   activity(limit = 20, signal?: AbortSignal): Promise<readonly WalletActivityItem[]> {
-    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
-      throw new SompiApiClientError("INVALID_REQUEST", "Wallet activity limit must be between 1 and 100.", false);
-    }
-    return this.request("GET", `/wallet/activity?limit=${limit}`, undefined, assertWalletActivity, signal);
+    return this.operation("listWalletActivity", { limit }, signal);
   }
 
   transfer(input: TransferCreateRequest, signal?: AbortSignal): Promise<TransferView> {
-    return this.request("POST", "/transfers", parseTransferCreateRequest(input), assertTransferView, signal);
+    return this.operation("createTransfer", input, signal);
   }
 
   transferStatus(transferId: string, signal?: AbortSignal): Promise<TransferView> {
-    return this.request("GET", `/transfers/${assertTransferId(transferId)}`, undefined, assertTransferView, signal);
+    return this.operation("getTransfer", { transferId }, signal);
   }
 
   transferRecover(transferId: string, signal?: AbortSignal): Promise<TransferView> {
-    return this.request("POST", `/transfers/${assertTransferId(transferId)}/recover`, undefined, assertTransferView, signal);
+    return this.operation("recoverTransfer", { transferId }, signal);
   }
 
   changePolicy(input: PolicyChangeCreateRequest, signal?: AbortSignal): Promise<PolicyChangeView> {
-    return this.request(
-      "POST",
-      "/policy-changes",
-      parsePolicyChangeCreateRequest(input),
-      assertPolicyChangeView,
-      signal,
-    );
+    return this.operation("createPolicyChange", input, signal);
   }
 
   policyChangeStatus(policyChangeId: string, signal?: AbortSignal): Promise<PolicyChangeView> {
-    return this.request(
-      "GET",
-      `/policy-changes/${assertPolicyChangeId(policyChangeId)}`,
-      undefined,
-      assertPolicyChangeView,
-      signal,
-    );
+    return this.operation("getPolicyChange", { policyChangeId }, signal);
   }
 
   policyChangeRecover(policyChangeId: string, signal?: AbortSignal): Promise<PolicyChangeView> {
-    return this.request("POST", `/policy-changes/${assertPolicyChangeId(policyChangeId)}/recover`, undefined, assertPolicyChangeView, signal);
+    return this.operation("recoverPolicyChange", { policyChangeId }, signal);
   }
 
   vaultMigration(input: VaultMigrationCreateRequest, signal?: AbortSignal): Promise<VaultMigrationView> {
-    return this.request("POST", "/vault-migrations", parseVaultMigrationCreateRequest(input), assertVaultMigrationView, signal);
+    return this.operation("createVaultMigration", input, signal);
   }
 
   vaultMigrationStatus(vaultMigrationId: string, signal?: AbortSignal): Promise<VaultMigrationView> {
-    return this.request("GET", `/vault-migrations/${assertVaultMigrationId(vaultMigrationId)}`, undefined, assertVaultMigrationView, signal);
+    return this.operation("getVaultMigration", { vaultMigrationId }, signal);
+  }
+
+  private operation<K extends SompiOperationId>(
+    operationId: K,
+    input: SompiOperationInputMap[K],
+    signal?: AbortSignal,
+  ): Promise<SompiOperationOutputMap[K]> {
+    const request = buildSompiOperationRequest(operationId, input);
+    return this.request(
+      request.method,
+      request.pathname,
+      request.body,
+      request.assertResponse,
+      signal,
+    );
   }
 
   private async request<T>(

@@ -4,6 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 
+import { SompiOperationFailure } from "../operation-failure.js";
 import { PurchaseJournal } from "../purchase/journal.js";
 import { vaultMigrationFactsDigest, VaultMigrationModule } from "./module.js";
 import type { VaultMigrationDecision, VaultMigrationFacts, VaultMigrationExecutionResult } from "./types.js";
@@ -42,7 +43,7 @@ test("denial, request substitution and ambiguous owner execution fail closed", a
     const first = await fixture.module.propose({ requestKey: "vault:ambiguous", newMaximumOutflowAtomic: "200000000" });
     await assert.rejects(
       () => fixture.module.propose({ requestKey: "vault:ambiguous", newMaximumOutflowAtomic: "300000000" }),
-      /different protection/,
+      operationFailure("VAULT_MIGRATION_CONFLICT"),
     );
     await assert.rejects(() => fixture.module.execute(first.id, {
       ...fixture.executor,
@@ -58,7 +59,156 @@ test("vault protection cannot be lowered below the active everyday hourly limit"
   try {
     await assert.rejects(
       () => fixture.module.propose({ requestKey: "vault:too-low", newMaximumOutflowAtomic: "100000000" }),
-      /lower the everyday hourly limit/,
+      operationFailure("INVALID_VAULT_MIGRATION"),
+    );
+  } finally { fixture.close(); }
+});
+
+test("a malformed everyday-limit projection stays an internal failure", async () => {
+  const fixture = createFixture();
+  try {
+    fixture.setEverydayMaximumProjection("not-an-atomic-amount");
+    await assert.rejects(
+      () => fixture.module.propose({
+        requestKey: "vault:malformed-everyday-limit",
+        newMaximumOutflowAtomic: "200000000",
+      }),
+      (error: unknown) =>
+        error instanceof Error &&
+        !(error instanceof SompiOperationFailure) &&
+        error.message === "Vault Migration everyday maximum is invalid",
+    );
+  } finally { fixture.close(); }
+});
+
+test("Vault Migration absence is stable and Journal faults stay internal", () => {
+  const fixture = createFixture();
+  try {
+    assert.throws(
+      () => fixture.module.status("vmg_AAAAAAAAAAAAAAAAAAAAAA"),
+      operationFailure("VAULT_MIGRATION_NOT_FOUND"),
+    );
+
+    fixture.journal.vaultMigration = () => {
+      throw new Error("injected Journal storage fault");
+    };
+    assert.throws(
+      () => fixture.module.status("vmg_AAAAAAAAAAAAAAAAAAAAAA"),
+      (error: unknown) =>
+        error instanceof Error &&
+        !(error instanceof SompiOperationFailure) &&
+        error.message === "injected Journal storage fault",
+    );
+  } finally { fixture.close(); }
+});
+
+test("a same-intent Vault Migration creation race returns the Journal winner", async () => {
+  const fixture = createFixture();
+  try {
+    const intent = {
+      requestKey: "vault:create-race:same-intent",
+      newMaximumOutflowAtomic: "200000000",
+    };
+    const winner = await fixture.module.propose(intent);
+    hideNextVaultMigrationRequestLookup(fixture.journal);
+
+    const loser = await fixture.module.propose(intent);
+    assert.equal(loser.id, winner.id);
+    assert.equal(loser.state, winner.state);
+  } finally { fixture.close(); }
+});
+
+test("a changed-intent Vault Migration creation race maps the Journal conflict", async () => {
+  const fixture = createFixture();
+  try {
+    await fixture.module.propose({
+      requestKey: "vault:create-race:changed-intent",
+      newMaximumOutflowAtomic: "200000000",
+    });
+    hideNextVaultMigrationRequestLookup(fixture.journal);
+
+    await assert.rejects(
+      fixture.module.propose({
+        requestKey: "vault:create-race:changed-intent",
+        newMaximumOutflowAtomic: "300000000",
+      }),
+      operationFailure("VAULT_MIGRATION_CONFLICT"),
+    );
+  } finally { fixture.close(); }
+});
+
+test("an active-policy digest CAS race maps the Journal conflict", async () => {
+  const fixture = createFixture();
+  try {
+    const createVaultMigration = fixture.journal.createVaultMigration.bind(fixture.journal);
+    fixture.journal.createVaultMigration = (input) => {
+      fixture.journal.installPolicy({
+        maxPerPaymentAtomic: "110000000",
+        maxPerHourAtomic: "110000000",
+        allowlist: [],
+      });
+      return createVaultMigration(input);
+    };
+
+    await assert.rejects(
+      fixture.module.propose({
+        requestKey: "vault:create-race:policy-digest",
+        newMaximumOutflowAtomic: "200000000",
+      }),
+      operationFailure("VAULT_MIGRATION_CONFLICT"),
+    );
+  } finally { fixture.close(); }
+});
+
+test("an active-policy generation CAS race maps the Journal conflict", async () => {
+  const fixture = createFixture();
+  try {
+    const initial = fixture.journal.requireActivePolicyActivation();
+    const createVaultMigration = fixture.journal.createVaultMigration.bind(fixture.journal);
+    let racedGeneration: number | undefined;
+    fixture.journal.createVaultMigration = (input) => {
+      fixture.journal.installPolicy({
+        maxPerPaymentAtomic: "50000000",
+        maxPerHourAtomic: "50000000",
+        allowlist: [],
+      });
+      fixture.journal.installPolicy({
+        maxPerPaymentAtomic: initial.policy.maxPerPaymentAtomic,
+        maxPerHourAtomic: initial.policy.maxPerHourAtomic,
+        allowlist: initial.policy.allowlist,
+      });
+      const restored = fixture.journal.requireActivePolicyActivation();
+      assert.equal(restored.policy.digest, initial.policy.digest);
+      racedGeneration = restored.activationGeneration;
+      return createVaultMigration(input);
+    };
+
+    await assert.rejects(
+      fixture.module.propose({
+        requestKey: "vault:create-race:policy-generation",
+        newMaximumOutflowAtomic: "200000000",
+      }),
+      operationFailure("VAULT_MIGRATION_CONFLICT"),
+    );
+    assert.equal(racedGeneration, initial.activationGeneration + 2);
+  } finally { fixture.close(); }
+});
+
+test("Vault Migration creation storage faults stay internal", async () => {
+  const fixture = createFixture();
+  try {
+    fixture.journal.createVaultMigration = () => {
+      throw new Error("injected Vault Migration storage fault");
+    };
+    await assert.rejects(
+      fixture.module.propose({
+        requestKey: "vault:create-storage-fault",
+        newMaximumOutflowAtomic: "200000000",
+      }),
+      (error: unknown) =>
+        error instanceof Error &&
+        !(error instanceof SompiOperationFailure) &&
+        error.message === "injected Vault Migration storage fault",
     );
   } finally { fixture.close(); }
 });
@@ -241,9 +391,20 @@ function createFixture(
         allowlist: [],
       });
     },
+    setEverydayMaximumProjection(value: string) {
+      activeEverydayMaximumAtomic = value;
+    },
     setNow(value: number) { now = value; },
     get executedFacts() { return executedFacts; },
     close() { journal.close(); fs.rmSync(directory, { recursive: true, force: true }); },
+  };
+}
+
+function hideNextVaultMigrationRequestLookup(journal: PurchaseJournal): void {
+  const findVaultMigrationByRequestKey = journal.findVaultMigrationByRequestKey.bind(journal);
+  journal.findVaultMigrationByRequestKey = () => {
+    journal.findVaultMigrationByRequestKey = findVaultMigrationByRequestKey;
+    return undefined;
   };
 }
 
@@ -255,4 +416,10 @@ async function authorityDecision(facts: VaultMigrationFacts, approve: boolean): 
     evidenceDigest: `sha256:${await import("node:crypto").then(({ createHash }) => createHash("sha256").update(evidence).digest("base64url"))}` as Sha256Digest,
     factsDigest: vaultMigrationFactsDigest(facts), decidedAtMs: 1_800_000_000_000,
   };
+}
+
+function operationFailure(code: SompiOperationFailure["code"]): (error: unknown) => boolean {
+  return (error: unknown) =>
+    error instanceof SompiOperationFailure &&
+    error.code === code;
 }

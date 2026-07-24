@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import test from "node:test";
 
 import {
@@ -28,6 +29,10 @@ import {
 } from "./authority-decision.js";
 
 const KEY = new Uint8Array(AUTHORITY_MAC_KEY_BYTES).fill(0x7b);
+const FIXED_APPROVAL_PROTECTED_HEADER =
+  "eyJhbGciOiJFUzI1NiIsImtpZCI6ImF1dGhvcml0eS1rZXktMSIsInR5cCI6IkpXVCJ9";
+const FIXED_APPROVAL_HEADER_PAYLOAD_SHA256 =
+  "df17e265576e9ea638536573a52daf1ab5ec053d1c0f39c2b158529bf623738c";
 
 test("authority decision evidence signs the exact canonical purchase facts", async () => {
   const { request, facts } = await verifiedRequest();
@@ -43,6 +48,16 @@ test("authority decision evidence signs the exact canonical purchase facts", asy
   assert.equal(detailed.evidence.decision, "approved");
   assert.equal(detailed.evidence.verificationProfile, SOMPI_AP2_AUTHORITY_DECISION_PROFILE);
   assert.equal(detailed.instrumentId, FIXED_INSTRUMENT_ID);
+
+  const segments = Buffer.from(evidence).toString("ascii").split(".");
+  assert.equal(segments.length, 3);
+  const [protectedHeader, payload, signature] = segments as [string, string, string];
+  assert.equal(protectedHeader, FIXED_APPROVAL_PROTECTED_HEADER);
+  assert.equal(
+    createHash("sha256").update(`${protectedHeader}.${payload}`, "ascii").digest("hex"),
+    FIXED_APPROVAL_HEADER_PAYLOAD_SHA256,
+  );
+  assert.equal(Buffer.from(signature, "base64url").byteLength, 64);
 });
 
 test("authority denial remains independently signed without pretending to be an AP2 mandate", async () => {

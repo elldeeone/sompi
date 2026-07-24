@@ -183,6 +183,7 @@ export interface TreasuryOperationJournal {
     submissionOutcome?: TreasurySubmissionOutcome,
   ): TreasuryOperationRecord;
   completeTreasuryOperation(operationKey: string, driver?: TreasuryDriverLease): TreasuryOperationRecord;
+  findTreasuryOperation(operationKey: string): TreasuryOperationRecord | undefined;
   requireTreasuryOperation(operationKey: string): TreasuryOperationRecord;
   listTreasuryOperations(kind: TreasuryOperationKind, limit: number): readonly TreasuryOperationRecord[];
   treasuryOperationSpentLastHour(): bigint;

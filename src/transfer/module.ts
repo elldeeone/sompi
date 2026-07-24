@@ -1,8 +1,18 @@
 import { createHash, randomBytes } from "node:crypto";
 
+import { SompiOperationFailure } from "../operation-failure.js";
 import { Address } from "../kaspa-wasm.js";
 import { kasAmountView } from "../amount-display.js";
-import { TreasuryOperationError, type TreasuryOperationModule, type TreasuryOperationView } from "../treasury/operations.js";
+import {
+  TreasuryOperationError,
+  TreasuryOperationNotFoundError,
+  type TreasuryOperationModule,
+  type TreasuryOperationView,
+} from "../treasury/operations.js";
+import {
+  JournalRequestConflictError,
+  PolicyReservationError,
+} from "../purchase/journal.js";
 import type { TransferJournal } from "./journal.js";
 import type {
   TransferAuthorizationFacts,
@@ -31,23 +41,6 @@ export interface TransferModuleOptions {
   readonly authorityTtlMs?: number;
 }
 
-export class TransferModuleError extends Error {
-  constructor(
-    readonly code:
-      | "INVALID_TRANSFER"
-      | "TRANSFER_CONFLICT"
-      | "TRANSFER_DENIED"
-      | "TRANSFER_EXPIRED"
-      | "TRANSFER_FAILED"
-      | "TRANSFER_NOT_FOUND",
-    message: string,
-    options?: { cause?: unknown },
-  ) {
-    super(message, options);
-    this.name = "TransferModuleError";
-  }
-}
-
 /** Deep module for one human-authorized, vault-backed native KAS send. */
 export class TransferModule {
   private readonly now: () => number;
@@ -55,15 +48,15 @@ export class TransferModule {
 
   constructor(private readonly options: TransferModuleOptions) {
     if (!options.journal || !options.authority || !options.treasury || !options.source || !options.manifest) {
-      throw new TransferModuleError("INVALID_TRANSFER", "Transfer module dependencies are incomplete");
+      throw new Error("Transfer module dependencies are incomplete");
     }
     if (options.finalityFloor !== "accepted" && options.finalityFloor !== "depth-confirmed") {
-      throw new TransferModuleError("INVALID_TRANSFER", "Transfer finality floor is invalid");
+      throw new Error("Transfer finality floor is invalid");
     }
     this.now = options.now ?? Date.now;
     this.authorityTtlMs = options.authorityTtlMs ?? DEFAULT_AUTHORITY_TTL_MS;
     if (!Number.isSafeInteger(this.authorityTtlMs) || this.authorityTtlMs < 1 || this.authorityTtlMs > 10 * 60_000) {
-      throw new TransferModuleError("INVALID_TRANSFER", "Transfer Authority TTL is invalid");
+      throw new Error("Transfer Authority TTL is invalid");
     }
   }
 
@@ -73,7 +66,7 @@ export class TransferModule {
     const existing = this.options.journal.findTransferByRequestKey(intent.requestKey);
     if (existing) {
       if (existing.requestDigest !== requestDigest(intent)) {
-        throw new TransferModuleError("TRANSFER_CONFLICT", "Transfer request key is already bound to different intent");
+        throw new SompiOperationFailure("TRANSFER_CONFLICT");
       }
       return this.drive(existing.id, signal);
     }
@@ -89,38 +82,45 @@ export class TransferModule {
         amountAtomic: intent.amountAtomic,
       });
     } catch (cause) {
-      const detail = cause instanceof Error && cause.message.length > 0
-        ? cause.message
-        : "current Treasury policy or available capacity rejected the transfer";
-      throw new TransferModuleError(
-        "INVALID_TRANSFER",
-        `Transfer cannot be authorized: ${detail}`,
-        { cause },
-      );
+      if (
+        cause instanceof TreasuryOperationError ||
+        cause instanceof PolicyReservationError
+      ) {
+        throw new SompiOperationFailure("INVALID_TRANSFER", { cause });
+      }
+      throw cause;
     }
     const now = this.timestamp();
     const expiresAtMs = now + this.authorityTtlMs;
     const amount = BigInt(intent.amountAtomic);
     const fee = atomic(context.feeCeilingAtomic, "Transfer fee ceiling", true);
     if (amount + fee > MAX_UINT64) {
-      throw new TransferModuleError("INVALID_TRANSFER", "Transfer maximum total exceeds uint64");
+      throw new SompiOperationFailure("INVALID_TRANSFER");
     }
-    const record = this.options.journal.claimTransferIntent({
-      id,
-      requestKey: intent.requestKey,
-      requestDigest: requestDigest(intent),
-      destination: intent.destination,
-      amountAtomic: intent.amountAtomic,
-      sourceVaultAddress: source.vaultAddress,
-      sourceVaultDigest: source.vaultDigest,
-      feeCeilingAtomic: context.feeCeilingAtomic,
-      maximumTotalAtomic: (amount + fee).toString(),
-      expiresAtMs,
-      policyDigest: context.policyDigest,
-      manifestRevision: manifest.revision,
-      manifestDigest: manifest.digest,
-      finalityFloor: this.options.finalityFloor,
-    });
+    let record: TransferRecord;
+    try {
+      record = this.options.journal.claimTransferIntent({
+        id,
+        requestKey: intent.requestKey,
+        requestDigest: requestDigest(intent),
+        destination: intent.destination,
+        amountAtomic: intent.amountAtomic,
+        sourceVaultAddress: source.vaultAddress,
+        sourceVaultDigest: source.vaultDigest,
+        feeCeilingAtomic: context.feeCeilingAtomic,
+        maximumTotalAtomic: (amount + fee).toString(),
+        expiresAtMs,
+        policyDigest: context.policyDigest,
+        manifestRevision: manifest.revision,
+        manifestDigest: manifest.digest,
+        finalityFloor: this.options.finalityFloor,
+      });
+    } catch (cause) {
+      if (cause instanceof JournalRequestConflictError) {
+        throw new SompiOperationFailure("TRANSFER_CONFLICT", { cause });
+      }
+      throw cause;
+    }
     return this.drive(record.id, signal);
   }
 
@@ -131,13 +131,31 @@ export class TransferModule {
   async recover(id: string, signal?: AbortSignal): Promise<TransferView> {
     signal?.throwIfAborted();
     const transfer = this.requireTransfer(id);
+    if (transfer.state === "failed_terminal") return this.view(transfer);
     if (!transfer.treasuryOperationKey) return this.drive(id, signal);
     let operation: TreasuryOperationView;
     try {
       operation = await this.options.treasury.recover(transfer.treasuryOperationKey, signal);
     } catch (error) {
+      let latest: TreasuryOperationView;
+      try {
+        latest = this.options.treasury.status(transfer.treasuryOperationKey);
+      } catch (statusError) {
+        if (
+          statusError instanceof TreasuryOperationNotFoundError &&
+          this.requireTransfer(id).state === "funds_reserved"
+        ) {
+          return this.drive(id, signal);
+        }
+        throw statusError;
+      }
+      this.options.journal.syncTransferTreasuryOperation(id, latest);
+      if (latest.state === "completed") return this.finishReceipt(id);
+      if (latest.state === "failed_terminal") {
+        return this.view(this.requireTransfer(id));
+      }
       this.markRecoverable(id, "treasury_recovery_required");
-      throw new TransferModuleError("TRANSFER_FAILED", "Transfer recovery remains unresolved", { cause: error });
+      throw new SompiOperationFailure("TRANSFER_FAILED", { cause: error });
     }
     this.options.journal.syncTransferTreasuryOperation(id, operation);
     return this.finishReceipt(id);
@@ -151,7 +169,7 @@ export class TransferModule {
     if (transfer.state === "awaiting_authority") {
       if (this.timestamp() >= transfer.expiresAtMs) {
         this.options.journal.transitionTransfer(id, "failed_terminal", "authority_request_expired");
-        throw new TransferModuleError("TRANSFER_EXPIRED", "Transfer approval expired");
+        throw new SompiOperationFailure("TRANSFER_EXPIRED");
       }
       const facts = transferFacts(transfer);
       const decision = await this.options.authority.request(facts, signal);
@@ -159,7 +177,7 @@ export class TransferModule {
       transfer = this.requireTransfer(id);
     }
     if (transfer.state === "denied") {
-      throw new TransferModuleError("TRANSFER_DENIED", "Transfer was denied");
+      throw new SompiOperationFailure("TRANSFER_DENIED");
     }
     if (transfer.state === "authorised") {
       const operationKey = `transfer:${transfer.id}`;
@@ -169,14 +187,11 @@ export class TransferModule {
       return this.view(transfer);
     }
     if (!transfer.treasuryOperationKey) {
-      throw new TransferModuleError("TRANSFER_FAILED", "Transfer has no durable Treasury operation");
+      throw new Error("Transfer has no durable Treasury operation");
     }
     const authorization = this.options.journal.findTransferAuthorization(id);
     if (!authorization || authorization.decision !== "approved") {
-      throw new TransferModuleError(
-        "TRANSFER_FAILED",
-        "Transfer has no durable approved Authority evidence"
-      );
+      throw new Error("Transfer has no durable approved Authority evidence");
     }
     try {
       const operation = await this.options.treasury.executeUnderPolicy({
@@ -193,26 +208,29 @@ export class TransferModule {
       let latest: TreasuryOperationView;
       try {
         latest = this.options.treasury.status(transfer.treasuryOperationKey);
-      } catch {
-        const current = this.requireTransfer(id);
-        if (current.state === "funds_reserved") {
-          this.options.journal.transitionTransfer(
-            id,
-            "failed_terminal",
-            "treasury_intent_rejected"
-          );
+      } catch (statusError) {
+        if (!(statusError instanceof TreasuryOperationNotFoundError)) {
+          throw statusError;
         }
-        throw new TransferModuleError(
-          "TRANSFER_FAILED",
-          error instanceof TreasuryOperationError
-            ? `Transfer could not start: ${error.message}. No funds were sent.`
-            : "Transfer could not start safely. No funds were sent; inspect the returned Transfer state before retrying.",
-          { cause: error },
-        );
+        const current = this.requireTransfer(id);
+        if (current.state !== "funds_reserved") {
+          throw new Error("Transfer Treasury operation disappeared after execution began", {
+            cause: statusError,
+          });
+        }
+        return this.view(this.options.journal.transitionTransfer(
+          id,
+          "failed_terminal",
+          "treasury_intent_rejected",
+        ));
       }
       this.options.journal.syncTransferTreasuryOperation(id, latest);
-      if (latest.state !== "failed_terminal") this.markRecoverable(id, "treasury_recovery_required");
-      throw new TransferModuleError("TRANSFER_FAILED", "Transfer requires recovery", { cause: error });
+      if (latest.state === "completed") return this.finishReceipt(id);
+      if (latest.state === "failed_terminal") {
+        return this.view(this.requireTransfer(id));
+      }
+      this.markRecoverable(id, "treasury_recovery_required");
+      throw new SompiOperationFailure("TRANSFER_FAILED", { cause: error });
     }
     return this.finishReceipt(id);
   }
@@ -221,7 +239,7 @@ export class TransferModule {
     const transfer = this.requireTransfer(id);
     if (transfer.state === "settled") {
       if (!transfer.transactionId || transfer.actualFeeAtomic === undefined) {
-        throw new TransferModuleError("TRANSFER_FAILED", "Settled Transfer is missing transaction evidence");
+        throw new Error("Settled Transfer is missing transaction evidence");
       }
       const receipt: TransferReceipt = Object.freeze({
         profile: "urn:sompi:receipt:transfer:1",
@@ -250,8 +268,12 @@ export class TransferModule {
   }
 
   private requireTransfer(id: string): TransferRecord {
-    try { return this.options.journal.requireTransfer(id); }
-    catch (error) { throw new TransferModuleError("TRANSFER_NOT_FOUND", "Transfer does not exist", { cause: error }); }
+    if (!/^trf_[A-Za-z0-9_-]{22}$/.test(id)) {
+      throw new SompiOperationFailure("INVALID_TRANSFER");
+    }
+    const transfer = this.options.journal.findTransfer(id);
+    if (!transfer) throw new SompiOperationFailure("TRANSFER_NOT_FOUND");
+    return transfer;
   }
 
   private view(record: TransferRecord): TransferView {
@@ -283,7 +305,7 @@ export class TransferModule {
   private timestamp(): number {
     const value = this.now();
     if (!Number.isSafeInteger(value) || value <= 0) {
-      throw new TransferModuleError("TRANSFER_FAILED", "Transfer clock is unavailable");
+      throw new Error("Transfer clock is unavailable");
     }
     return value;
   }
@@ -308,21 +330,26 @@ function transferSummary(record: TransferRecord): string {
 
 function canonicalIntent(input: Readonly<TransferIntent>): TransferIntent {
   if (!input || typeof input.requestKey !== "string" || !/^[A-Za-z0-9._:-]{1,160}$/.test(input.requestKey)) {
-    throw new TransferModuleError("INVALID_TRANSFER", "Transfer request key is invalid");
+    throw new SompiOperationFailure("INVALID_TRANSFER");
   }
   const destination = canonicalAddress(input.destination);
-  const amountAtomic = atomic(input.amountAtomic, "Transfer amount", false).toString();
+  let amountAtomic: string;
+  try {
+    amountAtomic = atomic(input.amountAtomic, "Transfer amount", false).toString();
+  } catch (cause) {
+    throw new SompiOperationFailure("INVALID_TRANSFER", { cause });
+  }
   return Object.freeze({ requestKey: input.requestKey, destination, amountAtomic });
 }
 
 function canonicalAddress(value: string): string {
   if (typeof value !== "string" || !Address.validate(value)) {
-    throw new TransferModuleError("INVALID_TRANSFER", "Transfer destination is invalid");
+    throw new SompiOperationFailure("INVALID_TRANSFER");
   }
   const address = new Address(value);
   try {
     if (address.prefix !== "kaspatest" || address.toString() !== value) {
-      throw new TransferModuleError("INVALID_TRANSFER", "Transfer destination must be canonical Testnet-10");
+      throw new SompiOperationFailure("INVALID_TRANSFER");
     }
     return value;
   } finally {
@@ -332,14 +359,14 @@ function canonicalAddress(value: string): string {
 
 function canonicalSource(value: Readonly<{ vaultAddress: string; vaultDigest: string }>) {
   if (!value || !/^kaspatest:[a-z0-9]+$/.test(value.vaultAddress) || !isDigest(value.vaultDigest)) {
-    throw new TransferModuleError("INVALID_TRANSFER", "Transfer source vault is invalid");
+    throw new Error("Transfer source vault is invalid");
   }
   return value;
 }
 
 function canonicalManifest(value: Readonly<{ revision: number; digest: string }>) {
   if (!value || !Number.isSafeInteger(value.revision) || value.revision < 1 || !isDigest(value.digest)) {
-    throw new TransferModuleError("INVALID_TRANSFER", "Transfer Operator Manifest identity is invalid");
+    throw new Error("Transfer Operator Manifest identity is invalid");
   }
   return value;
 }
@@ -379,11 +406,11 @@ function transferFacts(transfer: TransferRecord): TransferAuthorizationFacts {
 
 function atomic(value: string, label: string, zeroAllowed: boolean): bigint {
   if (typeof value !== "string" || !/^(?:0|[1-9][0-9]*)$/.test(value)) {
-    throw new TransferModuleError("INVALID_TRANSFER", `${label} is invalid`);
+    throw new Error(`${label} is invalid`);
   }
   const parsed = BigInt(value);
   if (parsed > MAX_UINT64 || (!zeroAllowed && parsed === 0n)) {
-    throw new TransferModuleError("INVALID_TRANSFER", `${label} is outside uint64 bounds`);
+    throw new Error(`${label} is outside uint64 bounds`);
   }
   return parsed;
 }
