@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: **2026-07-24**
+Last updated: **2026-07-26**
 
 ## Architecture programme
 
@@ -209,5 +209,17 @@ The deterministic Trusted Authority records signed human approval before an irre
 ## Next work
 
 Architecture Phase 3 is complete.
-Phase 4 is next, but it is not active.
-Stop before Phase 4 until its work is explicitly started.
+Architecture Phase 4 is active. It started from
+`aab94d95df42e7ffdf1ca3ff1c00bdd3e2e71fae`.
+
+Phase 4 C1 is complete. The Treasury characterization surface now proves
+readiness, quote, reservation, staging, direct Movement, shared capacity, and
+recovery behavior. The change adds one Purchase interface test and changes no
+production source, Journal schema, protocol adapter, public interface, or
+runtime wiring.
+
+The full test command ran 605 tests. 604 passed and one privileged ownership
+test was skipped as expected. Offline smoke passed.
+
+Phase 4 C2 is next. Do not start C2 until its policy and capacity move is
+explicitly started.

@@ -103,6 +103,37 @@ test("coordinator completes one exact Purchase and idempotently projects linked 
   });
 });
 
+test("Treasury readiness gates quote, reservation, and staging without partial execution", async () => {
+  await withFixture(async ({ coordinator, dependencies, intent, journal }) => {
+    dependencies.quoteReady = false;
+
+    const waiting = await coordinator.purchase(intent);
+    assert.equal(waiting.state, "terms_bound");
+    assert.equal(waiting.treasury.status, "unreserved");
+    assert.equal(dependencies.calls.authority, 0);
+    assert.equal(dependencies.calls.submitStaging, 0);
+    assert.equal(journal.findReservationForPurchase(waiting.id), undefined);
+
+    dependencies.quoteReady = true;
+    const completed = await coordinator.purchase(intent);
+
+    assert.equal(completed.state, "receipted");
+    assert.equal(completed.treasury.status, "committed");
+    assert.equal(dependencies.calls.authority, 1);
+    assert.equal(dependencies.calls.submitStaging, 1);
+
+    const reservation = journal.findReservationForPurchase(completed.id);
+    assert.ok(reservation);
+    assert.equal(reservation.state, "spent");
+    assert.equal(reservation.amountAtomic, "60");
+    assert.equal(reservation.additionalCostCeilingAtomic, "10");
+    const stagingEffects = journal.effectsForPurchase(completed.id)
+      .filter((effect) => effect.kind === "treasury-staging");
+    assert.equal(stagingEffects.length, 1);
+    assert.equal(stagingEffects[0].state, "observed");
+  });
+});
+
 test("Merchant confirmed finality strengthens an accepted operator floor without replacing either fact", async () => {
   await withFixture(async ({ coordinator, dependencies, intent, journal }) => {
     const completed = await coordinator.purchase(intent);

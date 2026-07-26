@@ -1,6 +1,6 @@
 # Sompi implementation plan
 
-Status: **Architecture Phase 3 complete**
+Status: **Architecture Phase 4 active; C1 complete**
 
 Starting commit: `89b0f1f404ce8e5f2ded88a5b1a99d8ca1743bba`
 
@@ -215,17 +215,116 @@ Completion evidence from 2026-07-24:
 
 ### Phase 4: Deepen Treasury
 
-Do not start this phase until Phase 3 is complete.
+Phase 3 is complete. This phase is scoped against commit
+`aab94d95df42e7ffdf1ca3ff1c00bdd3e2e71fae`.
 
-- **P4.1:** Make one Treasury module own capacity, custody, staging, Movement, and effect
-  recovery behind its existing interface.
-- **P4.2:** Preserve one atomic SQLite Journal transaction for shared policy and
-  capacity.
-- **P4.3:** Keep Kaspa-x402 payment construction, wire handling, and Merchant settlement
-  inside the Kaspa-x402 adapter.
-- **P4.4:** Delete replaced Treasury pass-through paths and their implementation tests
-  after equivalent Treasury interface tests pass.
-- **P4.5:** Stop after Phase 4 and re-scope every remaining candidate.
+Purpose: make one deep Treasury module own the complete Treasury sub-lifecycle.
+Purchase continues to own the Purchase lifecycle. It uses Treasury through a
+small Sompi domain interface.
+
+The canonical implementation starts from the existing
+`TreasuryOperationModule`. It absorbs the required behavior from
+`VaultTreasuryModule` and Purchase. Do not create a third Treasury wrapper.
+
+- [ ] **P4.1:** Move the Treasury interface and its domain types from Purchase
+  into Treasury. Purchase must not define Treasury policy, quote, staging, or
+  recovery types.
+- [ ] **P4.2:** Make one Treasury implementation own readiness, quote, policy,
+  reservation, and shared capacity for Purchase and direct Movements.
+- [ ] **P4.3:** Make that implementation own staging preparation, durable plan
+  and prepared bytes, effect fencing, submission, observation, ambiguity, and
+  reconciliation.
+- [ ] **P4.4:** Make that implementation own abandoned staging recovery,
+  including lease takeover and the choice to observe, retry, or release.
+- [ ] **P4.5:** Use the same implementation for direct Movements from Transfer,
+  Funding Intake, batch work, operator activation, and other current callers.
+- [ ] **P4.6:** Keep one `PurchaseJournal` SQLite implementation. Preserve one
+  atomic transaction for policy, reservation, capacity, effect, and recovery
+  state. Do not add a Treasury database or a second transaction owner.
+- [ ] **P4.7:** Keep Kaspa-x402 payment construction, wire handling, transaction
+  submission mechanisms, chain observation mechanisms, and Merchant settlement
+  inside injected Kaspa-x402 adapters. Treasury owns when these mechanisms run
+  and the durable Sompi outcome. Stable Treasury and Purchase state must use
+  Sompi domain types.
+- [ ] **P4.8:** Construct one Treasury implementation at runtime. Delete
+  `VaultTreasuryModule`, replaced pass-through paths, duplicate wiring,
+  Purchase-owned Treasury types, and shallow forwarding tests after equivalent
+  Treasury interface tests pass.
+- [ ] **P4.9:** Stop after Phase 4. Repeat the deletion test and re-scope every
+  remaining architecture candidate.
+
+Implementation sequence:
+
+1. [x] **P4.C1 — Characterize the interface.** Add Treasury interface tests for
+   readiness, quote, reservation, staging, direct Movement, and recovery. Do
+   not change behavior.
+2. [ ] **P4.C2 — Move policy and capacity ownership.** Define the Treasury-owned
+   domain interface and move readiness, quote, policy, reservation, and shared
+   capacity behind it.
+3. [ ] **P4.C3 — Move staging preparation.** Move prepared transaction planning,
+   durable prepared bytes, and preparation fences behind Treasury.
+4. [ ] **P4.C4 — Move staging execution.** Move submission, observation, ambiguity,
+   retry, and reconciliation behind Treasury.
+5. [ ] **P4.C5 — Move staging recovery.** Move abandoned staging recovery and lease
+   takeover behind Treasury.
+6. [ ] **P4.C6 — Complete the clean cutover.** Route direct Movement callers
+   through the same Treasury implementation. Replace runtime wiring and delete
+   the old wrapper, types, paths, and forwarding tests.
+7. [ ] **P4.C7 — Verify and stop.** Run all offline gates, record separately
+   authorized funded Testnet-10 evidence, update the state documents, and stop
+   for a new architecture review.
+
+Each sequence step must leave the repository buildable. Each move must add or
+move interface tests before it deletes old implementation tests.
+
+C1 completion evidence from 2026-07-26:
+
+- The Purchase interface proves that fail-closed Treasury readiness prevents
+  authorization, reservation, and staging.
+- The same Purchase continues through an exact quote, one policy reservation,
+  one staging effect, and one committed public Treasury outcome when readiness
+  becomes true.
+- Existing Purchase interface tests cover staging ambiguity, immutable
+  prepared bytes, restart, and abandoned staging recovery.
+- Existing direct Treasury interface tests cover shared Purchase and direct
+  capacity, takeover, cancellation, ambiguity, preparation fences, and
+  recovery without duplicate submission.
+- No production source, Journal schema, protocol adapter, public interface, or
+  runtime wiring changed. The full test command ran 605 tests: 604 passed and
+  one privileged ownership test was skipped as expected. Offline smoke passed.
+
+Verification gate:
+
+- [ ] **P4.G1:** Treasury interface tests cover readiness, quote, reservation,
+  staging, direct Movement, and effect recovery.
+- [ ] **P4.G2:** Concurrent Purchase and direct Movement tests prove shared
+  capacity, policy replacement, expiry, cancellation, and recovery use one
+  atomic Journal transaction.
+- [ ] **P4.G3:** Staging tests cover cancellation, ambiguous submission,
+  preparation fences, restart, reconciliation, recovery races, and one winning
+  effect.
+- [ ] **P4.G4:** Direct Movement tests cover lease takeover, stale
+  predecessors, cancellation, ambiguous submission, preparation fences,
+  restart, and adapter failures.
+- [ ] **P4.G5:** Import and deletion checks prove that Purchase does not own
+  Treasury lifecycle types or Treasury Journal commands. The old pass-through
+  module, duplicate runtime wiring, and forwarding tests do not exist.
+- [ ] **P4.G6:** The complete unit suite, offline smoke, all five Kaspa-x402
+  conformance checks, generated OpenAPI and Arazzo checks, and the release
+  verifier pass.
+- [ ] **P4.G7:** Fresh funded Testnet-10 evidence proves staging execution,
+  direct Movement execution, ambiguous-effect recovery, and restart recovery
+  without a duplicate effect. This gate requires separate approval before any
+  funded command runs.
+- [ ] **P4.G8:** No public API, physical Journal schema, Kaspa-x402 source,
+  wire, package, pin, fixture, or conformance change, AP2 upstream pin change,
+  release, deployment, live-host, sibling-repository, or deferred-work change
+  is included.
+
+Add or amend an ADR before implementation if the cutover needs a physical
+Journal schema change or changes an accepted architecture decision. Do not add
+a universal payment-rail interface. A second real execution adapter must prove
+the need for that interface.
 
 ## Post-Phase-4 re-scope candidates
 
