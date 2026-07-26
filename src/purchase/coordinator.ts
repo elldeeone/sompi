@@ -52,7 +52,6 @@ import {
   TREASURY_STAGING_RECOVERY_EFFECT_KIND,
   type EffectClaim,
   type EffectRecord,
-  type PolicyDefinition,
   type PurchaseRecord,
   type RecordPurchaseSettlementInput,
   type RecordObservedTreasuryStagingInput,
@@ -77,6 +76,11 @@ import type {
   PurchaseView,
   Sha256Digest,
 } from "./types.js";
+import {
+  TreasuryCapacityError,
+  type PurchaseTreasuryCapacity,
+  type TreasuryQuote,
+} from "../treasury/purchase-capacity.js";
 
 const PAYMENT_EFFECT_KIND = "kaspa-x402-payment";
 const PURCHASE_COORDINATION_TTL_MS = 60_000;
@@ -195,21 +199,12 @@ export interface AuthorityModule {
   }): Promise<AuthorityResult>;
 }
 
-export interface TreasuryQuote {
-  additionalCostCeilingAtomic: string;
-  reservationTtlMs: number;
-  ready: boolean;
-  blockerCode?: string;
-}
-
 /**
  * Deep Purchase Treasury seam. It owns readiness, capacity policy, vault
  * staging, and abandoned-stage recovery. The Purchase module chooses when a
  * movement is required; it never calls the vault or recovery adapters itself.
  */
-export interface TreasuryModule {
-  currentPolicy(): Promise<PolicyDefinition>;
-  quote(input: { purchaseId: PurchaseId; terms: CheckoutTerms }): Promise<TreasuryQuote>;
+export interface TreasuryModule extends PurchaseTreasuryCapacity {
   prepareStaging(input: {
     execution: KaspaPreparedExecutionContext["execution"];
     request: KaspaRequestContext;
@@ -921,15 +916,13 @@ export class PurchaseCoordinator implements PurchaseModule {
     terms: CheckoutTerms,
     executionPlan: CanonicalPurchaseExecutionPlan
   ): Promise<TreasuryQuote> {
-    if (executionPlan.mechanism === "channel-voucher") {
-      const remaining = Math.max(1, Date.parse(terms.expiresAt) - this.now());
-      return Object.freeze({
-        ready: true,
-        additionalCostCeilingAtomic: "0",
-        reservationTtlMs: remaining,
-      });
-    }
-    return this.treasury.quote({ purchaseId, terms });
+    return this.treasury.quote({
+      purchaseId,
+      fundingMode: executionPlan.mechanism === "channel-voucher"
+        ? "precapitalized-channel"
+        : "staged-payment",
+      terms,
+    });
   }
 
   private async requestAuthorization(purchase: PurchaseRecord): Promise<boolean> {
@@ -1053,79 +1046,64 @@ export class PurchaseCoordinator implements PurchaseModule {
     const attemptNumber = 1;
     const identifier = createPaymentIdentifier(purchase.id, attemptNumber);
     const reservationId = `reservation:${identifier}`;
-    let reservation = this.journal.findReservationForPurchase(purchase.id);
-    if (reservation) {
-      this.journal.expireReservations();
-      reservation = this.journal.requireReservation(reservation.id);
-      if (reservation.state === "expired") {
-        this.journal.transitionPurchase(
-          purchase.id,
-          "authorised",
-          "expired",
-          "treasury_reservation_expired",
-          reservation.policyDigest
-        );
-        return true;
-      }
-      const existingAttempt = this.journal.paymentAttempts(purchase.id).at(-1);
-      const stagedRecovery = existingAttempt
-        ? this.journal.treasuryStagingRecoveryContext(purchase.id, existingAttempt.attempt)
-        : undefined;
-      const stagedInFlight =
-        reservation.state === "in_flight" &&
-        stagedRecovery?.reservation.id === reservation.id &&
-        stagedRecovery.plan.reservationId === reservation.id;
-      if (reservation.state !== "active" && !stagedInFlight) {
-        throw new PurchaseCoordinatorError(
-          `authorized Purchase has unusable Treasury Reservation state ${reservation.state}`,
-          "treasury_reservation_invariant"
-        );
-      }
-      if (
-        reservation.state === "active" &&
-        this.journal.requireActivePolicy().digest !== reservation.policyDigest
-      ) {
-        throw new PurchaseCoordinatorError(
-          "active Treasury policy changed after capacity was reserved",
-          "treasury_policy_changed"
-        );
-      }
-    } else {
-      const executionPlan = this.journal.requireExecutionPlan(purchase.id);
-      const quote = await this.executionQuote(purchase.id, terms, executionPlan);
-      if (!quote.ready) return false;
-      requireAtomicDecimal(quote.additionalCostCeilingAtomic, true, "Treasury additional-cost ceiling");
-      if (BigInt(quote.additionalCostCeilingAtomic) > BigInt(approvedRequest.additionalCostCeilingAtomic)) {
-        throw new PurchaseCoordinatorError(
-          "Treasury additional-cost quote exceeds the exact authorized ceiling",
-          "treasury_quote_increased"
-        );
-      }
-      if (!Number.isSafeInteger(quote.reservationTtlMs) || quote.reservationTtlMs <= 0) {
-        throw new PurchaseCoordinatorError("Treasury reservation TTL is invalid", "treasury_quote_invalid");
-      }
-      const policy = this.journal.installPolicy(await this.treasury.currentPolicy());
-      const reservationExpiry = Math.min(
-        terms.expiresAtMs,
-        authorization.expiresAtMs,
-        safeAdd(this.now(), quote.reservationTtlMs)
-      );
-      reservation = this.journal.reservePolicy({
-        id: reservationId,
+    const executionPlan = this.journal.requireExecutionPlan(purchase.id);
+    let capacity;
+    try {
+      capacity = await this.treasury.reservePurchaseCapacity({
+        reservationId,
         purchaseId: purchase.id,
-        policyDigest: policy.digest,
-        approvalEvidenceDigest: authorization.evidenceDigest,
-        approvalVerificationProfile: authorization.verificationProfile,
-        approvalVerifierId: authorization.verifierId,
-        payee: terms.payTo,
-        amountAtomic: terms.amountAtomic,
-        additionalCostCeilingAtomic: quote.additionalCostCeilingAtomic,
-        fundingSource: "vault-treasury",
-        expiresAtMs: reservationExpiry,
+        fundingMode: executionPlan.mechanism === "channel-voucher"
+          ? "precapitalized-channel"
+          : "staged-payment",
+        terms,
+        termsExpiresAtMs: terms.expiresAtMs,
+        authorizedAdditionalCostCeilingAtomic:
+          approvedRequest.additionalCostCeilingAtomic,
+        authorization: {
+          evidenceDigest: authorization.evidenceDigest,
+          verificationProfile: authorization.verificationProfile,
+          verifierId: authorization.verifierId,
+          expiresAtMs: authorization.expiresAtMs,
+        },
       });
+    } catch (error) {
+      if (error instanceof TreasuryCapacityError) {
+        throw new PurchaseCoordinatorError(error.message, error.code, {
+          cause: error,
+        });
+      }
+      throw error;
+    }
+    if (capacity.status === "not_ready") return false;
+    const reservation = capacity.reservation;
+    if (reservation.state === "expired") {
+      this.journal.transitionPurchase(
+        purchase.id,
+        "authorised",
+        "expired",
+        "treasury_reservation_expired",
+        reservation.policyDigest
+      );
+      return true;
+    }
+    const existingAttempt = this.journal.paymentAttempts(purchase.id).at(-1);
+    const stagedRecovery = existingAttempt
+      ? this.journal.treasuryStagingRecoveryContext(
+          purchase.id,
+          existingAttempt.attempt,
+        )
+      : undefined;
+    const stagedInFlight =
+      reservation.state === "in_flight" &&
+      stagedRecovery?.reservation.id === reservation.id &&
+      stagedRecovery.plan.reservationId === reservation.id;
+    if (reservation.state !== "active" && !stagedInFlight) {
+      throw new PurchaseCoordinatorError(
+        `authorized Purchase has unusable Treasury Reservation state ${reservation.state}`,
+        "treasury_reservation_invariant"
+      );
     }
     const attempt = this.journal.createPaymentAttempt({ purchaseId: purchase.id, attempt: attemptNumber, identifier });
-    const executionPlan = this.journal.requireExecutionPlan(purchase.id);
     if (executionPlan.mechanism === "channel-voucher") {
       const preparation = await this.preparePaymentExecution(
         purchase,
@@ -2939,14 +2917,6 @@ function executionAssuranceMeets(
     return actual === required;
   }
   return paymentFinalityMeets(actual, required);
-}
-
-function safeAdd(left: number, right: number): number {
-  const value = left + right;
-  if (!Number.isSafeInteger(value)) {
-    throw new PurchaseCoordinatorError("timestamp exceeds the supported range", "invalid_timestamp");
-  }
-  return value;
 }
 
 function safeErrorDigest(domain: string, error: unknown): Sha256Digest {

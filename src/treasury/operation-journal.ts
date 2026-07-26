@@ -1,3 +1,10 @@
+import type { Sha256Digest } from "../purchase/types.js";
+import type {
+  ReservePurchaseCapacityInput,
+  TreasuryPolicy,
+  TreasuryPurchaseReservation,
+} from "./purchase-capacity.js";
+
 export type TreasuryOperationKind = "wallet_send" | "vault_send" | "vault_deposit" | "batch_refund";
 export type TreasuryOperationState =
   | "intent"
@@ -122,17 +129,37 @@ export type TreasurySubmissionOutcome =
  * capacity reservations must share one SQLite transaction and policy snapshot.
  */
 export interface TreasuryOperationJournal {
-  installPolicy(definition: {
-    readonly maxPerPaymentAtomic: string;
-    readonly maxPerHourAtomic: string;
-    readonly allowlist: readonly string[];
-  }): { readonly digest: string };
+  installPolicy(
+    definition: TreasuryPolicy
+  ): Readonly<TreasuryPolicy & { readonly digest: Sha256Digest }>;
+  findActivePolicy():
+    | Readonly<TreasuryPolicy & { readonly digest: Sha256Digest }>
+    | undefined;
+  requireActivePolicy(): Readonly<TreasuryPolicy & { readonly digest: Sha256Digest }>;
   requirePolicy(digest: string): Readonly<{
     digest: string;
     maxPerPaymentAtomic: string;
     maxPerHourAtomic: string;
     allowlist: readonly string[];
   }>;
+  expireReservations(): number;
+  findReservationForPurchase(
+    purchaseId: ReservePurchaseCapacityInput["purchaseId"]
+  ): TreasuryPurchaseReservation | undefined;
+  requireReservation(id: string): TreasuryPurchaseReservation;
+  reservePolicy(input: {
+    readonly id: string;
+    readonly purchaseId: ReservePurchaseCapacityInput["purchaseId"];
+    readonly policyDigest: Sha256Digest;
+    readonly payee: string;
+    readonly amountAtomic: string;
+    readonly additionalCostCeilingAtomic: string;
+    readonly fundingSource: "vault-treasury";
+    readonly expiresAtMs: number;
+    readonly approvalEvidenceDigest: Sha256Digest;
+    readonly approvalVerificationProfile: string;
+    readonly approvalVerifierId: string;
+  }): TreasuryPurchaseReservation;
   preflightTreasuryOperation(input: TreasuryOperationPreflight): void;
   claimTreasuryOperationIntent(input: TreasuryOperationIntent): TreasuryOperationRecord;
   claimTreasuryOperationDriver(

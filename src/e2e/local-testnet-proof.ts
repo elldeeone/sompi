@@ -93,7 +93,12 @@ import {
   JournalTreasuryStagingObservationSource,
   createJournalTreasuryStagingMetadataSource,
 } from "../runtime/journal-sources.js";
-import { VaultTreasuryModule } from "../treasury/vault-treasury.js";
+import type { TreasuryOperationAdapter } from "../treasury/operation-adapters.js";
+import type {
+  TreasuryOperationKind,
+  TreasuryOperationRecord,
+} from "../treasury/operation-journal.js";
+import { TreasuryOperationModule } from "../treasury/operations.js";
 import { VAULT_TEMPLATE_VERSION, buildRedeemScript } from "../vault/template.js";
 import { VaultManager, type VaultConfig } from "../vault.js";
 import { KaspaWallet } from "../wallet.js";
@@ -603,17 +608,24 @@ function composeCoordinator(input: {
       throw new Error("local proof did not expect abandoned staging recovery");
     },
   };
-  const treasury = new VaultTreasuryModule({
-    vault: input.vault,
-    policy: {
-      maxPerPaymentAtomic: "100000000",
-      maxPerHourAtomic: "500000000",
-      allowlist: [PAY_TO],
+  const policy = new PolicyEngine({
+    maxSompiPerTx: 100_000_000n,
+    maxSompiPerHour: 500_000_000n,
+    allowlist: [PAY_TO],
+  });
+  const treasury = new TreasuryOperationModule({
+    journal: input.journal,
+    policy,
+    adapters: unavailableDirectTreasuryAdapters(),
+    feeCeilingAtomic: ADDITIONAL_COST_CEILING_ATOMIC,
+    purchase: {
+      vault: input.vault,
+      additionalCostCeilingAtomic: ADDITIONAL_COST_CEILING_ATOMIC,
+      reservationTtlMs: 120_000,
+      staging: treasuryStaging,
+      stagingRecovery,
+      now: input.clock,
     },
-    additionalCostCeilingAtomic: ADDITIONAL_COST_CEILING_ATOMIC,
-    reservationTtlMs: 120_000,
-    staging: treasuryStaging,
-    stagingRecovery,
   });
   return new PurchaseCoordinator(
     input.journal,
@@ -631,6 +643,28 @@ function composeCoordinator(input: {
       finality: chainEvidence,
     }
   );
+}
+
+function unavailableDirectTreasuryAdapters(): readonly TreasuryOperationAdapter[] {
+  return ([
+    "wallet_send",
+    "vault_send",
+    "vault_deposit",
+  ] as const).map((kind: TreasuryOperationKind) => ({
+    kind,
+    async prepare(record: TreasuryOperationRecord) {
+      throw new Error(`local proof did not expect ${record.kind} preparation`);
+    },
+    async submit() {
+      throw new Error("local proof did not expect direct Treasury submission");
+    },
+    async observe() {
+      throw new Error("local proof did not expect direct Treasury observation");
+    },
+    async commit() {
+      throw new Error("local proof did not expect direct Treasury commit");
+    },
+  }));
 }
 
 async function invokePurchase(input: {

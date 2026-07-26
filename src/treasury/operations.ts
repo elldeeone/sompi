@@ -1,5 +1,9 @@
 import { createHash, randomBytes } from "node:crypto";
 import { PolicyEngine } from "../policy.js";
+import type {
+  TreasuryModule as PurchaseTreasuryModule,
+  TreasuryStagingRecoveryModule,
+} from "../purchase/coordinator.js";
 import {
   TreasuryPreparationError,
   type TreasuryOperationAdapter,
@@ -11,10 +15,19 @@ import {
   type TreasuryDriverLease,
   type TreasurySubmissionOutcome,
 } from "./operation-journal.js";
+import {
+  TreasuryCapacityError,
+  type PurchaseTreasuryCapacity,
+  type ReservePurchaseCapacityInput,
+  type ReservePurchaseCapacityResult,
+  type TreasuryPolicy,
+  type TreasuryQuote,
+} from "./purchase-capacity.js";
 
 const OPERATION_KEY = /^[A-Za-z0-9._:-]{1,160}$/;
 const ADDRESS = /^kaspatest:[a-z0-9]+$/;
 const ATOMIC = /^[1-9][0-9]*$/;
+const TESTNET = "kaspa:testnet-10";
 const MAX_RECONCILED_RETRIES = 8;
 const DRIVER_LEASE_TTL_MS = 60_000;
 const DRIVER_WAIT_MS = 10;
@@ -49,13 +62,33 @@ export interface TreasuryOperationView {
   readonly updatedAtMs?: number;
 }
 
+export interface TreasuryPurchaseOptions {
+  readonly vault: {
+    readonly configured: boolean;
+    config(): {
+      readonly configured?: boolean;
+      readonly covenantId?: string;
+    };
+  };
+  readonly additionalCostCeilingAtomic: string;
+  readonly reservationTtlMs?: number;
+  readonly staging: Pick<
+    PurchaseTreasuryModule,
+    "prepareStaging" | "submitStaging" | "observeStaging"
+  >;
+  readonly stagingRecovery: TreasuryStagingRecoveryModule;
+  readonly now?: () => number;
+}
+
 export interface TreasuryOperationModuleOptions {
   readonly journal: TreasuryOperationJournal;
-  readonly policy: Pick<PolicyEngine, "authorize" | "policy">;
+  readonly policy: Pick<PolicyEngine, "activate" | "authorize" | "policy">;
   readonly adapters: readonly TreasuryOperationAdapter[];
   readonly feeCeilingAtomic: string;
   /** Manifest projection in production; default is only for hermetic fixtures. */
   readonly directTreasuryRetries?: number;
+  /** Required when this implementation is used by Purchase. */
+  readonly purchase?: TreasuryPurchaseOptions;
 }
 
 export interface TreasuryAuthorizedExecution {
@@ -86,10 +119,21 @@ export class TreasuryOperationNotFoundError extends TreasuryOperationError {
  */
 export class TreasuryOperationModule {
   private readonly journal: TreasuryOperationJournal;
-  private readonly policy: Pick<PolicyEngine, "authorize" | "policy">;
+  private readonly policy: Pick<
+    PolicyEngine,
+    "activate" | "authorize" | "policy"
+  >;
   private readonly adapters: ReadonlyMap<TreasuryOperationKind, TreasuryOperationAdapter>;
   private readonly feeCeilingAtomic: string;
   private readonly directTreasuryRetries: number;
+  private readonly purchase?: {
+    readonly vault: TreasuryPurchaseOptions["vault"];
+    readonly additionalCostCeilingAtomic: string;
+    readonly reservationTtlMs: number;
+    readonly staging: TreasuryPurchaseOptions["staging"];
+    readonly stagingRecovery: TreasuryStagingRecoveryModule;
+    readonly now: () => number;
+  };
   /** Only an optimization; durable Journal driver generations are authoritative. */
   private readonly driverOwner = `treasury-driver:${process.pid}:${randomBytes(8).toString("hex")}`;
   private readonly activeDrivePromises = new Map<string, Promise<TreasuryOperationView>>();
@@ -121,7 +165,180 @@ export class TreasuryOperationModule {
     this.journal = options.journal;
     this.policy = options.policy;
     this.adapters = adapters;
-    this.installCurrentPolicy();
+    if (options.purchase) {
+      const purchase = options.purchase;
+      if (!purchase.vault) {
+        throw new TreasuryOperationError("Purchase Treasury requires a vault backend");
+      }
+      requireMethod(purchase.staging?.prepareStaging, "staging preparation");
+      requireMethod(purchase.staging?.submitStaging, "staging submission");
+      requireMethod(purchase.staging?.observeStaging, "staging observation");
+      requireMethod(purchase.stagingRecovery?.prepare, "staging recovery preparation");
+      requireMethod(purchase.stagingRecovery?.observe, "staging recovery observation");
+      requireMethod(purchase.stagingRecovery?.submit, "staging recovery submission");
+      const reservationTtlMs = purchase.reservationTtlMs ?? 120_000;
+      if (!Number.isSafeInteger(reservationTtlMs) || reservationTtlMs <= 0) {
+        throw new TreasuryOperationError("Purchase Treasury reservation TTL is invalid");
+      }
+      this.purchase = Object.freeze({
+        vault: purchase.vault,
+        additionalCostCeilingAtomic: requireAtomic(
+          purchase.additionalCostCeilingAtomic,
+          "Purchase Treasury additional-cost ceiling",
+          true,
+        ),
+        reservationTtlMs,
+        staging: purchase.staging,
+        stagingRecovery: purchase.stagingRecovery,
+        now: purchase.now ?? Date.now,
+      });
+    }
+    this.synchronizePolicy();
+  }
+
+  async quote(
+    input: Parameters<PurchaseTreasuryCapacity["quote"]>[0],
+  ): Promise<TreasuryQuote> {
+    const purchase = this.requirePurchase();
+    if (input.fundingMode === "precapitalized-channel") {
+      const remaining = Math.max(
+        1,
+        Date.parse(input.terms.expiresAt) - requireTimestamp(purchase.now()),
+      );
+      return Object.freeze({
+        additionalCostCeilingAtomic: "0",
+        reservationTtlMs: remaining,
+        ready: true,
+      });
+    }
+    if (input.terms.asset !== "KAS" || input.terms.network !== TESTNET) {
+      return this.quoteResult(false, "unsupported_asset_or_network");
+    }
+    let configured: ReturnType<typeof purchase.vault.config>;
+    try {
+      if (!purchase.vault.configured) {
+        return this.quoteResult(false, "vault_not_configured");
+      }
+      configured = purchase.vault.config();
+    } catch {
+      return this.quoteResult(false, "vault_unavailable");
+    }
+    if (
+      configured.covenantId !== undefined &&
+      !/^[a-f0-9]{64}$/.test(configured.covenantId)
+    ) {
+      return this.quoteResult(false, "vault_unavailable");
+    }
+    return this.quoteResult(
+      Boolean(configured.covenantId),
+      configured.covenantId ? undefined : "vault_not_covenant_funded",
+    );
+  }
+
+  async reservePurchaseCapacity(
+    input: Readonly<ReservePurchaseCapacityInput>,
+  ): Promise<Readonly<ReservePurchaseCapacityResult>> {
+    const purchase = this.requirePurchase();
+    this.journal.expireReservations();
+    const existing = this.journal.findReservationForPurchase(input.purchaseId);
+    if (existing) {
+      const reservation = this.journal.requireReservation(existing.id);
+      if (
+        reservation.state === "active" &&
+        this.journal.requireActivePolicy().digest !== reservation.policyDigest
+      ) {
+        throw new TreasuryCapacityError(
+          "active Treasury policy changed after capacity was reserved",
+          "treasury_policy_changed",
+        );
+      }
+      return Object.freeze({ status: "reserved", reservation });
+    }
+
+    const quote = await this.quote({
+      purchaseId: input.purchaseId,
+      fundingMode: input.fundingMode,
+      terms: input.terms,
+    });
+    if (!quote.ready) {
+      return Object.freeze({ status: "not_ready", quote });
+    }
+    requireAtomic(
+      quote.additionalCostCeilingAtomic,
+      "Purchase Treasury additional-cost ceiling",
+      true,
+    );
+    if (
+      BigInt(quote.additionalCostCeilingAtomic) >
+      BigInt(input.authorizedAdditionalCostCeilingAtomic)
+    ) {
+      throw new TreasuryCapacityError(
+        "Treasury additional-cost quote exceeds the exact authorized ceiling",
+        "treasury_quote_increased",
+      );
+    }
+    if (!Number.isSafeInteger(quote.reservationTtlMs) || quote.reservationTtlMs <= 0) {
+      throw new TreasuryCapacityError(
+        "Treasury reservation TTL is invalid",
+        "treasury_quote_invalid",
+      );
+    }
+    const policy = this.journal.installPolicy(this.currentPurchasePolicy());
+    const expiresAtMs = Math.min(
+      input.termsExpiresAtMs,
+      input.authorization.expiresAtMs,
+      safeAdd(requireTimestamp(purchase.now()), quote.reservationTtlMs),
+    );
+    const reservation = this.journal.reservePolicy({
+      id: input.reservationId,
+      purchaseId: input.purchaseId,
+      policyDigest: policy.digest,
+      approvalEvidenceDigest: input.authorization.evidenceDigest,
+      approvalVerificationProfile: input.authorization.verificationProfile,
+      approvalVerifierId: input.authorization.verifierId,
+      payee: input.terms.payTo,
+      amountAtomic: input.terms.amountAtomic,
+      additionalCostCeilingAtomic: quote.additionalCostCeilingAtomic,
+      fundingSource: "vault-treasury",
+      expiresAtMs,
+    });
+    return Object.freeze({ status: "reserved", reservation });
+  }
+
+  async prepareStaging(
+    input: Parameters<PurchaseTreasuryModule["prepareStaging"]>[0],
+  ): ReturnType<PurchaseTreasuryModule["prepareStaging"]> {
+    return this.requirePurchase().staging.prepareStaging(input);
+  }
+
+  async submitStaging(
+    input: Parameters<PurchaseTreasuryModule["submitStaging"]>[0],
+  ): ReturnType<PurchaseTreasuryModule["submitStaging"]> {
+    return this.requirePurchase().staging.submitStaging(input);
+  }
+
+  async observeStaging(
+    input: Parameters<PurchaseTreasuryModule["observeStaging"]>[0],
+  ): ReturnType<PurchaseTreasuryModule["observeStaging"]> {
+    return this.requirePurchase().staging.observeStaging(input);
+  }
+
+  async prepareStagingRecovery(
+    input: Parameters<PurchaseTreasuryModule["prepareStagingRecovery"]>[0],
+  ): ReturnType<PurchaseTreasuryModule["prepareStagingRecovery"]> {
+    return this.requirePurchase().stagingRecovery.prepare(input);
+  }
+
+  async observeStagingRecovery(
+    input: Parameters<PurchaseTreasuryModule["observeStagingRecovery"]>[0],
+  ): ReturnType<PurchaseTreasuryModule["observeStagingRecovery"]> {
+    return this.requirePurchase().stagingRecovery.observe(input);
+  }
+
+  async submitStagingRecovery(
+    input: Parameters<PurchaseTreasuryModule["submitStagingRecovery"]>[0],
+  ): ReturnType<PurchaseTreasuryModule["submitStagingRecovery"]> {
+    return this.requirePurchase().stagingRecovery.submit(input);
   }
 
   async execute(
@@ -558,11 +775,48 @@ export class TreasuryOperationModule {
   }
 
   private installCurrentPolicy(): { readonly digest: string } {
+    return this.journal.installPolicy(this.currentPurchasePolicy());
+  }
+
+  private synchronizePolicy(): void {
+    const active =
+      this.journal.findActivePolicy() ??
+      this.journal.installPolicy(this.currentPurchasePolicy());
+    this.policy.activate(Object.freeze({
+      maxSompiPerTx: BigInt(active.maxPerPaymentAtomic),
+      maxSompiPerHour: BigInt(active.maxPerHourAtomic),
+      allowlist: [...active.allowlist],
+    }));
+  }
+
+  private currentPurchasePolicy(): TreasuryPolicy {
     const policy = this.policy.policy;
-    return this.journal.installPolicy({
+    return Object.freeze({
       maxPerPaymentAtomic: policy.maxSompiPerTx.toString(),
       maxPerHourAtomic: policy.maxSompiPerHour.toString(),
       allowlist: Object.freeze([...policy.allowlist]),
+    });
+  }
+
+  private requirePurchase(): NonNullable<TreasuryOperationModule["purchase"]> {
+    if (!this.purchase) {
+      throw new TreasuryOperationError(
+        "Purchase Treasury dependencies are unavailable",
+      );
+    }
+    return this.purchase;
+  }
+
+  private quoteResult(
+    ready: boolean,
+    blockerCode?: string,
+  ): TreasuryQuote {
+    const purchase = this.requirePurchase();
+    return Object.freeze({
+      additionalCostCeilingAtomic: purchase.additionalCostCeilingAtomic,
+      reservationTtlMs: purchase.reservationTtlMs,
+      ready,
+      ...(blockerCode === undefined ? {} : { blockerCode }),
     });
   }
 
@@ -703,6 +957,38 @@ function requireAtomic(value: string, label: string, allowZero = false): string 
 function requireRetryLimit(value: number): number {
   if (!Number.isSafeInteger(value) || value <= 0 || value > 128) {
     throw new TreasuryOperationError("direct Treasury retry budget is invalid");
+  }
+  return value;
+}
+
+function requireMethod(
+  value: unknown,
+  label: string,
+): asserts value is (...args: never[]) => unknown {
+  if (typeof value !== "function") {
+    throw new TreasuryOperationError(
+      `Purchase Treasury ${label} adapter is required`,
+    );
+  }
+}
+
+function safeAdd(left: number, right: number): number {
+  const result = left + right;
+  if (!Number.isSafeInteger(result) || result <= 0) {
+    throw new TreasuryCapacityError(
+      "Treasury reservation expiry is invalid",
+      "treasury_quote_invalid",
+    );
+  }
+  return result;
+}
+
+function requireTimestamp(value: number): number {
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new TreasuryCapacityError(
+      "Treasury clock is unavailable",
+      "treasury_quote_invalid",
+    );
   }
   return value;
 }

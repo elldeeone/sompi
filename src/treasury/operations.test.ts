@@ -29,6 +29,10 @@ import type {
 } from "./operation-adapters.js";
 import { TreasuryPreparationError } from "./operation-adapters.js";
 import { TreasuryOperationModule } from "./operations.js";
+import {
+  TreasuryCapacityError,
+  type ReservePurchaseCapacityInput,
+} from "./purchase-capacity.js";
 
 const NOW = 1_900_000_000_000;
 const DESTINATION = "kaspatest:merchant";
@@ -214,6 +218,96 @@ test("direct and Purchase reservations share one transactional hourly capacity",
       }
     },
     { maxPerPaymentAtomic: "1000", maxPerHourAtomic: "1000" }
+  );
+});
+
+test("Treasury owns one Purchase reservation and shares its capacity with direct Movements", async () => {
+  await withFixture(
+    async ({ journal, module, wallet }) => {
+      const purchaseId = authorizedPurchase(journal, 73, "390");
+      const capacity = await module.reservePurchaseCapacity(
+        purchaseCapacityInput(journal, purchaseId, "res_treasury_owned"),
+      );
+
+      assert.equal(capacity.status, "reserved");
+      if (capacity.status !== "reserved") return;
+      assert.equal(capacity.reservation.state, "active");
+      assert.equal(capacity.reservation.amountAtomic, "390");
+      assert.equal(capacity.reservation.additionalCostCeilingAtomic, "10");
+      assert.equal(module.effectiveCapacityUsed(), 400n);
+
+      wallet.prepareErrors = 1;
+      await assert.rejects(
+        module.execute({
+          operationKey: "direct:after-purchase-capacity",
+          kind: "wallet_send",
+          destination: DESTINATION,
+          amountAtomic: "590",
+        }),
+        /injected prepare crash/,
+      );
+      assert.equal(module.effectiveCapacityUsed(), 1_000n);
+    },
+    { maxPerPaymentAtomic: "1000", maxPerHourAtomic: "1000" },
+  );
+});
+
+test("Treasury capacity is idempotent, policy-bound, and expires through its interface", async () => {
+  await withFixture(async ({ journal, module, policy, advanceTime }) => {
+    const purchaseId = authorizedPurchase(journal, 74, "100");
+    const input = purchaseCapacityInput(
+      journal,
+      purchaseId,
+      "res_treasury_interface",
+    );
+
+    const first = await module.reservePurchaseCapacity(input);
+    const replay = await module.reservePurchaseCapacity(input);
+    assert.equal(first.status, "reserved");
+    assert.deepEqual(replay, first);
+    assert.equal(module.effectiveCapacityUsed(), 110n);
+
+    policy.activate({
+      maxSompiPerTx: 500n,
+      maxSompiPerHour: 5_000n,
+      allowlist: [DESTINATION],
+    });
+    journal.installPolicy({
+      maxPerPaymentAtomic: "500",
+      maxPerHourAtomic: "5000",
+      allowlist: [DESTINATION],
+    });
+    await assert.rejects(
+      module.reservePurchaseCapacity(input),
+      (error: unknown) =>
+        error instanceof TreasuryCapacityError &&
+        error.code === "treasury_policy_changed",
+    );
+
+    advanceTime(60_001);
+    const expired = await module.reservePurchaseCapacity(input);
+    assert.equal(expired.status, "reserved");
+    if (expired.status !== "reserved") return;
+    assert.equal(expired.reservation.state, "expired");
+    assert.equal(module.effectiveCapacityUsed(), 0n);
+  });
+});
+
+test("Treasury rejects a Purchase quote above the authorized ceiling", async () => {
+  await withFixture(
+    async ({ journal, module }) => {
+      const purchaseId = authorizedPurchase(journal, 75, "100");
+      await assert.rejects(
+        module.reservePurchaseCapacity(
+          purchaseCapacityInput(journal, purchaseId, "res_quote_increased"),
+        ),
+        (error: unknown) =>
+          error instanceof TreasuryCapacityError &&
+          error.code === "treasury_quote_increased",
+      );
+      assert.equal(journal.findReservationForPurchase(purchaseId), undefined);
+    },
+    { purchaseAdditionalCostCeilingAtomic: "11" },
   );
 });
 
@@ -1165,13 +1259,21 @@ async function withFixture(
     vault: FakeAdapter;
     deposit: FakeAdapter;
     module: TreasuryOperationModule;
+    advanceTime(milliseconds: number): void;
   }) => Promise<void>,
-  limits: { maxPerPaymentAtomic?: string; maxPerHourAtomic?: string; directTreasuryRetries?: number } = {}
+  limits: {
+    maxPerPaymentAtomic?: string;
+    maxPerHourAtomic?: string;
+    directTreasuryRetries?: number;
+    purchaseAdditionalCostCeilingAtomic?: string;
+  } = {}
 ): Promise<void> {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-treasury-operation-"));
   fs.chmodSync(directory, 0o700);
+  let currentTime = NOW;
+  const now = () => currentTime;
   const journal = new PurchaseJournal(path.join(directory, "purchase.sqlite"), {
-    now: () => NOW,
+    now,
   });
   const policy = new PolicyEngine({
     maxSompiPerTx: BigInt(limits.maxPerPaymentAtomic ?? "1000"),
@@ -1189,13 +1291,56 @@ async function withFixture(
     ...(limits.directTreasuryRetries === undefined
       ? {}
       : { directTreasuryRetries: limits.directTreasuryRetries }),
+    purchase: purchaseOptions(
+      now,
+      limits.purchaseAdditionalCostCeilingAtomic,
+    ),
   });
   try {
-    await run({ directory, journal, policy, wallet, vault, deposit, module });
+    await run({
+      directory,
+      journal,
+      policy,
+      wallet,
+      vault,
+      deposit,
+      module,
+      advanceTime(milliseconds: number) {
+        currentTime += milliseconds;
+      },
+    });
   } finally {
     journal.close();
     fs.rmSync(directory, { recursive: true, force: true });
   }
+}
+
+function purchaseOptions(
+  now: () => number,
+  additionalCostCeilingAtomic = "10",
+) {
+  const unexpected = async (): Promise<never> => {
+    throw new Error("test did not expect Purchase staging");
+  };
+  return {
+    vault: {
+      configured: true,
+      config: () => ({ covenantId: "aa".repeat(32) }),
+    },
+    additionalCostCeilingAtomic,
+    reservationTtlMs: 60_000,
+    staging: {
+      prepareStaging: unexpected,
+      submitStaging: unexpected,
+      observeStaging: unexpected,
+    },
+    stagingRecovery: {
+      prepare: unexpected,
+      observe: unexpected,
+      submit: unexpected,
+    },
+    now,
+  };
 }
 
 function authorizedPurchase(
@@ -1320,6 +1465,31 @@ function authorizedPurchase(
     expiresAtMs,
   });
   return id;
+}
+
+function purchaseCapacityInput(
+  journal: PurchaseJournal,
+  purchaseId: PurchaseId,
+  reservationId: string,
+): ReservePurchaseCapacityInput {
+  const terms = journal.requireCheckoutTerms(purchaseId);
+  const authorization = journal.requireAuthorization(purchaseId);
+  const authorizationRequest = journal.requireAuthorizationRequest(purchaseId);
+  return {
+    reservationId,
+    purchaseId,
+    fundingMode: "staged-payment",
+    terms,
+    termsExpiresAtMs: terms.expiresAtMs,
+    authorizedAdditionalCostCeilingAtomic:
+      authorizationRequest.additionalCostCeilingAtomic,
+    authorization: {
+      evidenceDigest: authorization.evidenceDigest,
+      verificationProfile: authorization.verificationProfile,
+      verifierId: authorization.verifierId,
+      expiresAtMs: authorization.expiresAtMs,
+    },
+  };
 }
 
 function reservePurchase(

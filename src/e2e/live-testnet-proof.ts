@@ -114,7 +114,13 @@ import {
   JournalTreasuryStagingObservationSource,
   createJournalTreasuryStagingMetadataSource,
 } from "../runtime/journal-sources.js";
-import { VaultTreasuryModule } from "../treasury/vault-treasury.js";
+import { PolicyEngine } from "../policy.js";
+import {
+  VaultDepositTreasuryOperationAdapter,
+  VaultSendTreasuryOperationAdapter,
+  WalletTreasuryOperationAdapter,
+} from "../treasury/operation-adapters.js";
+import { TreasuryOperationModule } from "../treasury/operations.js";
 import { createSompiMcpServer } from "../mcp/server.js";
 import {
   Transaction,
@@ -670,17 +676,39 @@ function composeLiveCoordinator(input: {
     observedStaging,
     finality: chainEvidence,
   });
-  const treasury = new VaultTreasuryModule({
-    vault: input.initialized.vault,
-    policy: {
-      maxPerPaymentAtomic: "100000000",
-      maxPerHourAtomic: "1000000000",
-      allowlist: [input.payTo],
+  const policy = new PolicyEngine({
+    maxSompiPerTx: 100_000_000n,
+    maxSompiPerHour: 1_000_000_000n,
+    allowlist: [input.payTo],
+  });
+  const treasury = new TreasuryOperationModule({
+    journal: input.journal,
+    policy,
+    adapters: [
+      new WalletTreasuryOperationAdapter(
+        input.initialized.treasuryWallet,
+        chainEvidence,
+      ),
+      new VaultSendTreasuryOperationAdapter(
+        input.initialized.vault,
+        input.initialized.treasuryWallet,
+        chainEvidence,
+      ),
+      new VaultDepositTreasuryOperationAdapter(
+        input.initialized.vault,
+        input.initialized.treasuryWallet,
+        chainEvidence,
+      ),
+    ],
+    feeCeilingAtomic: LIVE_ADDITIONAL_COST_CEILING_ATOMIC,
+    purchase: {
+      vault: input.initialized.vault,
+      additionalCostCeilingAtomic: LIVE_ADDITIONAL_COST_CEILING_ATOMIC,
+      reservationTtlMs: 30 * 60_000,
+      staging: treasuryStaging,
+      stagingRecovery,
+      now,
     },
-    additionalCostCeilingAtomic: LIVE_ADDITIONAL_COST_CEILING_ATOMIC,
-    reservationTtlMs: 30 * 60_000,
-    staging: treasuryStaging,
-    stagingRecovery,
   });
   const coordinator = new PurchaseCoordinator(
     input.journal,

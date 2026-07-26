@@ -59,7 +59,6 @@ import {
 import { PurchaseJournal } from "../purchase/journal.js";
 import { SompiPaidResponseVerifier } from "../purchase/paid-response-verifier.js";
 import type { PurchaseModule, Sha256Digest } from "../purchase/types.js";
-import { VaultTreasuryModule } from "../treasury/vault-treasury.js";
 import { TreasuryOperationModule } from "../treasury/operations.js";
 import {
   VaultDepositTreasuryOperationAdapter,
@@ -170,7 +169,6 @@ export function createSompiPurchaseRuntime(
       dataDir: config.dataDirectory,
       nodeUrl: config.nodeUrl,
     });
-    activateJournalPolicy(journal, policy);
     authorityReplay = new SqliteAuthorityReplayStore(
       config.authority.clientReplayDatabase,
       { now }
@@ -197,10 +195,7 @@ export function createSompiPurchaseRuntime(
     );
     const addressCodec = new KaspaTestnet10AddressCodec();
     const batchChain = new WalletBatchChainSource(wallet);
-    const treasuryOperations = new TreasuryOperationModule({
-      journal,
-      policy,
-      adapters: [
+    const treasuryOperationAdapters = [
         new WalletTreasuryOperationAdapter(
           wallet,
           chainEvidence,
@@ -230,18 +225,7 @@ export function createSompiPurchaseRuntime(
             witnessFetch,
           ),
         ),
-      ],
-      feeCeilingAtomic: config.treasuryOperationFeeCeilingAtomic,
-      directTreasuryRetries: config.admission.directTreasuryRetries,
-    });
-    const batchCapital = new KaspaX402BatchCapitalModule(
-      journal,
-      treasuryOperations,
-      channelSigner,
-      channelStore,
-      now,
-    );
-    const batchRefund = new KaspaX402BatchRefundModule(journal, treasuryOperations);
+      ] as const;
     const checkout = new SompiCheckoutTermsModule({
       transport,
       paymentRequirements: new KaspaX402PaymentRequirementsVerifier({
@@ -346,26 +330,6 @@ export function createSompiPurchaseRuntime(
       expectedAuthorityIssuer: config.authority.issuer,
       now,
     });
-    const transfer = new TransferModule({
-      journal,
-      authority: ownerAuthority,
-      treasury: treasuryOperations,
-      source: () => {
-        const current = vault.config();
-        return Object.freeze({
-          vaultAddress: current.address,
-          vaultDigest: vaultStaticConfigurationDigest(current),
-        });
-      },
-      manifest: () => config.operatorManifest.identity,
-      finality: chainEvidence,
-      now,
-    });
-    const fundingIntake = new FundingIntakeModule({
-      wallet,
-      vault,
-      treasury: treasuryOperations,
-    });
     const policyChange = new PolicyChangeModule({
       journal,
       policy,
@@ -389,15 +353,6 @@ export function createSompiPurchaseRuntime(
       manifest: () => config.operatorManifest.identity,
       now,
     });
-    const walletView = new WalletViewModule({
-      wallet,
-      vault,
-      journal,
-      treasury: treasuryOperations,
-      fundingIntake,
-      policy,
-      now,
-    });
     const stagingRecovery = new KaspaStagingRecoveryModule({
       recovery: new AbandonedStagingRecovery({
         keyStore,
@@ -413,19 +368,66 @@ export function createSompiPurchaseRuntime(
       observedStaging,
       finality: chainEvidence,
     });
-    const treasury = new VaultTreasuryModule({
+    const treasuryOperations = new TreasuryOperationModule({
+      journal,
+      policy,
+      adapters: treasuryOperationAdapters,
+      feeCeilingAtomic: config.treasuryOperationFeeCeilingAtomic,
+      directTreasuryRetries: config.admission.directTreasuryRetries,
+      purchase: {
+        vault,
+        additionalCostCeilingAtomic: config.additionalCostCeilingAtomic,
+        staging: treasuryStaging,
+        stagingRecovery,
+        now,
+      },
+    });
+    const batchCapital = new KaspaX402BatchCapitalModule(
+      journal,
+      treasuryOperations,
+      channelSigner,
+      channelStore,
+      now,
+    );
+    const batchRefund = new KaspaX402BatchRefundModule(
+      journal,
+      treasuryOperations,
+    );
+    const transfer = new TransferModule({
+      journal,
+      authority: ownerAuthority,
+      treasury: treasuryOperations,
+      source: () => {
+        const current = vault.config();
+        return Object.freeze({
+          vaultAddress: current.address,
+          vaultDigest: vaultStaticConfigurationDigest(current),
+        });
+      },
+      manifest: () => config.operatorManifest.identity,
+      finality: chainEvidence,
+      now,
+    });
+    const fundingIntake = new FundingIntakeModule({
+      wallet,
       vault,
-      policy: () => purchasePolicy(policy),
-      additionalCostCeilingAtomic: config.additionalCostCeilingAtomic,
-      staging: treasuryStaging,
-      stagingRecovery,
+      treasury: treasuryOperations,
+    });
+    const walletView = new WalletViewModule({
+      wallet,
+      vault,
+      journal,
+      treasury: treasuryOperations,
+      fundingIntake,
+      policy,
+      now,
     });
     const purchase = new PurchaseCoordinator(
       journal,
       egress,
       checkout,
       authority,
-      treasury,
+      treasuryOperations,
       payment,
       new PendingFulfilmentModule(),
       {
@@ -533,29 +535,6 @@ async function systemResolver(hostname: string) {
       return Object.freeze({ address: answer.address, family: answer.family });
     })
   );
-}
-
-function purchasePolicy(policy: PolicyEngine) {
-  const current = policy.policy;
-  return Object.freeze({
-    maxPerPaymentAtomic: current.maxSompiPerTx.toString(),
-    maxPerHourAtomic: current.maxSompiPerHour.toString(),
-    allowlist: Object.freeze([...current.allowlist]),
-  });
-}
-
-function activateJournalPolicy(journal: PurchaseJournal, policy: PolicyEngine): void {
-  let active;
-  try {
-    active = journal.requireActivePolicy();
-  } catch {
-    active = journal.installPolicy(purchasePolicy(policy));
-  }
-  policy.activate(Object.freeze({
-    maxSompiPerTx: BigInt(active.maxPerPaymentAtomic),
-    maxSompiPerHour: BigInt(active.maxPerHourAtomic),
-    allowlist: [...active.allowlist],
-  }));
 }
 
 async function closeRuntimeResources(

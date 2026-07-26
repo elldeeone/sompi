@@ -1,6 +1,6 @@
 # Sompi implementation plan
 
-Status: **Architecture Phase 4 active; C1 complete**
+Status: **Architecture Phase 4 active; C2 complete**
 
 Starting commit: `89b0f1f404ce8e5f2ded88a5b1a99d8ca1743bba`
 
@@ -229,7 +229,7 @@ The canonical implementation starts from the existing
 - [ ] **P4.1:** Move the Treasury interface and its domain types from Purchase
   into Treasury. Purchase must not define Treasury policy, quote, staging, or
   recovery types.
-- [ ] **P4.2:** Make one Treasury implementation own readiness, quote, policy,
+- [x] **P4.2:** Make one Treasury implementation own readiness, quote, policy,
   reservation, and shared capacity for Purchase and direct Movements.
 - [ ] **P4.3:** Make that implementation own staging preparation, durable plan
   and prepared bytes, effect fencing, submission, observation, ambiguity, and
@@ -258,18 +258,21 @@ Implementation sequence:
 1. [x] **P4.C1 — Characterize the interface.** Add Treasury interface tests for
    readiness, quote, reservation, staging, direct Movement, and recovery. Do
    not change behavior.
-2. [ ] **P4.C2 — Move policy and capacity ownership.** Define the Treasury-owned
+2. [x] **P4.C2 — Move policy and capacity ownership.** Define the Treasury-owned
    domain interface and move readiness, quote, policy, reservation, and shared
-   capacity behind it.
+   capacity behind it. After equivalent interface tests pass, construct one
+   production Treasury implementation and delete `VaultTreasuryModule`. This
+   prevents policy and capacity from having two production owners.
 3. [ ] **P4.C3 — Move staging preparation.** Move prepared transaction planning,
    durable prepared bytes, and preparation fences behind Treasury.
 4. [ ] **P4.C4 — Move staging execution.** Move submission, observation, ambiguity,
    retry, and reconciliation behind Treasury.
 5. [ ] **P4.C5 — Move staging recovery.** Move abandoned staging recovery and lease
    takeover behind Treasury.
-6. [ ] **P4.C6 — Complete the clean cutover.** Route direct Movement callers
-   through the same Treasury implementation. Replace runtime wiring and delete
-   the old wrapper, types, paths, and forwarding tests.
+6. [ ] **P4.C6 — Complete the clean cutover.** After C3, C4, and C5, delete the
+   remaining Purchase-owned Treasury staging and recovery types, pass-through
+   paths, and duplicate wiring. Verify that all current callers continue to
+   use the same Treasury implementation.
 7. [ ] **P4.C7 — Verify and stop.** Run all offline gates, record separately
    authorized funded Testnet-10 evidence, update the state documents, and stop
    for a new architecture review.
@@ -292,6 +295,29 @@ C1 completion evidence from 2026-07-26:
 - No production source, Journal schema, protocol adapter, public interface, or
   runtime wiring changed. The full test command ran 605 tests: 604 passed and
   one privileged ownership test was skipped as expected. Offline smoke passed.
+
+C2 completion evidence from 2026-07-26:
+
+- Treasury now defines the Purchase-facing quote, policy, reservation, and
+  capacity types.
+- One `TreasuryOperationModule` instance owns startup policy synchronization,
+  readiness, quote, reservation, and shared Purchase and direct Movement
+  capacity.
+- Purchase asks Treasury to quote and reserve capacity. Purchase no longer
+  installs a policy or creates a policy reservation.
+- Runtime and end-to-end composition use the same Treasury implementation for
+  Purchase and direct Movements. `VaultTreasuryModule` and its shallow
+  forwarding tests no longer exist.
+- The implementation sequence now records this one-instance runtime cutover in
+  C2. C6 retains the final staging and recovery type and path deletion after
+  C3, C4, and C5.
+- Purchase still owns staging preparation, execution, and recovery order.
+  Treasury staging types and Journal commands remain until C3, C4, and C5.
+- The physical Journal schema, protocol adapters, public API, protocol pins,
+  and sibling repositories did not change.
+- The focused C2 command ran 72 tests. All 72 passed. The full test command
+  ran 606 tests: 605 passed and one privileged ownership test was skipped as
+  expected. Offline smoke passed.
 
 Verification gate:
 

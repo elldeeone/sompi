@@ -212,14 +212,20 @@ Architecture Phase 3 is complete.
 Architecture Phase 4 is active. It started from
 `aab94d95df42e7ffdf1ca3ff1c00bdd3e2e71fae`.
 
-Phase 4 C1 is complete. The Treasury characterization surface now proves
-readiness, quote, reservation, staging, direct Movement, shared capacity, and
-recovery behavior. The change adds one Purchase interface test and changes no
-production source, Journal schema, protocol adapter, public interface, or
-runtime wiring.
+Phase 4 C2 is complete. Treasury now owns Purchase readiness, quote, policy,
+reservation, and shared Purchase and direct Movement capacity. Runtime and
+end-to-end composition use one `TreasuryOperationModule` instance.
+`VaultTreasuryModule` and its shallow forwarding tests no longer exist.
+The implementation sequence records this one-instance runtime cutover in C2.
 
-The full test command ran 605 tests. 604 passed and one privileged ownership
-test was skipped as expected. Offline smoke passed.
+Purchase still owns staging preparation, execution, and recovery order.
+Treasury staging types and Journal commands remain until C3, C4, and C5.
+The physical Journal schema, protocol adapters, public API, and protocol pins
+did not change.
 
-Phase 4 C2 is next. Do not start C2 until its policy and capacity move is
+The focused C2 command ran 72 tests. All 72 passed. The full test command ran
+606 tests: 605 passed and one privileged ownership test was skipped as
+expected. Offline smoke passed.
+
+Phase 4 C3 is next. Do not start C3 until its staging preparation move is
 explicitly started.

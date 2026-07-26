@@ -79,6 +79,11 @@ import type {
 } from "../transfer/types.js";
 import type { TransferJournalIntent } from "../transfer/journal.js";
 import type { TreasuryOperationView } from "../treasury/operations.js";
+import type {
+  TreasuryPolicy,
+  TreasuryPurchaseReservation,
+  TreasuryReservationState,
+} from "../treasury/purchase-capacity.js";
 
 const PAYMENT_ATTEMPT_STATES = ["planned", "prepared", "submitted", "observed", "failed"] as const;
 const EFFECT_STATES = [
@@ -100,7 +105,7 @@ export const PURCHASE_RECEIPT_PROFILE = "urn:sompi:receipt:purchase:1" as const;
 
 type PaymentAttemptState = (typeof PAYMENT_ATTEMPT_STATES)[number];
 export type EffectState = (typeof EFFECT_STATES)[number];
-type ReservationState = (typeof RESERVATION_STATES)[number];
+type ReservationState = TreasuryReservationState;
 
 /**
  * Complete executable manifest of transactional fault seams. Tests key their
@@ -1035,13 +1040,9 @@ export interface EvidenceVerificationInput {
   detailDigest: Sha256Digest;
 }
 
-export interface PolicyDefinition {
-  maxPerPaymentAtomic: string;
-  maxPerHourAtomic: string;
-  allowlist: readonly string[];
-}
+export type PolicyDefinition = TreasuryPolicy;
 
-export interface PolicySnapshotRecord extends PolicyDefinition {
+export interface PolicySnapshotRecord extends TreasuryPolicy {
   digest: Sha256Digest;
   version: number;
   activatedAtMs: number;
@@ -1171,25 +1172,7 @@ export interface PolicyReservationInput {
   approvalVerifierId?: string;
 }
 
-export interface PolicyReservationRecord {
-  id: string;
-  purchaseId: PurchaseId;
-  policyDigest: Sha256Digest;
-  approvalEvidenceDigest?: Sha256Digest;
-  approvalVerificationProfile?: string;
-  approvalVerifierId?: string;
-  payee: string;
-  amountAtomic: string;
-  additionalCostCeilingAtomic: string;
-  fundingSource: FundingSource;
-  state: ReservationState;
-  expiresAtMs: number;
-  createdAtMs: number;
-  updatedAtMs: number;
-  inFlightAtMs?: number;
-  spentAtMs?: number;
-  releaseEvidenceDigest?: Sha256Digest;
-}
+export type PolicyReservationRecord = TreasuryPurchaseReservation;
 
 export interface CreatePaymentAttemptInput {
   purchaseId: PurchaseId;
@@ -3469,6 +3452,12 @@ export class PurchaseJournal {
   }
 
   requireActivePolicy(): PolicySnapshotRecord {
+    const policy = this.findActivePolicy();
+    if (!policy) throw new PolicyReservationError("no active treasury policy is installed");
+    return policy;
+  }
+
+  findActivePolicy(): PolicySnapshotRecord | undefined {
     const row = this.db
       .prepare(
         `SELECT p.* FROM policy_snapshots p
@@ -3476,8 +3465,9 @@ export class PurchaseJournal {
          WHERE j.singleton = 1`
       )
       .get() as PolicySnapshotRow | undefined;
-    if (!row) throw new PolicyReservationError("no active treasury policy is installed");
-    return policyFromRow(row, this.policyAllowlist(row.digest));
+    return row
+      ? policyFromRow(row, this.policyAllowlist(row.digest))
+      : undefined;
   }
 
   requireActivePolicyActivation(): ActivePolicyRecord {

@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
+import { PolicyEngine } from "../policy.js";
 import type {
   ChainEvidenceFinalitySelection,
   ChainEvidenceFinalitySelector,
@@ -68,6 +69,13 @@ import {
   type JournalFaultPoint,
 } from "./journal.js";
 import type { CheckoutTerms, PurchaseId, PurchaseIntent, PurchaseModule } from "./types.js";
+import {
+  type TreasuryOperationAdapter,
+} from "../treasury/operation-adapters.js";
+import type {
+  TreasuryOperationRecord,
+} from "../treasury/operation-journal.js";
+import { TreasuryOperationModule } from "../treasury/operations.js";
 
 const NOW = Date.parse("2030-01-01T00:00:00.000Z");
 const TESTNET_PAYEE = "kaspatest:qpumuen7l8wthtz45p3ftn58pvrs9xlumvkuu2xet8egzkcklqtes5z8rkmpd";
@@ -1181,7 +1189,7 @@ function makeCoordinator(
     }),
     dependencies.checkout,
     dependencies.authority,
-    dependencies.treasury,
+    dependencies.purchaseTreasury(journal, now),
     dependencies.payment,
     dependencies.fulfilment,
     {
@@ -1202,6 +1210,28 @@ function operationFailure(code: SompiOperationFailure["code"]): (error: unknown)
   return (error: unknown) =>
     error instanceof SompiOperationFailure &&
     error.code === code;
+}
+
+function unavailableDirectTreasuryAdapters(): readonly TreasuryOperationAdapter[] {
+  return ([
+    "wallet_send",
+    "vault_send",
+    "vault_deposit",
+  ] as const).map((kind) => ({
+    kind,
+    async prepare(record: TreasuryOperationRecord) {
+      throw new Error(`test did not expect ${record.kind} preparation`);
+    },
+    async submit() {
+      throw new Error("test did not expect direct Treasury submission");
+    },
+    async observe() {
+      throw new Error("test did not expect direct Treasury observation");
+    },
+    async commit() {
+      throw new Error("test did not expect direct Treasury commit");
+    },
+  }));
 }
 
 let instanceCounter = 0;
@@ -1364,30 +1394,52 @@ class FakeDependencies {
     },
   };
 
-  readonly treasury: TreasuryModule = {
-    currentPolicy: async () => {
-      this.calls.policy++;
-      return {
-        maxPerPaymentAtomic: this.policyPerPayment,
-        maxPerHourAtomic: "10000",
+  purchaseTreasury(
+    journal: PurchaseJournal,
+    now: () => number,
+  ): TreasuryModule {
+    const dependencies = this;
+    const treasury = new TreasuryOperationModule({
+      journal,
+      policy: new PolicyEngine({
+        maxSompiPerTx: BigInt(this.policyPerPayment),
+        maxSompiPerHour: 10_000n,
         allowlist: [TESTNET_PAYEE],
-      };
-    },
-    quote: async () => {
-      this.calls.quote++;
-      return {
-        ready: this.quoteReady,
+      }),
+      adapters: unavailableDirectTreasuryAdapters(),
+      feeCeilingAtomic: "1",
+      purchase: {
+        vault: {
+          get configured() {
+            dependencies.calls.quote++;
+            return dependencies.quoteReady;
+          },
+          config: () => ({ covenantId: "aa".repeat(32) }),
+        },
         additionalCostCeilingAtomic: this.quoteAdditionalCost,
         reservationTtlMs: 60_000,
-      };
-    },
-    prepareStaging: async (input) => this.payment.prepareStaging(input),
-    submitStaging: async (input) => this.payment.submitStaging(input),
-    observeStaging: async (input) => this.payment.observeStaging(input),
-    prepareStagingRecovery: async (input) => this.stagingRecovery.prepare(input),
-    observeStagingRecovery: async (input) => this.stagingRecovery.observe(input),
-    submitStagingRecovery: async (input) => this.stagingRecovery.submit(input),
-  };
+        staging: this.payment,
+        stagingRecovery: this.stagingRecovery,
+        now,
+      },
+    });
+    return {
+      quote: (input) => treasury.quote(input),
+      reservePurchaseCapacity: async (input) => {
+        this.calls.policy++;
+        return treasury.reservePurchaseCapacity(input);
+      },
+      prepareStaging: (input) => treasury.prepareStaging(input),
+      submitStaging: (input) => treasury.submitStaging(input),
+      observeStaging: (input) => treasury.observeStaging(input),
+      prepareStagingRecovery: (input) =>
+        treasury.prepareStagingRecovery(input),
+      observeStagingRecovery: (input) =>
+        treasury.observeStagingRecovery(input),
+      submitStagingRecovery: (input) =>
+        treasury.submitStagingRecovery(input),
+    };
+  }
 
   readonly payment: KaspaPaymentModule & Pick<
     TreasuryModule,

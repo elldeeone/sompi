@@ -63,7 +63,6 @@ import {
   TreasuryOperationModule,
   type TreasuryOperationView,
 } from "../treasury/operations.js";
-import { VaultTreasuryModule } from "../treasury/vault-treasury.js";
 import { Transaction } from "../kaspa-wasm.js";
 import {
   LIVE_NETWORK,
@@ -280,6 +279,34 @@ export async function runLiveBatchProof(
         ),
       ],
       feeCeilingAtomic: "10000000",
+      purchase: {
+        vault: initialized.vault,
+        additionalCostCeilingAtomic: "0",
+        reservationTtlMs: 30 * 60_000,
+        staging: {
+          async prepareStaging() {
+            throw new Error("batch execution must not stage exact funding");
+          },
+          async submitStaging() {
+            throw new Error("batch execution must not submit exact staging");
+          },
+          async observeStaging() {
+            throw new Error("batch execution must not observe exact staging");
+          },
+        },
+        stagingRecovery: {
+          async prepare() {
+            throw new Error("batch execution has no exact staging recovery");
+          },
+          async observe() {
+            throw new Error("batch execution has no exact staging recovery");
+          },
+          async submit() {
+            throw new Error("batch execution has no exact staging recovery");
+          },
+        },
+        now: Date.now,
+      },
     });
     const capital = new KaspaX402BatchCapitalModule(
       journal,
@@ -423,6 +450,7 @@ export async function runLiveBatchProof(
         channelSigner: clientSigner,
         batchChain,
         chainEvidence,
+        treasury,
         entropy,
         workerId: `sompi-live-batch-${index}`,
       });
@@ -657,6 +685,7 @@ function composeBatchCoordinator(input: {
   readonly channelSigner: SecureBatchChannelSigner;
   readonly batchChain: WalletBatchChainSource;
   readonly chainEvidence: ChainEvidenceModule;
+  readonly treasury: TreasuryOperationModule;
   readonly entropy: Buffer;
   readonly workerId: string;
 }): PurchaseCoordinator {
@@ -687,34 +716,12 @@ function composeBatchCoordinator(input: {
     paidResponseVerifier: paid,
     now: Date.now,
   });
-  const unavailableStaging = {
-    async prepareStaging() { throw new Error("batch execution must not stage exact funding"); },
-    async submitStaging() { throw new Error("batch execution must not submit exact staging"); },
-    async observeStaging() { throw new Error("batch execution must not observe exact staging"); },
-  };
-  const unavailableRecovery = {
-    async prepare() { throw new Error("batch execution has no exact staging recovery"); },
-    async observe() { throw new Error("batch execution has no exact staging recovery"); },
-    async submit() { throw new Error("batch execution has no exact staging recovery"); },
-  };
-  const treasury = new VaultTreasuryModule({
-    vault: input.initialized.vault,
-    policy: {
-      maxPerPaymentAtomic: "100000000",
-      maxPerHourAtomic: "500000000",
-      allowlist: [input.initialized.config.wallets.merchantAddress],
-    },
-    additionalCostCeilingAtomic: "0",
-    reservationTtlMs: 30 * 60_000,
-    staging: unavailableStaging,
-    stagingRecovery: unavailableRecovery,
-  });
   return new PurchaseCoordinator(
     input.journal,
     egress,
     checkout,
     input.authorityModule,
-    treasury,
+    input.treasury,
     payment,
     { async obtain() { return { status: "pending" as const }; } },
     {
