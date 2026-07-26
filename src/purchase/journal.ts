@@ -5,8 +5,10 @@ import Database from "better-sqlite3";
 import { SecureLocalStateDirectory } from "../secure-local-state.js";
 import { EvidenceStore, type StoredEvidence } from "./evidence-store.js";
 import {
+  authorizationFacts,
   authorizationFactsDigest,
   PURCHASE_AUTHORIZATION_REQUEST_PROFILE,
+  type PurchaseAuthorizationRequest,
 } from "./contracts.js";
 import {
   assertPurchaseId,
@@ -84,6 +86,22 @@ import type {
   TreasuryPurchaseReservation,
   TreasuryReservationState,
 } from "../treasury/purchase-capacity.js";
+import {
+  treasuryStagingPreparationLeaseName,
+  type PlanTreasuryStagingInput,
+  type TreasuryStagingPreparationContext,
+  type TreasuryStagingPreparationLease,
+  type TreasuryStagingPlanRecord,
+} from "../treasury/purchase-staging.js";
+
+/*
+ * These aliases keep existing Journal callers buildable until the Phase 4 C6
+ * deletion pass removes the old import path.
+ */
+export type {
+  PlanTreasuryStagingInput,
+  TreasuryStagingPlanRecord,
+} from "../treasury/purchase-staging.js";
 
 const PAYMENT_ATTEMPT_STATES = ["planned", "prepared", "submitted", "observed", "failed"] as const;
 const EFFECT_STATES = [
@@ -1208,26 +1226,6 @@ export interface PreparePaymentAttemptInput {
 }
 
 export interface PaymentPreparationRecord extends Omit<PreparePaymentAttemptInput, "preparedBytes"> {
-  preparedRef: string;
-  preparedByteLength: number;
-  createdAtMs: number;
-}
-
-export interface PlanTreasuryStagingInput {
-  purchaseId: PurchaseId;
-  attempt: number;
-  reservationId: string;
-  idempotencyKey: string;
-  payloadDigest: Sha256Digest;
-  preparedBytes: Uint8Array;
-  plannedTransactionId: string;
-  expectedOutpoint: string;
-  stagingAmountAtomic: string;
-  fundingSource: FundingSource;
-}
-
-export interface TreasuryStagingPlanRecord extends Omit<PlanTreasuryStagingInput, "preparedBytes"> {
-  effectId: string;
   preparedRef: string;
   preparedByteLength: number;
   createdAtMs: number;
@@ -2779,6 +2777,122 @@ export class PurchaseJournal {
     const authorization = this.findAuthorization(purchaseId);
     if (!authorization) throw new JournalNotFoundError(`Purchase ${purchaseId} has no authorization decision`);
     return authorization;
+  }
+
+  hydratePurchaseAuthorizationRequest(
+    purchaseId: PurchaseId
+  ): PurchaseAuthorizationRequest {
+    const purchase = this.requirePurchase(purchaseId);
+    const terms = this.requireCheckoutTerms(purchaseId);
+    const record = this.requireAuthorizationRequest(purchaseId);
+    const parsed = parseAuthorizationRequestEvidence(
+      this.readEvidence(record.requestDigest),
+    );
+    if (parsed.profile !== PURCHASE_AUTHORIZATION_REQUEST_PROFILE) {
+      throw new JournalInvariantError(
+        `Purchase ${purchaseId} authorization request finality facts are malformed`
+      );
+    }
+    if (
+      parsed.effectiveFinalityFloor !== record.effectiveFinalityFloor ||
+      parsed.settlementAssurance !== record.settlementAssurance
+    ) {
+      throw new JournalInvariantError(
+        `Purchase ${purchaseId} authorization request finality facts differ from the Journal`
+      );
+    }
+    return {
+      purchaseId: purchase.id,
+      resourceUrl: purchase.resourceUrl,
+      method: purchase.method,
+      requestMediaType: record.requestMediaType,
+      requestBodyDigest: record.requestBodyDigest,
+      terms: checkoutTermsCopy(terms),
+      requestDigest: record.requestDigest,
+      nonceDigest: record.nonceDigest,
+      additionalCostCeilingAtomic: record.additionalCostCeilingAtomic,
+      operatorFinalityFloor: parsed.operatorFinalityFloor,
+      effectiveFinalityFloor: record.effectiveFinalityFloor,
+      depthConfirmationDaa: parsed.depthConfirmationDaa,
+      executionPlanDigest: record.executionPlanDigest,
+      executionMechanism: record.executionMechanism,
+      executionProfile: record.executionProfile,
+      settlementAssurance: record.settlementAssurance,
+      maximumAuthorizedChargeAtomic: record.maximumAuthorizedChargeAtomic,
+      ...(record.channelId === undefined ? {} : { channelId: record.channelId }),
+      ...(record.channelEpochDigest === undefined
+        ? {}
+        : { channelEpochDigest: record.channelEpochDigest }),
+      createdAtMs: record.createdAtMs,
+      expiresAtMs: record.expiresAtMs,
+    };
+  }
+
+  requirePurchaseExecutionContext(
+    purchaseId: PurchaseId,
+    attemptNumber: number,
+  ): TreasuryStagingPreparationContext {
+    const purchase = this.requirePurchase(purchaseId);
+    const terms = this.requireCheckoutTerms(purchaseId);
+    const authorizationRequest =
+      this.hydratePurchaseAuthorizationRequest(purchaseId);
+    const authorization = this.requireAuthorization(purchaseId);
+    const attempt = this.requirePaymentAttempt(purchaseId, attemptNumber);
+    if (
+      authorization.decision !== "approved" ||
+      authorization.approvedFactsDigest !==
+        authorizationFactsDigest(authorizationRequest)
+    ) {
+      throw new JournalInvariantError(
+        `Purchase ${purchaseId} has no exact durable authorization for Treasury staging`
+      );
+    }
+    const requestFingerprint = requestFingerprintFromBodyDigest({
+      url: purchase.resourceUrl,
+      method: purchase.method,
+      ...(authorizationRequest.requestMediaType === ""
+        ? {}
+        : { mediaType: authorizationRequest.requestMediaType }),
+      bodyDigest: authorizationRequest.requestBodyDigest,
+    });
+    if (
+      requestFingerprint !== purchase.resourceFingerprint ||
+      requestFingerprint !== terms.resourceFingerprint
+    ) {
+      throw new JournalInvariantError(
+        `Purchase ${purchaseId} request identity differs from its durable Checkout Terms`
+      );
+    }
+    return {
+      execution: {
+        purchaseId,
+        terms: checkoutTermsCopy(terms),
+        authorizationRequest,
+        authorization: {
+          purchaseId,
+          checkoutDigest: terms.checkoutDigest,
+          decision: "approved",
+          authorityId: authorization.authorityId,
+          evidenceDigest: authorization.evidenceDigest,
+          facts: authorizationFacts(authorizationRequest),
+        },
+        paymentIdentifier: attempt.identifier,
+      },
+      request: {
+        url: purchase.resourceUrl,
+        method: purchase.method,
+        ...(authorizationRequest.requestMediaType === ""
+          ? {}
+          : { mediaType: authorizationRequest.requestMediaType }),
+        body: Uint8Array.from(
+          this.readEvidence(authorizationRequest.requestBodyDigest),
+        ),
+        requestFingerprint,
+      },
+      paymentRequirements: Uint8Array.from(
+        this.readEvidence(terms.paymentRequirementsDigest),
+      ),
+    };
   }
 
   findAuthorization(purchaseId: PurchaseId): AuthorizationRecord | undefined {
@@ -4904,10 +5018,31 @@ export class PurchaseJournal {
     return paymentAttempt;
   }
 
-  planTreasuryStaging(input: PlanTreasuryStagingInput): TreasuryStagingPlanRecord {
+  commitTreasuryStagingPreparation(
+    lease: TreasuryStagingPreparationLease,
+    input: PlanTreasuryStagingInput,
+  ): TreasuryStagingPlanRecord {
+    return this.planTreasuryStaging(input, lease);
+  }
+
+  planTreasuryStaging(
+    input: PlanTreasuryStagingInput,
+    preparationLease?: TreasuryStagingPreparationLease,
+  ): TreasuryStagingPlanRecord {
     validateTreasuryStagingPlanInput(input);
     const stored = this.storePreparedMaterial(input.preparedBytes, input.payloadDigest);
     const plan = this.db.transaction(() => {
+      if (preparationLease) {
+        if (
+          preparationLease.name !==
+          treasuryStagingPreparationLeaseName(input.purchaseId, input.attempt)
+        ) {
+          throw new JournalFencingError(
+            "Treasury staging preparation lease does not match its Payment Attempt"
+          );
+        }
+        this.assertLeaseInternal(preparationLease, this.timestamp());
+      }
       const attempt = this.requirePaymentAttempt(input.purchaseId, input.attempt);
       const effectRow = this.db
         .prepare("SELECT * FROM effects WHERE idempotency_key = ?")
@@ -8603,80 +8738,9 @@ export class PurchaseJournal {
   }
 
   private canonicalAuthorizationFactsDigest(purchaseId: PurchaseId): Sha256Digest {
-    const purchase = this.requirePurchase(purchaseId);
-    const terms = this.requireCheckoutTerms(purchaseId);
-    const request = this.requireAuthorizationRequest(purchaseId);
-    let authorizationEnvelope: unknown;
-    try {
-      authorizationEnvelope = JSON.parse(
-        Buffer.from(this.readEvidence(request.requestDigest)).toString("utf8")
-      );
-    } catch (error) {
-      throw new JournalInvariantError(
-        `Purchase ${purchaseId} authorization request evidence is malformed`,
-        { cause: error }
-      );
-    }
-    if (
-      !authorizationEnvelope ||
-      typeof authorizationEnvelope !== "object" ||
-      Array.isArray(authorizationEnvelope)
-    ) {
-      throw new JournalInvariantError(
-        `Purchase ${purchaseId} authorization request evidence is malformed`
-      );
-    }
-    const envelope = authorizationEnvelope as Record<string, unknown>;
-    if (
-      envelope.profile !== PURCHASE_AUTHORIZATION_REQUEST_PROFILE ||
-      (envelope.operatorFinalityFloor !== "accepted" &&
-        envelope.operatorFinalityFloor !== "depth-confirmed") ||
-      (envelope.effectiveFinalityFloor !== "accepted" &&
-        envelope.effectiveFinalityFloor !== "depth-confirmed") ||
-      typeof envelope.depthConfirmationDaa !== "string" ||
-      !/^[1-9][0-9]*$/.test(envelope.depthConfirmationDaa) ||
-      envelope.depthConfirmationDaa.length > 78 ||
-      (envelope.settlementAssurance !== "accepted" &&
-        envelope.settlementAssurance !== "confirmed" &&
-        envelope.settlementAssurance !== "channel-commitment")
-    ) {
-      throw new JournalInvariantError(
-        `Purchase ${purchaseId} authorization request finality facts are malformed`
-      );
-    }
-    if (
-      envelope.effectiveFinalityFloor !== request.effectiveFinalityFloor ||
-      envelope.settlementAssurance !== request.settlementAssurance
-    ) {
-      throw new JournalInvariantError(
-        `Purchase ${purchaseId} authorization request finality facts differ from the Journal`
-      );
-    }
-    return authorizationFactsDigest({
-      purchaseId,
-      resourceUrl: purchase.resourceUrl,
-      method: purchase.method,
-      requestMediaType: request.requestMediaType,
-      requestBodyDigest: request.requestBodyDigest,
-      terms,
-      requestDigest: request.requestDigest,
-      nonceDigest: request.nonceDigest,
-      additionalCostCeilingAtomic: request.additionalCostCeilingAtomic,
-      operatorFinalityFloor: envelope.operatorFinalityFloor,
-      effectiveFinalityFloor: envelope.effectiveFinalityFloor,
-      depthConfirmationDaa: envelope.depthConfirmationDaa,
-      executionPlanDigest: request.executionPlanDigest,
-      executionMechanism: request.executionMechanism,
-      executionProfile: request.executionProfile,
-      settlementAssurance: envelope.settlementAssurance,
-      maximumAuthorizedChargeAtomic: request.maximumAuthorizedChargeAtomic,
-      ...(request.channelId === undefined ? {} : { channelId: request.channelId }),
-      ...(request.channelEpochDigest === undefined
-        ? {}
-        : { channelEpochDigest: request.channelEpochDigest }),
-      createdAtMs: request.createdAtMs,
-      expiresAtMs: request.expiresAtMs,
-    });
+    return authorizationFactsDigest(
+      this.hydratePurchaseAuthorizationRequest(purchaseId)
+    );
   }
 
   private policyAllowlist(digest: string): string[] {
@@ -8708,7 +8772,7 @@ export class PurchaseJournal {
     return row ? paymentPreparationFromRow(row) : undefined;
   }
 
-  private findTreasuryStagingPlan(
+  findTreasuryStagingPlan(
     purchaseId: PurchaseId,
     attempt: number
   ): TreasuryStagingPlanRecord | undefined {
@@ -12400,6 +12464,80 @@ function decimalBigInt(value: string, label: string, allowZero = false): bigint 
     throw new PolicyReservationError(`${label} must be ${allowZero ? "non-negative" : "positive"}`);
   }
   return parsed;
+}
+
+interface ParsedAuthorizationRequestEvidence {
+  profile: string;
+  operatorFinalityFloor: "accepted" | "depth-confirmed";
+  effectiveFinalityFloor: "accepted" | "depth-confirmed";
+  depthConfirmationDaa: string;
+  settlementAssurance: string;
+}
+
+function parseAuthorizationRequestEvidence(
+  bytes: Uint8Array
+): ParsedAuthorizationRequestEvidence {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.from(bytes).toString("utf8"));
+  } catch (error) {
+    throw new JournalInvariantError(
+      "Purchase authorization request finality facts are malformed",
+      { cause: error },
+    );
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new JournalInvariantError(
+      "Purchase authorization request finality facts are malformed"
+    );
+  }
+  const value = parsed as Record<string, unknown>;
+  for (const key of [
+    "profile",
+    "operatorFinalityFloor",
+    "effectiveFinalityFloor",
+    "depthConfirmationDaa",
+    "settlementAssurance",
+  ]) {
+    if (typeof value[key] !== "string") {
+      throw new JournalInvariantError(
+        "Purchase authorization request finality facts are malformed"
+      );
+    }
+  }
+  if (
+    (value.operatorFinalityFloor !== "accepted" &&
+      value.operatorFinalityFloor !== "depth-confirmed") ||
+    (value.effectiveFinalityFloor !== "accepted" &&
+      value.effectiveFinalityFloor !== "depth-confirmed") ||
+    !/^[1-9][0-9]*$/.test(String(value.depthConfirmationDaa)) ||
+    String(value.depthConfirmationDaa).length > 78 ||
+    (value.settlementAssurance !== "accepted" &&
+      value.settlementAssurance !== "confirmed" &&
+      value.settlementAssurance !== "channel-commitment")
+  ) {
+    throw new JournalInvariantError(
+      "Purchase authorization request finality facts are malformed"
+    );
+  }
+  return value as unknown as ParsedAuthorizationRequestEvidence;
+}
+
+function checkoutTermsCopy(terms: CheckoutTerms): CheckoutTerms {
+  return {
+    merchant: {
+      id: terms.merchant.id,
+      name: terms.merchant.name,
+      origin: terms.merchant.origin,
+    },
+    resourceFingerprint: terms.resourceFingerprint,
+    amountAtomic: terms.amountAtomic,
+    asset: terms.asset,
+    network: terms.network,
+    payTo: terms.payTo,
+    expiresAt: terms.expiresAt,
+    checkoutDigest: terms.checkoutDigest,
+  };
 }
 
 function validateTreasuryOperationIntent(input: TreasuryOperationIntent): void {

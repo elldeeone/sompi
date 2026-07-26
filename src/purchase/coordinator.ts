@@ -81,6 +81,13 @@ import {
   type PurchaseTreasuryCapacity,
   type TreasuryQuote,
 } from "../treasury/purchase-capacity.js";
+import {
+  TreasuryStagingPreparationError,
+  type PreparedTreasuryStaging,
+  type PurchaseTreasuryStagingPreparation,
+} from "../treasury/purchase-staging.js";
+
+export type { PreparedTreasuryStaging } from "../treasury/purchase-staging.js";
 
 const PAYMENT_EFFECT_KIND = "kaspa-x402-payment";
 const PURCHASE_COORDINATION_TTL_MS = 60_000;
@@ -204,13 +211,9 @@ export interface AuthorityModule {
  * staging, and abandoned-stage recovery. The Purchase module chooses when a
  * movement is required; it never calls the vault or recovery adapters itself.
  */
-export interface TreasuryModule extends PurchaseTreasuryCapacity {
-  prepareStaging(input: {
-    execution: KaspaPreparedExecutionContext["execution"];
-    request: KaspaRequestContext;
-    paymentRequirements: Uint8Array;
-    additionalCostCeilingAtomic: string;
-  }): Promise<PreparedTreasuryStaging>;
+export interface TreasuryModule
+  extends PurchaseTreasuryCapacity,
+    PurchaseTreasuryStagingPreparation {
   submitStaging(input: {
     context: KaspaTreasuryStagingContext;
     effect: EffectRecord;
@@ -241,15 +244,6 @@ export interface PreparedKaspaPayment extends PreparedPurchasePayment {
   profile: string;
   transactionId?: string;
   requiredAssurance: "accepted" | "confirmed" | "channel-commitment";
-}
-
-export interface PreparedTreasuryStaging {
-  preparedBytes: Uint8Array;
-  preparedDigest: Sha256Digest;
-  transactionId: string;
-  expectedOutpoint: string;
-  stagingAmountAtomic: string;
-  fundingSource: "vault-treasury";
 }
 
 export interface TreasuryStagingResult {
@@ -926,7 +920,7 @@ export class PurchaseCoordinator implements PurchaseModule {
   }
 
   private async requestAuthorization(purchase: PurchaseRecord): Promise<boolean> {
-    const request = this.authorizationRequest(purchase);
+    const request = this.journal.hydratePurchaseAuthorizationRequest(purchase.id);
     if (request.expiresAtMs <= this.now()) {
       this.journal.transitionPurchase(
         purchase.id,
@@ -1138,31 +1132,21 @@ export class PurchaseCoordinator implements PurchaseModule {
         "payment_invariant"
       );
     }
-    const execution = this.purchaseExecutionContext(purchase.id, attemptNumber);
-    const preparedCandidate = await this.treasury.prepareStaging({
-      execution: execution.execution,
-      request: execution.request,
-      paymentRequirements: execution.paymentRequirements,
-      additionalCostCeilingAtomic: reservation.additionalCostCeilingAtomic,
-    });
-    const preparedBytes = Uint8Array.from(preparedCandidate.preparedBytes);
-    validatePreparedTreasuryStaging(
-      preparedCandidate,
-      preparedBytes,
-      BigInt(terms.amountAtomic) + BigInt(reservation.additionalCostCeilingAtomic)
-    );
-    const staging = this.journal.planTreasuryStaging({
-      purchaseId: purchase.id,
-      attempt: attemptNumber,
-      reservationId: reservation.id,
-      idempotencyKey: `treasury-staging:${identifier}`,
-      payloadDigest: preparedCandidate.preparedDigest,
-      preparedBytes,
-      plannedTransactionId: preparedCandidate.transactionId,
-      expectedOutpoint: preparedCandidate.expectedOutpoint,
-      stagingAmountAtomic: preparedCandidate.stagingAmountAtomic,
-      fundingSource: preparedCandidate.fundingSource,
-    });
+    let staging;
+    try {
+      staging = await this.treasury.preparePurchaseStaging({
+        purchaseId: purchase.id,
+        attempt: attemptNumber,
+      });
+    } catch (error) {
+      if (error instanceof TreasuryStagingPreparationError) {
+        if (error.code === "treasury_staging_busy") return false;
+        throw new PurchaseCoordinatorError(error.message, error.code, {
+          cause: error,
+        });
+      }
+      throw error;
+    }
     this.journal.transitionPurchase(
       purchase.id,
       "authorised",
@@ -2321,39 +2305,10 @@ export class PurchaseCoordinator implements PurchaseModule {
     KaspaPreparedExecutionContext,
     "execution" | "request" | "paymentRequirements"
   > {
-    const purchase = this.journal.requirePurchase(purchaseId);
-    const terms = this.journal.requireCheckoutTerms(purchaseId);
-    const request = this.authorizationRequest(purchase);
-    const authorization = this.journal.requireAuthorization(purchaseId);
-    if (authorization.decision !== "approved") {
-      throw new PurchaseCoordinatorError("prepared payment lost its approved authorization", "authorization_invariant");
-    }
-    const attempt = this.journal.requirePaymentAttempt(purchaseId, attemptNumber);
-    const intent = this.persistedIntent(purchaseId);
-    if (!intent) {
-      throw new PurchaseCoordinatorError(
-        "Purchase execution lost its persisted request",
-        "request_invariant"
-      );
-    }
-    return {
-      execution: {
-        purchaseId,
-        terms: canonicalTermsCopy(terms),
-        authorizationRequest: request,
-        authorization: {
-          purchaseId,
-          checkoutDigest: terms.checkoutDigest,
-          decision: "approved",
-          authorityId: authorization.authorityId,
-          evidenceDigest: authorization.evidenceDigest,
-          facts: authorizationFacts(request),
-        },
-        paymentIdentifier: attempt.identifier,
-      },
-      request: kaspaRequestContext(intent),
-      paymentRequirements: this.journal.readEvidence(terms.paymentRequirementsDigest),
-    };
+    return this.journal.requirePurchaseExecutionContext(
+      purchaseId,
+      attemptNumber,
+    );
   }
 
   private executionAuthorizationExpired(purchaseId: PurchaseId): boolean {
@@ -2416,58 +2371,6 @@ export class PurchaseCoordinator implements PurchaseModule {
         requiredAssurance: preparation.requiredAssurance,
         fundingSource: "vault-treasury",
       },
-    };
-  }
-
-  private authorizationRequest(purchase: PurchaseRecord): PurchaseAuthorizationRequest {
-    const terms = this.journal.requireCheckoutTerms(purchase.id);
-    const record = this.journal.requireAuthorizationRequest(purchase.id);
-    const parsed = parseAuthorizationEnvelope(this.journal.readEvidence(record.requestDigest));
-    if (
-      parsed.profile !== PURCHASE_AUTHORIZATION_REQUEST_PROFILE ||
-      parsed.purchaseId !== purchase.id ||
-      parsed.resourceUrl !== purchase.resourceUrl ||
-      parsed.method !== purchase.method ||
-      parsed.nonceDigest !== record.nonceDigest ||
-      parsed.requestMediaType !== record.requestMediaType ||
-      parsed.requestBodyDigest !== record.requestBodyDigest ||
-      parsed.additionalCostCeilingAtomic !== record.additionalCostCeilingAtomic ||
-      parsed.effectiveFinalityFloor !== record.effectiveFinalityFloor ||
-      parsed.settlementAssurance !== record.settlementAssurance ||
-      parsed.executionPlanDigest !== record.executionPlanDigest ||
-      parsed.executionMechanism !== record.executionMechanism ||
-      parsed.executionProfile !== record.executionProfile ||
-      parsed.maximumAuthorizedChargeAtomic !== record.maximumAuthorizedChargeAtomic ||
-      parsed.channelId !== record.channelId ||
-      parsed.channelEpochDigest !== record.channelEpochDigest ||
-      evidenceDigest(Buffer.from(parsed.nonce, "base64url")) !== record.nonceDigest
-    ) {
-      throw new PurchaseCoordinatorError("authorization request artifact is inconsistent", "authorization_invariant");
-    }
-    return {
-      purchaseId: purchase.id,
-      resourceUrl: purchase.resourceUrl,
-      method: purchase.method,
-      requestMediaType: record.requestMediaType,
-      requestBodyDigest: record.requestBodyDigest,
-      terms: canonicalTermsCopy(terms),
-      requestDigest: record.requestDigest,
-      nonceDigest: record.nonceDigest,
-      additionalCostCeilingAtomic: record.additionalCostCeilingAtomic,
-      operatorFinalityFloor: parsed.operatorFinalityFloor,
-      effectiveFinalityFloor: record.effectiveFinalityFloor,
-      depthConfirmationDaa: parsed.depthConfirmationDaa,
-      executionPlanDigest: record.executionPlanDigest,
-      executionMechanism: record.executionMechanism,
-      executionProfile: record.executionProfile,
-      settlementAssurance: record.settlementAssurance,
-      maximumAuthorizedChargeAtomic: record.maximumAuthorizedChargeAtomic,
-      ...(record.channelId === undefined ? {} : { channelId: record.channelId }),
-      ...(record.channelEpochDigest === undefined
-        ? {}
-        : { channelEpochDigest: record.channelEpochDigest }),
-      createdAtMs: record.createdAtMs,
-      expiresAtMs: record.expiresAtMs,
     };
   }
 
@@ -2604,81 +2507,6 @@ export class PurchaseCoordinator implements PurchaseModule {
   }
 }
 
-interface ParsedAuthorizationEnvelope {
-  profile: string;
-  purchaseId: string;
-  resourceUrl: string;
-  method: string;
-  nonce: string;
-  nonceDigest: string;
-  requestMediaType: string;
-  requestBodyDigest: string;
-  additionalCostCeilingAtomic: string;
-  operatorFinalityFloor: "accepted" | "depth-confirmed";
-  effectiveFinalityFloor: "accepted" | "depth-confirmed";
-  depthConfirmationDaa: string;
-  executionPlanDigest: string;
-  executionMechanism: string;
-  executionProfile: string;
-  settlementAssurance: string;
-  maximumAuthorizedChargeAtomic: string;
-  channelId?: string;
-  channelEpochDigest?: string;
-}
-
-function parseAuthorizationEnvelope(bytes: Uint8Array): ParsedAuthorizationEnvelope {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(Buffer.from(bytes).toString("utf8"));
-  } catch (error) {
-    throw new PurchaseCoordinatorError("authorization request artifact is malformed", "authorization_invariant", {
-      cause: error,
-    });
-  }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new PurchaseCoordinatorError("authorization request artifact is malformed", "authorization_invariant");
-  }
-  const value = parsed as Record<string, unknown>;
-  for (const key of [
-    "profile",
-    "purchaseId",
-    "resourceUrl",
-    "method",
-    "nonce",
-    "nonceDigest",
-    "requestMediaType",
-    "requestBodyDigest",
-    "additionalCostCeilingAtomic",
-    "operatorFinalityFloor",
-    "effectiveFinalityFloor",
-    "depthConfirmationDaa",
-    "executionPlanDigest",
-    "executionMechanism",
-    "executionProfile",
-    "settlementAssurance",
-    "maximumAuthorizedChargeAtomic",
-  ]) {
-    if (typeof value[key] !== "string") {
-      throw new PurchaseCoordinatorError("authorization request artifact is malformed", "authorization_invariant");
-    }
-  }
-  if (
-    (value.operatorFinalityFloor !== "accepted" &&
-      value.operatorFinalityFloor !== "depth-confirmed") ||
-    (value.effectiveFinalityFloor !== "accepted" &&
-      value.effectiveFinalityFloor !== "depth-confirmed") ||
-    typeof value.depthConfirmationDaa !== "string" ||
-    !/^[1-9][0-9]*$/.test(value.depthConfirmationDaa) ||
-    value.depthConfirmationDaa.length > 78 ||
-    (value.channelId !== undefined && typeof value.channelId !== "string") ||
-    (value.channelEpochDigest !== undefined && typeof value.channelEpochDigest !== "string") ||
-    ((value.channelId === undefined) !== (value.channelEpochDigest === undefined))
-  ) {
-    throw new PurchaseCoordinatorError("authorization request artifact is malformed", "authorization_invariant");
-  }
-  return value as unknown as ParsedAuthorizationEnvelope;
-}
-
 function canonicalIntentCopy(intent: PurchaseIntent): PurchaseIntent {
   const resource = {
     url: canonicalRequestUrl(intent.resource.url),
@@ -2695,16 +2523,6 @@ function canonicalIntentCopy(intent: PurchaseIntent): PurchaseIntent {
       }
     : undefined;
   return { requestKey: intent.requestKey as PurchaseRequestKey, resource, expectedMerchant };
-}
-
-function kaspaRequestContext(intent: PurchaseIntent): KaspaRequestContext {
-  return {
-    url: intent.resource.url,
-    method: intent.resource.method,
-    mediaType: intent.resource.mediaType,
-    body: Uint8Array.from(intent.resource.body ?? new Uint8Array()),
-    requestFingerprint: requestFingerprint(intent.resource),
-  };
 }
 
 function canonicalTermsCopy(terms: CheckoutTerms): CheckoutTerms {
@@ -2729,54 +2547,6 @@ function freezeVerifiedArtifact(artifact: VerifiedArtifact): VerifiedArtifact {
     declaredDigest: artifact.declaredDigest,
     verification: Object.freeze({ ...artifact.verification }),
   });
-}
-
-function validatePreparedTreasuryStaging(
-  prepared: PreparedTreasuryStaging,
-  bytes: Uint8Array,
-  reservedGrossAtomic: bigint
-): void {
-  if (
-    bytes.byteLength === 0 ||
-    prepared.preparedDigest !== evidenceDigest(bytes)
-  ) {
-    throw new PurchaseCoordinatorError(
-      "prepared Treasury staging bytes do not match their declared digest",
-      "treasury_staging_mismatch"
-    );
-  }
-  if (!/^[a-f0-9]{64}$/.test(prepared.transactionId)) {
-    throw new PurchaseCoordinatorError(
-      "prepared Treasury staging has no canonical transaction identity",
-      "treasury_staging_mismatch"
-    );
-  }
-  const outpoint = new RegExp(
-    `^${prepared.transactionId}:(0|[1-9][0-9]*)$`
-  ).exec(prepared.expectedOutpoint);
-  if (!outpoint || BigInt(outpoint[1]) > 0xffff_ffffn) {
-    throw new PurchaseCoordinatorError(
-      "prepared Treasury staging has no canonical expected outpoint",
-      "treasury_staging_mismatch"
-    );
-  }
-  const amount = requireAtomicDecimal(
-    prepared.stagingAmountAtomic,
-    false,
-    "Treasury staging amount"
-  );
-  if (amount > reservedGrossAtomic) {
-    throw new PurchaseCoordinatorError(
-      "Treasury staging amount exceeds its exact reserved gross outflow",
-      "treasury_staging_mismatch"
-    );
-  }
-  if (prepared.fundingSource !== "vault-treasury") {
-    throw new PurchaseCoordinatorError(
-      "Treasury staging used an unauthorized funding source",
-      "treasury_staging_mismatch"
-    );
-  }
 }
 
 function stagingOutput(

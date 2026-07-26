@@ -1,6 +1,6 @@
 # Sompi implementation plan
 
-Status: **Architecture Phase 4 active; C2 complete**
+Status: **Architecture Phase 4 active; C3 complete**
 
 Starting commit: `89b0f1f404ce8e5f2ded88a5b1a99d8ca1743bba`
 
@@ -263,7 +263,7 @@ Implementation sequence:
    capacity behind it. After equivalent interface tests pass, construct one
    production Treasury implementation and delete `VaultTreasuryModule`. This
    prevents policy and capacity from having two production owners.
-3. [ ] **P4.C3 — Move staging preparation.** Move prepared transaction planning,
+3. [x] **P4.C3 — Move staging preparation.** Move prepared transaction planning,
    durable prepared bytes, and preparation fences behind Treasury.
 4. [ ] **P4.C4 — Move staging execution.** Move submission, observation, ambiguity,
    retry, and reconciliation behind Treasury.
@@ -317,6 +317,32 @@ C2 completion evidence from 2026-07-26:
   and sibling repositories did not change.
 - The focused C2 command ran 72 tests. All 72 passed. The full test command
   ran 606 tests: 605 passed and one privileged ownership test was skipped as
+  expected. Offline smoke passed.
+
+C3 completion evidence from 2026-07-26:
+
+- Treasury defines the staging preparation input, prepared material, durable
+  plan, adapter, and error types.
+- Purchase asks Treasury to prepare one Purchase staging operation with only
+  the Purchase ID and attempt number. Treasury returns only the durable payload
+  digest. Purchase does not receive Treasury Journal or storage metadata.
+- The Journal reconstructs the exact durable authorization, request,
+  requirements, and Payment Attempt context. Treasury does not accept these
+  facts from its caller.
+- Treasury checks the Reservation and active policy. It acquires and renews an
+  attempt-scoped preparation lease before it calls the Kaspa-x402 adapter.
+  The Journal commits the prepared bytes and planned Effect under that lease.
+- A repeated preparation request returns the existing durable plan. It does
+  not call the adapter again.
+- Treasury interface tests prove durable bytes, a planned Effect fence,
+  idempotent replay, exclusive preparation across Treasury instances, and
+  rejection of invalid prepared material.
+- Staging submission, observation, ambiguity, and reconciliation remain in
+  Purchase until C4. Abandoned staging recovery remains until C5.
+- The physical Journal schema, Kaspa-x402 behavior and pin, public API, and
+  sibling repositories did not change.
+- The focused C3 command ran 114 tests. All 114 passed. The full test command
+  ran 609 tests: 608 passed and one privileged ownership test was skipped as
   expected. Offline smoke passed.
 
 Verification gate:

@@ -1,9 +1,19 @@
-import type { Sha256Digest } from "../purchase/types.js";
+import type {
+  PaymentIdentifier,
+  PurchaseId,
+  Sha256Digest,
+} from "../purchase/types.js";
 import type {
   ReservePurchaseCapacityInput,
   TreasuryPolicy,
   TreasuryPurchaseReservation,
 } from "./purchase-capacity.js";
+import type {
+  PlanTreasuryStagingInput,
+  TreasuryStagingPreparationContext,
+  TreasuryStagingPreparationLease,
+  TreasuryStagingPlanRecord,
+} from "./purchase-staging.js";
 
 export type TreasuryOperationKind = "wallet_send" | "vault_send" | "vault_deposit" | "batch_refund";
 export type TreasuryOperationState =
@@ -147,6 +157,35 @@ export interface TreasuryOperationJournal {
     purchaseId: ReservePurchaseCapacityInput["purchaseId"]
   ): TreasuryPurchaseReservation | undefined;
   requireReservation(id: string): TreasuryPurchaseReservation;
+  requirePaymentAttempt(
+    purchaseId: PurchaseId,
+    attempt: number
+  ): Readonly<{
+    identifier: PaymentIdentifier;
+    state: "planned" | "prepared" | "submitted" | "observed" | "failed";
+  }>;
+  findTreasuryStagingPlan(
+    purchaseId: PurchaseId,
+    attempt: number
+  ): TreasuryStagingPlanRecord | undefined;
+  requirePurchaseExecutionContext(
+    purchaseId: PurchaseId,
+    attempt: number
+  ): TreasuryStagingPreparationContext;
+  acquireLease(
+    name: string,
+    holder: string,
+    ttlMs: number
+  ): TreasuryStagingPreparationLease | undefined;
+  renewLease(
+    lease: TreasuryStagingPreparationLease,
+    ttlMs: number
+  ): TreasuryStagingPreparationLease;
+  releaseLease(lease: TreasuryStagingPreparationLease): boolean;
+  commitTreasuryStagingPreparation(
+    lease: TreasuryStagingPreparationLease,
+    input: PlanTreasuryStagingInput
+  ): TreasuryStagingPlanRecord;
   reservePolicy(input: {
     readonly id: string;
     readonly purchaseId: ReservePurchaseCapacityInput["purchaseId"];

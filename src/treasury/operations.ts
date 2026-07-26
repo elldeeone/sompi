@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { PolicyEngine } from "../policy.js";
+import { evidenceDigest } from "../purchase/identity.js";
 import type {
   TreasuryModule as PurchaseTreasuryModule,
   TreasuryStagingRecoveryModule,
@@ -23,6 +24,16 @@ import {
   type TreasuryPolicy,
   type TreasuryQuote,
 } from "./purchase-capacity.js";
+import {
+  TreasuryStagingPreparationError,
+  treasuryStagingPreparationLeaseName,
+  type PreparePurchaseStagingInput,
+  type PreparedTreasuryStaging,
+  type PurchaseTreasuryStagingPreparation,
+  type TreasuryStagingPreparationAdapter,
+  type TreasuryStagingPreparationLease,
+  type TreasuryStagingPreparationResult,
+} from "./purchase-staging.js";
 
 const OPERATION_KEY = /^[A-Za-z0-9._:-]{1,160}$/;
 const ADDRESS = /^kaspatest:[a-z0-9]+$/;
@@ -30,6 +41,7 @@ const ATOMIC = /^[1-9][0-9]*$/;
 const TESTNET = "kaspa:testnet-10";
 const MAX_RECONCILED_RETRIES = 8;
 const DRIVER_LEASE_TTL_MS = 60_000;
+const STAGING_PREPARATION_LEASE_TTL_MS = 60_000;
 const DRIVER_WAIT_MS = 10;
 const DRIVER_WAIT_ATTEMPTS = 600;
 
@@ -72,10 +84,8 @@ export interface TreasuryPurchaseOptions {
   };
   readonly additionalCostCeilingAtomic: string;
   readonly reservationTtlMs?: number;
-  readonly staging: Pick<
-    PurchaseTreasuryModule,
-    "prepareStaging" | "submitStaging" | "observeStaging"
-  >;
+  readonly staging: TreasuryStagingPreparationAdapter &
+    Pick<PurchaseTreasuryModule, "submitStaging" | "observeStaging">;
   readonly stagingRecovery: TreasuryStagingRecoveryModule;
   readonly now?: () => number;
 }
@@ -117,7 +127,7 @@ export class TreasuryOperationNotFoundError extends TreasuryOperationError {
  * submission ordering, ambiguity, reconciliation, and local commit. MCP does
  * not call wallet/vault mutation methods directly.
  */
-export class TreasuryOperationModule {
+export class TreasuryOperationModule implements PurchaseTreasuryStagingPreparation {
   private readonly journal: TreasuryOperationJournal;
   private readonly policy: Pick<
     PolicyEngine,
@@ -305,10 +315,142 @@ export class TreasuryOperationModule {
     return Object.freeze({ status: "reserved", reservation });
   }
 
-  async prepareStaging(
-    input: Parameters<PurchaseTreasuryModule["prepareStaging"]>[0],
-  ): ReturnType<PurchaseTreasuryModule["prepareStaging"]> {
-    return this.requirePurchase().staging.prepareStaging(input);
+  async preparePurchaseStaging(
+    input: Readonly<PreparePurchaseStagingInput>,
+  ): Promise<Readonly<TreasuryStagingPreparationResult>> {
+    const purchase = this.requirePurchase();
+    const attempt = this.journal.requirePaymentAttempt(
+      input.purchaseId,
+      input.attempt,
+    );
+    const existing = this.journal.findTreasuryStagingPlan(
+      input.purchaseId,
+      input.attempt,
+    );
+    if (existing) return stagingPreparationResult(existing.payloadDigest);
+    if (attempt.state !== "planned") {
+      throw new TreasuryStagingPreparationError(
+        `Treasury staging requires a planned Payment Attempt, found ${attempt.state}`,
+        "payment_invariant",
+      );
+    }
+
+    const leaseName = treasuryStagingPreparationLeaseName(
+      input.purchaseId,
+      input.attempt,
+    );
+    let lease = this.journal.acquireLease(
+      leaseName,
+      this.driverOwner,
+      STAGING_PREPARATION_LEASE_TTL_MS,
+    );
+    if (!lease) {
+      const winningPlan = this.journal.findTreasuryStagingPlan(
+        input.purchaseId,
+        input.attempt,
+      );
+      if (winningPlan) {
+        return stagingPreparationResult(winningPlan.payloadDigest);
+      }
+      throw new TreasuryStagingPreparationError(
+        "Treasury staging preparation is already active",
+        "treasury_staging_busy",
+      );
+    }
+
+    let leaseLost: unknown;
+    const heartbeat = setInterval(() => {
+      if (leaseLost) return;
+      try {
+        lease = this.journal.renewLease(
+          lease as TreasuryStagingPreparationLease,
+          STAGING_PREPARATION_LEASE_TTL_MS,
+        );
+      } catch (error) {
+        leaseLost = error;
+      }
+    }, Math.max(10, Math.floor(STAGING_PREPARATION_LEASE_TTL_MS / 3)));
+    heartbeat.unref();
+    try {
+      const winningPlan = this.journal.findTreasuryStagingPlan(
+        input.purchaseId,
+        input.attempt,
+      );
+      if (winningPlan) {
+        return stagingPreparationResult(winningPlan.payloadDigest);
+      }
+      const context = this.journal.requirePurchaseExecutionContext(
+        input.purchaseId,
+        input.attempt,
+      );
+      if (context.execution.paymentIdentifier !== attempt.identifier) {
+        throw new TreasuryStagingPreparationError(
+          "Treasury staging Payment Attempt does not match its durable execution context",
+          "payment_invariant",
+        );
+      }
+      this.journal.expireReservations();
+      const reservation = this.journal.findReservationForPurchase(
+        input.purchaseId,
+      );
+      if (
+        !reservation ||
+        reservation.state !== "active" ||
+        reservation.fundingSource !== "vault-treasury"
+      ) {
+        throw new TreasuryStagingPreparationError(
+          "Treasury staging requires this Purchase's active Reservation",
+          "treasury_reservation_invariant",
+        );
+      }
+      if (reservation.policyDigest !== this.journal.requireActivePolicy().digest) {
+        throw new TreasuryStagingPreparationError(
+          "active Treasury policy changed before staging preparation",
+          "treasury_reservation_invariant",
+        );
+      }
+
+      const prepared = await purchase.staging.prepareStaging({
+        execution: context.execution,
+        request: context.request,
+        paymentRequirements: Uint8Array.from(context.paymentRequirements),
+        additionalCostCeilingAtomic: reservation.additionalCostCeilingAtomic,
+      });
+      if (leaseLost) {
+        throw new TreasuryStagingPreparationError(
+          "Treasury staging preparation lost its exclusive lease",
+          "treasury_staging_busy",
+          { cause: leaseLost },
+        );
+      }
+      lease = this.journal.renewLease(
+        lease,
+        STAGING_PREPARATION_LEASE_TTL_MS,
+      );
+      const preparedBytes = Uint8Array.from(prepared.preparedBytes);
+      validatePreparedPurchaseStaging(
+        prepared,
+        preparedBytes,
+        BigInt(reservation.amountAtomic) +
+          BigInt(reservation.additionalCostCeilingAtomic),
+      );
+      const plan = this.journal.commitTreasuryStagingPreparation(lease, {
+        purchaseId: input.purchaseId,
+        attempt: input.attempt,
+        reservationId: reservation.id,
+        idempotencyKey: `treasury-staging:${attempt.identifier}`,
+        payloadDigest: prepared.preparedDigest,
+        preparedBytes,
+        plannedTransactionId: prepared.transactionId,
+        expectedOutpoint: prepared.expectedOutpoint,
+        stagingAmountAtomic: prepared.stagingAmountAtomic,
+        fundingSource: prepared.fundingSource,
+      });
+      return stagingPreparationResult(plan.payloadDigest);
+    } finally {
+      clearInterval(heartbeat);
+      if (!leaseLost) this.journal.releaseLease(lease);
+    }
   }
 
   async submitStaging(
@@ -952,6 +1094,73 @@ function requireAtomic(value: string, label: string, allowZero = false): string 
     throw new TreasuryOperationError(`${label} is invalid`);
   }
   return value;
+}
+
+function validatePreparedPurchaseStaging(
+  prepared: Readonly<PreparedTreasuryStaging>,
+  bytes: Uint8Array,
+  reservedGrossAtomic: bigint,
+): void {
+  if (
+    bytes.byteLength === 0 ||
+    prepared.preparedDigest !== evidenceDigest(bytes)
+  ) {
+    throw new TreasuryStagingPreparationError(
+      "prepared Treasury staging bytes do not match their declared digest",
+      "treasury_staging_mismatch",
+    );
+  }
+  if (!/^[a-f0-9]{64}$/.test(prepared.transactionId)) {
+    throw new TreasuryStagingPreparationError(
+      "prepared Treasury staging has no canonical transaction identity",
+      "treasury_staging_mismatch",
+    );
+  }
+  const outpoint = new RegExp(
+    `^${prepared.transactionId}:(0|[1-9][0-9]*)$`,
+  ).exec(prepared.expectedOutpoint);
+  if (!outpoint || BigInt(outpoint[1]) > 0xffff_ffffn) {
+    throw new TreasuryStagingPreparationError(
+      "prepared Treasury staging has no canonical expected outpoint",
+      "treasury_staging_mismatch",
+    );
+  }
+  const amount = stagingAtomic(
+    prepared.stagingAmountAtomic,
+    "Treasury staging amount",
+  );
+  if (amount > reservedGrossAtomic) {
+    throw new TreasuryStagingPreparationError(
+      "Treasury staging amount exceeds its exact reserved gross outflow",
+      "treasury_staging_mismatch",
+    );
+  }
+  if (prepared.fundingSource !== "vault-treasury") {
+    throw new TreasuryStagingPreparationError(
+      "Treasury staging used an unauthorized funding source",
+      "treasury_staging_mismatch",
+    );
+  }
+}
+
+function stagingPreparationResult(
+  payloadDigest: TreasuryStagingPreparationResult["payloadDigest"],
+): Readonly<TreasuryStagingPreparationResult> {
+  return Object.freeze({ payloadDigest });
+}
+
+function stagingAtomic(value: string, label: string): bigint {
+  if (
+    typeof value !== "string" ||
+    !/^[1-9][0-9]*$/.test(value) ||
+    BigInt(value) > (1n << 64n) - 1n
+  ) {
+    throw new TreasuryStagingPreparationError(
+      `${label} is invalid`,
+      "treasury_staging_mismatch",
+    );
+  }
+  return BigInt(value);
 }
 
 function requireRetryLimit(value: number): number {

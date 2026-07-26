@@ -42,7 +42,6 @@ import type {
   PaymentRecoveryObservation,
   PaymentSubmissionResult,
   PreparedKaspaPayment,
-  PreparedTreasuryStaging,
   PurchaseEgressSession,
   SettlementResult,
   TreasuryModule,
@@ -52,6 +51,11 @@ import type {
 } from "../../purchase/coordinator.js";
 import type { EffectObservation } from "../../purchase/journal.js";
 import type { PurchaseId, Sha256Digest } from "../../purchase/types.js";
+import type {
+  PrepareTreasuryStagingAdapterInput,
+  PreparedTreasuryStaging,
+  TreasuryStagingPreparationAdapter,
+} from "../../treasury/purchase-staging.js";
 import type { SupportedProtocolProfiles } from "../../protocols/profiles.js";
 import type { PinnedHttpTransport } from "../../http/pinned-transport.js";
 import type { PaidResourceResponseVerifier } from "../../purchase/paid-resource-response.js";
@@ -78,7 +82,7 @@ const HASH32 = /^[a-f0-9]{64}$/;
 const DIGEST = /^sha256:[A-Za-z0-9_-]{43}$/;
 const UINT64_MAX = (1n << 64n) - 1n;
 
-type PrepareStagingInput = Parameters<TreasuryModule["prepareStaging"]>[0];
+type PrepareStagingInput = PrepareTreasuryStagingAdapterInput;
 type SubmitStagingInput = Parameters<TreasuryModule["submitStaging"]>[0];
 type ObserveStagingInput = Parameters<TreasuryModule["observeStaging"]>[0];
 type PreparePaymentInput = Parameters<KaspaPaymentModule["prepare"]>[0];
@@ -209,10 +213,11 @@ interface ProcessedPaymentResponse {
  * requirements and immutable effect bindings, while the underlying driver
  * owns the vault transaction and chain observation.
  */
-export class KaspaX402TreasuryStagingAdapter implements Pick<
-  TreasuryModule,
-  "prepareStaging" | "submitStaging" | "observeStaging"
-> {
+export class KaspaX402TreasuryStagingAdapter
+  implements
+    TreasuryStagingPreparationAdapter,
+    Pick<TreasuryModule, "submitStaging" | "observeStaging">
+{
   private readonly driver: TreasuryStagingDriver;
   private readonly now: () => number;
 

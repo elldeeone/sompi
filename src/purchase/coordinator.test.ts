@@ -76,6 +76,7 @@ import type {
   TreasuryOperationRecord,
 } from "../treasury/operation-journal.js";
 import { TreasuryOperationModule } from "../treasury/operations.js";
+import type { TreasuryStagingPreparationAdapter } from "../treasury/purchase-staging.js";
 
 const NOW = Date.parse("2030-01-01T00:00:00.000Z");
 const TESTNET_PAYEE = "kaspatest:qpumuen7l8wthtz45p3ftn58pvrs9xlumvkuu2xet8egzkcklqtes5z8rkmpd";
@@ -1429,7 +1430,8 @@ class FakeDependencies {
         this.calls.policy++;
         return treasury.reservePurchaseCapacity(input);
       },
-      prepareStaging: (input) => treasury.prepareStaging(input),
+      preparePurchaseStaging: (input) =>
+        treasury.preparePurchaseStaging(input),
       submitStaging: (input) => treasury.submitStaging(input),
       observeStaging: (input) => treasury.observeStaging(input),
       prepareStagingRecovery: (input) =>
@@ -1441,10 +1443,9 @@ class FakeDependencies {
     };
   }
 
-  readonly payment: KaspaPaymentModule & Pick<
-    TreasuryModule,
-    "prepareStaging" | "submitStaging" | "observeStaging"
-  > = {
+  readonly payment: KaspaPaymentModule &
+    TreasuryStagingPreparationAdapter &
+    Pick<TreasuryModule, "submitStaging" | "observeStaging"> = {
     prepareStaging: async ({ execution, paymentRequirements }): Promise<PreparedTreasuryStaging> => {
       this.calls.prepareStaging++;
       assert.equal(evidenceDigest(paymentRequirements), evidenceDigest(`requirements:${execution.purchaseId}`));

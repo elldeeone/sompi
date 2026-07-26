@@ -4,9 +4,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 
-import { authorizationFactsDigest } from "../purchase/contracts.js";
+import {
+  authorizationFactsDigest,
+} from "../purchase/contracts.js";
 import {
   assertPurchaseRequestKey,
+  createPaymentIdentifier,
   createPurchaseId,
   evidenceDigest,
   requestFingerprint,
@@ -33,6 +36,11 @@ import {
   TreasuryCapacityError,
   type ReservePurchaseCapacityInput,
 } from "./purchase-capacity.js";
+import {
+  TreasuryStagingPreparationError,
+  type PreparePurchaseStagingInput,
+  type TreasuryStagingPreparationAdapter,
+} from "./purchase-staging.js";
 
 const NOW = 1_900_000_000_000;
 const DESTINATION = "kaspatest:merchant";
@@ -309,6 +317,164 @@ test("Treasury rejects a Purchase quote above the authorized ceiling", async () 
     },
     { purchaseAdditionalCostCeilingAtomic: "11" },
   );
+});
+
+test("Treasury durably plans Purchase staging once before returning", async () => {
+  await withFixture(async ({ journal, policy, wallet, vault, deposit }) => {
+    const purchaseId = authorizedPurchase(journal, 76, "100");
+    const preparedBytes = Buffer.from("durable-purchase-staging", "utf8");
+    const transactionId = "ab".repeat(32);
+    let prepareCalls = 0;
+    const module = purchaseStagingModule({
+      journal,
+      policy,
+      adapters: [wallet, vault, deposit],
+      prepareStaging: async (context) => {
+        prepareCalls += 1;
+        assert.equal(journal.findTreasuryStagingPlan(purchaseId, 1), undefined);
+        assert.equal(context.execution.purchaseId, purchaseId);
+        assert.equal(context.additionalCostCeilingAtomic, "10");
+        assert.deepEqual(
+          Buffer.from(context.paymentRequirements),
+          journal.readEvidence(
+            journal.requireCheckoutTerms(purchaseId).paymentRequirementsDigest,
+          ),
+        );
+        return {
+          preparedBytes,
+          preparedDigest: evidenceDigest(preparedBytes),
+          transactionId,
+          expectedOutpoint: `${transactionId}:0`,
+          stagingAmountAtomic: "110",
+          fundingSource: "vault-treasury",
+        };
+      },
+    });
+    await module.reservePurchaseCapacity(
+      purchaseCapacityInput(journal, purchaseId, "res_staging_owned"),
+    );
+    const input = purchaseStagingInput(journal, purchaseId);
+
+    const result = await module.preparePurchaseStaging(input);
+    const plan = journal.requireTreasuryStagingPlan(purchaseId, 1);
+
+    assert.equal(prepareCalls, 1);
+    assert.deepEqual(result, {
+      payloadDigest: evidenceDigest(preparedBytes),
+    });
+    assert.equal(journal.requireEffect(plan.effectId).state, "planned");
+    assert.deepEqual(
+      journal.readPreparedTreasuryStaging(purchaseId, 1),
+      preparedBytes,
+    );
+
+    const replay = await module.preparePurchaseStaging(input);
+    assert.deepEqual(replay, result);
+    assert.equal(prepareCalls, 1);
+  });
+});
+
+test("Treasury serializes Purchase staging preparation before adapter signing", async () => {
+  await withFixture(async ({ journal, policy, wallet, vault, deposit }) => {
+    const purchaseId = authorizedPurchase(journal, 78, "100");
+    const preparedBytes = Buffer.from("exclusive-purchase-staging", "utf8");
+    const transactionId = "ef".repeat(32);
+    let releasePreparation!: () => void;
+    const preparationGate = new Promise<void>((resolve) => {
+      releasePreparation = resolve;
+    });
+    let firstPrepareCalls = 0;
+    let secondPrepareCalls = 0;
+    const prepared = {
+      preparedBytes,
+      preparedDigest: evidenceDigest(preparedBytes),
+      transactionId,
+      expectedOutpoint: `${transactionId}:0`,
+      stagingAmountAtomic: "110",
+      fundingSource: "vault-treasury" as const,
+    };
+    const first = purchaseStagingModule({
+      journal,
+      policy,
+      adapters: [wallet, vault, deposit],
+      prepareStaging: async () => {
+        firstPrepareCalls += 1;
+        await preparationGate;
+        return prepared;
+      },
+    });
+    const second = purchaseStagingModule({
+      journal,
+      policy,
+      adapters: [wallet, vault, deposit],
+      prepareStaging: async () => {
+        secondPrepareCalls += 1;
+        return prepared;
+      },
+    });
+    await first.reservePurchaseCapacity(
+      purchaseCapacityInput(journal, purchaseId, "res_staging_exclusive"),
+    );
+    const input = purchaseStagingInput(journal, purchaseId);
+
+    const firstPreparation = first.preparePurchaseStaging(input);
+    for (
+      let attempt = 0;
+      attempt < 100 && firstPrepareCalls === 0;
+      attempt += 1
+    ) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.equal(firstPrepareCalls, 1);
+    await assert.rejects(
+      second.preparePurchaseStaging(input),
+      (error: unknown) =>
+        error instanceof TreasuryStagingPreparationError &&
+        error.code === "treasury_staging_busy",
+    );
+    assert.equal(secondPrepareCalls, 0);
+
+    releasePreparation();
+    const result = await firstPreparation;
+    assert.equal(result.payloadDigest, evidenceDigest(preparedBytes));
+    assert.equal(
+      journal.requireTreasuryStagingPlan(purchaseId, 1).payloadDigest,
+      result.payloadDigest,
+    );
+  });
+});
+
+test("Treasury rejects invalid Purchase staging before creating its fence", async () => {
+  await withFixture(async ({ journal, policy, wallet, vault, deposit }) => {
+    const purchaseId = authorizedPurchase(journal, 77, "100");
+    const transactionId = "cd".repeat(32);
+    const module = purchaseStagingModule({
+      journal,
+      policy,
+      adapters: [wallet, vault, deposit],
+      prepareStaging: async () => ({
+        preparedBytes: Buffer.from("invalid-purchase-staging", "utf8"),
+        preparedDigest: evidenceDigest("different-purchase-staging"),
+        transactionId,
+        expectedOutpoint: `${transactionId}:0`,
+        stagingAmountAtomic: "110",
+        fundingSource: "vault-treasury",
+      }),
+    });
+    await module.reservePurchaseCapacity(
+      purchaseCapacityInput(journal, purchaseId, "res_staging_invalid"),
+    );
+    const input = purchaseStagingInput(journal, purchaseId);
+
+    await assert.rejects(
+      module.preparePurchaseStaging(input),
+      (error: unknown) =>
+        error instanceof TreasuryStagingPreparationError &&
+        error.code === "treasury_staging_mismatch",
+    );
+    assert.equal(journal.findTreasuryStagingPlan(purchaseId, 1), undefined);
+    assert.equal(journal.effectsForPurchase(purchaseId).length, 0);
+  });
 });
 
 test("a durable Treasury driver serializes cross-handle execution and effects", async () => {
@@ -1248,6 +1414,58 @@ function pending(transactionId: string): TreasuryOperationProbe {
 
 function notSubmitted(transactionId: string): TreasuryOperationProbe {
   return { status: "not_submitted", detail: { status: "not_submitted", transactionId } };
+}
+
+function purchaseStagingModule(input: {
+  journal: PurchaseJournal;
+  policy: PolicyEngine;
+  adapters: readonly TreasuryOperationAdapter[];
+  prepareStaging: TreasuryStagingPreparationAdapter["prepareStaging"];
+}): TreasuryOperationModule {
+  const unexpected = async (): Promise<never> => {
+    throw new Error("test did not expect Treasury staging submission");
+  };
+  return new TreasuryOperationModule({
+    journal: input.journal,
+    policy: input.policy,
+    adapters: input.adapters,
+    feeCeilingAtomic: "10",
+    purchase: {
+      vault: {
+        configured: true,
+        config: () => ({ covenantId: "aa".repeat(32) }),
+      },
+      additionalCostCeilingAtomic: "10",
+      reservationTtlMs: 60_000,
+      staging: {
+        prepareStaging: input.prepareStaging,
+        submitStaging: unexpected,
+        observeStaging: unexpected,
+      },
+      stagingRecovery: {
+        prepare: unexpected,
+        observe: unexpected,
+        submit: unexpected,
+      },
+      now: () => NOW,
+    },
+  });
+}
+
+function purchaseStagingInput(
+  journal: PurchaseJournal,
+  purchaseId: PurchaseId,
+): PreparePurchaseStagingInput {
+  const paymentIdentifier = createPaymentIdentifier(purchaseId, 1);
+  journal.createPaymentAttempt({
+    purchaseId,
+    attempt: 1,
+    identifier: paymentIdentifier,
+  });
+  return {
+    purchaseId,
+    attempt: 1,
+  };
 }
 
 async function withFixture(

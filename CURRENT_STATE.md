@@ -212,20 +212,28 @@ Architecture Phase 3 is complete.
 Architecture Phase 4 is active. It started from
 `aab94d95df42e7ffdf1ca3ff1c00bdd3e2e71fae`.
 
-Phase 4 C2 is complete. Treasury now owns Purchase readiness, quote, policy,
-reservation, and shared Purchase and direct Movement capacity. Runtime and
-end-to-end composition use one `TreasuryOperationModule` instance.
-`VaultTreasuryModule` and its shallow forwarding tests no longer exist.
-The implementation sequence records this one-instance runtime cutover in C2.
+Phase 4 C3 is complete. Treasury now owns Purchase staging preparation,
+prepared material validation, durable prepared bytes, and the planned Effect
+fence. Purchase asks Treasury to complete this operation through one
+`preparePurchaseStaging` method with only the Purchase ID and attempt number.
+It receives only the durable payload digest.
 
-Purchase still owns staging preparation, execution, and recovery order.
-Treasury staging types and Journal commands remain until C3, C4, and C5.
-The physical Journal schema, protocol adapters, public API, and protocol pins
-did not change.
+The Kaspa-x402 adapter still owns protocol checks and transaction preparation.
+Treasury owns when preparation runs and when its Sompi result becomes durable.
+The Journal reconstructs the exact durable execution context. Treasury
+acquires and renews an attempt-scoped preparation lease before adapter work.
+The Journal commits the plan under that lease. A repeated request returns the
+existing durable plan without another adapter call. A concurrent Treasury
+instance cannot prepare or sign the same attempt.
 
-The focused C2 command ran 72 tests. All 72 passed. The full test command ran
-606 tests: 605 passed and one privileged ownership test was skipped as
+Purchase still owns staging submission, observation, ambiguity, and
+reconciliation until C4. Purchase still owns abandoned staging recovery until
+C5. The physical Journal schema, Kaspa-x402 behavior and pin, public API, and
+sibling repositories did not change.
+
+The focused C3 command ran 114 tests. All 114 passed. The full test command ran
+609 tests: 608 passed and one privileged ownership test was skipped as
 expected. Offline smoke passed.
 
-Phase 4 C3 is next. Do not start C3 until its staging preparation move is
+Phase 4 C4 is next. Do not start C4 until its staging execution move is
 explicitly started.
