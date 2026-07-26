@@ -91,19 +91,68 @@ sompi-operator status /etc/sompi/operator-manifest.json \
 ## API transports
 
 Create separate Agent and recovery transports.
+The selected Hermes user's existing primary group owns the Agent API socket
+directory.
+The Hermes user does not get a Sompi supplementary group.
 
 ```bash
-install -d -o SOMPI_OPERATOR_USER -g SOMPI_RUNTIME_GROUP -m 0750 /etc/sompi
-install -d -o SOMPI_API_USER -g SOMPI_RUNTIME_GROUP -m 0710 /run/sompi-api
+install -d -o root -g sompi-api -m 0750 /etc/sompi
+install -d -o root -g SOMPI_RECOVERY_GROUP -m 0750 /etc/sompi-recovery
+install -d -o SOMPI_AUTHORITY_USER -g HERMES_PRIMARY_GROUP -m 2710 \
+  /run/sompi-telegram-callback
+install -d -o SOMPI_API_USER -g HERMES_PRIMARY_GROUP -m 2710 /run/sompi-api
 install -d -o SOMPI_API_USER -g SOMPI_RECOVERY_GROUP -m 0710 /run/sompi-recovery
-sompi-operator agent-credential \
-  /etc/sompi/agent-api.json OPERATOR_UID RUNTIME_GID
 sompi-operator recovery-credential \
-  /etc/sompi/recovery-api.json OPERATOR_UID RECOVERY_GID
+  /etc/sompi-recovery/recovery-api.json 0 RECOVERY_GID
 ```
 
-Give the Agent only its socket and credential.
-Give operator recovery its separate socket, group, credential, and request pool.
+The host bootstrap creates one Agent bearer and installs these two files:
+
+| Use | Path | Owner and mode |
+|---|---|---|
+| API server | `/etc/sompi/agent-api.json` | `root:sompi-api`, `0640` |
+| Hermes client | `~/.sompi/agent-api.json` | selected Hermes user, `0600` |
+
+The two files contain the same bearer.
+The `sompi-operator agent-credential` command creates only one file with a new
+bearer.
+It does not create the required pair.
+Do not run it once for each path.
+If the pair is absent or invalid, stop Hermes and `sompi-api`.
+There is no in-place credential-pair repair command.
+Do not replace only one copy.
+Keep the current host state for inspection.
+Prepare a clean replacement host and run a reviewed Host Bootstrap request.
+
+The recovery credential is
+`/etc/sompi-recovery/recovery-api.json`.
+It has owner `root`, group `SOMPI_RECOVERY_GROUP`, and mode `0640`.
+The recovery socket directory has mode `0710`.
+It does not use the Hermes primary group.
+
+Set the API server environment as follows:
+
+```text
+SOMPI_AGENT_API_CREDENTIAL=/etc/sompi/agent-api.json
+SOMPI_RUNTIME_GID=<sompi-api group gid>
+SOMPI_API_SOCKET_GID=<selected Hermes primary group gid>
+```
+
+Set the Hermes environment as follows:
+
+```text
+PYTHONDONTWRITEBYTECODE=1
+SOMPI_AGENT_API_CREDENTIAL=<Hermes home>/.sompi/agent-api.json
+SOMPI_RUNTIME_GID=<selected Hermes primary group gid>
+SOMPI_API_SOCKET_GID=<selected Hermes primary group gid>
+```
+
+Give Hermes only its socket and client credential.
+Use `PYTHONDONTWRITEBYTECODE=1` for the Hermes configuration commands and
+gateway service.
+Do not add Hermes to `sompi-api`, Authority IPC, or recovery groups.
+Give operator recovery its separate `0710` socket directory, group,
+credential, and request pool.
 TCP transport is disabled.
 
 Use the bootstrap-generated `sompi-api.service` as the source of runtime configuration.
@@ -158,7 +207,7 @@ sudo env \
   SOMPI_OPERATOR_MANIFEST=/etc/sompi/operator-manifest.json \
   SOMPI_OPERATOR_UID=0 \
   SOMPI_API_UID=API_UID \
-  SOMPI_RUNTIME_GID=AGENT_API_GID \
+  SOMPI_RUNTIME_GID=SOMPI_API_GID \
   SOMPI_AUTHORITY_CLIENT_DIR=/var/lib/sompi-authority-client \
   SOMPI_AUTHORITY_RUNTIME_DIR=/run/sompi-authority \
   SOMPI_AUTHORITY_SOCKET=/run/sompi-authority/authority.sock \

@@ -82,6 +82,13 @@ const HASH32 = /^[a-f0-9]{64}$/;
 const DIGEST = /^sha256:[A-Za-z0-9_-]{43}$/;
 const PURCHASE_ID = /^pur_[A-Za-z0-9_-]{22}$/;
 const PAYMENT_IDENTIFIER = /^pay_[A-Za-z0-9_-]{43}$/;
+const LIVE_CHAIN_EVIDENCE_FINALITY_POLICY = Object.freeze({
+  settlement: "accepted",
+  "direct-treasury": "accepted",
+  vault: "accepted",
+  staging: "accepted",
+  "recovery-release": "accepted",
+} as const);
 
 type CandidateLabel = "first" | "second" | "retry";
 
@@ -776,7 +783,8 @@ function contentionStagingModule(
       depthConfirmationDaa: 10,
       fetch: globalThis.fetch,
     }),
-    new JournalChainEvidenceStore(journal)
+    new JournalChainEvidenceStore(journal),
+    LIVE_CHAIN_EVIDENCE_FINALITY_POLICY
   );
   return new TreasuryOperationModule({
     journal,
@@ -790,18 +798,16 @@ function contentionStagingModule(
       allowlist: [...allowlist],
     }),
     adapters: [
-      new WalletTreasuryOperationAdapter(initialized.treasuryWallet, chainEvidence, "accepted"),
+      new WalletTreasuryOperationAdapter(initialized.treasuryWallet, chainEvidence),
       new VaultSendTreasuryOperationAdapter(
         initialized.vault,
         initialized.treasuryWallet,
-        chainEvidence,
-        "accepted"
+        chainEvidence
       ),
       new VaultDepositTreasuryOperationAdapter(
         initialized.vault,
         initialized.treasuryWallet,
-        chainEvidence,
-        "accepted"
+        chainEvidence
       ),
     ],
     feeCeilingAtomic: LIVE_TREASURY_FEE_CEILING_ATOMIC,
@@ -1269,7 +1275,6 @@ async function proveLosingCandidateAbsent(
     watchedAddresses: Object.freeze([initialized.config.additiveHead.address, loser.address]),
     mechanism: "kip10-script-template",
     protocolFinality: "accepted",
-    operatorFloor: "accepted",
     signal: AbortSignal.timeout(30_000),
   });
   const witness = await new HttpsAcceptedChainWitness({

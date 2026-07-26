@@ -2,13 +2,47 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { Transaction } from "../kaspa-wasm.js";
-import { ChainEvidenceModule, meets } from "./module.js";
+import { ChainEvidenceModule } from "./module.js";
 import { HttpsAcceptedChainWitness, WrpcOperatorChainObserver } from "./sources.js";
 import type {
   AcceptedChainEvidenceQuery,
+  ChainEvidenceFinalityPolicy,
   ChainEvidenceRecord,
   ChainEvidenceRequest,
 } from "./types.js";
+
+const DEPTH_POLICY: ChainEvidenceFinalityPolicy = Object.freeze({
+  settlement: "depth-confirmed",
+  "direct-treasury": "depth-confirmed",
+  vault: "depth-confirmed",
+  staging: "depth-confirmed",
+  "recovery-release": "depth-confirmed",
+});
+
+test("source depth inputs normalize to one Chain Evidence selection fact", () => {
+  const operator = new WrpcOperatorChainObserver({
+    rpc: { client: async () => ({} as never) },
+    depthConfirmationDaa: "010",
+  });
+  const witness = new HttpsAcceptedChainWitness({
+    baseUrl: "https://witness.example/",
+    depthConfirmationDaa: 10n,
+    fetch: async () => new Response(null, { status: 503 }),
+  });
+  const module = new ChainEvidenceModule(
+    operator,
+    witness,
+    memoryStore(),
+    DEPTH_POLICY,
+    () => 1_800_000_000_000
+  );
+  assert.equal(operator.depthConfirmationDaa, "10");
+  assert.equal(witness.depthConfirmationDaa, "10");
+  assert.equal(
+    module.selectFinality("settlement", "accepted").depthConfirmationDaa,
+    "10"
+  );
+});
 
 test("HTTPS accepted history and operator wRPC corroborate the exact transaction and anchor", async () => {
   const { request, transaction } = fixture();
@@ -60,13 +94,15 @@ test("HTTPS accepted history and operator wRPC corroborate the exact transaction
     new WrpcOperatorChainObserver({ rpc: { client: async () => rpc as any }, depthConfirmationDaa: 10, now: () => 1_800_000_000_000 }),
     new HttpsAcceptedChainWitness({ baseUrl: "https://witness.example/", depthConfirmationDaa: 10, fetch: fetcher, now: () => 1_800_000_000_000 }),
     store,
+    DEPTH_POLICY,
     () => 1_800_000_000_000
   );
   const evidence = await module.observe(request);
-  assert.equal(evidence.status, "present");
-  assert.equal(evidence.level, "depth-confirmed");
-  assert.equal(evidence.blockHash, containing);
-  assert.equal(evidence.acceptingBlockHash, accepting);
+  assert.equal(evidence.interpretation, "accepted");
+  assert.equal(evidence.evidence.status, "present");
+  assert.equal(evidence.evidence.level, "depth-confirmed");
+  assert.equal(evidence.evidence.blockHash, containing);
+  assert.equal(evidence.evidence.acceptingBlockHash, accepting);
 });
 
 test("operator history refuses a witness transaction ID without the matching block body", async () => {
@@ -109,12 +145,14 @@ test("operator history refuses a witness transaction ID without the matching blo
     new WrpcOperatorChainObserver({ rpc: { client: async () => rpc as any }, depthConfirmationDaa: 10, now: () => 1_800_000_000_000 }),
     new HttpsAcceptedChainWitness({ baseUrl: "https://witness.example/", depthConfirmationDaa: 10, fetch: fetcher, now: () => 1_800_000_000_000 }),
     memoryStore(),
+    DEPTH_POLICY,
     () => 1_800_000_000_000
   );
 
   const evidence = await module.observe(request);
-  assert.equal(evidence.status, "present");
-  assert.equal(evidence.level, "provisional");
+  assert.equal(evidence.interpretation, "provisional");
+  assert.equal(evidence.evidence.status, "present");
+  assert.equal(evidence.evidence.level, "provisional");
 });
 
 test("HTTP 404 plus a generic RPC capability failure is unavailable, never absence", async () => {
@@ -135,9 +173,10 @@ test("HTTP 404 plus a generic RPC capability failure is unavailable, never absen
       now: () => 1_800_000_000_000,
     }),
     memoryStore(),
+    DEPTH_POLICY,
     () => 1_800_000_000_000
   );
-  assert.equal((await module.observe(request)).status, "unavailable");
+  assert.equal((await module.observe(request)).interpretation, "unavailable");
 });
 
 test("a live exact UTXO prevents a lagging 404 witness from becoming absence", async () => {
@@ -161,11 +200,13 @@ test("a live exact UTXO prevents a lagging 404 witness from becoming absence", a
       now: () => 1_800_000_000_000,
     }),
     memoryStore(),
+    DEPTH_POLICY,
     () => 1_800_000_000_000
   );
   const evidence = await module.observe(request);
-  assert.equal(evidence.status, "present");
-  assert.equal(evidence.level, "provisional");
+  assert.equal(evidence.interpretation, "provisional");
+  assert.equal(evidence.evidence.status, "present");
+  assert.equal(evidence.evidence.level, "provisional");
 });
 
 test("empty address-bucket mempool evidence independently proves operator absence", async () => {
@@ -339,7 +380,7 @@ function fixture(): { request: ChainEvidenceRequest; transaction: Record<string,
     expectedOutputs: [{ index: 1, amountAtomic: "123", scriptPublicKey: `0000${script}`, address: "kaspatest:qfixture" }],
     expectedInputs: [{ transactionId: "aa".repeat(32), index: 0 }],
     watchedAddresses: ["kaspatest:qfixture"], mechanism: "kip10-script-template",
-    protocolFinality: "accepted", operatorFloor: "depth-confirmed",
+    protocolFinality: "accepted",
     signal: new AbortController().signal,
   }, transaction };
 }
@@ -372,13 +413,19 @@ function acceptedWitness(request: ChainEvidenceRequest, acceptingBlockHash: stri
 function memoryStore() {
   const records: ChainEvidenceRecord[] = [];
   return {
-    findAccepted: (query: AcceptedChainEvidenceQuery) => records.find((record) =>
+    findRetained: (query: AcceptedChainEvidenceQuery) => records.filter((record) =>
+      record.profile === query.profile &&
+      record.operationId === query.operationId &&
+      record.operation === query.operation &&
       record.transactionId === query.transactionId &&
       record.outputsDigest === query.outputsDigest &&
       record.mechanism === query.mechanism &&
+      record.protocolFinality === query.protocolFinality &&
+      record.operatorFloor === query.operatorFloor &&
+      record.effectiveFloor === query.effectiveFloor &&
       record.status === "present" &&
       record.level !== undefined &&
-      meets(record.level, query.minimumLevel)
+      record.level !== "provisional"
     ),
     record: (record: ChainEvidenceRecord) => (records.push(record), record),
   };

@@ -7,7 +7,8 @@ It uses an internal, human-present authorization artifact that uses the AP2 mand
 
 | Item | Value |
 |---|---|
-| Profile | `urn:sompi:ap2-derived-human-present:1` |
+| Authorization profile | `urn:sompi:ap2-derived-human-present:2` |
+| Decision evidence profile | `urn:sompi:authority-decision:ap2-derived-human-present:3` |
 | Mode | human-present |
 | Signature | ES256 |
 | Issuer | operator-configured Trusted Authority |
@@ -25,7 +26,8 @@ An approval binds these fact groups:
 - Authority profile, issuer, key, issue time, and expiry
 - Purchase identity and request key
 - Merchant, request, resource, and x402 requirement identities
-- network, scheme, payee, execution profile, and finality floor
+- network, scheme, payee, and execution profile
+- Merchant settlement assurance, operator floor, effective floor, and DAA depth
 - amount, batch charge, fee, and total-cost limits
 - instrument and channel facts when they apply
 

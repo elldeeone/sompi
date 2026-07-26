@@ -31,9 +31,9 @@ import type {
 } from "./types.js";
 
 export const SOMPI_AP2_AUTHORITY_DECISION_PROFILE =
-  "urn:sompi:authority-decision:ap2-derived-human-present:2" as const;
+  "urn:sompi:authority-decision:ap2-derived-human-present:3" as const;
 export const SOMPI_AP2_AUTHORIZATION_PROFILE =
-  "urn:sompi:ap2-derived-human-present:1" as const;
+  "urn:sompi:ap2-derived-human-present:2" as const;
 export const SOMPI_AP2_AUTHORITY_AUDIENCE =
   "urn:sompi:purchase-authority-verifier" as const;
 

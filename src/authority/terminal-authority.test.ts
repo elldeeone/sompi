@@ -155,7 +155,7 @@ test("bounded prompt admission cancels the head, ignores its late answer, and ad
 
 function display(purchaseId: string): AuthorityApprovalDisplay {
   return Object.freeze({
-    profile: "sompi.purchase-approval.1",
+    profile: "sompi.purchase-approval.2",
     authorityRequestDigest: "sha256:EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",
     purchaseId,
     merchant: Object.freeze({
@@ -182,7 +182,9 @@ function display(purchaseId: string): AuthorityApprovalDisplay {
     purchaseAuthorizationFactsDigest: "sha256:HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH",
     termsExpiresAt: "2099-01-01T00:00:00.000Z",
     additionalCostCeilingAtomic: "100",
+    operatorFinalityFloor: "accepted",
     effectiveFinalityFloor: "accepted",
+    depthConfirmationDaa: "10",
     execution: Object.freeze({
       planDigest: "sha256:DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
       mechanism: "single-transaction",

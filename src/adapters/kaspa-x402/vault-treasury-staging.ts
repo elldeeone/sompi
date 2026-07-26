@@ -23,11 +23,9 @@ import type {
   VaultManager,
 } from "../../vault.js";
 import type { KaspaWallet } from "../../wallet.js";
-import { meets } from "../../chain-evidence/module.js";
 import type {
-  ChainEvidenceRecord,
+  ChainEvidenceObservation,
   ChainEvidenceRequest,
-  FinalityFloor,
 } from "../../chain-evidence/types.js";
 import { serializeScriptPublicKey } from "./address-codec.js";
 import type { TreasuryStagingDriver } from "./exact-payment-module.js";
@@ -196,20 +194,12 @@ export interface VaultTreasuryStagingOptions {
   readonly wallet: KaspaWallet;
   readonly keyStore: StagingKeyStore;
   readonly chainEvidence: StagingChainEvidence;
-  readonly finalityFloor: FinalityFloor;
 }
 
 export interface StagingChainEvidence {
   observe(
     request: Readonly<ChainEvidenceRequest>
-  ): Promise<
-    Readonly<
-      Pick<
-        ChainEvidenceRecord,
-        "status" | "level" | "detailDigest" | "acceptingBlockDaaScore" | "observedAtMs"
-      >
-    >
-  >;
+  ): Promise<ChainEvidenceObservation>;
 }
 
 export class VaultTreasuryStagingError extends Error {
@@ -225,7 +215,6 @@ export class VaultTreasuryStaging implements TreasuryStagingDriver {
   private readonly wallet: KaspaWallet;
   private readonly keyStore: StagingKeyStore;
   private readonly chainEvidence: StagingChainEvidence;
-  private readonly finalityFloor: FinalityFloor;
 
   constructor(options: VaultTreasuryStagingOptions) {
     if (!options?.vault || !options.wallet || !options.keyStore || typeof options.chainEvidence?.observe !== "function") {
@@ -237,7 +226,6 @@ export class VaultTreasuryStaging implements TreasuryStagingDriver {
     this.wallet = options.wallet;
     this.keyStore = options.keyStore;
     this.chainEvidence = options.chainEvidence;
-    this.finalityFloor = options.finalityFloor;
   }
 
   async prepare(input: Readonly<PrepareInput>): Promise<PreparedTreasuryStaging> {
@@ -370,19 +358,19 @@ export class VaultTreasuryStaging implements TreasuryStagingDriver {
       watchedAddresses: [prepared.destination, prepared.continuationAddress],
       mechanism: "native-covenant",
       protocolFinality: "accepted",
-      operatorFloor: this.finalityFloor,
       signal,
     });
-    if (evidence.status !== "present" || !evidence.level || !meets(evidence.level, this.finalityFloor)) return undefined;
+    if (evidence.interpretation !== "accepted") return undefined;
+    const accepted = evidence.evidence;
     return Object.freeze({
       transactionId: prepared.transactionId,
       destinationOutpoint: prepared.destinationOutpoint,
       continuationOutpoint: prepared.continuationOutpoint,
       amountSompi: prepared.amountSompi,
       continuationAmountSompi: prepared.continuationAmountSompi,
-      observedAtDaa: BigInt(evidence.acceptingBlockDaaScore!),
-      chainEvidenceDigest: evidence.detailDigest,
-      chainEvidenceLevel: evidence.level as
+      observedAtDaa: BigInt(accepted.acceptingBlockDaaScore),
+      chainEvidenceDigest: accepted.detailDigest,
+      chainEvidenceLevel: accepted.level as
         | "accepted"
         | "depth-confirmed"
         | "consensus-final",

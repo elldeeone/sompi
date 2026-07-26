@@ -1255,9 +1255,17 @@ function authorizedPurchase(
     executionPlan: executionPlan.plan,
     executionPlanEvidenceDigest: executionPlan.evidenceDigest,
   });
-  const requestDigest = evidenceDigest(`auth-request-${seed}`);
+  const authorizationRequestArtifact = JSON.stringify({
+    profile: "urn:sompi:authorization-request:2",
+    seed,
+    operatorFinalityFloor: "accepted",
+    effectiveFinalityFloor: "accepted",
+    depthConfirmationDaa: "10",
+    settlementAssurance: "accepted",
+  });
+  const requestDigest = evidenceDigest(authorizationRequestArtifact);
   const requestBodyDigest = evidenceDigest(new Uint8Array());
-  verifiedEvidence(journal, id, `auth-request-${seed}`, "authorization-request");
+  verifiedEvidence(journal, id, authorizationRequestArtifact, "authorization-request");
   journal.storeEvidence(id, {
     bytes: new Uint8Array(),
     mediaType: "application/octet-stream",
@@ -1293,7 +1301,9 @@ function authorizedPurchase(
       requestDigest,
       nonceDigest,
       additionalCostCeilingAtomic: "10",
+      operatorFinalityFloor: "accepted",
       effectiveFinalityFloor: "accepted",
+      depthConfirmationDaa: "10",
       executionPlanDigest: storedAuthorizationRequest.executionPlanDigest,
       executionMechanism: storedAuthorizationRequest.executionMechanism,
       executionProfile: storedAuthorizationRequest.executionProfile,

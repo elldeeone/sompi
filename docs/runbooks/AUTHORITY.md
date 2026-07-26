@@ -30,8 +30,9 @@ and Telegram callback sockets.
 | `/var/lib/sompi-authority/private` | Authority, directory `0700`, files `0600` |
 | `/var/lib/sompi-authority-client` | Authority during initialization; API after handoff; directory `0700`, files `0600` |
 | `/run/sompi-authority/authority.sock` | Authority and IPC group, `0660` |
-| `/run/sompi-telegram-callback/telegram-callback.sock` | Authority and agent integration group, `0660` |
-| `/run/sompi-api/sompi.sock` | API and agent integration group, `0660` |
+| `/run/sompi-telegram-callback` | Authority and selected Hermes primary group, directory `2710` |
+| `/run/sompi-telegram-callback/telegram-callback.sock` | Authority and selected Hermes primary group, `0660` |
+| `/run/sompi-api/sompi.sock` | API and selected Hermes primary group, `0660` |
 | `/run/sompi-recovery/recovery.sock` | API and recovery group, `0660` |
 
 Use disjoint canonical paths.
@@ -49,9 +50,12 @@ sudo install -d -o sompi-authority -g sompi-authority -m 0700 \
   /var/lib/sompi-authority-client
 sudo install -d -o sompi-authority -g AUTHORITY_IPC_GROUP -m 0710 \
   /run/sompi-authority
-sudo install -d -o sompi-authority -g AGENT_INTEGRATION_GROUP -m 0710 \
+sudo install -d -o sompi-authority -g HERMES_PRIMARY_GROUP -m 2710 \
   /run/sompi-telegram-callback
 ```
+
+The set-group-ID directory gives the callback socket the selected Hermes
+primary group. Do not add the Authority account to that group.
 
 Then, run initialization once as the Authority account:
 
@@ -109,7 +113,7 @@ sudo -u sompi-authority env \
 Keep its terminal and Telegram token outside agent access.
 
 Give MCP only the Agent socket and Agent credential.
-Hermes uses the agent integration group for the Agent and callback sockets.
+Hermes uses its primary group for the Agent and callback sockets.
 Neither process receives Authority IPC, recovery, wallet, or operator access.
 
 ## Decide
@@ -138,7 +142,7 @@ Rotate that boundary with a coordinated stop:
 3. Initialize a new Authority path and key ID.
 4. Keep old public keys while retained evidence needs them.
 5. Transfer only the new client MAC copy and trust store to the API.
-6. Restart Authority, API, and the agent integration.
+6. Restart Authority, API, and Hermes.
 
 Reconcile every possible external effect.
 Do not delete state or submit a payment manually.

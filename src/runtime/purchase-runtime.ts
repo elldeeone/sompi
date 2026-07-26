@@ -181,6 +181,13 @@ export function createSompiPurchaseRuntime(
       new WrpcOperatorChainObserver({ rpc: wallet, depthConfirmationDaa: config.depthConfirmationDaa, now }),
       new HttpsAcceptedChainWitness({ baseUrl: config.witnessBaseUrl, depthConfirmationDaa: config.depthConfirmationDaa, fetch: witnessFetch, now }),
       new JournalChainEvidenceStore(journal),
+      Object.freeze({
+        settlement: config.finalityFloors.settlement,
+        "direct-treasury": config.finalityFloors.directTreasury,
+        vault: config.finalityFloors.vault,
+        staging: config.finalityFloors.staging,
+        "recovery-release": config.finalityFloors.recoveryRelease,
+      }),
       now
     );
     const channelStore = new JournalBatchChannelStore(journal, now);
@@ -197,19 +204,16 @@ export function createSompiPurchaseRuntime(
         new WalletTreasuryOperationAdapter(
           wallet,
           chainEvidence,
-          config.finalityFloors.directTreasury,
         ),
         new VaultSendTreasuryOperationAdapter(
           vault,
           wallet,
           chainEvidence,
-          config.finalityFloors.vault,
         ),
         new VaultDepositTreasuryOperationAdapter(
           vault,
           wallet,
           chainEvidence,
-          config.finalityFloors.vault,
         ),
         new BatchRefundTreasuryOperationAdapter(
           journal,
@@ -217,13 +221,11 @@ export function createSompiPurchaseRuntime(
           batchChain,
           channelSigner,
           chainEvidence,
-          config.finalityFloors.recoveryRelease,
           config.batchClaimFeeReserveAtomic,
           new HttpsBatchClaimRaceSource(
             config.witnessBaseUrl,
             batchChain,
             chainEvidence,
-            config.finalityFloors.recoveryRelease,
             journal,
             witnessFetch,
           ),
@@ -283,7 +285,6 @@ export function createSompiPurchaseRuntime(
     });
     const staging = new VaultTreasuryStaging({
       vault, wallet, keyStore, chainEvidence,
-      finalityFloor: config.finalityFloors.staging,
     });
     const canonicalStaging = createJournalTreasuryStagingMetadataSource(journal);
     const observedStaging = new JournalTreasuryStagingObservationSource(
@@ -301,7 +302,7 @@ export function createSompiPurchaseRuntime(
         observedStaging,
         now
       ),
-      chain: new ChainEvidenceExactOutputSource(chainEvidence, config.finalityFloors.settlement),
+      chain: new ChainEvidenceExactOutputSource(chainEvidence),
       merchantResponses:
         dependencies.merchantResponses ?? new AbsentMerchantPaymentResponseLookup(),
       addressCodec: new KaspaTestnet10AddressCodec(),
@@ -357,7 +358,7 @@ export function createSompiPurchaseRuntime(
         });
       },
       manifest: () => config.operatorManifest.identity,
-      finalityFloor: config.finalityFloors.vault,
+      finality: chainEvidence,
       now,
     });
     const fundingIntake = new FundingIntakeModule({
@@ -403,15 +404,14 @@ export function createSompiPurchaseRuntime(
         recoveryAddress: wallet.address,
         observer: new ChainEvidenceStagingRecoveryRaceSource(
           chainEvidence,
-          wallet,
-          config.finalityFloors.recoveryRelease
+          wallet
         ),
         submitter: new RpcStagingRecoveryTransactionSubmitter({ rpc: wallet, now }),
         now,
       }),
       metadata: canonicalStaging,
       observedStaging,
-      finalityFloor: config.finalityFloors.recoveryRelease,
+      finality: chainEvidence,
     });
     const treasury = new VaultTreasuryModule({
       vault,
@@ -428,7 +428,10 @@ export function createSompiPurchaseRuntime(
       treasury,
       payment,
       new PendingFulfilmentModule(),
-      { now, effectiveFinalityFloor: config.finalityFloors.settlement }
+      {
+        now,
+        finality: chainEvidence,
+      }
     );
     let closePromise: Promise<void> | undefined;
     return Object.freeze({

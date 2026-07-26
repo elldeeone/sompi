@@ -52,6 +52,7 @@ export class SompiApiClient implements SompiApplication {
     this.socketAccess = Object.freeze({
       expectedServerUserId: options.expectedServerUserId,
       runtimeGroupId: options.runtimeGroupId,
+      directoryMode: options.directoryMode,
     });
     this.credential = options.credential;
     this.timeoutMs = positiveInteger(options.timeoutMs ?? 125_000);

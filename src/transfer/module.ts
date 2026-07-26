@@ -3,6 +3,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { SompiOperationFailure } from "../operation-failure.js";
 import { Address } from "../kaspa-wasm.js";
 import { kasAmountView } from "../amount-display.js";
+import type { ChainEvidenceFinalitySelector } from "../chain-evidence/types.js";
 import {
   TreasuryOperationError,
   TreasuryOperationNotFoundError,
@@ -36,7 +37,7 @@ export interface TransferModuleOptions {
   >;
   readonly source: () => Readonly<{ vaultAddress: string; vaultDigest: string }>;
   readonly manifest: () => Readonly<{ revision: number; digest: string }>;
-  readonly finalityFloor: "accepted" | "depth-confirmed";
+  readonly finality: ChainEvidenceFinalitySelector;
   readonly now?: () => number;
   readonly authorityTtlMs?: number;
 }
@@ -47,11 +48,15 @@ export class TransferModule {
   private readonly authorityTtlMs: number;
 
   constructor(private readonly options: TransferModuleOptions) {
-    if (!options.journal || !options.authority || !options.treasury || !options.source || !options.manifest) {
+    if (
+      !options.journal ||
+      !options.authority ||
+      !options.treasury ||
+      !options.source ||
+      !options.manifest ||
+      typeof options.finality?.selectFinality !== "function"
+    ) {
       throw new Error("Transfer module dependencies are incomplete");
-    }
-    if (options.finalityFloor !== "accepted" && options.finalityFloor !== "depth-confirmed") {
-      throw new Error("Transfer finality floor is invalid");
     }
     this.now = options.now ?? Date.now;
     this.authorityTtlMs = options.authorityTtlMs ?? DEFAULT_AUTHORITY_TTL_MS;
@@ -72,6 +77,7 @@ export class TransferModule {
     }
     const source = canonicalSource(this.options.source());
     const manifest = canonicalManifest(this.options.manifest());
+    const finality = this.options.finality.selectFinality("vault", "accepted");
     const id = createTransferId();
     let context: Readonly<{ policyDigest: string; feeCeilingAtomic: string }>;
     try {
@@ -113,7 +119,7 @@ export class TransferModule {
         policyDigest: context.policyDigest,
         manifestRevision: manifest.revision,
         manifestDigest: manifest.digest,
-        finalityFloor: this.options.finalityFloor,
+        finalityFloor: finality.effectiveFloor,
       });
     } catch (cause) {
       if (cause instanceof JournalRequestConflictError) {

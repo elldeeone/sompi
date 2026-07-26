@@ -10,6 +10,11 @@ import {
   stableStringify,
 } from "@kaspa-x402/core";
 
+import {
+  CHAIN_EVIDENCE_PROFILE,
+  type ChainEvidenceObservation,
+  type ChainEvidenceRequest,
+} from "../chain-evidence/types.js";
 import { Transaction, payToScriptHashScript } from "../kaspa-wasm.js";
 import {
   authorizationFacts,
@@ -226,6 +231,44 @@ test("fee source rejects transaction, outpoint, amount, evidence, deadline, and 
   });
 });
 
+function acceptedStagingObservation(
+  request: Readonly<ChainEvidenceRequest>,
+): ChainEvidenceObservation {
+  const finality = Object.freeze({
+    operation: request.operation,
+    protocolFinality: request.protocolFinality,
+    operatorFloor: "accepted" as const,
+    effectiveFloor: "accepted" as const,
+    depthConfirmationDaa: "10",
+  });
+  return Object.freeze({
+    interpretation: "accepted" as const,
+    finality,
+    evidence: Object.freeze({
+      profile: CHAIN_EVIDENCE_PROFILE,
+      operationId: request.operationId,
+      operation: request.operation,
+      transactionId: request.transactionId,
+      status: "present" as const,
+      level: "accepted" as const,
+      view: "current" as const,
+      mechanism: request.mechanism,
+      protocolFinality: request.protocolFinality,
+      operatorFloor: finality.operatorFloor,
+      effectiveFloor: finality.effectiveFloor,
+      primaryProfile: "test-primary",
+      witnessProfile: "test-witness",
+      blockHash: "aa".repeat(32),
+      acceptingBlockHash: "bb".repeat(32),
+      acceptingBlockDaaScore: "9",
+      virtualDaaScore: "10",
+      outputsDigest: evidenceDigest(`outputs:${request.transactionId}`),
+      detailDigest: evidenceDigest(`chain:${request.transactionId}`),
+      observedAtMs: NOW,
+    }),
+  });
+}
+
 interface StagingJournalFixture {
   journal: PurchaseJournal;
   purchaseId: PurchaseId;
@@ -416,8 +459,15 @@ async function withStagingJournal(
       issuer: "purchase-intent",
       kind: "purchase-request-body",
     });
+    const authorizationRequestArtifact = JSON.stringify({
+      profile: "urn:sompi:authorization-request:2",
+      operatorFinalityFloor: "accepted",
+      effectiveFinalityFloor: "accepted",
+      depthConfirmationDaa: "10",
+      settlementAssurance: "accepted",
+    });
     const requestDigest = storeVerifiedEvidence(journal, purchaseId, {
-      bytes: Buffer.from("authorization-request", "utf8"),
+      bytes: Buffer.from(authorizationRequestArtifact, "utf8"),
       kind: "authorization-request",
       profile: "test-authorization-request-profile",
       issuer: "sompi-mcp:test",
@@ -446,7 +496,9 @@ async function withStagingJournal(
       requestDigest,
       nonceDigest,
       additionalCostCeilingAtomic: ADDITIONAL_COST_CEILING,
+      operatorFinalityFloor: "accepted" as const,
       effectiveFinalityFloor: "accepted" as const,
+      depthConfirmationDaa: "10",
       executionPlanDigest: storedAuthorizationRequest.executionPlanDigest,
       executionMechanism: storedAuthorizationRequest.executionMechanism,
       executionProfile: storedAuthorizationRequest.executionProfile,
@@ -506,13 +558,9 @@ async function withStagingJournal(
     const staging = new VaultTreasuryStaging({
       vault, wallet, keyStore,
       chainEvidence: {
-        observe: async (request: any) => ({
-          status: "present", level: "accepted", view: "current",
-          detailDigest: evidenceDigest(`chain:${request.transactionId}`),
-          acceptingBlockDaaScore: "9", observedAtMs: NOW,
-        }),
+        observe: async (request: ChainEvidenceRequest) =>
+          acceptedStagingObservation(request),
       },
-      finalityFloor: "accepted",
     });
     const execution = {
       purchaseId,

@@ -28,7 +28,9 @@ import { authorizationFactsDigest } from "./contracts.js";
 import { JOURNAL_SCHEMA_VERSION } from "./journal-schema.js";
 import type { PurchaseId, Sha256Digest } from "./types.js";
 import {
+  CHAIN_EVIDENCE_OPERATOR_PROFILE,
   CHAIN_EVIDENCE_PROFILE,
+  CHAIN_EVIDENCE_WITNESS_PROFILE,
   type ChainEvidenceRecord,
 } from "../chain-evidence/types.js";
 
@@ -105,8 +107,8 @@ test("completed Treasury operation resolves its accepted Chain Evidence through 
       protocolFinality: "accepted",
       operatorFloor: "accepted",
       effectiveFloor: "accepted",
-      primaryProfile: "test-primary",
-      witnessProfile: "test-witness",
+      primaryProfile: CHAIN_EVIDENCE_OPERATOR_PROFILE,
+      witnessProfile: CHAIN_EVIDENCE_WITNESS_PROFILE,
       blockHash: "22".repeat(32),
       acceptingBlockHash: "33".repeat(32),
       acceptingBlockDaaScore: "100",
@@ -501,6 +503,32 @@ test("policy is one persisted snapshot and approval evidence is bound to the Pur
     );
     const second = reserve(journal, purchaseB, policyB, "reservation-b", clock.value, "30", "5");
     assert.equal(second.policyDigest, policyB.digest);
+  });
+});
+
+test("authorization digest hydration rejects artifact and Journal finality disagreement", () => {
+  withJournal(({ journal }) => {
+    assert.throws(
+      () =>
+        authorizedPurchase(journal, 94, "60", {
+          effectiveFinalityFloor: "depth-confirmed",
+        }),
+      /authorization request finality facts differ from the Journal/
+    );
+    assert.throws(
+      () =>
+        authorizedPurchase(journal, 95, "60", {
+          settlementAssurance: "confirmed",
+        }),
+      /authorization request finality facts differ from the Journal/
+    );
+    assert.throws(
+      () =>
+        authorizedPurchase(journal, 96, "60", {
+          profile: "urn:sompi:authorization-request:1",
+        }),
+      /authorization request finality facts are malformed/
+    );
   });
 });
 
@@ -1480,7 +1508,18 @@ function createPurchase(journal: PurchaseJournal, seed: number): PurchaseRecord 
   return journal.createPurchase(purchaseInput(seed));
 }
 
-function authorizedPurchase(journal: PurchaseJournal, seed: number, amountAtomic = "60"): PurchaseId {
+function authorizedPurchase(
+  journal: PurchaseJournal,
+  seed: number,
+  amountAtomic = "60",
+  finalityArtifact: Partial<{
+    profile: string;
+    operatorFinalityFloor: "accepted" | "depth-confirmed";
+    effectiveFinalityFloor: "accepted" | "depth-confirmed";
+    depthConfirmationDaa: string;
+    settlementAssurance: "accepted" | "confirmed" | "channel-commitment";
+  }> = {}
+): PurchaseId {
   const purchase = createPurchase(journal, seed);
   const checkoutEvidence = verifiedEvidence(
     journal,
@@ -1528,8 +1567,17 @@ function authorizedPurchase(journal: PurchaseJournal, seed: number, amountAtomic
     executionPlan: executionPlan.plan,
     executionPlanEvidenceDigest: executionPlan.evidenceDigest,
   });
-  const requestDigest = evidenceDigest(`authorization-request-${seed}`);
-  verifiedEvidence(journal, purchase.id, `authorization-request-${seed}`, "authorization-request");
+  const authorizationRequestArtifact = JSON.stringify({
+    profile: "urn:sompi:authorization-request:2",
+    seed,
+    operatorFinalityFloor: "accepted",
+    effectiveFinalityFloor: "accepted",
+    depthConfirmationDaa: "10",
+    settlementAssurance: "accepted",
+    ...finalityArtifact,
+  });
+  const requestDigest = evidenceDigest(authorizationRequestArtifact);
+  verifiedEvidence(journal, purchase.id, authorizationRequestArtifact, "authorization-request");
   journal.storeEvidence(purchase.id, {
     bytes: new Uint8Array(),
     mediaType: "application/octet-stream",
@@ -1566,7 +1614,9 @@ function authorizedPurchase(journal: PurchaseJournal, seed: number, amountAtomic
     requestDigest,
     nonceDigest,
     additionalCostCeilingAtomic: "10",
+    operatorFinalityFloor: "accepted",
     effectiveFinalityFloor: "accepted",
+    depthConfirmationDaa: "10",
     executionPlanDigest: storedAuthorizationRequest.executionPlanDigest,
     executionMechanism: storedAuthorizationRequest.executionMechanism,
     executionProfile: storedAuthorizationRequest.executionProfile,

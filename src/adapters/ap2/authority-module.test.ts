@@ -70,7 +70,7 @@ test("the human display is exactly the independently signed Purchase decision", 
     if (result.status !== "decision") return;
     const facts = result.decision.facts;
     assert.deepEqual(fixture.displayed, {
-      profile: "sompi.purchase-approval.1",
+      profile: "sompi.purchase-approval.2",
       authorityRequestDigest: result.decision.evidence.requestDigest,
       purchaseId: facts.purchaseId,
       merchant: {
@@ -97,7 +97,9 @@ test("the human display is exactly the independently signed Purchase decision", 
       purchaseAuthorizationFactsDigest: facts.purchaseAuthorizationFactsDigest,
       termsExpiresAt: facts.termsExpiresAt,
       additionalCostCeilingAtomic: facts.additionalCostCeilingAtomic,
+      operatorFinalityFloor: "accepted",
       effectiveFinalityFloor: "accepted",
+      depthConfirmationDaa: "10",
       execution: {
         planDigest: facts.executionPlanDigest,
         mechanism: facts.executionMechanism,
@@ -116,13 +118,15 @@ test("the human display is exactly the independently signed Purchase decision", 
     );
     assert.equal(
       result.decision.evidence.factsDigest,
-      "sha256:wI2z-LUE7vLnwWge_CSG-sUfhp1GRhgZVGBs4tjMCmg",
-      "the standard Purchase-to-Authority fact projection must remain byte stable",
+      // ADR-0024 establishes the exact v2 approval-facts shape.
+      "sha256:k4sQzAFd7tPdXBwbhfAPq3H6u6v72LHpNGWBcxYGFaA",
+      "the standard v2 Purchase-to-Authority facts must remain exact",
     );
     assert.equal(
       result.decision.evidence.requestDigest,
-      "sha256:dJAR0I6z6f1T1cmg6kBuoY24kO-pRNkevhfnnv3pPXo",
-      "the standard authenticated Authority request must remain byte stable",
+      // ADR-0024 establishes the exact Authority IPC v2 request.
+      "sha256:Nz7jW-6XPPudGZJRe0stiohzaSUY5MzdIMMvTUZZyps",
+      "the standard Authority IPC v2 request must remain exact",
     );
     assert.equal(result.decision.evidence.purchaseId, fixture.displayed?.purchaseId);
     assert.equal(result.decision.evidence.checkoutDigest, fixture.displayed?.checkoutDigest);
@@ -135,6 +139,7 @@ test("batch approval displays and signs the channel epoch, charge ceiling, and a
   const channelId = "ab".repeat(32);
   const channelEpochDigest = evidenceDigest("batch-channel-epoch");
   const fixture = await authoritySystem(true, {
+    operatorFinalityFloor: "depth-confirmed",
     effectiveFinalityFloor: "depth-confirmed",
     executionPlanDigest: evidenceDigest("batch-execution-plan"),
     executionMechanism: "channel-voucher",
@@ -157,19 +162,23 @@ test("batch approval displays and signs the channel epoch, charge ceiling, and a
       channelId,
       channelEpochDigest,
     });
+    assert.equal(fixture.displayed?.operatorFinalityFloor, "depth-confirmed");
     assert.equal(fixture.displayed?.effectiveFinalityFloor, "depth-confirmed");
+    assert.equal(fixture.displayed?.depthConfirmationDaa, "10");
     assert.equal(result.decision.facts.executionProfile, "kaspa-escrow-v1:batch-settlement");
     assert.equal(result.decision.facts.channelEpochDigest, channelEpochDigest);
     assert.equal(result.decision.evidence.factsDigest, authorityFactsDigest(result.decision.facts));
     assert.equal(
       result.decision.evidence.factsDigest,
-      "sha256:7bpYEgS-R4Ew5_d2QfNLAaWhtvOBoyJb-aoccmaO9kk",
-      "the batch Purchase-to-Authority fact projection must remain byte stable",
+      // ADR-0024 establishes the exact v2 approval-facts shape.
+      "sha256:sMkzUKH4yZ5FWQQIaOQYn-3qsBrt3SugI3LyZd1xnH8",
+      "the batch v2 Purchase-to-Authority facts must remain exact",
     );
     assert.equal(
       result.decision.evidence.requestDigest,
-      "sha256:0okbhVW71ZLssJqrGytQFbqAfkCqAKCsMxzJZDLIOXI",
-      "the batch authenticated Authority request must remain byte stable",
+      // ADR-0024 establishes the exact Authority IPC v2 request.
+      "sha256:pDoGA1GTUrCcsbK0vLm2GRKGHdEh3Sk6LpkApw5w9bc",
+      "the batch Authority IPC v2 request must remain exact",
     );
   } finally {
     await fixture.close();
@@ -334,7 +343,9 @@ async function authoritySystem(
     requestDigest: evidenceDigest("purchase-authorization-request"),
     nonceDigest: evidenceDigest("purchase-authorization-nonce"),
     additionalCostCeilingAtomic: checkout.additionalCostCeilingAtomic,
+    operatorFinalityFloor: "accepted",
     effectiveFinalityFloor: "accepted",
+    depthConfirmationDaa: "10",
     executionPlanDigest: evidenceDigest("execution-plan"),
     executionMechanism: "single-transaction",
     executionProfile: "kaspa-exact-v2:standard-native",

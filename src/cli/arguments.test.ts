@@ -38,6 +38,17 @@ test("operator CLI exposes provisioning and offline-owner vault migration only",
   assert.deepEqual(parseOperatorArguments(["bootstrap", "request.json", `sha256:${"A".repeat(43)}`]), {
     kind: "bootstrap", request: "request.json", digest: `sha256:${"A".repeat(43)}`,
   });
+  assert.deepEqual(parseOperatorArguments([
+    "bootstrap-commit-status",
+    "/var/lib/sompi-bootstrap/receipt.json",
+    "@elldeeone/sompi@0.12.2",
+    `sha256:${"A".repeat(43)}`,
+  ]), {
+    kind: "bootstrap-commit-status",
+    receipt: "/var/lib/sompi-bootstrap/receipt.json",
+    package: "@elldeeone/sompi@0.12.2",
+    digest: `sha256:${"A".repeat(43)}`,
+  });
   assert.deepEqual(parseOperatorArguments(["bootstrap-activate", "request.json", `sha256:${"A".repeat(43)}`]), {
     kind: "bootstrap-activate", request: "request.json", digest: `sha256:${"A".repeat(43)}`,
   });
@@ -67,7 +78,7 @@ test("operator CLI exposes provisioning and offline-owner vault migration only",
   assert.deepEqual(parseOperatorArguments(["vault-migrate", "recover", "vmg_AAAAAAAAAAAAAAAAAAAAAA", "/root/owner-key"]), {
     kind: "vault-migrate", action: "recover", vaultMigrationId: "vmg_AAAAAAAAAAAAAAAAAAAAAA", ownerKeyFile: "/root/owner-key",
   });
-  for (const args of [[], ["bootstrap-preview"], ["bootstrap", "x", "bad"], ["bootstrap-activate", "x", "bad"], ["bootstrap-activate-worker", "extra"], ["install"], ["status", "x", "-1", "1"], ["agent-credential", "x", "-1", "1"], ["recovery-credential", "x", "-1", "1"], ["owner-key", "extra"], ["vault-migrate", "execute", "bad", "/root/key"], ["vault-migrate", "unknown", "vmg_AAAAAAAAAAAAAAAAAAAAAA", "/root/key"], ["start"]]) {
+  for (const args of [[], ["bootstrap-preview"], ["bootstrap", "x", "bad"], ["bootstrap-commit-status", "relative", "@elldeeone/sompi@0.12.2", `sha256:${"A".repeat(43)}`], ["bootstrap-commit-status", "/root/receipt", "bad", `sha256:${"A".repeat(43)}`], ["bootstrap-activate", "x", "bad"], ["bootstrap-activate-worker", "extra"], ["install"], ["status", "x", "-1", "1"], ["agent-credential", "x", "-1", "1"], ["recovery-credential", "x", "-1", "1"], ["owner-key", "extra"], ["vault-migrate", "execute", "bad", "/root/key"], ["vault-migrate", "unknown", "vmg_AAAAAAAAAAAAAAAAAAAAAA", "/root/key"], ["start"]]) {
     assert.throws(() => parseOperatorArguments(args), CliArgumentError);
   }
   assert.match(OPERATOR_USAGE, /^usage: sompi-operator/);

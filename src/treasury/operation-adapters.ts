@@ -17,8 +17,8 @@ import type {
   TreasuryOperationValidationInput,
 } from "./operation-journal.js";
 import { Address } from "../kaspa-wasm.js";
-import { meets, type ChainEvidenceModule } from "../chain-evidence/module.js";
-import type { ChainEvidenceRecord, ExpectedChainOutput, FinalityFloor } from "../chain-evidence/types.js";
+import type { ChainEvidenceModule } from "../chain-evidence/module.js";
+import type { ChainEvidenceRecord, ExpectedChainOutput } from "../chain-evidence/types.js";
 
 const PROFILE = "urn:sompi:treasury-operation:prepared:1" as const;
 const OBSERVATION_PROFILE = "urn:sompi:treasury-operation:observation:1" as const;
@@ -170,8 +170,7 @@ export class WalletTreasuryOperationAdapter implements TreasuryOperationAdapter 
 
   constructor(
     private readonly wallet: KaspaWallet,
-    private readonly chainEvidence: ChainEvidenceModule,
-    private readonly finalityFloor: FinalityFloor
+    private readonly chainEvidence: ChainEvidenceModule
   ) {
     if (!wallet || wallet.networkId !== "testnet-10") {
       throw new Error("wallet Treasury operation adapter requires testnet-10");
@@ -243,7 +242,7 @@ export class WalletTreasuryOperationAdapter implements TreasuryOperationAdapter 
     preparedBytes: Uint8Array
   ): Promise<TreasuryOperationProbe> {
     const envelope = decodeWallet(preparedBytes, intent);
-    const observation = await observeEnvelopeChainEvidence(this.chainEvidence, intent, envelope, this.finalityFloor);
+    const observation = await observeEnvelopeChainEvidence(this.chainEvidence, intent, envelope);
     return Object.freeze({
       status: observation.status,
       detail: Object.freeze({
@@ -285,8 +284,7 @@ export class VaultSendTreasuryOperationAdapter implements TreasuryOperationAdapt
   constructor(
     private readonly vault: VaultManager,
     private readonly wallet: KaspaWallet,
-    private readonly chainEvidence: ChainEvidenceModule,
-    private readonly finalityFloor: FinalityFloor
+    private readonly chainEvidence: ChainEvidenceModule
   ) {
     if (!vault || !wallet || wallet.networkId !== "testnet-10") {
       throw new Error("vault Treasury operation adapter requires testnet-10");
@@ -354,7 +352,7 @@ export class VaultSendTreasuryOperationAdapter implements TreasuryOperationAdapt
     preparedBytes: Uint8Array
   ): Promise<TreasuryOperationProbe> {
     const envelope = decodeVault(preparedBytes, intent);
-    const observation = await observeEnvelopeChainEvidence(this.chainEvidence, intent, envelope, this.finalityFloor);
+    const observation = await observeEnvelopeChainEvidence(this.chainEvidence, intent, envelope);
     return Object.freeze({
       status: observation.status,
       detail: Object.freeze({
@@ -402,8 +400,7 @@ export class VaultDepositTreasuryOperationAdapter implements TreasuryOperationAd
   constructor(
     private readonly vault: VaultManager,
     private readonly wallet: KaspaWallet,
-    private readonly chainEvidence: ChainEvidenceModule,
-    private readonly finalityFloor: FinalityFloor
+    private readonly chainEvidence: ChainEvidenceModule
   ) {
     if (!vault || !wallet || wallet.networkId !== "testnet-10") {
       throw new Error("vault deposit Treasury operation adapter requires testnet-10");
@@ -484,7 +481,7 @@ export class VaultDepositTreasuryOperationAdapter implements TreasuryOperationAd
     preparedBytes: Uint8Array
   ): Promise<TreasuryOperationProbe> {
     const envelope = decodeVaultDeposit(preparedBytes, intent);
-    const observation = await observeEnvelopeChainEvidence(this.chainEvidence, intent, envelope, this.finalityFloor);
+    const observation = await observeEnvelopeChainEvidence(this.chainEvidence, intent, envelope);
     return Object.freeze({
       status: observation.status,
       detail: Object.freeze({
@@ -553,8 +550,7 @@ function validateDestination(destination: string): void {
 async function observeEnvelopeChainEvidence(
   module: ChainEvidenceModule,
   intent: TreasuryOperationRecord,
-  envelope: EvidenceEnvelope,
-  floor: FinalityFloor
+  envelope: EvidenceEnvelope
 ): Promise<{ readonly status: TreasuryOperationObservationStatus; readonly evidence?: ChainEvidenceRecord }> {
   const expectedOutputs = envelopeExpectedOutputs(envelope);
   const evidence = await module.observe({
@@ -567,14 +563,15 @@ async function observeEnvelopeChainEvidence(
     watchedAddresses: envelopeWatchedAddresses(envelope),
     mechanism: envelope.kind === "wallet_send" ? "ordinary" : "native-covenant",
     protocolFinality: "accepted",
-    operatorFloor: floor,
     signal: new AbortController().signal,
   });
-  if (evidence.status === "present" && evidence.level && meets(evidence.level, floor)) {
-    return Object.freeze({ status: "observed" as const, evidence });
+  if (evidence.interpretation === "accepted") {
+    return Object.freeze({ status: "observed" as const, evidence: evidence.evidence });
   }
-  if (evidence.status === "absent") return Object.freeze({ status: "not_submitted" as const, evidence });
-  return Object.freeze({ status: "pending" as const, evidence });
+  if (evidence.interpretation === "absent") {
+    return Object.freeze({ status: "not_submitted" as const, evidence: evidence.evidence });
+  }
+  return Object.freeze({ status: "pending" as const, evidence: evidence.evidence });
 }
 
 function envelopeExpectedOutputs(envelope: EvidenceEnvelope): readonly ExpectedChainOutput[] {

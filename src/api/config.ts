@@ -7,12 +7,16 @@ import {
   type AgentApiCredential,
   type RecoveryApiCredential,
 } from "./credential.js";
-import { validateSompiApiSocketPath } from "./socket.js";
+import {
+  validateSompiApiSocketPath,
+  type SompiApiSocketDirectoryMode,
+} from "./socket.js";
 
 export interface SompiApiConnectionConfig {
   readonly socketPath: string;
   readonly expectedServerUserId: number;
   readonly runtimeGroupId: number;
+  readonly directoryMode: SompiApiSocketDirectoryMode;
   readonly credential: AgentApiCredential;
 }
 
@@ -26,6 +30,7 @@ export interface SompiRecoveryApiListenerConfig {
   readonly socketPath: string;
   readonly expectedServerUserId: number;
   readonly runtimeGroupId: number;
+  readonly directoryMode: SompiApiSocketDirectoryMode;
   readonly credential: RecoveryApiCredential;
   readonly deadlineMs: number;
   readonly maxControlConcurrency: number;
@@ -63,14 +68,33 @@ function sompiApiConfigFromEnv(
   const socketPath = path.resolve(configuredSocketPath);
   const operatorUserId = numeric(required(env, "SOMPI_OPERATOR_UID"), "operator user ID", 0, 0x7fffffff);
   const expectedServerUserId = numeric(required(env, "SOMPI_API_UID"), "API server user ID", 0, 0x7fffffff);
-  const runtimeGroupId = numeric(required(env, "SOMPI_RUNTIME_GID"), "runtime group ID", 0, 0x7fffffff);
+  const credentialRuntimeGroupId = numeric(
+    required(env, "SOMPI_RUNTIME_GID"),
+    "runtime group ID",
+    0,
+    0x7fffffff,
+  );
+  const runtimeGroupId = numeric(
+    required(env, "SOMPI_API_SOCKET_GID"),
+    "API socket group ID",
+    0,
+    0x7fffffff,
+  );
+  assertAgentSocketGroupIsDistinct(
+    credentialRuntimeGroupId,
+    runtimeGroupId,
+    options.allowSameUserForTests === true || requireDistinctClient,
+  );
+  const currentUserId = typeof process.getuid === "function" ? process.getuid() : undefined;
+  const currentGroupId = typeof process.getgid === "function" ? process.getgid() : undefined;
   if (requireDistinctClient && !options.allowSameUserForTests) {
-    const currentUserId = typeof process.getuid === "function" ? process.getuid() : undefined;
     if (
       currentUserId === undefined ||
+      currentGroupId === undefined ||
       currentUserId === 0 ||
       currentUserId === expectedServerUserId ||
-      currentUserId === operatorUserId
+      currentUserId === operatorUserId ||
+      credentialRuntimeGroupId !== currentGroupId
     ) {
       throw new SompiApiConfigError(
         "Sompi API clients must run as a distinct non-root runtime principal",
@@ -83,9 +107,16 @@ function sompiApiConfigFromEnv(
       socketPath,
       expectedServerUserId,
       runtimeGroupId,
+      directoryMode: 0o2710,
       credential: loadAgentApiCredential(filename, {
-        expectedOwnerUserId: operatorUserId,
-        runtimeGroupId,
+        expectedOwnerUserId:
+          requireDistinctClient && !options.allowSameUserForTests
+            ? currentUserId!
+            : operatorUserId,
+        runtimeGroupId: credentialRuntimeGroupId,
+        ...(requireDistinctClient && !options.allowSameUserForTests
+          ? { ownerOnlyClientFile: true }
+          : {}),
         ...(options.allowSameUserForTests ? { allowSameUserForTests: true } : {}),
       }),
     });
@@ -135,11 +166,25 @@ export function sompiRecoveryApiListenerConfigFromEnv(
   const expectedServerUserId = numeric(required(env, "SOMPI_API_UID"), "API server user ID", 0, 0x7fffffff);
   const runtimeGroupId = numeric(required(env, "SOMPI_RECOVERY_GID"), "recovery group ID", 0, 0x7fffffff);
   const agentRuntimeGroupId = numeric(required(env, "SOMPI_RUNTIME_GID"), "runtime group ID", 0, 0x7fffffff);
+  const agentSocketGroupId = numeric(
+    required(env, "SOMPI_API_SOCKET_GID"),
+    "API socket group ID",
+    0,
+    0x7fffffff,
+  );
+  assertAgentSocketGroupIsDistinct(
+    agentRuntimeGroupId,
+    agentSocketGroupId,
+    options.allowSameUserForTests === true,
+  );
   const socketPath = path.resolve(configuredSocketPath);
   if (socketPath === path.resolve(required(env, "SOMPI_API_SOCKET"))) {
     throw new SompiApiConfigError("Sompi recovery API requires a distinct socket path");
   }
-  if (!options.allowSameUserForTests && runtimeGroupId === agentRuntimeGroupId) {
+  if (
+    !options.allowSameUserForTests &&
+    (runtimeGroupId === agentRuntimeGroupId || runtimeGroupId === agentSocketGroupId)
+  ) {
     throw new SompiApiConfigError("Sompi recovery API requires a distinct operator-only group");
   }
   const currentUserId = typeof process.getuid === "function" ? process.getuid() : undefined;
@@ -152,6 +197,7 @@ export function sompiRecoveryApiListenerConfigFromEnv(
       socketPath,
       expectedServerUserId,
       runtimeGroupId,
+      directoryMode: 0o710,
       credential: loadRecoveryApiCredential(filename, {
         expectedOwnerUserId: operatorUserId,
         runtimeGroupId,
@@ -178,4 +224,16 @@ function numeric(value: string, label: string, minimum: number, maximum: number)
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < minimum || parsed > maximum) throw new SompiApiConfigError(`${label} is invalid`);
   return parsed;
+}
+
+function assertAgentSocketGroupIsDistinct(
+  credentialRuntimeGroupId: number,
+  socketGroupId: number,
+  allowSameUserForTests: boolean,
+): void {
+  if (!allowSameUserForTests && credentialRuntimeGroupId === socketGroupId) {
+    throw new SompiApiConfigError(
+      "Sompi API socket requires the selected agent's distinct primary group",
+    );
+  }
 }

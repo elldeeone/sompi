@@ -28,6 +28,7 @@ test("API environment accepts only a permissioned Unix socket and securely insta
     fs.writeFileSync(filename, bytes, { mode: 0o600 });
     fs.writeFileSync(recoveryFilename, recoveryBytes, { mode: 0o600 });
     const stat = fs.statSync(filename);
+    const socketGroupId = stat.gid + 1;
     const env = {
       SOMPI_API_SOCKET: socketPath,
       SOMPI_API_DEADLINE_MS: "90000",
@@ -37,6 +38,7 @@ test("API environment accepts only a permissioned Unix socket and securely insta
       SOMPI_OPERATOR_UID: String(stat.uid),
       SOMPI_API_UID: String(stat.uid),
       SOMPI_RUNTIME_GID: String(stat.gid),
+      SOMPI_API_SOCKET_GID: String(socketGroupId),
       SOMPI_RECOVERY_API_SOCKET: recoverySocketPath,
       SOMPI_RECOVERY_API_CREDENTIAL: recoveryFilename,
       SOMPI_RECOVERY_GID: String(stat.gid),
@@ -46,13 +48,15 @@ test("API environment accepts only a permissioned Unix socket and securely insta
     const connection = sompiApiConnectionConfigFromEnv(env, { allowSameUserForTests: true });
     assert.equal(connection.socketPath, socketPath);
     assert.equal(connection.expectedServerUserId, stat.uid);
-    assert.equal(connection.runtimeGroupId, stat.gid);
+    assert.equal(connection.runtimeGroupId, socketGroupId);
+    assert.equal(connection.directoryMode, 0o2710);
     const listener = sompiApiListenerConfigFromEnv(env, { allowSameUserForTests: true });
     assert.equal(listener.maxMutationConcurrency, 4);
     assert.equal(listener.maxControlConcurrency, 2);
     assert.equal(listener.deadlineMs, 90_000);
     const recovery = sompiRecoveryApiListenerConfigFromEnv(env, { allowSameUserForTests: true });
     assert.equal(recovery.socketPath, recoverySocketPath);
+    assert.equal(recovery.directoryMode, 0o710);
     assert.equal(recovery.maxControlConcurrency, 3);
     assert.equal(recovery.maxConnections, 7);
     assert.notEqual(recovery.credential.schema, connection.credential.schema);
@@ -67,6 +71,14 @@ test("API environment accepts only a permissioned Unix socket and securely insta
     assert.throws(
       () => sompiApiConnectionConfigFromEnv({ ...env, SOMPI_API_HOST: "127.0.0.1" }, { allowSameUserForTests: true }),
       /removed/
+    );
+    assert.throws(
+      () => sompiApiConnectionConfigFromEnv({ ...env, SOMPI_API_SOCKET_GID: undefined }, { allowSameUserForTests: true }),
+      /SOMPI_API_SOCKET_GID is required/
+    );
+    assert.throws(
+      () => sompiApiListenerConfigFromEnv({ ...env, SOMPI_API_SOCKET_GID: env.SOMPI_RUNTIME_GID }),
+      /distinct primary group/
     );
     assert.throws(
       () => sompiApiConnectionConfigFromEnv(env),

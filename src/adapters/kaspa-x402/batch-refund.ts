@@ -13,8 +13,6 @@ import {
 } from "@kaspa-x402/covenant";
 
 import { ChainEvidenceModule } from "../../chain-evidence/module.js";
-import { meets } from "../../chain-evidence/module.js";
-import type { FinalityFloor } from "../../chain-evidence/types.js";
 import { evidenceDigest } from "../../purchase/identity.js";
 import type { PurchaseJournal } from "../../purchase/journal.js";
 import type { Sha256Digest } from "../../purchase/types.js";
@@ -70,7 +68,6 @@ export class BatchRefundTreasuryOperationAdapter implements TreasuryOperationAda
     private readonly chain: BatchActiveUtxoSource,
     private readonly signer: SecureBatchChannelSigner,
     private readonly chainEvidence: ChainEvidenceModule,
-    private readonly finalityFloor: FinalityFloor,
     private readonly feeAtomic: string,
     private readonly claimRace: BatchClaimRaceSource,
   ) {
@@ -230,11 +227,11 @@ export class BatchRefundTreasuryOperationAdapter implements TreasuryOperationAda
       watchedAddresses: [envelope.refundAddress],
       mechanism: "native-covenant",
       protocolFinality: "accepted",
-      operatorFloor: this.finalityFloor,
       signal: new AbortController().signal,
     });
-    const observed = evidence.status === "present" && evidence.level && meets(evidence.level, this.finalityFloor);
-    if (!observed) {
+    const accepted = evidence.interpretation === "accepted";
+    const record = evidence.evidence;
+    if (!accepted) {
       const channel = this.journal.requireBatchChannel(envelope.channelId);
       const race = await this.claimRace.observeClaimWinner({
         channel,
@@ -261,15 +258,15 @@ export class BatchRefundTreasuryOperationAdapter implements TreasuryOperationAda
         });
       }
       return Object.freeze({
-        status: race.status === "unspent" && evidence.status === "absent"
+        status: race.status === "unspent" && evidence.interpretation === "absent"
           ? "not_submitted" as const
           : "pending" as const,
         detail: Object.freeze({
           profile: "urn:sompi:batch-refund-observation:1",
           operationKey: intent.operationKey,
           transactionId: envelope.transactionId,
-          chainEvidenceDigest: evidence.detailDigest,
-          chainEvidenceLevel: evidence.level ?? "unknown",
+          chainEvidenceDigest: record.detailDigest,
+          chainEvidenceLevel: record.level ?? "unknown",
           raceStatus: race.status,
           raceEvidenceDigest: race.detailDigest,
         }),
@@ -281,8 +278,8 @@ export class BatchRefundTreasuryOperationAdapter implements TreasuryOperationAda
         profile: "urn:sompi:batch-refund-observation:1",
         operationKey: intent.operationKey,
         transactionId: envelope.transactionId,
-        chainEvidenceDigest: evidence.detailDigest,
-        chainEvidenceLevel: evidence.level ?? "unknown",
+        chainEvidenceDigest: record.detailDigest,
+        chainEvidenceLevel: record.level ?? "unknown",
       }),
     });
   }

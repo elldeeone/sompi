@@ -2,11 +2,22 @@ import * as assert from "node:assert/strict";
 import test from "node:test";
 
 import { evidenceDigest } from "./identity.js";
-import { canonicalPurchaseExecutionPlan, channelEpochDigest } from "./execution-plan.js";
+import {
+  canonicalPurchaseExecutionPlan,
+  channelEpochDigest,
+  purchaseExecutionProtocolFinality,
+} from "./execution-plan.js";
 
 const requirementsDigest = evidenceDigest(Buffer.from("requirements"));
 
 test("canonical execution plans distinguish exact settlement from a bound channel voucher", () => {
+  assert.deepEqual(
+    (["accepted", "confirmed", "channel-commitment"] as const).map((assurance) =>
+      purchaseExecutionProtocolFinality(assurance)
+    ),
+    ["accepted", "confirmed", "accepted"]
+  );
+
   const exact = canonicalPurchaseExecutionPlan({
     mechanism: "single-transaction",
     profile: "kaspa-exact-v2:standard-native",

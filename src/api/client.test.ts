@@ -69,7 +69,7 @@ test("API client rejects an insecure socket directory before disclosing its bear
   await listen(server, fixture.socketPath);
   fs.chownSync(fixture.socketPath, fixture.access.expectedServerUserId, fixture.access.runtimeGroupId);
   fs.chmodSync(fixture.socketPath, 0o660);
-  fs.chmodSync(fixture.directory, 0o770);
+  fs.chmodSync(fixture.directory, 0o710);
   try {
     const client = new SompiApiClient({ credential, ...fixture.access, socketPath: fixture.socketPath });
     await assert.rejects(() => client.status(fakeView().id), (error: unknown) =>
@@ -91,7 +91,7 @@ test("API client rejects oversized and malformed local responses", async () => {
   await listen(server, fixture.socketPath);
   fs.chownSync(fixture.socketPath, fixture.access.expectedServerUserId, fixture.access.runtimeGroupId);
   fs.chmodSync(fixture.socketPath, 0o660);
-  fs.chmodSync(fixture.directory, 0o710);
+  fs.chmodSync(fixture.directory, 0o2710);
   try {
     const client = new SompiApiClient({ credential, ...fixture.access, socketPath: fixture.socketPath });
     await assert.rejects(() => client.status(fakeView().id), (error: unknown) =>
@@ -107,11 +107,11 @@ function socketFixture() {
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
   const gid = typeof process.getgid === "function" ? process.getgid() : 0;
   fs.chownSync(directory, uid, gid);
-  fs.chmodSync(directory, 0o710);
+  fs.chmodSync(directory, 0o2710);
   return {
     directory,
     socketPath: path.join(directory, "api.sock"),
-    access: { expectedServerUserId: uid, runtimeGroupId: gid },
+    access: { expectedServerUserId: uid, runtimeGroupId: gid, directoryMode: 0o2710 as const },
     close: () => fs.rmSync(directory, { recursive: true, force: true }),
   } as const;
 }

@@ -18,6 +18,7 @@ import type {
 } from "../../purchase/coordinator.js";
 import type { Sha256Digest } from "../../purchase/types.js";
 import { evidenceDigest } from "../../purchase/identity.js";
+import type { ChainEvidenceFinalitySelector } from "../../chain-evidence/types.js";
 import type {
   JournalObservedStagingSource,
 } from "./exact-attempt-funding-bridge.js";
@@ -41,7 +42,7 @@ export interface KaspaStagingRecoveryModuleOptions {
   readonly recovery: AbandonedStagingRecovery;
   readonly metadata: TreasuryStagingMetadataSource;
   readonly observedStaging: JournalObservedStagingSource;
-  readonly finalityFloor: "accepted" | "depth-confirmed";
+  readonly finality: ChainEvidenceFinalitySelector;
 }
 
 /**
@@ -57,7 +58,8 @@ export class KaspaStagingRecoveryModule
       !options?.recovery ||
       typeof options.recovery.prepare !== "function" ||
       typeof options.metadata?.read !== "function" ||
-      typeof options.observedStaging?.read !== "function"
+      typeof options.observedStaging?.read !== "function" ||
+      typeof options.finality?.selectFinality !== "function"
     ) {
       throw new Error("staging recovery dependencies are required");
     }
@@ -97,7 +99,7 @@ export class KaspaStagingRecoveryModule
     if (evidenceDigest(input.paymentRequirements) !== metadata.paymentRequirementsDigest) {
       throw new Error("PAYMENT-REQUIRED differs from the signed staging metadata");
     }
-    const requirement = exactRequirement(input, this.options.finalityFloor);
+    const requirement = exactRequirement(input, this.options.finality);
     const selection: ImmutableExactPaymentSelection = input.exactPayment
       ? {
           mode: "exact_candidate",
@@ -232,7 +234,7 @@ function validatePreparationContext(
 
 function exactRequirement(
   input: Readonly<StagingRecoveryPreparationContext>,
-  floor: "accepted" | "depth-confirmed"
+  finality: ChainEvidenceFinalitySelector
 ): { requiredFinality: "accepted" | "confirmed" } {
   const header = strictAscii(input.paymentRequirements, "PAYMENT-REQUIRED");
   const parsed = parsePaymentRequiredHeaderValue(header, {
@@ -258,11 +260,11 @@ function exactRequirement(
   ) {
     throw new Error("staging recovery payment requirements differ from Checkout Terms");
   }
+  const selected = finality.selectFinality("recovery-release", requiredFinality);
   return {
-    requiredFinality:
-      floor === "depth-confirmed" || requiredFinality === "confirmed"
-        ? "confirmed"
-        : "accepted",
+    requiredFinality: selected.effectiveFloor === "depth-confirmed"
+      ? "confirmed"
+      : "accepted",
   };
 }
 

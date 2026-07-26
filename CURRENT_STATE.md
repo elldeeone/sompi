@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: **2026-07-23**
+Last updated: **2026-07-24**
 
 ## Architecture programme
 
@@ -36,6 +36,33 @@ The completed changes now have these properties:
   provenance are unchanged.
 
 No accepted decision changes in this phase. No new ADR is required.
+
+Architecture Phase 3 is complete. It started from
+`484ad800cb1f74261ca5c7ae746fbb3cb0563e1a`.
+
+The completed changes now have these properties:
+
+- Chain Evidence owns Finality Floor selection and terminal evidence meaning
+  for all five operation policies.
+- Merchant assurance, operator policy, effective floor, and DAA depth are
+  separate facts.
+- Retained raw DAA evidence is exact and can change between accepted and
+  depth-confirmed in both directions.
+- Host Bootstrap owns and verifies the exact principal, group, socket, startup,
+  Hermes, rollback, and secret-isolation topology.
+- The internal authorization identities, Authority IPC, and Journal epoch use
+  the clean semantic cutover in ADR-0024.
+
+The current source uses the internal authorization profiles and Authority IPC
+version in ADR-0024. It accepts only Journal epoch 20. Epoch 20 has the same
+physical SQLite shape as epoch 19. There is no migration, fallback, or dual
+reader.
+
+The phase does not change the public API, Kaspa-x402 source, wire behavior or
+pins, the AP2 upstream pin, release artifacts, deployment, the live Terah host,
+or a sibling repository. It does not include Phase 4 Treasury work.
+
+This phase implements accepted ADR-0012, ADR-0018, and ADR-0024.
 
 ## Current release
 
@@ -134,6 +161,21 @@ The Architecture Phase 2 tree produced these local results:
   Phase 2 tree.
 - The Kaspa-x402 source, pin, fixtures, and conformance provenance did not change.
 
+The Architecture Phase 3 tree produced these local results:
+
+- 604 unit tests ran.
+- 603 tests passed.
+- One root-only ownership test was skipped as expected.
+- Offline smoke passed.
+- The disposable root-container Host Bootstrap proof passed all 46 checks in
+  the pinned Node 22.22.0 image.
+- All five alpha.9 conformance checks passed.
+- OpenAPI and Arazzo generated-interface checks passed.
+- The complete release verifier passed on an isolated clean commit of the exact
+  Phase 3 tree.
+- The Kaspa-x402 source, wire behavior, packages, pins, fixtures, and
+  conformance provenance did not change. The AP2 upstream pin did not change.
+
 ## Funded evidence
 
 The [alpha.9 clean-cutover evidence](https://github.com/elldeeone/sompi/blob/c8fd02fa403b7e4f43dfa91653c0c232867d8ed8/evidence/alpha9-clean-cutover/README.md) is public and contains no secrets.
@@ -166,5 +208,6 @@ The deterministic Trusted Authority records signed human approval before an irre
 
 ## Next work
 
-Architecture Phase 3 is the next planned phase. It is not active.
-Do not start Phase 3 without explicit user authorization.
+Architecture Phase 3 is complete.
+Phase 4 is next, but it is not active.
+Stop before Phase 4 until its work is explicitly started.

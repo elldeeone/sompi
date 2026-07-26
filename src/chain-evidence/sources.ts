@@ -7,6 +7,10 @@ import type {
   IndependentChainWitness,
   OperatorChainObserver,
 } from "./types.js";
+import {
+  CHAIN_EVIDENCE_OPERATOR_PROFILE,
+  CHAIN_EVIDENCE_WITNESS_PROFILE,
+} from "./types.js";
 
 const HASH32 = /^[a-f0-9]{64}$/;
 const UINT = /^(?:0|[1-9][0-9]*)$/;
@@ -24,6 +28,7 @@ export interface HttpsAcceptedChainWitnessOptions {
 
 /** Independent explorer/history witness. HTTP 404 is the only absence result. */
 export class HttpsAcceptedChainWitness implements IndependentChainWitness {
+  readonly depthConfirmationDaa: string;
   private readonly baseUrl: string;
   private readonly depth: bigint;
   private readonly fetcher: typeof globalThis.fetch;
@@ -36,6 +41,7 @@ export class HttpsAcceptedChainWitness implements IndependentChainWitness {
     }
     this.baseUrl = url.href;
     this.depth = positiveBigInt(options.depthConfirmationDaa, "witness confirmation depth");
+    this.depthConfirmationDaa = this.depth.toString();
     if (typeof options.fetch !== "function") throw new Error("Chain Evidence witness requires an injected fetch boundary");
     this.fetcher = options.fetch;
     this.now = options.now ?? Date.now;
@@ -49,16 +55,16 @@ export class HttpsAcceptedChainWitness implements IndependentChainWitness {
     );
     if (transactionResponse.status === 404) {
       drain(transactionResponse);
-      return nonPresent("absent", "kaspa-rest-accepted-history-v1", digest({ source: this.baseUrl, transactionId: request.transactionId, httpStatus: 404 }), readTime(this.now()));
+      return nonPresent("absent", CHAIN_EVIDENCE_WITNESS_PROFILE, digest({ source: this.baseUrl, transactionId: request.transactionId, httpStatus: 404 }), readTime(this.now()));
     }
     if (!transactionResponse.ok) {
       drain(transactionResponse);
-      return nonPresent("unavailable", "kaspa-rest-accepted-history-v1", digest({ source: this.baseUrl, transactionId: request.transactionId, httpStatus: transactionResponse.status }), readTime(this.now()));
+      return nonPresent("unavailable", CHAIN_EVIDENCE_WITNESS_PROFILE, digest({ source: this.baseUrl, transactionId: request.transactionId, httpStatus: transactionResponse.status }), readTime(this.now()));
     }
     const transaction = await boundedJson(transactionResponse);
     const transactionId = hash(transaction.transaction_id, "witness transaction ID");
     if (transactionId !== request.transactionId || transaction.is_accepted !== true) {
-      return nonPresent("unknown", "kaspa-rest-accepted-history-v1", digest({ source: this.baseUrl, transactionId: request.transactionId, result: "not-accepted" }), readTime(this.now()));
+      return nonPresent("unknown", CHAIN_EVIDENCE_WITNESS_PROFILE, digest({ source: this.baseUrl, transactionId: request.transactionId, result: "not-accepted" }), readTime(this.now()));
     }
     validateWitnessTransaction(transaction, request);
     const blocks = stringArray(transaction.block_hash, "witness transaction block hashes").map((value) => hash(value, "witness transaction block hash"));
@@ -71,20 +77,20 @@ export class HttpsAcceptedChainWitness implements IndependentChainWitness {
     ]);
     if (!blockResponse.ok || !dagResponse.ok) {
       drain(blockResponse); drain(dagResponse);
-      return nonPresent("unavailable", "kaspa-rest-accepted-history-v1", digest({ source: this.baseUrl, transactionId: request.transactionId, blockStatus: blockResponse.status, dagStatus: dagResponse.status }), readTime(this.now()));
+      return nonPresent("unavailable", CHAIN_EVIDENCE_WITNESS_PROFILE, digest({ source: this.baseUrl, transactionId: request.transactionId, blockStatus: blockResponse.status, dagStatus: dagResponse.status }), readTime(this.now()));
     }
     const [block, dag] = await Promise.all([boundedJson(blockResponse), boundedJson(dagResponse)]);
     const header = record(block.header, "witness accepting block header");
     const acceptingDaa = uint(header.daaScore, "witness accepting block DAA");
     const virtualDaa = uint(dag.virtualDaaScore, "witness virtual DAA");
-    if (virtualDaa < acceptingDaa) return nonPresent("unknown", "kaspa-rest-accepted-history-v1", digest({ source: this.baseUrl, transactionId: request.transactionId, result: "daa-inversion" }), readTime(this.now()));
+    if (virtualDaa < acceptingDaa) return nonPresent("unknown", CHAIN_EVIDENCE_WITNESS_PROFILE, digest({ source: this.baseUrl, transactionId: request.transactionId, result: "daa-inversion" }), readTime(this.now()));
     const level = virtualDaa - acceptingDaa >= this.depth ? "depth-confirmed" as const : "accepted" as const;
     const expectedDigest = outputsDigest(request);
     return Object.freeze({
       status: "present" as const,
       level,
       view: "historical" as const,
-      sourceProfile: "kaspa-rest-accepted-history-v1",
+      sourceProfile: CHAIN_EVIDENCE_WITNESS_PROFILE,
       transactionId,
       blockHash,
       acceptingBlockHash,
@@ -105,11 +111,13 @@ export interface WrpcOperatorChainObserverOptions {
 
 /** Operator wRPC corroborator. It never turns generic RPC exceptions into absence. */
 export class WrpcOperatorChainObserver implements OperatorChainObserver {
+  readonly depthConfirmationDaa: string;
   private readonly depth: bigint;
   private readonly now: () => number;
   constructor(private readonly options: WrpcOperatorChainObserverOptions) {
     if (typeof options?.rpc?.client !== "function") throw new Error("operator wRPC provider is required");
     this.depth = positiveBigInt(options.depthConfirmationDaa, "operator confirmation depth");
+    this.depthConfirmationDaa = this.depth.toString();
     this.now = options.now ?? Date.now;
   }
 
@@ -118,7 +126,7 @@ export class WrpcOperatorChainObserver implements OperatorChainObserver {
     const rpc = await this.options.rpc.client();
     const info = await rpc.getServerInfo();
     if (!info.isSynced || !info.hasUtxoIndex || !["testnet-10", "kaspa:testnet-10"].includes(String(info.networkId))) {
-      return nonPresent("unavailable", "kaspa-operator-wrpc-v1", digest({ result: "node-profile-unavailable" }), readTime(this.now()));
+      return nonPresent("unavailable", CHAIN_EVIDENCE_OPERATOR_PROFILE, digest({ result: "node-profile-unavailable" }), readTime(this.now()));
     }
     const virtualDaa = BigInt(info.virtualDaaScore);
     if (witness.status === "present" && witness.level !== "provisional") {
@@ -132,7 +140,7 @@ export class WrpcOperatorChainObserver implements OperatorChainObserver {
           entry.acceptedTransactionIds.some((candidate) => String(candidate).toLowerCase() === request.transactionId)
         );
         if (matches.length !== 1 || String(matches[0].acceptingBlockHash).toLowerCase() !== witness.acceptingBlockHash) {
-          return nonPresent("unknown", "kaspa-operator-wrpc-v1", digest({ result: "accepted-history-conflict", transactionId: request.transactionId }), readTime(this.now()));
+          return nonPresent("unknown", CHAIN_EVIDENCE_OPERATOR_PROFILE, digest({ result: "accepted-history-conflict", transactionId: request.transactionId }), readTime(this.now()));
         }
         const [block, transactionBlock] = await Promise.all([
           rpc.getBlock({ hash: witness.acceptingBlockHash, includeTransactions: false }),
@@ -142,12 +150,12 @@ export class WrpcOperatorChainObserver implements OperatorChainObserver {
         const headerHash = String(header.hash).toLowerCase();
         const acceptingDaa = BigInt(header.daaScore);
         if (headerHash !== witness.acceptingBlockHash || acceptingDaa.toString() !== witness.acceptingBlockDaaScore || virtualDaa < acceptingDaa) {
-          return nonPresent("unknown", "kaspa-operator-wrpc-v1", digest({ result: "accepting-block-conflict", transactionId: request.transactionId }), readTime(this.now()));
+          return nonPresent("unknown", CHAIN_EVIDENCE_OPERATOR_PROFILE, digest({ result: "accepting-block-conflict", transactionId: request.transactionId }), readTime(this.now()));
         }
         const containing = record(transactionBlock.block, "wRPC transaction block");
         const containingHeader = record(containing.header, "wRPC transaction block header");
         if (String(containingHeader.hash ?? "").toLowerCase() !== witness.blockHash) {
-          return nonPresent("unknown", "kaspa-operator-wrpc-v1", digest({ result: "transaction-block-conflict", transactionId: request.transactionId }), readTime(this.now()));
+          return nonPresent("unknown", CHAIN_EVIDENCE_OPERATOR_PROFILE, digest({ result: "transaction-block-conflict", transactionId: request.transactionId }), readTime(this.now()));
         }
         const transactions = array(containing.transactions, "wRPC accepted block transactions");
         if (transactions.length > MAX_ACCEPTED_BLOCK_TRANSACTIONS) {
@@ -167,13 +175,13 @@ export class WrpcOperatorChainObserver implements OperatorChainObserver {
           }
         }
         if (transactionMatches !== 1) {
-          return nonPresent("unknown", "kaspa-operator-wrpc-v1", digest({ result: "accepted-transaction-body-conflict", transactionId: request.transactionId }), readTime(this.now()));
+          return nonPresent("unknown", CHAIN_EVIDENCE_OPERATOR_PROFILE, digest({ result: "accepted-transaction-body-conflict", transactionId: request.transactionId }), readTime(this.now()));
         }
         validateWrpcTransaction(transactionMatch, request);
         const level = virtualDaa - acceptingDaa >= this.depth ? "depth-confirmed" as const : "accepted" as const;
         return Object.freeze({
           status: "present" as const, level, view: "historical" as const,
-          sourceProfile: "kaspa-operator-wrpc-v1", transactionId: request.transactionId,
+          sourceProfile: CHAIN_EVIDENCE_OPERATOR_PROFILE, transactionId: request.transactionId,
           blockHash: witness.blockHash, acceptingBlockHash: witness.acceptingBlockHash,
           acceptingBlockDaaScore: acceptingDaa.toString(), virtualDaaScore: virtualDaa.toString(),
           outputsDigest: outputsDigest(request),
@@ -181,7 +189,7 @@ export class WrpcOperatorChainObserver implements OperatorChainObserver {
           observedAtMs: readTime(this.now()),
         });
       } catch {
-        return nonPresent("unavailable", "kaspa-operator-wrpc-v1", digest({ result: "accepted-history-unavailable", transactionId: request.transactionId }), readTime(this.now()));
+        return nonPresent("unavailable", CHAIN_EVIDENCE_OPERATOR_PROFILE, digest({ result: "accepted-history-unavailable", transactionId: request.transactionId }), readTime(this.now()));
       }
     }
 
@@ -193,14 +201,14 @@ export class WrpcOperatorChainObserver implements OperatorChainObserver {
       if (currentView === "present") {
         return Object.freeze({
           status: "present" as const, level: "provisional" as const, view: "current" as const,
-          sourceProfile: "kaspa-operator-wrpc-v1", transactionId: request.transactionId,
+          sourceProfile: CHAIN_EVIDENCE_OPERATOR_PROFILE, transactionId: request.transactionId,
           outputsDigest: outputsDigest(request),
           detailDigest: digest({ source: "operator-wrpc-utxo", transactionId: request.transactionId, outputsDigest: outputsDigest(request) }),
           observedAtMs: readTime(this.now()),
         });
       }
       if (currentView === "partial") {
-        return nonPresent("unknown", "kaspa-operator-wrpc-v1", digest({ result: "partial-current-output-view", transactionId: request.transactionId }), readTime(this.now()));
+        return nonPresent("unknown", CHAIN_EVIDENCE_OPERATOR_PROFILE, digest({ result: "partial-current-output-view", transactionId: request.transactionId }), readTime(this.now()));
       }
 
       // A bounded address query gives a complete pool view for the
@@ -221,15 +229,15 @@ export class WrpcOperatorChainObserver implements OperatorChainObserver {
         validateWrpcTransaction(match, request);
         return Object.freeze({
           status: "present" as const, level: "provisional" as const, view: "current" as const,
-          sourceProfile: "kaspa-operator-wrpc-v1", transactionId: request.transactionId,
+          sourceProfile: CHAIN_EVIDENCE_OPERATOR_PROFILE, transactionId: request.transactionId,
           outputsDigest: outputsDigest(request),
           detailDigest: digest({ source: "operator-wrpc-mempool", transactionId: request.transactionId, outputsDigest: outputsDigest(request) }),
           observedAtMs: readTime(this.now()),
         });
       }
-      return nonPresent("absent", "kaspa-operator-wrpc-v1", digest({ source: "operator-wrpc-address-pool", result: "absent", transactionId: request.transactionId, watchedAddresses: request.watchedAddresses }), readTime(this.now()));
+      return nonPresent("absent", CHAIN_EVIDENCE_OPERATOR_PROFILE, digest({ source: "operator-wrpc-address-pool", result: "absent", transactionId: request.transactionId, watchedAddresses: request.watchedAddresses }), readTime(this.now()));
     } catch {
-      return nonPresent("unavailable", "kaspa-operator-wrpc-v1", digest({ result: "mempool-address-view-unavailable", transactionId: request.transactionId }), readTime(this.now()));
+      return nonPresent("unavailable", CHAIN_EVIDENCE_OPERATOR_PROFILE, digest({ result: "mempool-address-view-unavailable", transactionId: request.transactionId }), readTime(this.now()));
     }
   }
 }

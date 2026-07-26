@@ -9,6 +9,16 @@ const PROFILE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}$/;
 export type PurchaseExecutionMechanism = "single-transaction" | "channel-voucher";
 export type PurchaseExecutionAssurance = "accepted" | "confirmed" | "channel-commitment";
 
+export function purchaseExecutionProtocolFinality(
+  assurance: PurchaseExecutionAssurance
+): "accepted" | "confirmed" {
+  if (assurance === "confirmed") return "confirmed";
+  if (assurance === "accepted" || assurance === "channel-commitment") {
+    return "accepted";
+  }
+  throw new Error("Purchase execution settlement assurance is invalid");
+}
+
 export interface PurchaseChannelEpoch {
   readonly channelId: string;
   readonly activeOutpoint: Readonly<{ txid: string; index: number }>;
@@ -49,13 +59,7 @@ export function canonicalPurchaseExecutionPlan(
     throw new Error("Purchase execution requirements digest is invalid");
   }
   const maximumChargeAtomic = atomic(input.maximumChargeAtomic, true, "maximum charge");
-  if (
-    input.settlementAssurance !== "accepted" &&
-    input.settlementAssurance !== "confirmed" &&
-    input.settlementAssurance !== "channel-commitment"
-  ) {
-    throw new Error("Purchase execution settlement assurance is invalid");
-  }
+  purchaseExecutionProtocolFinality(input.settlementAssurance);
 
   let channelEpoch: PurchaseChannelEpoch | undefined;
   let claimFeeReserveAtomic: string | undefined;

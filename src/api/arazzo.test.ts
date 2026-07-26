@@ -90,9 +90,10 @@ test("Arazzo recovery scenario runs create, status, recover, and terminal receip
   const access = {
     expectedServerUserId: typeof process.getuid === "function" ? process.getuid() : 0,
     runtimeGroupId: typeof process.getgid === "function" ? process.getgid() : 0,
+    directoryMode: 0o2710 as const,
   };
   fs.chownSync(directory, access.expectedServerUserId, access.runtimeGroupId);
-  fs.chmodSync(directory, 0o710);
+  fs.chmodSync(directory, access.directoryMode);
   const socketPath = path.join(directory, "api.sock");
   const running = await startSompiApiServer({ application, credential, socketPath, ...access });
   try {

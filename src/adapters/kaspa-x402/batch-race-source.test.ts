@@ -5,6 +5,11 @@ import * as path from "node:path";
 import test from "node:test";
 
 import type { ChainEvidenceModule } from "../../chain-evidence/module.js";
+import {
+  CHAIN_EVIDENCE_PROFILE,
+  type ChainEvidenceObservation,
+  type ChainEvidenceRequest,
+} from "../../chain-evidence/types.js";
 import { evidenceDigest } from "../../purchase/identity.js";
 import {
   PurchaseJournal,
@@ -34,14 +39,9 @@ test("batch claim-race source discovers a spender but trusts it only after exact
         assert.deepEqual(request.expectedInputs, [{ transactionId: ACTIVE_TXID, index: 0 }]);
         assert.equal(request.expectedOutputs[1].amountAtomic, "800000");
         assert.equal(request.expectedOutputs[1].scriptPublicKey, SCRIPT);
-        return {
-          status: "present",
-          level: "accepted",
-          detailDigest: evidenceDigest("accepted-claim"),
-        };
+        return acceptedObservation(request, "accepted-claim");
       },
     } as unknown as ChainEvidenceModule,
-    "accepted",
     recoveryStore(),
     async (_input, init) => {
       assert.equal(init?.redirect, "error");
@@ -64,6 +64,30 @@ test("batch claim-race source discovers a spender but trusts it only after exact
   assert.equal(evidenceCalls, 1);
 });
 
+test("consensus-final claim evidence is exposed as depth-confirmed", async () => {
+  const source = new HttpsBatchClaimRaceSource(
+    "https://history.example/",
+    { getVirtualDaaScore: async () => "1", getUtxos: async () => [] },
+    {
+      observe: async (request: ChainEvidenceRequest) =>
+        acceptedObservation(request, "consensus-final-claim", "consensus-final"),
+    } as unknown as ChainEvidenceModule,
+    recoveryStore(),
+    async () => new Response(JSON.stringify([claimTransaction()]), { status: 200 }),
+  );
+
+  const observed = await source.observeClaimWinner({
+    channel: channel(),
+    refundTransactionId: "77".repeat(32),
+    signal: new AbortController().signal,
+  });
+  assert.equal(observed.status, "claim");
+  assert.equal(
+    observed.status === "claim" ? observed.finality : undefined,
+    "depth-confirmed",
+  );
+});
+
 test("a stale positive active UTXO cannot suppress an accepted claim", async () => {
   let fetchCalls = 0;
   let evidenceCalls = 0;
@@ -79,16 +103,11 @@ test("a stale positive active UTXO cannot suppress an accepted claim", async () 
       }],
     },
     {
-      observe: async () => {
+      observe: async (request: ChainEvidenceRequest) => {
         evidenceCalls += 1;
-        return {
-          status: "present",
-          level: "accepted",
-          detailDigest: evidenceDigest("accepted-claim-despite-stale-utxo"),
-        };
+        return acceptedObservation(request, "accepted-claim-despite-stale-utxo");
       },
     } as unknown as ChainEvidenceModule,
-    "accepted",
     recoveryStore(),
     async () => {
       fetchCalls += 1;
@@ -118,7 +137,6 @@ test("a corroborated unspent channel remains unspent and an invalid spender fail
       }],
     },
     {} as ChainEvidenceModule,
-    "accepted",
     recoveryStore(),
     async () => { fetchCalls += 1; return new Response("[]"); },
   );
@@ -133,7 +151,6 @@ test("a corroborated unspent channel remains unspent and an invalid spender fail
     "https://history.example/",
     { getVirtualDaaScore: async () => "1", getUtxos: async () => [] },
     { observe: async () => { throw new Error("must not corroborate malformed candidate"); } } as unknown as ChainEvidenceModule,
-    "accepted",
     recoveryStore(),
     async () => new Response(JSON.stringify([{ ...claimTransaction(), version: 0 }]), { status: 200 }),
   );
@@ -155,16 +172,11 @@ test("an accepted claim may reconcile the highest disclosed voucher before respo
     "https://history.example/",
     { getVirtualDaaScore: async () => "1", getUtxos: async () => [] },
     {
-      observe: async () => {
+      observe: async (request: ChainEvidenceRequest) => {
         evidenceCalls += 1;
-        return {
-          status: "present",
-          level: "accepted",
-          detailDigest: evidenceDigest("accepted-unacknowledged-claim"),
-        };
+        return acceptedObservation(request, "accepted-unacknowledged-claim");
       },
     } as unknown as ChainEvidenceModule,
-    "accepted",
     recoveryStore(),
     async () => new Response(JSON.stringify([claimTransaction()]), { status: 200 }),
   );
@@ -188,16 +200,11 @@ test("accepted older claim remains recoverable after a stale positive view advan
     "https://history.example/",
     { getVirtualDaaScore: async () => "1", getUtxos: async () => [] },
     {
-      observe: async () => {
+      observe: async (request: ChainEvidenceRequest) => {
         evidenceCalls += 1;
-        return {
-          status: "present",
-          level: "accepted",
-          detailDigest: evidenceDigest("accepted-older-claim"),
-        };
+        return acceptedObservation(request, "accepted-older-claim");
       },
     } as unknown as ChainEvidenceModule,
-    "accepted",
     recoveryStore(),
     async () => new Response(JSON.stringify([claimTransaction()]), { status: 200 }),
   );
@@ -216,7 +223,6 @@ test("claim history is streamed under a hard byte ceiling", async () => {
     "https://history.example/",
     { getVirtualDaaScore: async () => "1", getUtxos: async () => [] },
     {} as ChainEvidenceModule,
-    "accepted",
     recoveryStore(),
     async () => new Response("[" + " ".repeat(4 * 1024 * 1024) + "]", { status: 200 }),
   );
@@ -232,7 +238,6 @@ test("batch refund DAA is independently read from the bounded witness", async ()
     "https://history.example/",
     { getVirtualDaaScore: async () => "1", getUtxos: async () => [] },
     {} as ChainEvidenceModule,
-    "accepted",
     recoveryStore(),
     async (input) => {
       assert.equal(String(input), "https://history.example/info/blockdag");
@@ -259,16 +264,11 @@ test("batch claim-race discovery follows bounded cursor pages and resumes from d
     "https://history.example/",
     { getVirtualDaaScore: async () => "1", getUtxos: async () => [] },
     {
-      observe: async () => {
+      observe: async (request: ChainEvidenceRequest) => {
         evidenceCalls += 1;
-        return {
-          status: "present",
-          level: "accepted",
-          detailDigest: evidenceDigest("accepted-cursor-claim"),
-        };
+        return acceptedObservation(request, "accepted-cursor-claim");
       },
     } as unknown as ChainEvidenceModule,
-    "accepted",
     recovery,
     async (input) => {
       requests += 1;
@@ -315,16 +315,11 @@ test("batch claim-race discovery resumes after its per-attempt page budget", asy
     "https://history.example/",
     { getVirtualDaaScore: async () => "1", getUtxos: async () => [] },
     {
-      observe: async () => {
+      observe: async (request: ChainEvidenceRequest) => {
         evidenceCalls += 1;
-        return {
-          status: "present",
-          level: "accepted",
-          detailDigest: evidenceDigest("accepted-resumed-claim"),
-        };
+        return acceptedObservation(request, "accepted-resumed-claim");
       },
     } as unknown as ChainEvidenceModule,
-    "accepted",
     recovery,
     async (input) => {
       requests += 1;
@@ -369,13 +364,9 @@ test("an exhausted index scan is retried because later indexing can reveal the a
     "https://history.example/",
     { getVirtualDaaScore: async () => "1", getUtxos: async () => [] },
     {
-      observe: async () => ({
-        status: "present",
-        level: "accepted",
-        detailDigest: evidenceDigest("accepted-after-index-lag"),
-      }),
+      observe: async (request: ChainEvidenceRequest) =>
+        acceptedObservation(request, "accepted-after-index-lag"),
     } as unknown as ChainEvidenceModule,
-    "accepted",
     recovery,
     async () => {
       requests += 1;
@@ -413,7 +404,6 @@ test("batch claim-race cursor progress survives a real Journal restart", async (
       "https://history.example/",
       { getVirtualDaaScore: async () => "1", getUtxos: async () => [] },
       {} as ChainEvidenceModule,
-      "accepted",
       journal,
       async (input) => {
         const before = new URL(String(input)).searchParams.get("before");
@@ -453,13 +443,9 @@ test("batch claim-race cursor progress survives a real Journal restart", async (
       "https://history.example/",
       { getVirtualDaaScore: async () => "1", getUtxos: async () => [] },
       {
-        observe: async () => ({
-          status: "present",
-          level: "accepted",
-          detailDigest: evidenceDigest("accepted-after-journal-restart"),
-        }),
+        observe: async (request: ChainEvidenceRequest) =>
+          acceptedObservation(request, "accepted-after-journal-restart"),
       } as unknown as ChainEvidenceModule,
-      "accepted",
       journal,
       async (input) => {
         resumedBefore = new URL(String(input)).searchParams.get("before");
@@ -473,6 +459,46 @@ test("batch claim-race cursor progress survives a real Journal restart", async (
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
+
+function acceptedObservation(
+  request: Readonly<ChainEvidenceRequest>,
+  detail: string,
+  level: "accepted" | "depth-confirmed" | "consensus-final" = "accepted",
+): ChainEvidenceObservation {
+  const finality = Object.freeze({
+    operation: request.operation,
+    protocolFinality: request.protocolFinality,
+    operatorFloor: "accepted" as const,
+    effectiveFloor: "accepted" as const,
+    depthConfirmationDaa: "10",
+  });
+  return Object.freeze({
+    interpretation: "accepted" as const,
+    finality,
+    evidence: Object.freeze({
+      profile: CHAIN_EVIDENCE_PROFILE,
+      operationId: request.operationId,
+      operation: request.operation,
+      transactionId: request.transactionId,
+      status: "present" as const,
+      level,
+      view: "current" as const,
+      mechanism: request.mechanism,
+      protocolFinality: request.protocolFinality,
+      operatorFloor: finality.operatorFloor,
+      effectiveFloor: finality.effectiveFloor,
+      primaryProfile: "test-primary",
+      witnessProfile: "test-witness",
+      blockHash: "aa".repeat(32),
+      acceptingBlockHash: "bb".repeat(32),
+      acceptingBlockDaaScore: "100",
+      virtualDaaScore: "101",
+      outputsDigest: evidenceDigest(`outputs:${detail}`),
+      detailDigest: evidenceDigest(detail),
+      observedAtMs: 1,
+    }),
+  });
+}
 
 function claimTransaction(): Record<string, unknown> {
   return {

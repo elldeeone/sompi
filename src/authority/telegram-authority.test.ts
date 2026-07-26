@@ -398,6 +398,10 @@ test("maximum contract-shaped Purchase facts are paginated before the decision c
   const completeDisplay = calls.map((call) => String(call.text)).join("\n");
   assert.match(completeDisplay, /Purchase authorization request:<\/b>/);
   assert.match(completeDisplay, /Purchase authorization nonce:<\/b>/);
+  assert.match(completeDisplay, /Merchant settlement assurance:<\/b>/);
+  assert.match(completeDisplay, /Sompi operator floor:<\/b>/);
+  assert.match(completeDisplay, /Effective finality floor:<\/b>/);
+  assert.match(completeDisplay, /Depth-confirmed minimum DAA depth:<\/b>/);
   assert.match(completeDisplay, /Purchase authorization facts:<\/b>/);
   assert.match(completeDisplay, new RegExp("&amp;".repeat(8)));
 });
@@ -455,7 +459,7 @@ function envelope(callbackData: string): TelegramCallbackInput {
 
 function display(): AuthorityApprovalDisplay {
   return Object.freeze({
-    profile: "sompi.purchase-approval.1",
+    profile: "sompi.purchase-approval.2",
     authorityRequestDigest: "sha256:EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE",
     purchaseId: "pur_AAAAAAAAAAAAAAAAAAAAAA",
     merchant: Object.freeze({
@@ -482,7 +486,9 @@ function display(): AuthorityApprovalDisplay {
     purchaseAuthorizationFactsDigest: "sha256:HHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHHH",
     termsExpiresAt: "2026-07-18T05:05:00.000Z",
     additionalCostCeilingAtomic: "100",
+    operatorFinalityFloor: "accepted",
     effectiveFinalityFloor: "accepted",
+    depthConfirmationDaa: "10",
     execution: Object.freeze({
       planDigest: "sha256:DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD",
       mechanism: "single-transaction",

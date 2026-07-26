@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type { ChainEvidenceModule } from "../chain-evidence/module.js";
-import type { ChainEvidenceRecord, FinalityFloor } from "../chain-evidence/types.js";
+import type { ChainEvidenceObservation } from "../chain-evidence/types.js";
 import { Transaction } from "../kaspa-wasm.js";
 import {
   recoverVaultWithOwner,
@@ -22,7 +22,6 @@ export class OfflineOwnerVaultMigrationExecutor implements VaultMigrationExecuto
     wallet: KaspaWallet;
     chainEvidence: ChainEvidenceModule;
     ownerPrivateKey: string;
-    finalityFloor: FinalityFloor;
     feeCeilingAtomic: string;
     now?: () => number;
   }>) {
@@ -57,7 +56,7 @@ export class OfflineOwnerVaultMigrationExecutor implements VaultMigrationExecuto
       undefined,
       signal,
     );
-    requireAccepted(recoveryEvidence, this.options.finalityFloor);
+    requireAccepted(recoveryEvidence);
 
     this.options.vault.activateReplacement(facts.vaultMigrationId, facts.oldVaultDigest, BigInt(facts.newMaximumOutflowAtomic));
     const prepared = await this.options.vault.prepareMigrationDeposit(
@@ -85,11 +84,11 @@ export class OfflineOwnerVaultMigrationExecutor implements VaultMigrationExecuto
       facts, "recovery", recovery.transactionId, recovery.transaction,
       facts.stableReceiveAddress, recovery.amountAtomic, undefined, signal, false,
     );
-    if (recoveryEvidence.status === "absent" && stage === "recovery_prepared") {
+    if (recoveryEvidence.interpretation === "absent" && stage === "recovery_prepared") {
       await submitPreparedOwnerRecovery(this.options.wallet, recovery.transaction, recovery.transactionId);
       recoveryEvidence = await this.observeTransaction(facts, "recovery", recovery.transactionId, recovery.transaction, facts.stableReceiveAddress, recovery.amountAtomic, undefined, signal);
     }
-    requireAccepted(recoveryEvidence, this.options.finalityFloor);
+    requireAccepted(recoveryEvidence);
 
     let replacement = stored.replacement ? decodeDeposit(stored.replacement) : undefined;
     if (!replacement) {
@@ -106,14 +105,14 @@ export class OfflineOwnerVaultMigrationExecutor implements VaultMigrationExecuto
       facts, "replacement", replacement.transactionId, replacement.transaction,
       replacement.vaultAddress, replacement.vaultAmountSompi.toString(), replacement.covenantId, signal, false,
     );
-    if (replacementEvidence.status === "absent") {
+    if (replacementEvidence.interpretation === "absent") {
       await this.options.vault.submitPreparedDeposit(this.options.wallet, replacement);
       replacementEvidence = await this.observeTransaction(
         facts, "replacement", replacement.transactionId, replacement.transaction,
         replacement.vaultAddress, replacement.vaultAmountSompi.toString(), replacement.covenantId, signal,
       );
     }
-    requireAccepted(replacementEvidence, this.options.finalityFloor);
+    requireAccepted(replacementEvidence);
     this.options.vault.commitObservedDeposit(replacement, observedDeposit(replacement, replacementEvidence));
     return this.finish(facts, recovery.transactionId, replacement.transactionId);
   }
@@ -122,22 +121,25 @@ export class OfflineOwnerVaultMigrationExecutor implements VaultMigrationExecuto
     facts: VaultMigrationFacts, stage: "recovery" | "replacement", transactionId: string,
     transactionJson: string, address: string, amountAtomic: string, covenantId: string | undefined,
     signal?: AbortSignal, wait = true,
-  ): Promise<ChainEvidenceRecord> {
+  ): Promise<ChainEvidenceObservation> {
     const outputs = transactionOutputs(transactionJson);
     const request = () => this.options.chainEvidence.observe({
       operationId: `vault-migration:${facts.vaultMigrationId}:${stage}`,
       operation: "vault", network: "kaspa:testnet-10", transactionId,
       expectedOutputs: [{ index: 0, amountAtomic, scriptPublicKey: outputs[0], address, ...(covenantId ? { covenantId } : {}) }],
       watchedAddresses: [address], mechanism: stage === "recovery" ? "ordinary" : "native-covenant",
-      protocolFinality: "accepted", operatorFloor: this.options.finalityFloor,
+      protocolFinality: "accepted",
       signal: signal ?? new AbortController().signal,
     });
     let evidence = await request();
     if (!wait) return evidence;
     const deadline = (this.options.now ?? Date.now)() + 120_000;
-    while (!accepted(evidence, this.options.finalityFloor)) {
+    while (evidence.interpretation !== "accepted") {
       signal?.throwIfAborted();
-      if ((this.options.now ?? Date.now)() >= deadline || evidence.status === "absent") return evidence;
+      if (
+        (this.options.now ?? Date.now)() >= deadline ||
+        evidence.interpretation === "absent"
+      ) return evidence;
       await delay(1_000, signal);
       evidence = await request();
     }
@@ -193,21 +195,26 @@ function executionPart(value: unknown, label: string): { transactionId: string; 
   return input;
 }
 
-function observedDeposit(prepared: PreparedVaultDeposit, evidence: ChainEvidenceRecord): ObservedVaultDeposit {
-  requireAccepted(evidence, evidence.operatorFloor);
+function observedDeposit(
+  prepared: PreparedVaultDeposit,
+  observation: ChainEvidenceObservation
+): ObservedVaultDeposit {
+  requireAccepted(observation);
+  const evidence = observation.evidence;
   return Object.freeze({
     transactionId: prepared.transactionId, vaultOutpoint: prepared.vaultOutpoint,
     vaultAmountSompi: prepared.vaultAmountSompi, covenantId: prepared.covenantId,
-    observedAtDaa: BigInt(evidence.acceptingBlockDaaScore!), chainEvidenceDigest: evidence.detailDigest,
-    chainEvidenceLevel: evidence.level!,
+    observedAtDaa: BigInt(evidence.acceptingBlockDaaScore), chainEvidenceDigest: evidence.detailDigest,
+    chainEvidenceLevel: evidence.level,
   }) as ObservedVaultDeposit;
 }
 
-function accepted(evidence: ChainEvidenceRecord, floor: FinalityFloor): boolean {
-  return evidence.status === "present" && (evidence.level === "depth-confirmed" || (floor === "accepted" && evidence.level === "accepted"));
-}
-function requireAccepted(evidence: ChainEvidenceRecord, floor: FinalityFloor): void {
-  if (!accepted(evidence, floor)) throw new Error("Vault Migration transaction is not independently accepted");
+function requireAccepted(
+  evidence: ChainEvidenceObservation
+): asserts evidence is Extract<ChainEvidenceObservation, { interpretation: "accepted" }> {
+  if (evidence.interpretation !== "accepted") {
+    throw new Error("Vault Migration transaction is not independently accepted");
+  }
 }
 function digest(value: unknown): Sha256Digest {
   return `sha256:${createHash("sha256").update(JSON.stringify(value)).digest("base64url")}` as Sha256Digest;

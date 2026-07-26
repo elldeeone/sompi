@@ -3,6 +3,11 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
+import type {
+  ChainEvidenceFinalitySelection,
+  ChainEvidenceFinalitySelector,
+  FinalityFloor,
+} from "../chain-evidence/types.js";
 import { SompiOperationFailure } from "../operation-failure.js";
 import {
   PurchaseCoordinator,
@@ -98,9 +103,66 @@ test("coordinator completes one exact Purchase and idempotently projects linked 
   });
 });
 
+test("Merchant confirmed finality strengthens an accepted operator floor without replacing either fact", async () => {
+  await withFixture(async ({ coordinator, dependencies, intent, journal }) => {
+    const completed = await coordinator.purchase(intent);
+    const executionPlan = journal.requireExecutionPlan(completed.id);
+    const authorization = journal.requireAuthorizationRequest(completed.id);
+
+    assert.equal(executionPlan.settlementAssurance, "confirmed");
+    assert.equal(authorization.settlementAssurance, "confirmed");
+    assert.equal(authorization.effectiveFinalityFloor, "depth-confirmed");
+    const envelope = JSON.parse(
+      Buffer.from(journal.readEvidence(authorization.requestDigest)).toString("utf8")
+    );
+    assert.equal(envelope.operatorFinalityFloor, "accepted");
+    assert.equal(envelope.effectiveFinalityFloor, "depth-confirmed");
+    assert.equal(envelope.depthConfirmationDaa, "10");
+    assert.deepEqual(dependencies.finalitySelections, [{
+      operation: "settlement",
+      protocolFinality: "confirmed",
+      operatorFloor: "accepted",
+      effectiveFloor: "depth-confirmed",
+      depthConfirmationDaa: "10",
+    }]);
+  }, (dependencies) => {
+    dependencies.exactSettlementAssurance = "confirmed";
+    dependencies.operatorFinalityFloor = "accepted";
+  });
+});
+
+test("an operator depth floor strengthens accepted Merchant finality without replacing either fact", async () => {
+  await withFixture(async ({ coordinator, dependencies, intent, journal }) => {
+    const completed = await coordinator.purchase(intent);
+    const executionPlan = journal.requireExecutionPlan(completed.id);
+    const authorization = journal.requireAuthorizationRequest(completed.id);
+
+    assert.equal(executionPlan.settlementAssurance, "accepted");
+    assert.equal(authorization.settlementAssurance, "accepted");
+    assert.equal(authorization.effectiveFinalityFloor, "depth-confirmed");
+    const envelope = JSON.parse(
+      Buffer.from(journal.readEvidence(authorization.requestDigest)).toString("utf8")
+    );
+    assert.equal(envelope.operatorFinalityFloor, "depth-confirmed");
+    assert.equal(envelope.effectiveFinalityFloor, "depth-confirmed");
+    assert.equal(envelope.depthConfirmationDaa, "10");
+    assert.deepEqual(dependencies.finalitySelections, [{
+      operation: "settlement",
+      protocolFinality: "accepted",
+      operatorFloor: "depth-confirmed",
+      effectiveFloor: "depth-confirmed",
+      depthConfirmationDaa: "10",
+    }]);
+  }, (dependencies) => {
+    dependencies.exactSettlementAssurance = "accepted";
+    dependencies.operatorFinalityFloor = "depth-confirmed";
+  });
+});
+
 test("coordinator completes one separately authorized batch Purchase without per-Purchase staging", async () => {
   await withFixture(async ({ coordinator, dependencies, intent, journal }) => {
     dependencies.executionMechanism = "channel-voucher";
+    dependencies.operatorFinalityFloor = "accepted";
 
     const completed = await coordinator.purchase({
       ...intent,
@@ -120,6 +182,17 @@ test("coordinator completes one separately authorized batch Purchase without per
     assert.equal(settlement?.actualAmountAtomic, "40");
     assert.equal(settlement?.actualAdditionalCostAtomic, "0");
     assert.equal(journal.findReservationForPurchase(completed.id)?.amountAtomic, "60");
+    assert.equal(
+      journal.requireAuthorizationRequest(completed.id).settlementAssurance,
+      "channel-commitment",
+    );
+    const authorizationRequest = journal.requireAuthorizationRequest(completed.id);
+    const envelope = JSON.parse(
+      Buffer.from(journal.readEvidence(authorizationRequest.requestDigest)).toString("utf8")
+    );
+    assert.equal(envelope.operatorFinalityFloor, "accepted");
+    assert.equal(envelope.effectiveFinalityFloor, "accepted");
+    assert.equal(envelope.depthConfirmationDaa, "10");
 
     const replay = await coordinator.purchase({
       ...intent,
@@ -129,6 +202,25 @@ test("coordinator completes one separately authorized batch Purchase without per
     assert.equal(dependencies.calls.authority, 1);
     assert.equal(dependencies.calls.prepare, 1);
     assert.equal(dependencies.calls.submit, 1);
+  });
+});
+
+test("a channel voucher fails before Authority when Settlement requires depth confirmation", async () => {
+  await withFixture(async ({ coordinator, dependencies, intent }) => {
+    dependencies.executionMechanism = "channel-voucher";
+    dependencies.operatorFinalityFloor = "depth-confirmed";
+
+    await assert.rejects(
+      coordinator.purchase({
+        ...intent,
+        requestKey: assertPurchaseRequestKey("test:coordinator:batch-depth-rejected"),
+      }),
+      /channel-voucher execution cannot satisfy a depth-confirmed Purchase Settlement floor/
+    );
+    assert.equal(dependencies.calls.authority, 0);
+    assert.equal(dependencies.calls.quote, 0);
+    assert.equal(dependencies.calls.prepare, 0);
+    assert.equal(dependencies.calls.submit, 0);
   });
 });
 
@@ -1012,7 +1104,8 @@ async function withFixture(
     dependencies: FakeDependencies;
     intent: PurchaseIntent;
     journal: PurchaseJournal;
-  }) => Promise<void>
+  }) => Promise<void>,
+  configure?: (dependencies: FakeDependencies) => void,
 ): Promise<void> {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-coordinator-"));
   fs.chmodSync(directory, 0o700);
@@ -1027,6 +1120,7 @@ async function withFixture(
     },
   });
   const dependencies = new FakeDependencies();
+  configure?.(dependencies);
   const coordinator = makeCoordinator(journal, dependencies);
   try {
     await run({ coordinator, dependencies, intent: makeIntent(), journal });
@@ -1063,6 +1157,7 @@ function makeCoordinator(
       now,
       workerId: `test-worker-${dependencies.instance}`,
       executionReserveMs,
+      finality: dependencies.finality,
       entropy(bytes) {
         return new Uint8Array(bytes).fill(entropyCounter++);
       },
@@ -1084,6 +1179,26 @@ class FakeDependencies {
   readonly instance = ++instanceCounter;
   module?: PurchaseModule;
   lastPurchaseId = "" as PurchaseId;
+  operatorFinalityFloor: FinalityFloor = "accepted";
+  exactSettlementAssurance: "accepted" | "confirmed" = "accepted";
+  finalitySelections: ChainEvidenceFinalitySelection[] = [];
+  readonly finality: ChainEvidenceFinalitySelector = {
+    selectFinality: (operation, protocolFinality) => {
+      const operatorFloor = this.operatorFinalityFloor;
+      const selection = Object.freeze({
+        operation,
+        protocolFinality,
+        operatorFloor,
+        effectiveFloor:
+          protocolFinality === "confirmed" || operatorFloor === "depth-confirmed"
+            ? "depth-confirmed" as const
+            : "accepted" as const,
+        depthConfirmationDaa: "10",
+      });
+      this.finalitySelections.push(selection);
+      return selection;
+    },
+  };
   authorityMode: "approved" | "pending" | "denied" = "approved";
   submitMode: "settled" | "submitted" | "throw" = "settled";
   observeMode: "pending" | "settled" | "conflict" | "application_failure" | "not_found_retryable" = "pending";
@@ -1178,7 +1293,7 @@ class FakeDependencies {
           requirementsDigest: paymentRequirements.declaredDigest!,
           maximumChargeAtomic: terms.amountAtomic,
           settlementAssurance: this.executionMechanism === "single-transaction"
-            ? "accepted"
+            ? this.exactSettlementAssurance
             : "channel-commitment",
           ...(this.executionMechanism === "channel-voucher"
             ? {
@@ -1332,7 +1447,7 @@ class FakeDependencies {
         profile: execution.authorizationRequest.executionProfile,
         ...(this.executionMechanism === "single-transaction" ? { transactionId } : {}),
         requiredAssurance: this.executionMechanism === "single-transaction"
-          ? "accepted"
+          ? this.exactSettlementAssurance
           : "channel-commitment",
         fundingSource: "vault-treasury",
       };
@@ -1596,7 +1711,9 @@ async function verifiedAuthorityResult(
       purchaseAuthorizationNonceDigest: purchaseFacts.nonceDigest,
       purchaseAuthorizationFactsDigest: evidenceDigest(JSON.stringify(purchaseFacts)),
       additionalCostCeilingAtomic: purchaseFacts.additionalCostCeilingAtomic,
+      operatorFinalityFloor: purchaseFacts.operatorFinalityFloor,
       effectiveFinalityFloor: purchaseFacts.effectiveFinalityFloor,
+      depthConfirmationDaa: purchaseFacts.depthConfirmationDaa,
       executionPlanDigest: purchaseFacts.executionPlanDigest,
       executionMechanism: purchaseFacts.executionMechanism,
       executionProfile: purchaseFacts.executionProfile,

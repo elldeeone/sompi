@@ -227,7 +227,9 @@ Treasury / SompiVault -> Chain Evidence and recovery
 
 `Transfer` controls native sends. `Purchase` controls x402 commerce. The AP2
 adapter and the Kaspa-x402 adapter are separate. Journal epoch 19 is the only
-supported state schema.
+state schema in the deployed `0.12.0` runtime. Current source accepts only
+Journal epoch 20. It has the same physical SQLite shape and new authorization
+evidence semantics.
 
 Read these current sources:
 

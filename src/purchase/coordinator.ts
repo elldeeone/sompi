@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { SompiOperationFailure } from "../operation-failure.js";
+import type { ChainEvidenceFinalitySelector } from "../chain-evidence/types.js";
 import {
   assertVerifiedAuthorityDecision,
   type VerifiedAuthorityDecision,
@@ -8,6 +9,7 @@ import {
   authorizationFacts,
   authorizationFactsDigest,
   checkoutTermsFactsDigest,
+  PURCHASE_AUTHORIZATION_REQUEST_PROFILE,
   validateAuthorizationDecision,
   validateCheckoutTerms,
   validatePreparedPayment,
@@ -80,7 +82,6 @@ const PAYMENT_EFFECT_KIND = "kaspa-x402-payment";
 const PURCHASE_COORDINATION_TTL_MS = 60_000;
 const RECOVERY_TTL_MS = 30_000;
 const DEFAULT_EXECUTION_RESERVE_MS = 30_000;
-const AUTHORIZATION_REQUEST_PROFILE = "urn:sompi:authorization-request:1";
 const REQUEST_BODY_PROFILE = "urn:sompi:purchase-request-body:1";
 
 export interface VerifiedArtifact {
@@ -515,7 +516,7 @@ export interface PurchaseCoordinatorOptions {
   effectLeaseTtlMs?: number;
   /** Time reserved after approval for staging and the first Merchant submission. */
   executionReserveMs?: number;
-  effectiveFinalityFloor?: "accepted" | "depth-confirmed";
+  finality: ChainEvidenceFinalitySelector;
 }
 
 export class PurchaseCoordinatorError extends Error {
@@ -535,7 +536,7 @@ export class PurchaseCoordinator implements PurchaseModule {
   private readonly workerId: string;
   private readonly effectLeaseTtlMs: number;
   private readonly executionReserveMs: number;
-  private readonly effectiveFinalityFloor: "accepted" | "depth-confirmed";
+  private readonly finality: ChainEvidenceFinalitySelector;
 
   constructor(
     private readonly journal: PurchaseJournal,
@@ -545,14 +546,20 @@ export class PurchaseCoordinator implements PurchaseModule {
     private readonly treasury: TreasuryModule,
     private readonly payment: KaspaPaymentModule,
     private readonly fulfilment: FulfilmentModule,
-    options: PurchaseCoordinatorOptions = {}
+    options: PurchaseCoordinatorOptions
   ) {
     this.now = options.now ?? Date.now;
     this.entropy = options.entropy ?? randomBytes;
     this.workerId = options.workerId ?? `coordinator-${process.pid}-${randomBytes(8).toString("hex")}`;
     this.effectLeaseTtlMs = options.effectLeaseTtlMs ?? PURCHASE_COORDINATION_TTL_MS;
     this.executionReserveMs = options.executionReserveMs ?? DEFAULT_EXECUTION_RESERVE_MS;
-    this.effectiveFinalityFloor = options.effectiveFinalityFloor ?? "accepted";
+    if (typeof options.finality?.selectFinality !== "function") {
+      throw new PurchaseCoordinatorError(
+        "Chain Evidence finality selector is required",
+        "invalid_configuration"
+      );
+    }
+    this.finality = options.finality;
     if (!Number.isSafeInteger(this.effectLeaseTtlMs) || this.effectLeaseTtlMs <= 0) {
       throw new PurchaseCoordinatorError("effect lease TTL must be a positive safe integer", "invalid_configuration");
     }
@@ -813,6 +820,19 @@ export class PurchaseCoordinator implements PurchaseModule {
       );
       return true;
     }
+    const selectedFinality = this.finality.selectFinality(
+      "settlement",
+      executionPlan.settlementAssurance === "confirmed" ? "confirmed" : "accepted"
+    );
+    if (
+      executionPlan.mechanism === "channel-voucher" &&
+      selectedFinality.effectiveFloor === "depth-confirmed"
+    ) {
+      throw new PurchaseCoordinatorError(
+        "channel-voucher execution cannot satisfy a depth-confirmed Purchase Settlement floor",
+        "unsupported_finality"
+      );
+    }
     const executionDeadlineMs = terms.expiresAtMs - (
       executionPlan.mechanism === "single-transaction"
         ? this.executionReserveMs
@@ -849,7 +869,7 @@ export class PurchaseCoordinator implements PurchaseModule {
     const requestMediaType = canonicalMediaType(intent.resource.mediaType) ?? "";
     const requestBodyDigest = evidenceDigest(intent.resource.body ?? new Uint8Array());
     const envelopeWithoutDigest = {
-      profile: AUTHORIZATION_REQUEST_PROFILE,
+      profile: PURCHASE_AUTHORIZATION_REQUEST_PROFILE,
       purchaseId: purchase.id,
       resourceUrl: purchase.resourceUrl,
       method: purchase.method,
@@ -859,7 +879,9 @@ export class PurchaseCoordinator implements PurchaseModule {
       requestMediaType,
       requestBodyDigest,
       additionalCostCeilingAtomic: quote.additionalCostCeilingAtomic,
-      effectiveFinalityFloor: this.effectiveFinalityFloor,
+      operatorFinalityFloor: selectedFinality.operatorFloor,
+      effectiveFinalityFloor: selectedFinality.effectiveFloor,
+      depthConfirmationDaa: selectedFinality.depthConfirmationDaa,
       executionPlanDigest: executionPlan.digest,
       executionMechanism: executionPlan.mechanism,
       executionProfile: executionPlan.profile,
@@ -877,7 +899,7 @@ export class PurchaseCoordinator implements PurchaseModule {
     const artifact = this.journal.storeEvidence(purchase.id, {
       bytes,
       mediaType: "application/json",
-      profile: AUTHORIZATION_REQUEST_PROFILE,
+      profile: PURCHASE_AUTHORIZATION_REQUEST_PROFILE,
       issuer: "sompi-purchase-module",
       kind: "authorization-request",
     });
@@ -888,7 +910,7 @@ export class PurchaseCoordinator implements PurchaseModule {
       requestMediaType,
       requestBodyDigest,
       additionalCostCeilingAtomic: quote.additionalCostCeilingAtomic,
-      effectiveFinalityFloor: this.effectiveFinalityFloor,
+      effectiveFinalityFloor: selectedFinality.effectiveFloor,
       expiresAtMs: executionDeadlineMs,
     });
     return true;
@@ -2424,7 +2446,7 @@ export class PurchaseCoordinator implements PurchaseModule {
     const record = this.journal.requireAuthorizationRequest(purchase.id);
     const parsed = parseAuthorizationEnvelope(this.journal.readEvidence(record.requestDigest));
     if (
-      parsed.profile !== AUTHORIZATION_REQUEST_PROFILE ||
+      parsed.profile !== PURCHASE_AUTHORIZATION_REQUEST_PROFILE ||
       parsed.purchaseId !== purchase.id ||
       parsed.resourceUrl !== purchase.resourceUrl ||
       parsed.method !== purchase.method ||
@@ -2433,10 +2455,10 @@ export class PurchaseCoordinator implements PurchaseModule {
       parsed.requestBodyDigest !== record.requestBodyDigest ||
       parsed.additionalCostCeilingAtomic !== record.additionalCostCeilingAtomic ||
       parsed.effectiveFinalityFloor !== record.effectiveFinalityFloor ||
+      parsed.settlementAssurance !== record.settlementAssurance ||
       parsed.executionPlanDigest !== record.executionPlanDigest ||
       parsed.executionMechanism !== record.executionMechanism ||
       parsed.executionProfile !== record.executionProfile ||
-      parsed.settlementAssurance !== record.settlementAssurance ||
       parsed.maximumAuthorizedChargeAtomic !== record.maximumAuthorizedChargeAtomic ||
       parsed.channelId !== record.channelId ||
       parsed.channelEpochDigest !== record.channelEpochDigest ||
@@ -2454,7 +2476,9 @@ export class PurchaseCoordinator implements PurchaseModule {
       requestDigest: record.requestDigest,
       nonceDigest: record.nonceDigest,
       additionalCostCeilingAtomic: record.additionalCostCeilingAtomic,
+      operatorFinalityFloor: parsed.operatorFinalityFloor,
       effectiveFinalityFloor: record.effectiveFinalityFloor,
+      depthConfirmationDaa: parsed.depthConfirmationDaa,
       executionPlanDigest: record.executionPlanDigest,
       executionMechanism: record.executionMechanism,
       executionProfile: record.executionProfile,
@@ -2612,7 +2636,9 @@ interface ParsedAuthorizationEnvelope {
   requestMediaType: string;
   requestBodyDigest: string;
   additionalCostCeilingAtomic: string;
-  effectiveFinalityFloor: string;
+  operatorFinalityFloor: "accepted" | "depth-confirmed";
+  effectiveFinalityFloor: "accepted" | "depth-confirmed";
+  depthConfirmationDaa: string;
   executionPlanDigest: string;
   executionMechanism: string;
   executionProfile: string;
@@ -2645,7 +2671,9 @@ function parseAuthorizationEnvelope(bytes: Uint8Array): ParsedAuthorizationEnvel
     "requestMediaType",
     "requestBodyDigest",
     "additionalCostCeilingAtomic",
+    "operatorFinalityFloor",
     "effectiveFinalityFloor",
+    "depthConfirmationDaa",
     "executionPlanDigest",
     "executionMechanism",
     "executionProfile",
@@ -2657,6 +2685,13 @@ function parseAuthorizationEnvelope(bytes: Uint8Array): ParsedAuthorizationEnvel
     }
   }
   if (
+    (value.operatorFinalityFloor !== "accepted" &&
+      value.operatorFinalityFloor !== "depth-confirmed") ||
+    (value.effectiveFinalityFloor !== "accepted" &&
+      value.effectiveFinalityFloor !== "depth-confirmed") ||
+    typeof value.depthConfirmationDaa !== "string" ||
+    !/^[1-9][0-9]*$/.test(value.depthConfirmationDaa) ||
+    value.depthConfirmationDaa.length > 78 ||
     (value.channelId !== undefined && typeof value.channelId !== "string") ||
     (value.channelEpochDigest !== undefined && typeof value.channelEpochDigest !== "string") ||
     ((value.channelId === undefined) !== (value.channelEpochDigest === undefined))

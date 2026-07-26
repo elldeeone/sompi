@@ -11,12 +11,14 @@ import {
   canonicalRequestUrl,
   requestFingerprintFromBodyDigest,
 } from "../purchase/identity.js";
+import { purchaseExecutionProtocolFinality } from "../purchase/execution-plan.js";
+import { chainEvidenceEffectiveFloor } from "../chain-evidence/types.js";
 import type { PurchaseId, Sha256Digest } from "../purchase/types.js";
 import { SUPPORTED_PROTOCOL_PROFILES } from "../protocols/profiles.js";
 import { Address } from "../kaspa-wasm.js";
 
 export const AUTHORITY_IPC_PROTOCOL = "sompi.authority.ipc" as const;
-export const AUTHORITY_IPC_VERSION = 1 as const;
+export const AUTHORITY_IPC_VERSION = 2 as const;
 export const AUTHORITY_MAC_ALGORITHM = "hmac-sha256" as const;
 export const AUTHORITY_MAC_KEY_BYTES = 32;
 export const AUTHORITY_NONCE_BYTES = 32;
@@ -32,7 +34,6 @@ export const AUTHORITY_MAX_CHECKOUT_EVIDENCE_BYTES = 32 * 1024;
 export const AUTHORITY_REPLAY_LEASE_MS = 15_000;
 export const AUTHORITY_EVIDENCE_VERIFICATION_REQUIREMENT =
   "independent-signature-and-exact-facts-required" as const;
-
 export const AUTHORITY_DENIAL_CODES = ["user_denied", "terms_expired"] as const;
 export type AuthorityDenialCode = (typeof AUTHORITY_DENIAL_CODES)[number];
 
@@ -71,11 +72,16 @@ export interface AuthorityApprovalFacts {
   readonly purchaseAuthorizationFactsDigest: Sha256Digest;
   /** Maximum non-price treasury outflow for bounded network, staging, and recovery fees. */
   readonly additionalCostCeilingAtomic: string;
+  /** Sompi-owned floor for Settlement before Merchant strengthening. */
+  readonly operatorFinalityFloor: "accepted" | "depth-confirmed";
   /** Stronger of Merchant protocol finality and the operator floor. */
   readonly effectiveFinalityFloor: "accepted" | "depth-confirmed";
+  /** DAA depth that gives protocol-neutral meaning to `depth-confirmed`. */
+  readonly depthConfirmationDaa: string;
   readonly executionPlanDigest: Sha256Digest;
   readonly executionMechanism: "single-transaction" | "channel-voucher";
   readonly executionProfile: string;
+  /** Settlement assurance required by the Merchant execution plan. */
   readonly settlementAssurance: "accepted" | "confirmed" | "channel-commitment";
   readonly maximumAuthorizedChargeAtomic: string;
   readonly channelId: string | null;
@@ -389,7 +395,7 @@ export class AuthorityProtocolError extends Error {
   }
 }
 
-const MAC_DOMAIN = Buffer.from("sompi:authority-ipc:mac:v1\0", "utf8");
+const MAC_DOMAIN = Buffer.from("sompi:authority-ipc:mac:v2\0", "utf8");
 const VERIFIED_REQUESTS = new WeakSet<object>();
 const VERIFIED_IPC_RESPONSES = new WeakSet<object>();
 const VERIFIED_DECISIONS = new WeakSet<object>();
@@ -788,7 +794,7 @@ export function renewAuthorityReplayLease(
 }
 
 export function authorityFactsDigest(facts: AuthorityApprovalFacts): Sha256Digest {
-  return domainDigest("sompi:authority-approval-facts:v1", JSON.stringify(canonicalFacts(facts)));
+  return domainDigest("sompi:authority-approval-facts:v2", JSON.stringify(canonicalFacts(facts)));
 }
 
 export function authorityNonceDigest(nonce: AuthorityNonce): Sha256Digest {
@@ -993,7 +999,9 @@ function canonicalFacts(candidate: AuthorityApprovalFacts): AuthorityApprovalFac
     "purchaseAuthorizationNonceDigest",
     "purchaseAuthorizationFactsDigest",
     "additionalCostCeilingAtomic",
+    "operatorFinalityFloor",
     "effectiveFinalityFloor",
+    "depthConfirmationDaa",
     "executionPlanDigest",
     "executionMechanism",
     "executionProfile",
@@ -1026,6 +1034,15 @@ function canonicalFacts(candidate: AuthorityApprovalFacts): AuthorityApprovalFac
   const executionMechanism = requireExecutionMechanism(record.executionMechanism);
   const executionProfile = requireIdentity(requireString(record.executionProfile), 160);
   const settlementAssurance = requireSettlementAssurance(record.settlementAssurance);
+  const operatorFinalityFloor = requireFinalityFloor(record.operatorFinalityFloor);
+  const effectiveFinalityFloor = requireFinalityFloor(record.effectiveFinalityFloor);
+  const expectedEffectiveFloor = chainEvidenceEffectiveFloor(
+    purchaseExecutionProtocolFinality(settlementAssurance),
+    operatorFinalityFloor
+  );
+  if (effectiveFinalityFloor !== expectedEffectiveFloor) {
+    throw new AuthorityProtocolError("malformed_message");
+  }
   const channelId = record.channelId === null ? null : requireIdentity(requireString(record.channelId), 160);
   const channelEpochDigest = record.channelEpochDigest === null
     ? null
@@ -1081,7 +1098,11 @@ function canonicalFacts(candidate: AuthorityApprovalFacts): AuthorityApprovalFac
     additionalCostCeilingAtomic: requireNonNegativeAtomic(
       requireString(record.additionalCostCeilingAtomic)
     ),
-    effectiveFinalityFloor: requireFinalityFloor(record.effectiveFinalityFloor),
+    operatorFinalityFloor,
+    effectiveFinalityFloor,
+    depthConfirmationDaa: requirePositiveAtomic(
+      requireString(record.depthConfirmationDaa)
+    ),
     executionPlanDigest: requireDigest(requireString(record.executionPlanDigest)),
     executionMechanism,
     executionProfile,

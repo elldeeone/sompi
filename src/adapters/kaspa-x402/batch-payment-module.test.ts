@@ -398,7 +398,9 @@ function input(): Parameters<KaspaX402BatchPaymentModule["prepare"]>[0] {
     requestDigest: evidenceDigest(Buffer.from("authorization-request")),
     nonceDigest: evidenceDigest(Buffer.from("authorization-nonce")),
     additionalCostCeilingAtomic: "0",
+    operatorFinalityFloor: "accepted" as const,
     effectiveFinalityFloor: "accepted" as const,
+    depthConfirmationDaa: "10",
     executionPlanDigest,
     executionMechanism: "channel-voucher" as const,
     executionProfile: "kaspa-escrow-v1:batch-settlement",
@@ -438,7 +440,9 @@ function input(): Parameters<KaspaX402BatchPaymentModule["prepare"]>[0] {
           requestDigest: authorizationRequest.requestDigest,
           nonceDigest: authorizationRequest.nonceDigest,
           additionalCostCeilingAtomic: "0",
+          operatorFinalityFloor: "accepted" as const,
           effectiveFinalityFloor: "accepted" as const,
+          depthConfirmationDaa: "10",
           executionPlanDigest,
           executionMechanism: "channel-voucher" as const,
           executionProfile: "kaspa-escrow-v1:batch-settlement",
@@ -629,10 +633,17 @@ async function withAuthorizedBatchJournal(
       executionPlan: plan.plan,
       executionPlanEvidenceDigest: plan.evidenceDigest,
     });
+    const authorizationRequestArtifact = JSON.stringify({
+      profile: "urn:sompi:authorization-request:2",
+      operatorFinalityFloor: "accepted",
+      effectiveFinalityFloor: "accepted",
+      depthConfirmationDaa: "10",
+      settlementAssurance: "channel-commitment",
+    });
     const requestDigest = verifiedEvidence(
       journal,
       purchaseId,
-      "batch-authorization-request",
+      authorizationRequestArtifact,
       "authorization-request"
     );
     journal.storeEvidence(purchaseId, {
@@ -675,7 +686,9 @@ async function withAuthorizedBatchJournal(
         requestDigest,
         nonceDigest,
         additionalCostCeilingAtomic: "0",
+        operatorFinalityFloor: "accepted",
         effectiveFinalityFloor: "accepted",
+        depthConfirmationDaa: "10",
         executionPlanDigest: authorizationRequest.executionPlanDigest,
         executionMechanism: authorizationRequest.executionMechanism,
         executionProfile: authorizationRequest.executionProfile,

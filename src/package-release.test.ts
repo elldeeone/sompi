@@ -278,7 +278,11 @@ test("current documentation exposes the API-first wallet and alpha.9 payment cut
     path.join(ROOT, "docs", "architecture", "PURCHASE_JOURNAL.md"),
     "utf8",
   );
-  assert.match(journal, /Epoch \*\*19\*\* is the only\s+active schema/);
+  assert.match(journal, /Current source accepts only epoch \*\*20\*\*\./);
+  assert.match(
+    journal,
+    /Epoch 20 has the same physical SQLite shape as epoch 19\./,
+  );
 });
 
 function sourceFiles(directory: string): string[] {

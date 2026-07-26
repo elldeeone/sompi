@@ -18,7 +18,11 @@ import {
   loadHostBootstrapRequest,
   previewHostBootstrap,
 } from "./operator/host-bootstrap.js";
-import { activateHostBootstrap, installHostBootstrap } from "./operator/host-install.js";
+import {
+  activateHostBootstrap,
+  installHostBootstrap,
+  verifyHostBootstrapCommitReceipt,
+} from "./operator/host-install.js";
 import { OfflineRuntimeIdentityError, enterOfflineOwnerRuntime } from "./operator/offline-runtime.js";
 import { activateBootstrapVault } from "./operator/vault-activation.js";
 import { generateOwnerKey } from "./vault.js";
@@ -49,6 +53,15 @@ try {
       }));
       break;
     }
+    case "bootstrap-commit-status": {
+      verifyHostBootstrapCommitReceipt(
+        command.receipt,
+        command.package,
+        command.digest,
+      );
+      print({ status: "committed" });
+      break;
+    }
     case "bootstrap-activate": print(activateHostBootstrap(
       loadHostBootstrapRequest(command.request),
       command.digest,
@@ -68,7 +81,7 @@ try {
       try {
         const executor = new OfflineOwnerVaultMigrationExecutor({
           vault: runtime.vault, wallet: runtime.wallet, chainEvidence: runtime.chainEvidence,
-          ownerPrivateKey, finalityFloor: config.finalityFloors.vault,
+          ownerPrivateKey,
           feeCeilingAtomic: config.treasuryOperationFeeCeilingAtomic,
         });
         const result = command.action === "execute"

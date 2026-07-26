@@ -1,3 +1,4 @@
+import { chainEvidenceEffectiveFloor } from "../chain-evidence/types.js";
 import { assertPurchaseId, canonicalMediaType, canonicalRequestUrl, evidenceDigest } from "./identity.js";
 import type {
   CheckoutTerms,
@@ -7,9 +8,10 @@ import type {
   PurchaseId,
   Sha256Digest,
 } from "./types.js";
-import type {
-  PurchaseExecutionAssurance,
-  PurchaseExecutionMechanism,
+import {
+  purchaseExecutionProtocolFinality,
+  type PurchaseExecutionAssurance,
+  type PurchaseExecutionMechanism,
 } from "./execution-plan.js";
 
 const DIGEST_PATTERN = /^sha256:[A-Za-z0-9_-]{43}$/;
@@ -24,6 +26,8 @@ const MAX_NETWORK_LENGTH = 128;
 const MAX_PAY_TO_LENGTH = 256;
 const MAX_AUTHORITY_ID_LENGTH = 160;
 const MAX_EXECUTION_ID_LENGTH = 160;
+export const PURCHASE_AUTHORIZATION_REQUEST_PROFILE =
+  "urn:sompi:authorization-request:2" as const;
 
 export interface CheckoutTermsExpectation {
   purchaseId: PurchaseId;
@@ -47,10 +51,16 @@ export interface PurchaseAuthorizationRequest {
   requestDigest: Sha256Digest;
   nonceDigest: Sha256Digest;
   additionalCostCeilingAtomic: string;
+  /** Sompi-owned floor for this operation, before Merchant strengthening. */
+  operatorFinalityFloor: "accepted" | "depth-confirmed";
+  /** Stronger of the Merchant settlement requirement and Sompi's operator floor. */
   effectiveFinalityFloor: "accepted" | "depth-confirmed";
+  /** DAA depth that gives protocol-neutral meaning to `depth-confirmed`. */
+  depthConfirmationDaa: string;
   executionPlanDigest: Sha256Digest;
   executionMechanism: PurchaseExecutionMechanism;
   executionProfile: string;
+  /** Settlement assurance required by the Merchant execution plan. */
   settlementAssurance: PurchaseExecutionAssurance;
   maximumAuthorizedChargeAtomic: string;
   channelId?: string;
@@ -77,7 +87,9 @@ export interface CanonicalAuthorizationFacts {
   requestDigest: Sha256Digest;
   nonceDigest: Sha256Digest;
   additionalCostCeilingAtomic: string;
+  operatorFinalityFloor: "accepted" | "depth-confirmed";
   effectiveFinalityFloor: "accepted" | "depth-confirmed";
+  depthConfirmationDaa: string;
   executionPlanDigest: Sha256Digest;
   executionMechanism: PurchaseExecutionMechanism;
   executionProfile: string;
@@ -231,6 +243,23 @@ export function authorizationFacts(request: PurchaseAuthorizationRequest): Canon
     throw new PurchaseContractError("authorization request outlives Checkout Terms");
   }
   const execution = canonicalAuthorizationExecution(request);
+  const operatorFinalityFloor = requireFinalityFloor(
+    request.operatorFinalityFloor,
+    "operator"
+  );
+  const effectiveFinalityFloor = requireFinalityFloor(
+    request.effectiveFinalityFloor,
+    "effective"
+  );
+  const expectedEffectiveFloor = chainEvidenceEffectiveFloor(
+    purchaseExecutionProtocolFinality(execution.settlementAssurance),
+    operatorFinalityFloor
+  );
+  if (effectiveFinalityFloor !== expectedEffectiveFloor) {
+    throw new PurchaseContractError(
+      "authorization effective finality floor does not match the Merchant assurance and operator floor"
+    );
+  }
   return {
     purchaseId,
     resourceUrl,
@@ -252,7 +281,12 @@ export function authorizationFacts(request: PurchaseAuthorizationRequest): Canon
       request.additionalCostCeilingAtomic,
       "authorization additional-cost ceiling"
     ),
-    effectiveFinalityFloor: requireFinalityFloor(request.effectiveFinalityFloor),
+    operatorFinalityFloor,
+    effectiveFinalityFloor,
+    depthConfirmationDaa: requirePositiveDecimal(
+      request.depthConfirmationDaa,
+      "authorization depth-confirmation DAA"
+    ),
     ...execution,
   };
 }
@@ -333,9 +367,12 @@ function canonicalAuthorizationExecution(
   };
 }
 
-function requireFinalityFloor(value: unknown): "accepted" | "depth-confirmed" {
+function requireFinalityFloor(
+  value: unknown,
+  owner: "operator" | "effective"
+): "accepted" | "depth-confirmed" {
   if (value !== "accepted" && value !== "depth-confirmed") {
-    throw new PurchaseContractError("authorization effective finality floor is invalid");
+    throw new PurchaseContractError(`authorization ${owner} finality floor is invalid`);
   }
   return value;
 }
@@ -423,6 +460,23 @@ function validateMerchant(candidate: MerchantIdentity): MerchantIdentity {
 
 function validateAuthorizationFacts(candidate: CanonicalAuthorizationFacts): CanonicalAuthorizationFacts {
   const execution = canonicalAuthorizationExecution(candidate);
+  const operatorFinalityFloor = requireFinalityFloor(
+    candidate.operatorFinalityFloor,
+    "operator"
+  );
+  const effectiveFinalityFloor = requireFinalityFloor(
+    candidate.effectiveFinalityFloor,
+    "effective"
+  );
+  const expectedEffectiveFloor = chainEvidenceEffectiveFloor(
+    purchaseExecutionProtocolFinality(execution.settlementAssurance),
+    operatorFinalityFloor
+  );
+  if (effectiveFinalityFloor !== expectedEffectiveFloor) {
+    throw new PurchaseContractError(
+      "authorization effective finality floor does not match the Merchant assurance and operator floor"
+    );
+  }
   return {
     purchaseId: requirePurchaseId(candidate.purchaseId),
     resourceUrl: canonicalResourceUrl(candidate.resourceUrl),
@@ -444,7 +498,12 @@ function validateAuthorizationFacts(candidate: CanonicalAuthorizationFacts): Can
       candidate.additionalCostCeilingAtomic,
       "authorization fact additional-cost ceiling"
     ),
-    effectiveFinalityFloor: requireFinalityFloor(candidate.effectiveFinalityFloor),
+    operatorFinalityFloor,
+    effectiveFinalityFloor,
+    depthConfirmationDaa: requirePositiveDecimal(
+      candidate.depthConfirmationDaa,
+      "authorization fact depth-confirmation DAA"
+    ),
     ...execution,
   };
 }

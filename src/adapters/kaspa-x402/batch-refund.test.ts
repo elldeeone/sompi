@@ -5,7 +5,14 @@ import * as path from "node:path";
 import test from "node:test";
 
 import type { ChainEvidenceModule } from "../../chain-evidence/module.js";
-import { CHAIN_EVIDENCE_PROFILE, type ChainEvidenceRecord } from "../../chain-evidence/types.js";
+import {
+  CHAIN_EVIDENCE_OPERATOR_PROFILE,
+  CHAIN_EVIDENCE_PROFILE,
+  CHAIN_EVIDENCE_WITNESS_PROFILE,
+  type ChainEvidenceObservation,
+  type ChainEvidenceRecord,
+  type ChainEvidenceRequest,
+} from "../../chain-evidence/types.js";
 import { evidenceDigest } from "../../purchase/identity.js";
 import { PurchaseJournal, type JournalFaultPoint } from "../../purchase/journal.js";
 import type { TreasuryOperationRecord } from "../../treasury/operation-journal.js";
@@ -53,7 +60,6 @@ test("batch refund is prepared from public alpha.9 covenant primitives only afte
       { getVirtualDaaScore: async () => "500000001", getUtxos: async () => [] },
       fixture.signer,
       {} as ChainEvidenceModule,
-      "accepted",
       "100000",
       unspentRace(),
     );
@@ -72,7 +78,6 @@ test("batch refund is prepared from public alpha.9 covenant primitives only afte
       { getVirtualDaaScore: async () => "500000000", getUtxos: async () => [] },
       fixture.signer,
       {} as ChainEvidenceModule,
-      "accepted",
       "100000",
       unspentRace(),
     );
@@ -84,7 +89,6 @@ test("batch refund is prepared from public alpha.9 covenant primitives only afte
       { getVirtualDaaScore: async () => "500000001", getUtxos: async () => [] },
       fixture.signer,
       {} as ChainEvidenceModule,
-      "accepted",
       "100000",
       {
         getVirtualDaaScore: async () => "500000000",
@@ -141,11 +145,10 @@ test("accepted merchant claim atomically advances the channel and supersedes a c
       wallet,
       { getVirtualDaaScore: async () => "500000001", getUtxos: async () => [] },
       fixture.signer,
-      { observe: async () => ({
-        status: "unavailable",
-        detailDigest: evidenceDigest("refund-not-observed"),
-      }) } as unknown as ChainEvidenceModule,
-      "accepted",
+      {
+        observe: async (request: ChainEvidenceRequest) =>
+          unavailableObservation(request, "refund-not-observed"),
+      } as unknown as ChainEvidenceModule,
       "100000",
       {
         getVirtualDaaScore: async () => "500000001",
@@ -425,11 +428,10 @@ async function preparedClaimRace(
     } as unknown as KaspaWallet,
     { getVirtualDaaScore: async () => "500000001", getUtxos: async () => [] },
     fixture.signer,
-    { observe: async () => ({
-      status: "unavailable",
-      detailDigest: evidenceDigest("refund-not-observed-crash"),
-    }) } as unknown as ChainEvidenceModule,
-    "accepted",
+    {
+      observe: async (request: ChainEvidenceRequest) =>
+        unavailableObservation(request, "refund-not-observed-crash"),
+    } as unknown as ChainEvidenceModule,
     "100000",
     {
       getVirtualDaaScore: async () => "500000001",
@@ -547,6 +549,39 @@ function completedTreasury(
   });
 }
 
+function unavailableObservation(
+  request: Readonly<ChainEvidenceRequest>,
+  detail: string,
+): ChainEvidenceObservation {
+  const finality = Object.freeze({
+    operation: request.operation,
+    protocolFinality: request.protocolFinality,
+    operatorFloor: "accepted" as const,
+    effectiveFloor: "accepted" as const,
+    depthConfirmationDaa: "10",
+  });
+  return Object.freeze({
+    interpretation: "unavailable" as const,
+    finality,
+    evidence: Object.freeze({
+      profile: CHAIN_EVIDENCE_PROFILE,
+      operationId: request.operationId,
+      operation: request.operation,
+      transactionId: request.transactionId,
+      status: "unavailable" as const,
+      mechanism: request.mechanism,
+      protocolFinality: request.protocolFinality,
+      operatorFloor: finality.operatorFloor,
+      effectiveFloor: finality.effectiveFloor,
+      primaryProfile: "test-primary",
+      witnessProfile: "test-witness",
+      outputsDigest: evidenceDigest(`outputs:${detail}`),
+      detailDigest: evidenceDigest(detail),
+      observedAtMs: 1,
+    }),
+  });
+}
+
 function recordAcceptedEvidence(
   journal: PurchaseJournal,
   transactionId: string,
@@ -564,8 +599,8 @@ function recordAcceptedEvidence(
     protocolFinality: "accepted",
     operatorFloor: "accepted",
     effectiveFloor: "accepted",
-    primaryProfile: "test-primary",
-    witnessProfile: "test-witness",
+    primaryProfile: CHAIN_EVIDENCE_OPERATOR_PROFILE,
+    witnessProfile: CHAIN_EVIDENCE_WITNESS_PROFILE,
     blockHash: "77".repeat(32),
     acceptingBlockHash: "88".repeat(32),
     acceptingBlockDaaScore: "500000001",

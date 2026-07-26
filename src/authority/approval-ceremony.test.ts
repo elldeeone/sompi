@@ -21,7 +21,7 @@ test("Purchase ceremony displays every exact signed fact without changing its sh
   const display = purchaseAuthorityApprovalDisplay(facts, REQUEST_DIGEST, true);
 
   assert.deepEqual(display, {
-    profile: "sompi.purchase-approval.1",
+    profile: "sompi.purchase-approval.2",
     authorityRequestDigest: REQUEST_DIGEST,
     purchaseId: facts.purchaseId,
     merchant: {
@@ -48,7 +48,9 @@ test("Purchase ceremony displays every exact signed fact without changing its sh
     purchaseAuthorizationFactsDigest: facts.purchaseAuthorizationFactsDigest,
     termsExpiresAt: facts.termsExpiresAt,
     additionalCostCeilingAtomic: facts.additionalCostCeilingAtomic,
+    operatorFinalityFloor: facts.operatorFinalityFloor,
     effectiveFinalityFloor: facts.effectiveFinalityFloor,
+    depthConfirmationDaa: facts.depthConfirmationDaa,
     execution: {
       planDigest: facts.executionPlanDigest,
       mechanism: facts.executionMechanism,
@@ -222,7 +224,9 @@ function purchaseFacts(): AuthorityApprovalFacts {
     purchaseAuthorizationNonceDigest: digest("E"),
     purchaseAuthorizationFactsDigest: digest("F"),
     additionalCostCeilingAtomic: "100",
+    operatorFinalityFloor: "accepted",
     effectiveFinalityFloor: "accepted",
+    depthConfirmationDaa: "10",
     executionPlanDigest: digest("G"),
     executionMechanism: "single-transaction",
     executionProfile: "kaspa-exact-v2:standard-native",

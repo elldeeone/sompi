@@ -41,9 +41,12 @@ test("live batch restart promotes a pending claim only after independent evidenc
       async observe() {
         order.push("evidence");
         return {
-          status: "present",
-          level: "accepted",
-          detailDigest: evidenceDigest("restart-accepted"),
+          interpretation: "accepted",
+          evidence: {
+            status: "present",
+            level: "accepted",
+            detailDigest: evidenceDigest("restart-accepted"),
+          },
         };
       },
     } as unknown as ChainEvidenceModule,
@@ -79,8 +82,11 @@ test("live batch claim promotion requires central accepted Chain Evidence", asyn
         observe: async (request: unknown) => {
           unavailableRequest = request;
           return {
-            status: "unavailable",
-            detailDigest: evidenceDigest("single-node-only"),
+            interpretation: "unavailable",
+            evidence: {
+              status: "unavailable",
+              detailDigest: evidenceDigest("single-node-only"),
+            },
           };
         },
       } as unknown as ChainEvidenceModule,
@@ -98,9 +104,12 @@ test("live batch claim promotion requires central accepted Chain Evidence", asyn
       observe: async (request: unknown) => {
         acceptedRequest = request as CapturedEvidenceRequest;
         return {
-          status: "present",
-          level: "accepted",
-          detailDigest: evidenceDigest("dual-source-accepted"),
+          interpretation: "accepted",
+          evidence: {
+            status: "present",
+            level: "accepted",
+            detailDigest: evidenceDigest("dual-source-accepted"),
+          },
         };
       },
     } as unknown as ChainEvidenceModule,

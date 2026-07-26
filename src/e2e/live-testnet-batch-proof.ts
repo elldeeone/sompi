@@ -33,7 +33,7 @@ import {
   WalletBatchChainSource,
   type BatchClaimRaceSource,
 } from "../adapters/kaspa-x402/index.js";
-import { ChainEvidenceModule, meets } from "../chain-evidence/module.js";
+import { ChainEvidenceModule } from "../chain-evidence/module.js";
 import { JournalChainEvidenceStore } from "../chain-evidence/journal-store.js";
 import {
   HttpsAcceptedChainWitness,
@@ -97,6 +97,13 @@ const BATCH_CLAIM_FEE_ATOMIC = "2000000";
 const CLAIM_DAA_LEAD = 6_000n;
 const REFUND_PROOF_DAA_LEAD = 1_800n;
 const PROOF_TIMEOUT_MS = 15 * 60_000;
+const LIVE_CHAIN_EVIDENCE_FINALITY_POLICY = Object.freeze({
+  settlement: "accepted",
+  "direct-treasury": "accepted",
+  vault: "accepted",
+  staging: "accepted",
+  "recovery-release": "accepted",
+} as const);
 
 export const LIVE_BATCH_PROOF_PROFILE =
   "urn:sompi:e2e:live-testnet10-generic-x402-batch:2" as const;
@@ -211,6 +218,7 @@ export async function runLiveBatchProof(
         now: Date.now,
       }),
       new JournalChainEvidenceStore(journal),
+      LIVE_CHAIN_EVIDENCE_FINALITY_POLICY,
       Date.now
     );
     const channelStore = new JournalBatchChannelStore(journal, Date.now);
@@ -249,20 +257,17 @@ export async function runLiveBatchProof(
       adapters: [
         new WalletTreasuryOperationAdapter(
           initialized.treasuryWallet,
-          chainEvidence,
-          "accepted"
+          chainEvidence
         ),
         new VaultSendTreasuryOperationAdapter(
           initialized.vault,
           initialized.treasuryWallet,
-          chainEvidence,
-          "accepted"
+          chainEvidence
         ),
         new VaultDepositTreasuryOperationAdapter(
           initialized.vault,
           initialized.treasuryWallet,
-          chainEvidence,
-          "accepted"
+          chainEvidence
         ),
         new BatchRefundTreasuryOperationAdapter(
           journal,
@@ -270,7 +275,6 @@ export async function runLiveBatchProof(
           batchChain,
           clientSigner,
           chainEvidence,
-          "accepted",
           BATCH_CLAIM_FEE_ATOMIC,
           claimRace
         ),
@@ -418,6 +422,7 @@ export async function runLiveBatchProof(
         channelStore,
         channelSigner: clientSigner,
         batchChain,
+        chainEvidence,
         entropy,
         workerId: `sompi-live-batch-${index}`,
       });
@@ -651,6 +656,7 @@ function composeBatchCoordinator(input: {
   readonly channelStore: JournalBatchChannelStore;
   readonly channelSigner: SecureBatchChannelSigner;
   readonly batchChain: WalletBatchChainSource;
+  readonly chainEvidence: ChainEvidenceModule;
   readonly entropy: Buffer;
   readonly workerId: string;
 }): PurchaseCoordinator {
@@ -723,6 +729,7 @@ function composeBatchCoordinator(input: {
       },
       workerId: input.workerId,
       effectLeaseTtlMs: 20_000,
+      finality: input.chainEvidence,
     }
   );
 }
@@ -861,7 +868,7 @@ export async function observeAcceptedBatchClaim(input: Readonly<{
   level: "accepted" | "depth-confirmed" | "consensus-final";
 }>> {
   const codec = new KaspaTestnet10AddressCodec();
-  const observed = await input.chainEvidence.observe({
+  const outcome = await input.chainEvidence.observe({
     operationId: `live-batch-claim:${input.channel.id}`,
     operation: "recovery-release",
     network: LIVE_NETWORK,
@@ -887,18 +894,12 @@ export async function observeAcceptedBatchClaim(input: Readonly<{
     watchedAddresses: [input.channel.escrowAddress, input.merchantAddress],
     mechanism: "native-covenant",
     protocolFinality: "accepted",
-    operatorFloor: "accepted",
     signal: new AbortController().signal,
   });
-  if (
-    observed.status !== "present" || !observed.level ||
-    !meets(observed.level, "accepted") ||
-    (observed.level !== "accepted" &&
-      observed.level !== "depth-confirmed" &&
-      observed.level !== "consensus-final")
-  ) {
+  if (outcome.interpretation !== "accepted") {
     throw new Error("live batch claim lacks independent accepted Chain Evidence");
   }
+  const observed = outcome.evidence;
   return Object.freeze({ detailDigest: observed.detailDigest, level: observed.level });
 }
 
@@ -1032,12 +1033,20 @@ function assertBatchReport(report: LiveBatchProofReport): void {
     report.claimChannel.chargedCumulativeAtomic !== "12000000" ||
     report.claimChannel.continuation.amountAtomic !== "28000000" ||
     !/^sha256:[A-Za-z0-9_-]{43}$/.test(report.claimChannel.chainEvidenceDigest) ||
-    !meets(report.claimChannel.chainEvidenceLevel, "accepted") ||
+    !isAcceptedChainEvidenceLevel(report.claimChannel.chainEvidenceLevel) ||
     report.refundChannel.refundOutput.amountAtomic !== "38000000" ||
     BigInt(report.refundChannel.observedBeforeBoundaryDaa) > BigInt(report.refundChannel.refundTimeoutDaa) ||
     BigInt(report.refundChannel.observedAfterBoundaryDaa) <= BigInt(report.refundChannel.refundTimeoutDaa) ||
     /(?:privateKey|wallet-key|owner\.key|ipc-mac\.key|sourceWalletDirectory|nodeUrl)/i.test(encoded)
   ) throw new Error("live batch report is invalid or contains private state");
+}
+
+function isAcceptedChainEvidenceLevel(
+  level: string
+): level is "accepted" | "depth-confirmed" | "consensus-final" {
+  return level === "accepted" ||
+    level === "depth-confirmed" ||
+    level === "consensus-final";
 }
 
 export function liveBatchReportDigest(report: LiveBatchProofReport): string {

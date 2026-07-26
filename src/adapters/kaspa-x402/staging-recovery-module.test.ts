@@ -3,12 +3,33 @@ import test from "node:test";
 
 import { encodePaymentRequiredHeader } from "@kaspa-x402/core";
 
+import type {
+  ChainEvidenceFinalitySelector,
+  ChainEvidenceOperation,
+  ProtocolFinality,
+} from "../../chain-evidence/types.js";
 import { evidenceDigest } from "../../purchase/identity.js";
 import { KaspaStagingRecoveryModule } from "./staging-recovery-module.js";
 
 const STAGING_TX = "11".repeat(32);
 const PAY_TO = "kaspatest:merchant";
 const EVIDENCE = evidenceDigest("staging-evidence");
+const FINALITY: ChainEvidenceFinalitySelector = Object.freeze({
+  selectFinality(
+    operation: ChainEvidenceOperation,
+    protocolFinality: ProtocolFinality,
+  ) {
+    return Object.freeze({
+      operation,
+      protocolFinality,
+      operatorFloor: "accepted" as const,
+      effectiveFloor: protocolFinality === "confirmed"
+        ? "depth-confirmed" as const
+        : "accepted" as const,
+      depthConfirmationDaa: "10",
+    });
+  },
+});
 
 test("alpha.9 standard-native requirements reach abandoned-staging recovery", async () => {
   let calls = 0;
@@ -59,7 +80,7 @@ test("alpha.9 standard-native requirements reach abandoned-staging recovery", as
         };
       },
     } as never,
-    finalityFloor: "accepted",
+    finality: FINALITY,
   });
   await module.prepare({
     purchaseId: "pur_AQEBAQEBAQEBAQEBAQEBAQ" as never,
@@ -121,7 +142,7 @@ test("staging recovery rejects a valid but cross-paired PAYMENT-REQUIRED artifac
         };
       },
     } as never,
-    finalityFloor: "accepted",
+    finality: FINALITY,
   });
   await assert.rejects(
     module.prepare({

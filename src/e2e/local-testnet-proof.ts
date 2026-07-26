@@ -100,6 +100,11 @@ import { KaspaWallet } from "../wallet.js";
 import { InMemoryKaspaTestnet10 } from "./in-memory-testnet.js";
 import { createSompiMcpServer } from "../mcp/server.js";
 import { PolicyEngine } from "../policy.js";
+import type {
+  ChainEvidenceFinalitySelector,
+  ChainEvidenceObservation,
+  ChainEvidenceRequest,
+} from "../chain-evidence/types.js";
 
 const NOW_MS = 2_000_000_000_000;
 const MERCHANT_ORIGIN = "https://merchant.example";
@@ -108,6 +113,13 @@ const RESOURCE_BODY = Buffer.from("Sompi deterministic generic x402 resource\n",
 const PAY_TO = "kaspatest:qpumuen7l8wthtz45p3ftn58pvrs9xlumvkuu2xet8egzkcklqtes5z8rkmpd";
 const PRICE_ATOMIC = "20000000";
 const ADDITIONAL_COST_CEILING_ATOMIC = "30000000";
+const LOCAL_CHAIN_EVIDENCE_FINALITY_POLICY = Object.freeze({
+  settlement: "accepted",
+  "direct-treasury": "accepted",
+  vault: "accepted",
+  staging: "accepted",
+  "recovery-release": "accepted",
+} as const);
 const INITIAL_VAULT_TRANSACTION_ID = "64".repeat(32);
 const COVENANT_ID = "65".repeat(32);
 const OWNER_PUBLIC_KEY =
@@ -527,12 +539,12 @@ function composeCoordinator(input: {
     now: input.clock,
     generatePrivateKey: () => STAGING_PRIVATE_KEY,
   });
+  const chainEvidence = localWalletChainEvidence(input.wallet, input.clock);
   const staging = new VaultTreasuryStaging({
     vault: input.vault,
     wallet: input.wallet,
     keyStore,
-    chainEvidence: localWalletChainEvidence(input.wallet, input.clock),
-    finalityFloor: "accepted",
+    chainEvidence,
   });
   const canonicalStaging = createJournalTreasuryStagingMetadataSource(input.journal);
   const observedStaging = new JournalTreasuryStagingObservationSource(
@@ -616,6 +628,7 @@ function composeCoordinator(input: {
       entropy: (length) => new Uint8Array(length).fill(length === 16 ? 0x41 : 0x42),
       workerId: "sompi-e2e-coordinator",
       effectLeaseTtlMs: 5_000,
+      finality: chainEvidence,
     }
   );
 }
@@ -698,14 +711,36 @@ function purchaseProofApplication(application: PurchaseApplication): SompiApplic
   });
 }
 
-function localWalletChainEvidence(wallet: KaspaWallet, now: () => number) {
+function localWalletChainEvidence(
+  wallet: KaspaWallet,
+  now: () => number
+): ChainEvidenceFinalitySelector & {
+  observe(
+    request: Readonly<ChainEvidenceRequest>
+  ): Promise<ChainEvidenceObservation>;
+} {
   return {
-    async observe(request: any) {
+    selectFinality(operation, protocolFinality) {
+      const operatorFloor = LOCAL_CHAIN_EVIDENCE_FINALITY_POLICY[operation];
+      return Object.freeze({
+        operation,
+        protocolFinality,
+        operatorFloor,
+        effectiveFloor:
+          protocolFinality === "confirmed" ? "depth-confirmed" : operatorFloor,
+        depthConfirmationDaa: "10",
+      });
+    },
+    async observe(request) {
+      const finality = this.selectFinality(
+        request.operation,
+        request.protocolFinality
+      );
       const rpc = await wallet.client();
       const response = await rpc.getUtxosByAddresses([...request.watchedAddresses]);
       const entries = response.entries as any[];
       const scores: bigint[] = [];
-      const present = request.expectedOutputs.every((expected: any) => {
+      const present = request.expectedOutputs.every((expected) => {
         const match = entries.find((entry) => {
           const outpoint = entry?.outpoint ?? entry?.entry?.outpoint;
           return String(outpoint?.transactionId) === request.transactionId &&
@@ -715,10 +750,60 @@ function localWalletChainEvidence(wallet: KaspaWallet, now: () => number) {
         if (match) scores.push(BigInt(match?.blockDaaScore ?? match?.entry?.blockDaaScore ?? 0));
         return Boolean(match);
       });
-      if (!present) return { status: "absent" as const, detailDigest: evidenceDigest(`local-absent:${request.transactionId}`), observedAtMs: now() };
+      const common = Object.freeze({
+        profile: "urn:sompi:chain-evidence:testnet-10:1" as const,
+        operationId: request.operationId,
+        operation: request.operation,
+        transactionId: request.transactionId,
+        mechanism: request.mechanism,
+        protocolFinality: request.protocolFinality,
+        operatorFloor: finality.operatorFloor,
+        effectiveFloor: finality.effectiveFloor,
+        primaryProfile: "urn:sompi:e2e:local-wallet-primary:1",
+        witnessProfile: "urn:sompi:e2e:local-wallet-witness:1",
+        outputsDigest: evidenceDigest(`local-outputs:${request.transactionId}`),
+        observedAtMs: now(),
+      });
+      if (!present) {
+        return Object.freeze({
+          interpretation: "absent" as const,
+          finality,
+          evidence: Object.freeze({
+            ...common,
+            status: "absent" as const,
+            detailDigest: evidenceDigest(`local-absent:${request.transactionId}`),
+          }),
+        });
+      }
       const score = scores.reduce((max, value) => value > max ? value : max, 0n);
-      if (score <= 0n) return { status: "present" as const, level: "provisional" as const, view: "current" as const, detailDigest: evidenceDigest(`local-provisional:${request.transactionId}`), observedAtMs: now() };
-      return { status: "present" as const, level: "accepted" as const, view: "current" as const, detailDigest: evidenceDigest(`local-accepted:${request.transactionId}`), acceptingBlockDaaScore: score.toString(), observedAtMs: now() };
+      if (score <= 0n) {
+        return Object.freeze({
+          interpretation: "provisional" as const,
+          finality,
+          evidence: Object.freeze({
+            ...common,
+            status: "present" as const,
+            level: "provisional" as const,
+            view: "current" as const,
+            detailDigest: evidenceDigest(`local-provisional:${request.transactionId}`),
+          }),
+        });
+      }
+      return Object.freeze({
+        interpretation: "accepted" as const,
+        finality,
+        evidence: Object.freeze({
+          ...common,
+          status: "present" as const,
+          level: "accepted" as const,
+          view: "current" as const,
+          blockHash: "11".repeat(32),
+          acceptingBlockHash: "22".repeat(32),
+          acceptingBlockDaaScore: score.toString(),
+          virtualDaaScore: score.toString(),
+          detailDigest: evidenceDigest(`local-accepted:${request.transactionId}`),
+        }),
+      });
     },
   };
 }

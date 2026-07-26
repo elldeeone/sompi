@@ -9,17 +9,17 @@ export class JournalChainEvidenceStore implements ChainEvidenceStore {
   constructor(private readonly journal: PurchaseJournal) {
     if (
       !journal ||
-      typeof journal.findAcceptedChainEvidence !== "function" ||
+      typeof journal.findRetainedChainEvidence !== "function" ||
       typeof journal.recordChainEvidence !== "function"
     ) {
       throw new Error("Purchase Journal Chain Evidence store is required");
     }
   }
 
-  findAccepted(
+  findRetained(
     query: Readonly<AcceptedChainEvidenceQuery>
-  ): ChainEvidenceRecord | undefined {
-    return this.journal.findAcceptedChainEvidence(query);
+  ): readonly ChainEvidenceRecord[] {
+    return this.journal.findRetainedChainEvidence(query);
   }
 
   record(record: Readonly<ChainEvidenceRecord>): ChainEvidenceRecord {

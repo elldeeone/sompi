@@ -49,10 +49,11 @@ test("request envelopes are canonical, deterministic, authenticated, and replay 
   assert.equal(first.wire, second.wire);
   assert.equal(first.requestDigest, second.requestDigest);
   assert.equal(first.factsDigest, authorityFactsDigest(request.facts));
-  assert.equal(first.requestDigest, "sha256:ql5ZVz5N9idQdNsUmA_vD-2zLUr2H7n7bjl_02R0hyA");
-  assert.equal(first.factsDigest, "sha256:G80XhoCA-C3sth-rFuLa-DI6YfwSxsjJ1aoLLXpK4a0");
+  // ADR-0024 establishes the exact Authority IPC v2 envelope.
+  assert.equal(first.requestDigest, "sha256:EackXd5hxYZ5A_Ih5ouqZkVeycr3-PctOGkJmCIdz7E");
+  assert.equal(first.factsDigest, "sha256:twylM9DUN08Qo_TRUjb7Ht8VDRPyiFUXLh1xka-HZjI");
   assert.equal(first.nonceDigest, "sha256:rPcvkLHhzeSiKxzypYz1ZjonDwweFIQ-VUjqZcc6cZo");
-  assert.equal(JSON.parse(first.wire).mac, "1iAvvZ3S7Mcu0CJevzLOSW7T0uR6NF5X4w7Mv-xe01M");
+  assert.equal(JSON.parse(first.wire).mac, "7C42HuGFfiWuaCYilGSRGBqMaEncXwl0mSLojBP5lUY");
   assert.deepEqual(Buffer.from(KEY), keyBefore, "caller-owned MAC key must not be zeroed or mutated");
   assert(Object.isFrozen(first));
   assert(Object.isFrozen(first.message));
@@ -106,10 +107,15 @@ test("strict parsing rejects alternate JSON forms, duplicate or unknown keys, an
     () => parseAuthorityApprovalRequest(reordered, verification()),
     "malformed_message"
   );
-  const duplicate = sealed.wire.replace('"version":1', '"version":1,"version":1');
+  const duplicate = sealed.wire.replace('"version":2', '"version":2,"version":2');
   assertProtocolError(
     () => parseAuthorityApprovalRequest(duplicate, verification()),
     "malformed_message"
+  );
+  const supersededVersion = sealed.wire.replace('"version":2', '"version":1');
+  assertProtocolError(
+    () => parseAuthorityApprovalRequest(supersededVersion, verification()),
+    "unsupported_protocol"
   );
   assertProtocolError(
     () =>
@@ -154,6 +160,9 @@ test("every exact Purchase and Checkout Terms fact is covered by authentication"
     (wire) =>
       (wire.message.facts.purchaseAuthorizationFactsDigest = evidenceDigest("other-authorization-facts")),
     (wire) => (wire.message.facts.additionalCostCeilingAtomic = "101"),
+    (wire) => (wire.message.facts.operatorFinalityFloor = "depth-confirmed"),
+    (wire) => (wire.message.facts.effectiveFinalityFloor = "depth-confirmed"),
+    (wire) => (wire.message.facts.depthConfirmationDaa = "11"),
     (wire) => (wire.message.checkoutEvidence.artifact = "other-checkout"),
     (wire) => (wire.message.checkoutEvidence.digest = evidenceDigest("other-checkout")),
     (wire) => (wire.message.checkoutEvidence.mediaType = "text/plain"),
@@ -176,6 +185,18 @@ test("every exact Purchase and Checkout Terms fact is covered by authentication"
     () => parseAuthorityApprovalRequest(JSON.stringify(missingAdditionalCost), verification()),
     "malformed_message"
   );
+  for (const field of [
+    "operatorFinalityFloor",
+    "effectiveFinalityFloor",
+    "depthConfirmationDaa",
+  ]) {
+    const missingFinalityFact = JSON.parse(sealed.wire);
+    delete missingFinalityFact.message.facts[field];
+    assertProtocolError(
+      () => parseAuthorityApprovalRequest(JSON.stringify(missingFinalityFact), verification()),
+      "malformed_message"
+    );
+  }
 });
 
 test("authority facts enforce the exact initial KAS testnet profile and canonical request identity", () => {
@@ -188,6 +209,9 @@ test("authority facts enforce the exact initial KAS testnet profile and canonica
     { ...base, termsExpiresAt: "2032-01-01T00:05:00+00:00" },
     { ...base, resourceFingerprint: evidenceDigest("not-the-canonical-request") },
     { ...base, requestBodyDigest: evidenceDigest("different-body") },
+    { ...base, operatorFinalityFloor: "depth-confirmed" },
+    { ...base, effectiveFinalityFloor: "depth-confirmed" },
+    { ...base, depthConfirmationDaa: "0" },
   ];
   for (const facts of rejected) {
     assertProtocolError(
@@ -610,7 +634,7 @@ test("authentication configuration is external, fixed-size, and key-id bound", (
   );
 
   const tag = HMAC_SHA256_AUTHORITY_MAC.sign(Buffer.from("fixed-vector"), KEY);
-  assert.equal(tag, "C_0pvzEuU08z1iG27FArR18iVhvGrNKt_wEPeqSoLqk");
+  assert.equal(tag, "ZOPJBMD99rv9rUXZxu699rJwUACZvialSh7D3TGFdc8");
   assert(HMAC_SHA256_AUTHORITY_MAC.verify(Buffer.from("fixed-vector"), tag, KEY));
   assert(!HMAC_SHA256_AUTHORITY_MAC.verify(Buffer.from("other-vector"), tag, KEY));
 });
@@ -701,7 +725,9 @@ function makeFacts(): AuthorityApprovalFacts {
     purchaseAuthorizationNonceDigest: evidenceDigest("purchase-authorization-nonce"),
     purchaseAuthorizationFactsDigest: evidenceDigest("purchase-authorization-facts"),
     additionalCostCeilingAtomic: "100",
+    operatorFinalityFloor: "accepted",
     effectiveFinalityFloor: "accepted",
+    depthConfirmationDaa: "10",
     executionPlanDigest: evidenceDigest("execution-plan"),
     executionMechanism: "single-transaction",
     executionProfile: "kaspa-exact-v2:standard-native",

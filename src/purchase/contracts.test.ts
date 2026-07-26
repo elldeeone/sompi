@@ -132,6 +132,48 @@ test("authorization may expire before Checkout Terms but never after them", () =
   );
 });
 
+test("authorization binds Merchant assurance, operator floor, effective floor, and depth meaning", () => {
+  const base = makeAuthorizationRequest();
+  assert.deepEqual(
+    {
+      settlementAssurance: authorizationFacts(base).settlementAssurance,
+      operatorFinalityFloor: authorizationFacts(base).operatorFinalityFloor,
+      effectiveFinalityFloor: authorizationFacts(base).effectiveFinalityFloor,
+      depthConfirmationDaa: authorizationFacts(base).depthConfirmationDaa,
+    },
+    {
+      settlementAssurance: "accepted",
+      operatorFinalityFloor: "accepted",
+      effectiveFinalityFloor: "accepted",
+      depthConfirmationDaa: "10",
+    }
+  );
+  assert.equal(
+    authorizationFacts({
+      ...base,
+      settlementAssurance: "confirmed",
+      effectiveFinalityFloor: "depth-confirmed",
+    }).operatorFinalityFloor,
+    "accepted"
+  );
+  assert.equal(
+    authorizationFacts({
+      ...base,
+      operatorFinalityFloor: "depth-confirmed",
+      effectiveFinalityFloor: "depth-confirmed",
+    }).settlementAssurance,
+    "accepted"
+  );
+  assert.throws(
+    () => authorizationFacts({ ...base, effectiveFinalityFloor: "depth-confirmed" }),
+    /does not match the Merchant assurance and operator floor/
+  );
+  assert.throws(
+    () => authorizationFacts({ ...base, depthConfirmationDaa: "0" }),
+    /depth-confirmation DAA/
+  );
+});
+
 test("prepared payment must exactly match all authorized Checkout Terms", () => {
   const request = makeExecutionRequest();
   const prepared = makePrepared(request);
@@ -229,7 +271,9 @@ function makeAuthorizationRequest(): PurchaseAuthorizationRequest {
     requestDigest: evidenceDigest("authorization-request"),
     nonceDigest: evidenceDigest("authorization-nonce"),
     additionalCostCeilingAtomic: "10",
+    operatorFinalityFloor: "accepted",
     effectiveFinalityFloor: "accepted",
+    depthConfirmationDaa: "10",
     executionPlanDigest: evidenceDigest("execution-plan"),
     executionMechanism: "single-transaction",
     executionProfile: "kaspa-exact-v2:standard-native",

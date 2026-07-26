@@ -87,7 +87,12 @@ export function parseRecoveryApiCredential(value: unknown): RecoveryApiCredentia
 /** Stable, no-follow read of an operator-installed least-authority credential. */
 export function loadAgentApiCredential(
   filename: string,
-  options: Readonly<{ expectedOwnerUserId: number; runtimeGroupId: number; allowSameUserForTests?: boolean }>
+  options: Readonly<{
+    expectedOwnerUserId: number;
+    runtimeGroupId: number;
+    ownerOnlyClientFile?: boolean;
+    allowSameUserForTests?: boolean;
+  }>
 ): AgentApiCredential {
   return loadCredential(filename, options, parseAgentApiCredential, canonicalAgentApiCredentialBytes, "agent");
 }
@@ -124,7 +129,12 @@ function apiCredentialMatches(
 
 function loadCredential<T extends AgentApiCredential | RecoveryApiCredential>(
   filename: string,
-  options: Readonly<{ expectedOwnerUserId: number; runtimeGroupId: number; allowSameUserForTests?: boolean }>,
+  options: Readonly<{
+    expectedOwnerUserId: number;
+    runtimeGroupId: number;
+    ownerOnlyClientFile?: boolean;
+    allowSameUserForTests?: boolean;
+  }>,
   parse: (value: unknown) => T,
   canonicalBytes: (credential: T) => Buffer,
   label: "agent" | "recovery"
@@ -135,7 +145,10 @@ function loadCredential<T extends AgentApiCredential | RecoveryApiCredential>(
   try {
     descriptor = fs.openSync(resolved, fs.constants.O_RDONLY | noFollowFlag());
     const before = fs.fstatSync(descriptor);
-    const expectedMode = options.allowSameUserForTests ? 0o600 : 0o640;
+    const expectedMode =
+      options.allowSameUserForTests || options.ownerOnlyClientFile
+        ? 0o600
+        : 0o640;
     if (
       !before.isFile() || before.nlink !== 1 || before.size < 2 || before.size > MAX_CREDENTIAL_BYTES ||
       before.uid !== options.expectedOwnerUserId || before.gid !== options.runtimeGroupId ||

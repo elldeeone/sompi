@@ -4,7 +4,10 @@ import { randomBytes } from "node:crypto";
 import Database from "better-sqlite3";
 import { SecureLocalStateDirectory } from "../secure-local-state.js";
 import { EvidenceStore, type StoredEvidence } from "./evidence-store.js";
-import { authorizationFactsDigest } from "./contracts.js";
+import {
+  authorizationFactsDigest,
+  PURCHASE_AUTHORIZATION_REQUEST_PROFILE,
+} from "./contracts.js";
 import {
   assertPurchaseId,
   assertPurchaseRequestKey,
@@ -52,9 +55,14 @@ import type {
   TreasuryDriverClaim,
   TreasuryDriverLease,
 } from "../treasury/operation-journal.js";
-import type {
-  AcceptedChainEvidenceQuery,
-  ChainEvidenceRecord,
+import {
+  CHAIN_EVIDENCE_OPERATOR_PROFILE,
+  CHAIN_EVIDENCE_OPERATIONS,
+  CHAIN_EVIDENCE_PROFILE,
+  CHAIN_EVIDENCE_WITNESS_PROFILE,
+  chainEvidenceEffectiveFloor,
+  type AcceptedChainEvidenceQuery,
+  type ChainEvidenceRecord,
 } from "../chain-evidence/types.js";
 import {
   validateAdmissionBudgets,
@@ -1650,10 +1658,11 @@ export class PurchaseJournal {
     this.now = options.now ?? Date.now;
     this.faultInjector = options.faultInjector;
     const databasePath = prepareDatabasePath(filename);
+    preflightDatabaseEpoch(databasePath, filename);
     this.db = new Database(filename);
     try {
-      this.configure(options.busyTimeoutMs ?? 5_000);
       validateDatabaseFiles(databasePath);
+      this.configure(options.busyTimeoutMs ?? 5_000);
       this.migrate();
       this.bindOperatorManifest(options.operatorManifestIdentity);
       const existingAdmission = options.admission ?? this.readAdmissionProjection();
@@ -2091,35 +2100,30 @@ export class PurchaseJournal {
     return row ? chainEvidenceFromRow(row) : undefined;
   }
 
-  findAcceptedChainEvidence(
+  findRetainedChainEvidence(
     query: Readonly<AcceptedChainEvidenceQuery>
-  ): ChainEvidenceRecord | undefined {
+  ): readonly ChainEvidenceRecord[] {
     validateAcceptedChainEvidenceQuery(query);
-    const minimumRank = query.minimumLevel === "depth-confirmed" ? 2 : 1;
-    const row = this.db.prepare(
+    const rows = this.db.prepare(
       `SELECT * FROM chain_evidence
-       WHERE transaction_id = ? AND outputs_digest = ? AND mechanism = ?
+       WHERE profile = ? AND operation_id = ? AND operation = ?
+         AND transaction_id = ? AND outputs_digest = ? AND mechanism = ?
+         AND protocol_finality = ? AND operator_floor = ? AND effective_floor = ?
          AND status = 'present'
          AND level IN ('accepted', 'depth-confirmed', 'consensus-final')
-         AND CASE level
-               WHEN 'consensus-final' THEN 3
-               WHEN 'depth-confirmed' THEN 2
-               ELSE 1
-             END >= ?
-       ORDER BY CASE level
-                  WHEN 'consensus-final' THEN 3
-                  WHEN 'depth-confirmed' THEN 2
-                  ELSE 1
-                END DESC,
-                observed_at_ms DESC
-       LIMIT 1`
-    ).get(
+       ORDER BY observed_at_ms DESC, detail_digest DESC`
+    ).all(
+      query.profile,
+      query.operationId,
+      query.operation,
       query.transactionId,
       query.outputsDigest,
       query.mechanism,
-      minimumRank
-    ) as ChainEvidenceRow | undefined;
-    return row ? chainEvidenceFromRow(row) : undefined;
+      query.protocolFinality,
+      query.operatorFloor,
+      query.effectiveFloor
+    ) as ChainEvidenceRow[];
+    return Object.freeze(rows.map(chainEvidenceFromRow));
   }
 
   integrityCheck(): true {
@@ -8612,6 +8616,52 @@ export class PurchaseJournal {
     const purchase = this.requirePurchase(purchaseId);
     const terms = this.requireCheckoutTerms(purchaseId);
     const request = this.requireAuthorizationRequest(purchaseId);
+    let authorizationEnvelope: unknown;
+    try {
+      authorizationEnvelope = JSON.parse(
+        Buffer.from(this.readEvidence(request.requestDigest)).toString("utf8")
+      );
+    } catch (error) {
+      throw new JournalInvariantError(
+        `Purchase ${purchaseId} authorization request evidence is malformed`,
+        { cause: error }
+      );
+    }
+    if (
+      !authorizationEnvelope ||
+      typeof authorizationEnvelope !== "object" ||
+      Array.isArray(authorizationEnvelope)
+    ) {
+      throw new JournalInvariantError(
+        `Purchase ${purchaseId} authorization request evidence is malformed`
+      );
+    }
+    const envelope = authorizationEnvelope as Record<string, unknown>;
+    if (
+      envelope.profile !== PURCHASE_AUTHORIZATION_REQUEST_PROFILE ||
+      (envelope.operatorFinalityFloor !== "accepted" &&
+        envelope.operatorFinalityFloor !== "depth-confirmed") ||
+      (envelope.effectiveFinalityFloor !== "accepted" &&
+        envelope.effectiveFinalityFloor !== "depth-confirmed") ||
+      typeof envelope.depthConfirmationDaa !== "string" ||
+      !/^[1-9][0-9]*$/.test(envelope.depthConfirmationDaa) ||
+      envelope.depthConfirmationDaa.length > 78 ||
+      (envelope.settlementAssurance !== "accepted" &&
+        envelope.settlementAssurance !== "confirmed" &&
+        envelope.settlementAssurance !== "channel-commitment")
+    ) {
+      throw new JournalInvariantError(
+        `Purchase ${purchaseId} authorization request finality facts are malformed`
+      );
+    }
+    if (
+      envelope.effectiveFinalityFloor !== request.effectiveFinalityFloor ||
+      envelope.settlementAssurance !== request.settlementAssurance
+    ) {
+      throw new JournalInvariantError(
+        `Purchase ${purchaseId} authorization request finality facts differ from the Journal`
+      );
+    }
     return authorizationFactsDigest({
       purchaseId,
       resourceUrl: purchase.resourceUrl,
@@ -8622,11 +8672,13 @@ export class PurchaseJournal {
       requestDigest: request.requestDigest,
       nonceDigest: request.nonceDigest,
       additionalCostCeilingAtomic: request.additionalCostCeilingAtomic,
-      effectiveFinalityFloor: request.effectiveFinalityFloor,
+      operatorFinalityFloor: envelope.operatorFinalityFloor,
+      effectiveFinalityFloor: envelope.effectiveFinalityFloor,
+      depthConfirmationDaa: envelope.depthConfirmationDaa,
       executionPlanDigest: request.executionPlanDigest,
       executionMechanism: request.executionMechanism,
       executionProfile: request.executionProfile,
-      settlementAssurance: request.settlementAssurance,
+      settlementAssurance: envelope.settlementAssurance,
       maximumAuthorizedChargeAtomic: request.maximumAuthorizedChargeAtomic,
       ...(request.channelId === undefined ? {} : { channelId: request.channelId }),
       ...(request.channelEpochDigest === undefined
@@ -12581,6 +12633,49 @@ function prepareDatabasePath(filename: string): PreparedJournalDatabasePath | un
   }
 }
 
+function preflightDatabaseEpoch(
+  pathInfo: PreparedJournalDatabasePath | undefined,
+  filename: string
+): void {
+  if (!pathInfo) return;
+  const resolved = path.resolve(filename);
+  let descriptor: number | undefined;
+  try {
+    const size = fs.statSync(resolved).size;
+    if (size === 0) return;
+    if (size < 100) {
+      throw new JournalInvariantError("Purchase Journal database header is invalid");
+    }
+    const header = Buffer.alloc(100);
+    descriptor = fs.openSync(resolved, "r");
+    if (fs.readSync(descriptor, header, 0, header.length, 0) !== header.length) {
+      throw new JournalInvariantError("Purchase Journal database header is incomplete");
+    }
+    if (!header.subarray(0, 16).equals(Buffer.from("SQLite format 3\0", "ascii"))) {
+      throw new JournalInvariantError("Purchase Journal database header is invalid");
+    }
+    const version = header.readUInt32BE(60);
+    const applicationId = header.readUInt32BE(68);
+    if (version === 0) return;
+    if (version !== JOURNAL_SCHEMA_VERSION) {
+      throw new JournalInvariantError(
+        `clean cutover refuses Purchase Journal schema ${version}; recreate it at schema ${JOURNAL_SCHEMA_VERSION}`
+      );
+    }
+    if (applicationId !== JOURNAL_APPLICATION_ID) {
+      throw new JournalInvariantError("Purchase Journal application identity is invalid");
+    }
+  } catch (error) {
+    if (error instanceof JournalInvariantError) throw error;
+    throw new JournalInvariantError(
+      "Purchase Journal database epoch preflight failed",
+      { cause: error }
+    );
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+  }
+}
+
 function validateDatabaseFiles(pathInfo: PreparedJournalDatabasePath | undefined): void {
   if (!pathInfo) return;
   try {
@@ -12600,20 +12695,73 @@ function validateDatabaseFiles(pathInfo: PreparedJournalDatabasePath | undefined
 
 function validateChainEvidenceRecord(record: Readonly<ChainEvidenceRecord>): void {
   if (
-    record.profile !== "urn:sompi:chain-evidence:testnet-10:1" ||
+    record.profile !== CHAIN_EVIDENCE_PROFILE ||
     !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(record.operationId) ||
+    !CHAIN_EVIDENCE_OPERATIONS.includes(record.operation) ||
     !/^[a-f0-9]{64}$/.test(record.transactionId) ||
+    !["present", "absent", "unknown", "unavailable"].includes(record.status) ||
+    !["ordinary", "native-covenant", "kip10-script-template"].includes(
+      record.mechanism
+    ) ||
+    !["mempool", "accepted", "confirmed"].includes(record.protocolFinality) ||
+    !["accepted", "depth-confirmed"].includes(record.operatorFloor) ||
+    !["accepted", "depth-confirmed"].includes(record.effectiveFloor) ||
+    typeof record.primaryProfile !== "string" ||
+    record.primaryProfile.length === 0 ||
+    typeof record.witnessProfile !== "string" ||
+    record.witnessProfile.length === 0 ||
     !/^sha256:[A-Za-z0-9_-]{43}$/.test(record.outputsDigest) ||
     !/^sha256:[A-Za-z0-9_-]{43}$/.test(record.detailDigest) ||
     !Number.isSafeInteger(record.observedAtMs) || record.observedAtMs <= 0
   ) throw new JournalInvariantError("Chain Evidence record is invalid");
+  const expectedEffective = chainEvidenceEffectiveFloor(
+    record.protocolFinality,
+    record.operatorFloor
+  );
+  if (record.effectiveFloor !== expectedEffective) {
+    throw new JournalInvariantError("Chain Evidence finality facts are inconsistent");
+  }
   const present = record.status === "present";
-  if (present !== (record.level !== undefined && record.view !== undefined)) {
+  if (
+    present !== (record.level !== undefined && record.view !== undefined) ||
+    (record.level !== undefined &&
+      !["provisional", "accepted", "depth-confirmed", "consensus-final"].includes(
+        record.level
+      )) ||
+    (record.view !== undefined &&
+      record.view !== "current" &&
+      record.view !== "historical")
+  ) {
     throw new JournalInvariantError("Chain Evidence presence fields are inconsistent");
   }
   const accepted = record.level === "accepted" || record.level === "depth-confirmed" || record.level === "consensus-final";
-  if (accepted !== Boolean(record.blockHash && record.acceptingBlockHash && record.acceptingBlockDaaScore && record.virtualDaaScore)) {
+  const anchors = [
+    record.blockHash,
+    record.acceptingBlockHash,
+    record.acceptingBlockDaaScore,
+    record.virtualDaaScore,
+  ];
+  if (
+    accepted !== anchors.every((value) => value !== undefined) ||
+    (!accepted && anchors.some((value) => value !== undefined)) ||
+    (accepted &&
+      (
+        !/^[a-f0-9]{64}$/.test(record.blockHash ?? "") ||
+        !/^[a-f0-9]{64}$/.test(record.acceptingBlockHash ?? "") ||
+        !/^(?:0|[1-9][0-9]*)$/.test(record.acceptingBlockDaaScore ?? "") ||
+        !/^(?:0|[1-9][0-9]*)$/.test(record.virtualDaaScore ?? "")
+      ))
+  ) {
     throw new JournalInvariantError("accepted Chain Evidence has incomplete anchors");
+  }
+  if (
+    accepted &&
+    (
+      record.primaryProfile !== CHAIN_EVIDENCE_OPERATOR_PROFILE ||
+      record.witnessProfile !== CHAIN_EVIDENCE_WITNESS_PROFILE
+    )
+  ) {
+    throw new JournalInvariantError("accepted Chain Evidence source profile is unsupported");
   }
 }
 
@@ -12622,21 +12770,34 @@ function validateAcceptedChainEvidenceQuery(
 ): void {
   if (
     !query ||
+    query.profile !== CHAIN_EVIDENCE_PROFILE ||
+    !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}$/.test(query.operationId) ||
+    !CHAIN_EVIDENCE_OPERATIONS.includes(query.operation) ||
     !/^[a-f0-9]{64}$/.test(query.transactionId) ||
     !/^sha256:[A-Za-z0-9_-]{43}$/.test(query.outputsDigest) ||
     !["ordinary", "native-covenant", "kip10-script-template"].includes(
       query.mechanism
     ) ||
-    (query.minimumLevel !== "accepted" &&
-      query.minimumLevel !== "depth-confirmed")
+    !["mempool", "accepted", "confirmed"].includes(query.protocolFinality) ||
+    (query.operatorFloor !== "accepted" &&
+      query.operatorFloor !== "depth-confirmed") ||
+    (query.effectiveFloor !== "accepted" &&
+      query.effectiveFloor !== "depth-confirmed") ||
+    query.effectiveFloor !== chainEvidenceEffectiveFloor(
+      query.protocolFinality,
+      query.operatorFloor
+    )
   ) {
     throw new JournalInvariantError("accepted Chain Evidence query is invalid");
   }
 }
 
 function chainEvidenceFromRow(row: ChainEvidenceRow): ChainEvidenceRecord {
+  if (row.profile !== CHAIN_EVIDENCE_PROFILE) {
+    throw new JournalInvariantError("Chain Evidence profile is unsupported");
+  }
   const record: ChainEvidenceRecord = {
-    profile: "urn:sompi:chain-evidence:testnet-10:1",
+    profile: row.profile,
     operationId: row.operation_id,
     operation: row.operation,
     transactionId: row.transaction_id,

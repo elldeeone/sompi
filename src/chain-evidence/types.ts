@@ -1,4 +1,6 @@
 export const CHAIN_EVIDENCE_PROFILE = "urn:sompi:chain-evidence:testnet-10:1" as const;
+export const CHAIN_EVIDENCE_OPERATOR_PROFILE = "kaspa-operator-wrpc-v1" as const;
+export const CHAIN_EVIDENCE_WITNESS_PROFILE = "kaspa-rest-accepted-history-v1" as const;
 
 export type ChainEvidenceLevel =
   | "provisional"
@@ -10,6 +12,45 @@ export type ChainEvidenceStatus = "present" | "absent" | "unknown" | "unavailabl
 export type ChainEvidenceView = "current" | "historical";
 export type ChainMechanism = "ordinary" | "native-covenant" | "kip10-script-template";
 export type FinalityFloor = "accepted" | "depth-confirmed";
+export const CHAIN_EVIDENCE_OPERATIONS = [
+  "settlement",
+  "direct-treasury",
+  "vault",
+  "staging",
+  "recovery-release",
+] as const;
+export type ChainEvidenceOperation = (typeof CHAIN_EVIDENCE_OPERATIONS)[number];
+export type ProtocolFinality = "mempool" | "accepted" | "confirmed";
+
+export function chainEvidenceEffectiveFloor(
+  protocolFinality: ProtocolFinality,
+  operatorFloor: FinalityFloor
+): FinalityFloor {
+  return protocolFinality === "confirmed" ||
+    operatorFloor === "depth-confirmed"
+    ? "depth-confirmed"
+    : "accepted";
+}
+
+export type ChainEvidenceFinalityPolicy = Readonly<
+  Record<ChainEvidenceOperation, FinalityFloor>
+>;
+
+export interface ChainEvidenceFinalitySelection {
+  readonly operation: ChainEvidenceOperation;
+  readonly protocolFinality: ProtocolFinality;
+  readonly operatorFloor: FinalityFloor;
+  readonly effectiveFloor: FinalityFloor;
+  /** Canonical DAA depth that gives meaning to `depth-confirmed`. */
+  readonly depthConfirmationDaa: string;
+}
+
+export interface ChainEvidenceFinalitySelector {
+  selectFinality(
+    operation: ChainEvidenceOperation,
+    protocolFinality: ProtocolFinality
+  ): ChainEvidenceFinalitySelection;
+}
 
 export interface ExpectedChainOutput {
   readonly index: number;
@@ -26,15 +67,14 @@ export interface ExpectedChainInput {
 
 export interface ChainEvidenceRequest {
   readonly operationId: string;
-  readonly operation: "settlement" | "direct-treasury" | "vault" | "staging" | "recovery-release";
+  readonly operation: ChainEvidenceOperation;
   readonly network: "kaspa:testnet-10";
   readonly transactionId: string;
   readonly expectedOutputs: readonly ExpectedChainOutput[];
   readonly expectedInputs?: readonly ExpectedChainInput[];
   readonly watchedAddresses: readonly string[];
   readonly mechanism: ChainMechanism;
-  readonly protocolFinality: "mempool" | "accepted" | "confirmed";
-  readonly operatorFloor: FinalityFloor;
+  readonly protocolFinality: ProtocolFinality;
   readonly signal: AbortSignal;
 }
 
@@ -99,11 +139,35 @@ export interface ChainEvidenceRecord {
   readonly observedAtMs: number;
 }
 
+export type AcceptedChainEvidenceRecord = ChainEvidenceRecord & Readonly<{
+  status: "present";
+  level: "accepted" | "depth-confirmed" | "consensus-final";
+  view: ChainEvidenceView;
+  blockHash: string;
+  acceptingBlockHash: string;
+  acceptingBlockDaaScore: string;
+  virtualDaaScore: string;
+}>;
+
+export type ChainEvidenceObservation =
+  | Readonly<{
+      interpretation: "accepted";
+      evidence: AcceptedChainEvidenceRecord;
+      finality: ChainEvidenceFinalitySelection;
+    }>
+  | Readonly<{
+      interpretation: "provisional" | "absent" | "unknown" | "unavailable";
+      evidence: ChainEvidenceRecord;
+      finality: ChainEvidenceFinalitySelection;
+    }>;
+
 export interface IndependentChainWitness {
+  readonly depthConfirmationDaa: string;
   observe(request: Readonly<ChainEvidenceRequest>): Promise<ChainSourceEvidence>;
 }
 
 export interface OperatorChainObserver {
+  readonly depthConfirmationDaa: string;
   observe(
     request: Readonly<ChainEvidenceRequest>,
     witness: Readonly<ChainSourceEvidence>
@@ -111,15 +175,20 @@ export interface OperatorChainObserver {
 }
 
 export interface AcceptedChainEvidenceQuery {
+  readonly profile: typeof CHAIN_EVIDENCE_PROFILE;
+  readonly operationId: string;
+  readonly operation: ChainEvidenceOperation;
   readonly transactionId: string;
   readonly outputsDigest: string;
   readonly mechanism: ChainMechanism;
-  readonly minimumLevel: FinalityFloor;
+  readonly protocolFinality: ProtocolFinality;
+  readonly operatorFloor: FinalityFloor;
+  readonly effectiveFloor: FinalityFloor;
 }
 
 export interface ChainEvidenceStore {
-  findAccepted(
+  findRetained(
     query: Readonly<AcceptedChainEvidenceQuery>
-  ): ChainEvidenceRecord | undefined;
+  ): readonly ChainEvidenceRecord[];
   record(record: Readonly<ChainEvidenceRecord>): ChainEvidenceRecord;
 }

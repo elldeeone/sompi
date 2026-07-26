@@ -187,7 +187,9 @@ Sompi observes an uncertain effect before it permits another action. Recovery
 does not create replacement payment authority. Fulfillment recovery uses the
 same settled payment and request.
 
-Journal epoch 19 is the only active schema.
+Current source accepts only Journal epoch 20. Epoch 20 has the same physical
+SQLite shape as epoch 19 and a new authorization meaning. It does not read or
+migrate an older epoch.
 
 ## Trust boundaries
 

@@ -1,7 +1,9 @@
 # Sompi Journal
 
 The SQLite Journal is Sompi's durable source of truth.
-Epoch **19** is the only active schema.
+Current source accepts only epoch **20**.
+Epoch 20 has the same physical SQLite shape as epoch 19.
+It is a new semantic boundary for finality and authorization evidence.
 
 ## Rules
 

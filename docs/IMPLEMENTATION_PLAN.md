@@ -1,12 +1,13 @@
 # Sompi implementation plan
 
-Status: **Architecture Phase 2 complete**
+Status: **Architecture Phase 3 complete**
 
 Starting commit: `89b0f1f404ce8e5f2ded88a5b1a99d8ca1743bba`
 
 Sompi `0.12.0` completed phases 0 through 21. The current source release is
 `0.12.2`. The deployed runtime uses Kaspa-x402 `0.1.0-alpha.9` and Journal
-epoch 19.
+epoch 19. Phase 3 source uses Journal epoch 20 after the internal authorization
+evidence cutover in ADR-0024.
 
 The completed plan is an archived historical record:
 [`IMPLEMENTATION_PLAN_THROUGH_V0.12.0.md`](https://github.com/elldeeone/sompi/blob/c8fd02fa403b7e4f43dfa91653c0c232867d8ed8/docs/IMPLEMENTATION_PLAN.md).
@@ -150,12 +151,67 @@ Completion evidence from 2026-07-23:
 
 Do not start this phase until Phase 2 is complete.
 
-- **P3.1:** Make Chain Evidence own effective Finality Floor selection and terminal
+- [x] **P3.1:** Make Chain Evidence own effective Finality Floor selection and terminal
   evidence interpretation.
-- **P3.2:** Keep Merchant protocol finality and Sompi operator policy as separate facts.
-- **P3.3:** Exercise the complete host principal, group, socket, startup, Hermes,
+- [x] **P3.2:** Keep Merchant protocol finality and Sompi operator policy as separate facts.
+- [x] **P3.3:** Exercise the complete host principal, group, socket, startup, Hermes,
   rollback,
   and secret-isolation topology through the Host Bootstrap interface.
+
+Chain Evidence receives one exact operator policy for Settlement, direct
+Treasury, Vault, staging, and recovery-release operations. Callers do not
+supply an operator floor or interpret raw evidence strength. Merchant
+settlement assurance, operator policy, and the effective floor remain separate
+facts.
+
+The separate finality facts change immutable internal authorization bytes.
+ADR-0024 replaces the Purchase Authorization, Trusted Authority, Authority IPC,
+and AP2-derived evidence identities. It starts Journal epoch 20 with the same
+physical SQLite shape as epoch 19. There is no migration, fallback, or dual
+reader.
+
+Host Bootstrap owns one exact trust topology. Its verification covers
+principals, group memberships, socket access, startup readiness, Hermes
+compatibility, rollback, and secret isolation. The phase does not install or
+change a live host.
+
+This phase implements ADR-0012, ADR-0018, and ADR-0024.
+
+Verification gate:
+
+- [x] **P3.G1:** Table tests prove all five operator-policy selections and both
+  Merchant-strengthening directions.
+- [x] **P3.G2:** Provisional, below-floor, conflicting, absent, and unavailable
+  observations cannot become terminal accepted evidence.
+- [x] **P3.G3:** Retained evidence stays exact and usable after restart. No
+  production caller supplies a floor or imports evidence-rank logic.
+- [x] **P3.G4:** Host Bootstrap interface tests prove the exact trust topology,
+  readiness, Hermes compatibility, rollback, and positive and negative secret
+  access.
+- [x] **P3.G5:** The complete unit suite, protocol conformance suite, generated
+  interface check, and release verifier pass.
+- [x] **P3.G6:** The only Journal change is the documented semantic cutover to
+  epoch 20. No physical schema migration, public API, Kaspa-x402 source, wire,
+  package, pin, fixture, or conformance change, AP2 upstream pin change,
+  release, deployment, live-host, sibling-repository, or Phase 4 change is
+  included.
+
+Completion evidence from 2026-07-24:
+
+- Chain Evidence tests cover all five operations, both strengthening directions,
+  exact retained candidates, source profiles, and DAA depth changes in both
+  directions.
+- The complete suite ran 604 tests: 603 passed and one privileged ownership
+  test was skipped as expected. Offline smoke passed.
+- The disposable root-container Host Bootstrap proof passed all 46 checks in
+  the pinned Node 22.22.0 image.
+- All five alpha.9 conformance checks, OpenAPI, Arazzo, and the complete release
+  verifier passed on an isolated clean commit of the Phase 3 tree.
+- Journal epoch 20 is one semantic cutover with the epoch-19 physical shape.
+  Kaspa-x402 source, wire behavior, packages, pins, fixtures, and conformance
+  provenance did not change. The AP2 upstream pin did not change.
+- No release, deployment, live-host, sibling-repository, or Phase 4 change is
+  included.
 
 ### Phase 4: Deepen Treasury
 

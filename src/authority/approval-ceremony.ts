@@ -13,7 +13,7 @@ import type {
 
 export interface AuthorityApprovalDisplay {
   readonly kind?: "purchase";
-  readonly profile: "sompi.purchase-approval.1";
+  readonly profile: "sompi.purchase-approval.2";
   readonly authorityRequestDigest: string;
   readonly purchaseId: string;
   readonly merchant: Readonly<{ id: string; name: string; origin: string }>;
@@ -31,7 +31,9 @@ export interface AuthorityApprovalDisplay {
   readonly purchaseAuthorizationFactsDigest: string;
   readonly termsExpiresAt: string;
   readonly additionalCostCeilingAtomic: string;
+  readonly operatorFinalityFloor: "accepted" | "depth-confirmed";
   readonly effectiveFinalityFloor: "accepted" | "depth-confirmed";
+  readonly depthConfirmationDaa: string;
   readonly execution: Readonly<{
     planDigest: string;
     mechanism: "single-transaction" | "channel-voucher";
@@ -179,7 +181,7 @@ export function authorityApprovalSubject(
   if (display.kind === undefined || display.kind === "purchase") {
     return subject(
       display.profile,
-      "sompi.purchase-approval.1",
+      "sompi.purchase-approval.2",
       "purchase",
       display.purchaseId,
       "Purchase",
@@ -199,7 +201,7 @@ export function purchaseAuthorityApprovalDisplay(
   recoveryRetry: boolean,
 ): PurchaseAuthorityApprovalDisplay {
   return Object.freeze({
-    profile: "sompi.purchase-approval.1",
+    profile: "sompi.purchase-approval.2",
     authorityRequestDigest,
     purchaseId: facts.purchaseId,
     merchant: Object.freeze({
@@ -226,7 +228,9 @@ export function purchaseAuthorityApprovalDisplay(
     purchaseAuthorizationFactsDigest: facts.purchaseAuthorizationFactsDigest,
     termsExpiresAt: facts.termsExpiresAt,
     additionalCostCeilingAtomic: facts.additionalCostCeilingAtomic,
+    operatorFinalityFloor: facts.operatorFinalityFloor,
     effectiveFinalityFloor: facts.effectiveFinalityFloor,
+    depthConfirmationDaa: facts.depthConfirmationDaa,
     execution: Object.freeze({
       planDigest: facts.executionPlanDigest,
       mechanism: facts.executionMechanism,

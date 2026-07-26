@@ -162,7 +162,9 @@ Sompi then observes and records the result in a separate transaction.
 
 A timeout after possible submission is ambiguous.
 Recovery checks the original effect before it permits another action.
-Journal epoch 19 is the only active schema.
+Current source accepts only Journal epoch 20.
+Epoch 20 has the same physical SQLite shape as epoch 19 and new authorization
+evidence semantics.
 
 ## Bounded lifecycles
 
@@ -237,4 +239,6 @@ It does not keep permanent dual-version paths.
 - a general payment-rail interface
 
 Accepted decisions are in the [ADR index](../adr/README.md).
-ADR-0023 defines the current alpha.9 cutover and Journal epoch.
+ADR-0023 defines the deployed alpha.9 cutover and Journal epoch 19.
+ADR-0024 defines the current source finality and authorization evidence cutover
+and Journal epoch 20.

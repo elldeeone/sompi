@@ -24,6 +24,7 @@ import {
   JOURNAL_SCHEMA_V16_SQL,
   JOURNAL_SCHEMA_V17_SQL,
   JOURNAL_SCHEMA_V18_SQL,
+  JOURNAL_SCHEMA_V19_SQL,
   JOURNAL_SCHEMA_V1_SQL,
   JOURNAL_SCHEMA_VERSION,
 } from "./journal-schema.js";
@@ -39,6 +40,7 @@ test("clean cutover rejects every superseded journal schema without mutation", (
       [10, JOURNAL_SCHEMA_V10_SQL], [11, JOURNAL_SCHEMA_V11_SQL], [12, JOURNAL_SCHEMA_V12_SQL],
       [13, JOURNAL_SCHEMA_V13_SQL], [14, JOURNAL_SCHEMA_V15_SQL], [15, JOURNAL_SCHEMA_V15_SQL],
       [16, JOURNAL_SCHEMA_V16_SQL], [17, JOURNAL_SCHEMA_V17_SQL], [18, JOURNAL_SCHEMA_V18_SQL],
+      [19, JOURNAL_SCHEMA_V19_SQL],
     ];
     for (const [version, schema] of schemas) {
       const filename = path.join(directory, `v${version}.sqlite`);
@@ -51,10 +53,16 @@ test("clean cutover rejects every superseded journal schema without mutation", (
       // the Journal's 0600 precondition so this test reaches the schema-epoch
       // rejection under both developer and GitHub Actions umasks.
       fs.chmodSync(filename, 0o600);
+      const before = fs.readFileSync(filename);
+      assert.equal(fs.existsSync(`${filename}-wal`), false);
+      assert.equal(fs.existsSync(`${filename}-shm`), false);
       assert.throws(
         () => new PurchaseJournal(filename),
         new RegExp(`clean cutover refuses Purchase Journal schema ${version}`)
       );
+      assert.deepEqual(fs.readFileSync(filename), before);
+      assert.equal(fs.existsSync(`${filename}-wal`), false);
+      assert.equal(fs.existsSync(`${filename}-shm`), false);
       const untouched = new Database(filename, { readonly: true });
       assert.equal(untouched.pragma("user_version", { simple: true }), version);
       untouched.close();

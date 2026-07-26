@@ -6,6 +6,11 @@ import test from "node:test";
 
 import { encodePaymentRequiredHeader, paymentIdentifierExtension, stableStringify } from "@kaspa-x402/core";
 
+import {
+  CHAIN_EVIDENCE_PROFILE,
+  type ChainEvidenceObservation,
+  type ChainEvidenceRequest,
+} from "../../chain-evidence/types.js";
 import { Transaction, payToScriptHashScript } from "../../kaspa-wasm.js";
 import {
   assertPurchaseId,
@@ -18,6 +23,7 @@ import { KaspaWallet } from "../../wallet.js";
 import { StagingKeyStore } from "./staging-key-store.js";
 import {
   CanonicalTreasuryStagingMetadataSource,
+  type StagingChainEvidence,
   VaultTreasuryStaging,
   decodeTreasuryStagingObservationEvidence,
   decodeVaultTreasuryStagingEnvelope,
@@ -124,7 +130,6 @@ test("restart submits exact prepared bytes, observes both outputs, and commits i
       wallet: fixture.wallet,
       keyStore: fixture.keyStore,
       chainEvidence: fixture.chainEvidence,
-      finalityFloor: "accepted",
     });
     const submitted = await restarted.submit({
       context,
@@ -220,12 +225,65 @@ test("submission rejects canonical envelope and immutable-context substitutions 
   });
 });
 
+function stagingObservation(
+  request: Readonly<ChainEvidenceRequest>,
+  visible: boolean,
+): ChainEvidenceObservation {
+  const finality = Object.freeze({
+    operation: request.operation,
+    protocolFinality: request.protocolFinality,
+    operatorFloor: "accepted" as const,
+    effectiveFloor: "accepted" as const,
+    depthConfirmationDaa: "10",
+  });
+  const base = {
+    profile: CHAIN_EVIDENCE_PROFILE,
+    operationId: request.operationId,
+    operation: request.operation,
+    transactionId: request.transactionId,
+    mechanism: request.mechanism,
+    protocolFinality: request.protocolFinality,
+    operatorFloor: finality.operatorFloor,
+    effectiveFloor: finality.effectiveFloor,
+    primaryProfile: "test-primary",
+    witnessProfile: "test-witness",
+    outputsDigest: evidenceDigest(`outputs:${request.transactionId}`),
+    observedAtMs: NOW,
+  } as const;
+  if (!visible) {
+    return Object.freeze({
+      interpretation: "absent" as const,
+      finality,
+      evidence: Object.freeze({
+        ...base,
+        status: "absent" as const,
+        detailDigest: evidenceDigest("absent"),
+      }),
+    });
+  }
+  return Object.freeze({
+    interpretation: "accepted" as const,
+    finality,
+    evidence: Object.freeze({
+      ...base,
+      status: "present" as const,
+      level: "accepted" as const,
+      view: "current" as const,
+      blockHash: "aa".repeat(32),
+      acceptingBlockHash: "bb".repeat(32),
+      acceptingBlockDaaScore: "9",
+      virtualDaaScore: "10",
+      detailDigest: evidenceDigest(`accepted:${request.transactionId}`),
+    }),
+  });
+}
+
 interface Fixture {
   staging: VaultTreasuryStaging;
   vault: VaultManager;
   wallet: KaspaWallet;
   keyStore: StagingKeyStore;
-  chainEvidence: any;
+  chainEvidence: StagingChainEvidence;
   fundingTxid: string;
   prepareInput(
     additionalCostCeilingAtomic: string,
@@ -326,17 +384,12 @@ async function withFixture(action: (fixture: Fixture) => Promise<void>): Promise
     now: () => NOW,
     generatePrivateKey: () => FIXED_STAGING_PRIVATE_KEY,
   });
-  const chainEvidence = {
-    async observe(request: any) {
-      if (!visible) return { status: "absent" as const, detailDigest: evidenceDigest("absent"), observedAtMs: NOW };
-      return {
-        status: "present" as const, level: "accepted" as const, view: "current" as const,
-        detailDigest: evidenceDigest(`accepted:${request.transactionId}`),
-        acceptingBlockDaaScore: "9", observedAtMs: NOW,
-      };
+  const chainEvidence: StagingChainEvidence = {
+    async observe(request: ChainEvidenceRequest) {
+      return stagingObservation(request, visible);
     },
   };
-  const staging = new VaultTreasuryStaging({ vault, wallet, keyStore, chainEvidence, finalityFloor: "accepted" });
+  const staging = new VaultTreasuryStaging({ vault, wallet, keyStore, chainEvidence });
   const checkoutDigest = evidenceDigest("checkout");
   const requestFingerprint = evidenceDigest("request");
   const authorizationEvidenceDigest = evidenceDigest("authorization");

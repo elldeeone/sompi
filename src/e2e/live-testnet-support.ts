@@ -61,6 +61,13 @@ export const LIVE_PRICE_ATOMIC = "20000000" as const;
 export const LIVE_ADDITIVE_THRESHOLD_ATOMIC = "10000000" as const;
 export const LIVE_ADDITIONAL_COST_CEILING_ATOMIC = "30000000" as const;
 export const LIVE_TREASURY_FEE_CEILING_ATOMIC = "10000000" as const;
+const LIVE_CHAIN_EVIDENCE_FINALITY_POLICY = Object.freeze({
+  settlement: "accepted",
+  "direct-treasury": "accepted",
+  vault: "accepted",
+  staging: "accepted",
+  "recovery-release": "accepted",
+} as const);
 const LIVE_OPERATOR_MANIFEST_IDENTITY = Object.freeze({
   revision: 1,
   digest: "sha256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
@@ -1358,7 +1365,8 @@ function treasuryModule(input: {
       depthConfirmationDaa: 10,
       fetch: globalThis.fetch,
     }),
-    new JournalChainEvidenceStore(input.journal)
+    new JournalChainEvidenceStore(input.journal),
+    LIVE_CHAIN_EVIDENCE_FINALITY_POLICY
   );
   return new TreasuryOperationModule({
     journal: input.journal,
@@ -1368,9 +1376,9 @@ function treasuryModule(input: {
       allowlist: Array.isArray(raw.allowlist) ? raw.allowlist.map(String) : [],
     }),
     adapters: [
-      new WalletTreasuryOperationAdapter(input.wallet, chainEvidence, "accepted"),
-      new VaultSendTreasuryOperationAdapter(input.vault, input.wallet, chainEvidence, "accepted"),
-      new VaultDepositTreasuryOperationAdapter(input.vault, input.wallet, chainEvidence, "accepted"),
+      new WalletTreasuryOperationAdapter(input.wallet, chainEvidence),
+      new VaultSendTreasuryOperationAdapter(input.vault, input.wallet, chainEvidence),
+      new VaultDepositTreasuryOperationAdapter(input.vault, input.wallet, chainEvidence),
     ],
     feeCeilingAtomic: LIVE_TREASURY_FEE_CEILING_ATOMIC,
   });

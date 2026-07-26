@@ -4,7 +4,7 @@ export const SUPPORTED_PROTOCOL_PROFILES = Object.freeze({
     gitCommit: "b4587ac1d055888a73b4b21750973cffba961793",
     specification: "https://github.com/google-agentic-commerce/AP2/tree/v0.2.0/docs/ap2",
     mode: "human-present",
-    evidenceProfile: "urn:sompi:ap2-derived-human-present:1",
+    evidenceProfile: "urn:sompi:ap2-derived-human-present:2",
     signatureAlgorithms: Object.freeze(["ES256"] as const),
     interoperability: "none",
     sourceWatchOnly: true,

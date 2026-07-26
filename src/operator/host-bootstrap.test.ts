@@ -15,16 +15,8 @@ import {
   operatorSpecForHostBootstrap,
   parseHostBootstrapRequest,
   previewHostBootstrap,
+  type HostBootstrapTopology,
 } from "./host-bootstrap.js";
-import {
-  installHermesCompatibilityCheckout,
-  installHermesCompatibilityVenvLink,
-  renderApiUnit,
-  renderAuthorityUnit,
-  renderTmpfiles,
-  renderVaultActivationUnit,
-  type HostCommandRunner,
-} from "./host-install.js";
 
 const REQUEST = {
   schema: HOST_BOOTSTRAP_SCHEMA,
@@ -81,6 +73,87 @@ const REQUEST = {
   },
 } as const;
 
+function assertTopologyAccessContract(
+  actual: HostBootstrapTopology["access"],
+): void {
+  const canonical = (
+    value: readonly {
+      readonly principal: string;
+      readonly checks: readonly {
+        readonly kind: string;
+        readonly path: string;
+        readonly allowed: boolean;
+      }[];
+    }[],
+  ) => value
+    .map(({ principal, checks }) => ({
+      principal,
+      checks: [...checks].sort((left, right) =>
+        `${left.kind}:${left.path}`.localeCompare(`${right.kind}:${right.path}`)
+      ),
+    }))
+    .sort((left, right) => left.principal.localeCompare(right.principal));
+  const readPaths = [
+    "~/.sompi/agent-api.json",
+    "/etc/sompi/agent-api.json",
+    "/etc/sompi-recovery/recovery-api.json",
+    "/var/lib/sompi-authority/private/telegram-bot-token",
+    "/var/lib/sompi-api/runtime/wallet-key",
+    "/root/sompi-telegram-token",
+    "/root/sompi-owner-recovery.json",
+  ] as const;
+  const connectPaths = [
+    "/run/sompi-authority/authority.sock",
+    "/run/sompi-telegram-callback/telegram-callback.sock",
+    "/run/sompi-api/sompi.sock",
+    "/run/sompi-recovery/recovery.sock",
+  ] as const;
+  const contracts = [
+    {
+      principal: "agent",
+      reads: [readPaths[0]],
+      connects: [connectPaths[1], connectPaths[2]],
+    },
+    {
+      principal: "sompi-api",
+      reads: [readPaths[1], readPaths[2], readPaths[4]],
+      connects: [connectPaths[0], connectPaths[2], connectPaths[3]],
+    },
+    {
+      principal: "sompi-authority",
+      reads: [readPaths[3]],
+      connects: [connectPaths[0], connectPaths[1]],
+    },
+    {
+      principal: "operator",
+      reads: [...readPaths],
+      connects: [...connectPaths],
+    },
+  ] as const;
+  assert.deepEqual(
+    canonical(actual),
+    canonical(contracts.map(({ principal, reads, connects }) => {
+      const allowedReads = new Set<string>(reads);
+      const allowedConnects = new Set<string>(connects);
+      return {
+        principal,
+        checks: [
+          ...readPaths.map((checkedPath) => ({
+            kind: "read",
+            path: checkedPath,
+            allowed: allowedReads.has(checkedPath),
+          })),
+          ...connectPaths.map((checkedPath) => ({
+            kind: "connect",
+            path: checkedPath,
+            allowed: allowedConnects.has(checkedPath),
+          })),
+        ],
+      };
+    })),
+  );
+}
+
 test("host bootstrap request is canonical, previewable, and creates the existing operator spec", () => {
   const request = parseHostBootstrapRequest(REQUEST);
   const digest = hostBootstrapRequestDigest(request);
@@ -90,6 +163,105 @@ test("host bootstrap request is canonical, previewable, and creates the existing
   assert.equal(preview.package, "@elldeeone/sompi@0.11.4");
   assert.equal(preview.minimumFundingSompi, "85000000");
   assert.deepEqual(preview.merchants, ["demo.kaspa-x402.org:443"]);
+  assert.equal(preview.topology.schema, "sompi-host-bootstrap-topology-v1");
+  assert.deepEqual(preview.topology.principals, {
+    operator: "root",
+    api: "sompi-api",
+    authority: "sompi-authority",
+    agent: "luke",
+  });
+  assert.deepEqual(preview.topology.groups, {
+    api: "sompi-api",
+    authority: "sompi-authority",
+    authorityIpc: "sompi-authority-ipc",
+    recovery: "sompi-recovery",
+    agentSockets: "selected-agent-primary-group",
+  });
+  assert.deepEqual(preview.topology.memberships, {
+    api: {
+      primary: "sompi-api",
+      supplementary: ["sompi-authority-ipc", "sompi-recovery"],
+    },
+    authority: {
+      primary: "sompi-authority",
+      supplementary: ["sompi-authority-ipc"],
+    },
+    agent: {
+      supplementary: [],
+      forbidden: [
+        "root",
+        "sompi-api",
+        "sompi-authority",
+        "sompi-authority-ipc",
+        "sompi-recovery",
+      ],
+    },
+  });
+  assert.deepEqual(preview.topology.sockets, [
+    {
+      role: "authority",
+      path: "/run/sompi-authority/authority.sock",
+      owner: "sompi-authority",
+      group: "sompi-authority-ipc",
+      directoryMode: "0710",
+      mode: "0660",
+    },
+    {
+      role: "telegram-callback",
+      path: "/run/sompi-telegram-callback/telegram-callback.sock",
+      owner: "sompi-authority",
+      group: "selected-agent-primary-group",
+      directoryMode: "2710",
+      mode: "0660",
+    },
+    {
+      role: "agent-api",
+      path: "/run/sompi-api/sompi.sock",
+      owner: "sompi-api",
+      group: "selected-agent-primary-group",
+      directoryMode: "2710",
+      mode: "0660",
+    },
+    {
+      role: "operator-recovery",
+      path: "/run/sompi-recovery/recovery.sock",
+      owner: "sompi-api",
+      group: "sompi-recovery",
+      directoryMode: "0710",
+      mode: "0660",
+    },
+  ]);
+  assert.deepEqual(preview.topology.startupOrder, [
+    "sompi-authority",
+    "sompi-api",
+    "hermes-gateway",
+  ]);
+  assert.deepEqual(preview.topology.hermes, {
+    skill: "~/.hermes/skills/sompi",
+    plugin: "~/.hermes/plugins/sompi-approval",
+    callback: "/run/sompi-telegram-callback/telegram-callback.sock",
+    compatibility: "native-hook-or-independent-git-checkout",
+  });
+  assert.deepEqual(preview.topology.secrets, {
+    ownerRecovery: "/root/sompi-owner-recovery.json",
+    telegramInput: "/root/sompi-telegram-token",
+    authorityPrivate: "/var/lib/sompi-authority/private",
+    apiRuntime: "/var/lib/sompi-api/runtime",
+    apiCredential: "/etc/sompi/agent-api.json",
+    agentCredential: "~/.sompi/agent-api.json",
+    recoveryCredential: "/etc/sompi-recovery/recovery-api.json",
+  });
+  assertTopologyAccessContract(preview.topology.access);
+  assert.deepEqual(preview.topology.rollback, {
+    scope: "invocation-created-resources-only",
+    reverses: [
+      "service activation",
+      "Hermes configuration",
+      "files and directories",
+      "supplementary memberships",
+      "service principals and groups",
+    ],
+  });
   assert.match(preview.nextCommand, /^sudo sh -eu -c /);
   assert.ok(preview.nextCommand.includes(
     "https://raw.githubusercontent.com/elldeeone/sompi/v0.11.4/scripts/install-runtime-package.mjs",
@@ -173,105 +345,8 @@ test("host bootstrap rejects secrets, unknown fields, terminal authority, and ve
     operator: { ...REQUEST.operator, authority: { provider: "terminal", telegram: null } },
   }), /Telegram human Authority/);
   assert.throws(() => previewHostBootstrap(parseHostBootstrapRequest(REQUEST), "0.8.1"), /running package version/);
-});
-
-test("host bootstrap renders least-authority systemd and socket assets without secrets", () => {
-  const request = parseHostBootstrapRequest(REQUEST);
-  const ids = {
-    apiUid: 996,
-    apiGid: 984,
-    authorityUid: 995,
-    authorityGid: 983,
-    authorityIpcGid: 988,
-    agentApiGid: 1000,
-    recoveryGid: 986,
-    callbackGid: 1000,
-    agentUid: 1000,
-    agentGid: 1000,
-    agentGroupName: "luke",
-    agentHome: "/home/luke",
-  };
-  const authority = renderAuthorityUnit(request, ids);
-  const api = renderApiUnit(request, ids);
-  const activation = renderVaultActivationUnit(request, ids);
-  const tmpfiles = renderTmpfiles(ids.agentGroupName);
-  assert.match(authority, /User=sompi-authority/);
-  assert.match(authority, /NoNewPrivileges=yes/);
-  assert.match(authority, /SOMPI_AUTHORITY_CALLBACK_SOCKET_GID=1000/);
-  assert.match(api, /User=sompi-api/);
-  assert.match(api, /SOMPI_RUNTIME_GID=1000/);
-  assert.match(api, /SOMPI_RECOVERY_API_SOCKET=\/run\/sompi-recovery\/recovery.sock/);
-  assert.match(activation, /User=sompi-api/);
-  assert.match(activation, /SOMPI_BOOTSTRAP_MINIMUM_FUNDING_SOMPI=85000000/);
-  assert.match(activation, /ExecStart=\/usr\/local\/bin\/sompi-operator bootstrap-activate-worker/);
-  assert.match(activation, /Conflicts=sompi-api.service/);
-  assert.match(tmpfiles, /sompi-api luke/);
-  assert.doesNotMatch(`${authority}${api}${activation}${tmpfiles}`, /telegram-bot-token|ownerPrivate|987654321/);
-});
-
-test("Hermes compatibility stays in an independently updateable Git checkout", () => {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-hermes-compat-"));
-  const objectStore = path.join(root, "hermes-object-store");
-  const checkout = path.join(root, "hermes-agent");
-  const compatRoot = path.join(root, "hermes-compat");
-  const patch = path.join(root, "callback.patch");
-  const runner: HostCommandRunner = {
-    run(command, args, options = {}) {
-      const result = spawnSync(command, [...args], {
-        cwd: options.cwd,
-        encoding: "utf8",
-        env: { ...process.env, PATH: "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" },
-      });
-      assert.equal(result.status, 0, result.stderr || `${command} failed`);
-      return result.stdout ?? "";
-    },
-  };
-  try {
-    fs.mkdirSync(objectStore);
-    runner.run("git", ["init", "--initial-branch", "main"], { cwd: objectStore });
-    runner.run("git", ["config", "user.name", "Sompi Test"], { cwd: objectStore });
-    runner.run("git", ["config", "user.email", "sompi@example.invalid"], { cwd: objectStore });
-    fs.writeFileSync(path.join(objectStore, "callback.py"), "HOOKS = []\n");
-    runner.run("git", ["add", "callback.py"], { cwd: objectStore });
-    runner.run("git", ["commit", "-m", "fixture"], { cwd: objectStore });
-    runner.run("git", ["clone", "--shared", objectStore, checkout]);
-    runner.run("git", ["remote", "set-url", "origin", "https://example.invalid/hermes-agent.git"], { cwd: checkout });
-    assert.equal(
-      fs.existsSync(path.join(checkout, ".git", "objects", "info", "alternates")),
-      true,
-    );
-    fs.mkdirSync(path.join(checkout, "venv"));
-    fs.writeFileSync(patch, [
-      "diff --git a/callback.py b/callback.py",
-      "--- a/callback.py",
-      "+++ b/callback.py",
-      "@@ -1 +1 @@",
-      "-HOOKS = []",
-      "+HOOKS = [\"gateway_callback_query\"]",
-      "",
-    ].join("\n"));
-
-    installHermesCompatibilityCheckout(checkout, compatRoot, patch, runner);
-    installHermesCompatibilityVenvLink(checkout, compatRoot);
-
-    assert.ok(fs.existsSync(path.join(compatRoot, ".git")));
-    assert.equal(runner.run("git", ["remote", "get-url", "origin"], { cwd: compatRoot }).trim(), "https://example.invalid/hermes-agent.git");
-    assert.equal(runner.run("git", ["branch", "--show-current"], { cwd: compatRoot }).trim(), "main");
-    assert.equal(fs.readFileSync(path.join(compatRoot, "callback.py"), "utf8"), "HOOKS = [\"gateway_callback_query\"]\n");
-    assert.match(runner.run("git", ["status", "--short"], { cwd: compatRoot }), /^ M callback\.py$/m);
-    assert.equal(fs.realpathSync(path.join(compatRoot, "venv")), path.join(checkout, "venv"));
-    assert.doesNotMatch(runner.run("git", ["status", "--short"], { cwd: compatRoot }), /venv/);
-    assert.equal(
-      fs.existsSync(path.join(compatRoot, ".git", "objects", "info", "alternates")),
-      false,
-    );
-
-    fs.renameSync(checkout, `${checkout}-moved`);
-    fs.renameSync(objectStore, `${objectStore}-moved`);
-    assert.match(runner.run("git", ["status", "--short"], { cwd: compatRoot }), /^ M callback\.py$/m);
-    runner.run("git", ["cat-file", "-e", "HEAD^{tree}"], { cwd: compatRoot });
-    runner.run("git", ["fsck", "--full"], { cwd: compatRoot });
-  } finally {
-    fs.rmSync(root, { recursive: true, force: true });
-  }
+  assert.throws(() => parseHostBootstrapRequest({
+    ...REQUEST,
+    agent: { kind: "hermes", user: "sompi-authority" },
+  }), /protected principal/);
 });

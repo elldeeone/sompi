@@ -51,6 +51,8 @@ test("authenticated HTTP routes call one canonical Purchase application over the
     assert.deepEqual(calls, ["purchase", "status", "recover"]);
     const stat = fs.lstatSync(running.socketPath);
     assert.equal(stat.mode & 0o777, 0o660);
+    assert.equal(stat.gid, fs.lstatSync(running.directory).gid);
+    assert.equal(fs.lstatSync(running.directory).mode & 0o7777, 0o2710);
   } finally {
     await running.close();
   }
@@ -190,15 +192,17 @@ test("API startup refuses an unprovisioned socket directory without changing its
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
   const gid = typeof process.getgid === "function" ? process.getgid() : 0;
   try {
-    assert.equal(fs.statSync(directory).mode & 0o777, 0o700);
+    fs.chownSync(directory, uid, gid);
+    fs.chmodSync(directory, 0o710);
     await assert.rejects(() => startSompiApiServer({
       application: fakeApplication(),
       credential: generateAgentApiCredential(),
       socketPath: path.join(directory, "api.sock"),
       expectedServerUserId: uid,
       runtimeGroupId: gid,
+      directoryMode: 0o2710,
     }), /secure local socket/);
-    assert.equal(fs.statSync(directory).mode & 0o777, 0o700);
+    assert.equal(fs.statSync(directory).mode & 0o7777, 0o710);
   } finally {
     fs.rmSync(directory, { recursive: true, force: true });
   }
@@ -313,11 +317,14 @@ test("pre-authentication Unix sockets are bounded separately from request concur
 });
 
 test("operator recovery remains available while the lower-trust agent listener is saturated", async () => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-api-isolated-recovery-"));
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-api-isolated-agent-"));
+  const recoveryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-api-isolated-recovery-"));
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
   const gid = typeof process.getgid === "function" ? process.getgid() : 0;
   fs.chownSync(directory, uid, gid);
-  fs.chmodSync(directory, 0o710);
+  fs.chmodSync(directory, 0o2710);
+  fs.chownSync(recoveryDirectory, uid, gid);
+  fs.chmodSync(recoveryDirectory, 0o710);
   const application = fakeApplication({
     async transferStatus() { return fakeTransfer(); },
     async transferRecover() { return fakeTransfer(); },
@@ -331,6 +338,7 @@ test("operator recovery remains available while the lower-trust agent listener i
     socketPath: path.join(directory, "agent.sock"),
     expectedServerUserId: uid,
     runtimeGroupId: gid,
+    directoryMode: 0o2710,
     maxMutationConcurrency: 1,
     maxControlConcurrency: 1,
     maxConnections: 2,
@@ -338,9 +346,10 @@ test("operator recovery remains available while the lower-trust agent listener i
   const recovery = await startSompiRecoveryApiServer({
     application,
     credential: recoveryCredential,
-    socketPath: path.join(directory, "recovery.sock"),
+    socketPath: path.join(recoveryDirectory, "recovery.sock"),
     expectedServerUserId: uid,
     runtimeGroupId: gid,
+    directoryMode: 0o710,
     maxControlConcurrency: 1,
     maxConnections: 2,
   });
@@ -373,21 +382,26 @@ test("operator recovery remains available while the lower-trust agent listener i
     for (const socket of hostile) socket.destroy();
     await Promise.all([agent.close(), recovery.close()]);
     fs.rmSync(directory, { recursive: true, force: true });
+    fs.rmSync(recoveryDirectory, { recursive: true, force: true });
   }
 });
 
 type TestServer = RunningSompiApiServer & { readonly directory: string };
 
 async function startTestServer(
-  options: Omit<SompiApiServerOptions, "socketPath" | "expectedServerUserId" | "runtimeGroupId">
+  options: Omit<SompiApiServerOptions, "socketPath" | "expectedServerUserId" | "runtimeGroupId" | "directoryMode">
 ): Promise<TestServer> {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-api-server-"));
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
   const gid = typeof process.getgid === "function" ? process.getgid() : 0;
   fs.chownSync(directory, uid, gid);
-  fs.chmodSync(directory, 0o710);
+  fs.chmodSync(directory, 0o2710);
   const running = await startSompiApiServer({
-    ...options, socketPath: path.join(directory, "api.sock"), expectedServerUserId: uid, runtimeGroupId: gid,
+    ...options,
+    socketPath: path.join(directory, "api.sock"),
+    expectedServerUserId: uid,
+    runtimeGroupId: gid,
+    directoryMode: 0o2710,
   });
   return {
     ...running,

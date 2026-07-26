@@ -29,6 +29,11 @@ test("operator-installed agent credential loads only from a stable owner-only te
       allowSameUserForTests: true,
     });
     assert.deepEqual(loaded, credential);
+    assert.deepEqual(loadAgentApiCredential(filename, {
+      expectedOwnerUserId: stat.uid,
+      runtimeGroupId: stat.gid,
+      ownerOnlyClientFile: true,
+    }), credential);
     assert.equal(agentApiCredentialMatches(loaded, `Bearer ${credential.token}`), true);
     assert.equal(agentApiCredentialMatches(loaded, `Bearer ${"A".repeat(43)}`), false);
     fs.chmodSync(filename, 0o644);
@@ -36,6 +41,11 @@ test("operator-installed agent credential loads only from a stable owner-only te
       expectedOwnerUserId: stat.uid,
       runtimeGroupId: stat.gid,
       allowSameUserForTests: true,
+    }), /permissions or identity/);
+    assert.throws(() => loadAgentApiCredential(filename, {
+      expectedOwnerUserId: stat.uid,
+      runtimeGroupId: stat.gid,
+      ownerOnlyClientFile: true,
     }), /permissions or identity/);
   } finally {
     bytes.fill(0);

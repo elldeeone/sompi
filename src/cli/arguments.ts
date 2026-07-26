@@ -38,6 +38,7 @@ export type AuthorityCliCommand =
 export type OperatorCliCommand =
   | Readonly<{ kind: "bootstrap-preview"; request: string }>
   | Readonly<{ kind: "bootstrap"; request: string; digest: string }>
+  | Readonly<{ kind: "bootstrap-commit-status"; receipt: string; package: string; digest: string }>
   | Readonly<{ kind: "bootstrap-activate"; request: string; digest: string }>
   | Readonly<{ kind: "bootstrap-activate-worker" }>
   | Readonly<{ kind: "preview"; spec: string }>
@@ -107,6 +108,23 @@ export function parseOperatorArguments(args: readonly string[]): OperatorCliComm
   if (args.length === 3 && args[0] === "bootstrap") {
     if (!/^sha256:[A-Za-z0-9_-]{43}$/.test(args[2])) throw new CliArgumentError("host bootstrap digest is invalid");
     return Object.freeze({ kind: "bootstrap", request: args[1], digest: args[2] });
+  }
+  if (args.length === 4 && args[0] === "bootstrap-commit-status") {
+    if (!path.isAbsolute(args[1]) || path.resolve(args[1]) !== args[1]) {
+      throw new CliArgumentError("host bootstrap receipt path is invalid");
+    }
+    if (!/^@elldeeone\/sompi@(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z.-]+)?$/.test(args[2])) {
+      throw new CliArgumentError("host bootstrap package is invalid");
+    }
+    if (!/^sha256:[A-Za-z0-9_-]{43}$/.test(args[3])) {
+      throw new CliArgumentError("host bootstrap digest is invalid");
+    }
+    return Object.freeze({
+      kind: "bootstrap-commit-status",
+      receipt: args[1],
+      package: args[2],
+      digest: args[3],
+    });
   }
   if (args.length === 3 && args[0] === "bootstrap-activate") {
     if (!/^sha256:[A-Za-z0-9_-]{43}$/.test(args[2])) throw new CliArgumentError("host bootstrap digest is invalid");

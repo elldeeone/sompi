@@ -31,8 +31,9 @@ import {
 const KEY = new Uint8Array(AUTHORITY_MAC_KEY_BYTES).fill(0x7b);
 const FIXED_APPROVAL_PROTECTED_HEADER =
   "eyJhbGciOiJFUzI1NiIsImtpZCI6ImF1dGhvcml0eS1rZXktMSIsInR5cCI6IkpXVCJ9";
+// Phase 3 adds the explicit operator floor and DAA depth meaning to signed facts.
 const FIXED_APPROVAL_HEADER_PAYLOAD_SHA256 =
-  "df17e265576e9ea638536573a52daf1ab5ec053d1c0f39c2b158529bf623738c";
+  "32e476ebe24aa66d279596f4f4bb276de7d06ab40e5934b11ca9a181e4a11ffe";
 
 test("authority decision evidence signs the exact canonical purchase facts", async () => {
   const { request, facts } = await verifiedRequest();
@@ -107,6 +108,7 @@ test("batch authority evidence rejects execution profile, channel epoch, ceiling
   const channelId = "ab".repeat(32);
   const channelEpochDigest = evidenceDigest("batch-channel-epoch");
   const { request, facts } = await verifiedRequest({
+    operatorFinalityFloor: "depth-confirmed",
     effectiveFinalityFloor: "depth-confirmed",
     executionPlanDigest: evidenceDigest("batch-execution-plan"),
     executionMechanism: "channel-voucher",
@@ -130,7 +132,9 @@ test("batch authority evidence rejects execution profile, channel epoch, ceiling
     { maximumAuthorizedChargeAtomic: "12000001" },
     { channelId: "cd".repeat(32) },
     { channelEpochDigest: evidenceDigest("other-batch-channel-epoch") },
+    { operatorFinalityFloor: "accepted" },
     { effectiveFinalityFloor: "accepted" },
+    { depthConfirmationDaa: "11" },
   ];
   for (const substitution of substitutions) {
     await assert.rejects(
@@ -175,7 +179,9 @@ async function verifiedRequest(
     purchaseAuthorizationNonceDigest: evidenceDigest("authorization-nonce"),
     purchaseAuthorizationFactsDigest: evidenceDigest("authorization-facts"),
     additionalCostCeilingAtomic: checkout.additionalCostCeilingAtomic,
+    operatorFinalityFloor: "accepted",
     effectiveFinalityFloor: "accepted",
+    depthConfirmationDaa: "10",
     executionPlanDigest: evidenceDigest("execution-plan"),
     executionMechanism: "single-transaction",
     executionProfile: "kaspa-exact-v2:standard-native",

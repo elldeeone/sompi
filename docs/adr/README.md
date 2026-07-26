@@ -28,3 +28,4 @@ A later record must explicitly supersede an earlier record.
 | [0021](0021-owner-approved-policy-and-vault-ux.md) | Owner-approved policy and vault UX | Accepted |
 | [0022](0022-progressive-approval-and-agent-continuation-ux.md) | Approval display and bounded continuation | Accepted |
 | [0023](0023-kaspa-x402-alpha9-clean-cutover.md) | Alpha.9 cutover and Journal epoch 19 | Accepted |
+| [0024](0024-phase3-finality-authorization-evidence-cutover.md) | Phase 3 finality and authorization evidence cutover | Accepted |

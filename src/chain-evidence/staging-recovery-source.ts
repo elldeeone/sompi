@@ -13,7 +13,6 @@ import {
   ABSENCE_PROPAGATION_INTERVAL_MS,
   type ChainEvidenceModule,
 } from "./module.js";
-import type { FinalityFloor } from "./types.js";
 
 const DEFAULT_CORROBORATION_DELAY_MS = ABSENCE_PROPAGATION_INTERVAL_MS + 100;
 
@@ -21,7 +20,6 @@ export class ChainEvidenceStagingRecoveryRaceSource implements StagingRecoveryRa
   constructor(
     private readonly chainEvidence: ChainEvidenceModule,
     private readonly rpc: { client(): Promise<RpcClient> },
-    private readonly floor: FinalityFloor,
     private readonly corroborationDelayMs = DEFAULT_CORROBORATION_DELAY_MS
   ) {
     if (
@@ -94,23 +92,23 @@ export class ChainEvidenceStagingRecoveryRaceSource implements StagingRecoveryRa
           ? "kip10-script-template"
           : "ordinary",
       protocolFinality: "accepted",
-      operatorFloor: this.floor,
       signal: request.signal,
     });
-    if (evidence.status === "absent") return Object.freeze({ status: "absent" as const, detailDigest: evidence.detailDigest as Sha256Digest });
-    if (evidence.status === "unknown" || evidence.status === "unavailable") {
+    if (evidence.interpretation === "absent") {
+      return Object.freeze({
+        status: "absent" as const,
+        detailDigest: evidence.evidence.detailDigest as Sha256Digest,
+      });
+    }
+    if (evidence.interpretation !== "accepted") {
       return Object.freeze({
         status: "unknown" as const,
-        detailDigest: evidence.detailDigest as Sha256Digest,
+        detailDigest: evidence.evidence.detailDigest as Sha256Digest,
       });
     }
-    if (evidence.status !== "present" || !evidence.level) {
-      return Object.freeze({
-        status: "partial" as const,
-        detailDigest: evidence.detailDigest as Sha256Digest,
-      });
-    }
-    const finality = evidence.level === "provisional" ? "mempool" as const : evidence.level === "accepted" ? "accepted" as const : "confirmed" as const;
+    const finality = evidence.evidence.level === "accepted"
+      ? "accepted" as const
+      : "confirmed" as const;
     return Object.freeze({
       status: "observed" as const,
       transactionId: candidate.transactionId,
@@ -119,7 +117,7 @@ export class ChainEvidenceStagingRecoveryRaceSource implements StagingRecoveryRa
       outputAmountAtomic: candidate.outputAmountAtomic,
       outputScriptPublicKey: candidate.outputScriptPublicKey,
       finality,
-      detailDigest: evidence.detailDigest as Sha256Digest,
+      detailDigest: evidence.evidence.detailDigest as Sha256Digest,
     });
   }
 

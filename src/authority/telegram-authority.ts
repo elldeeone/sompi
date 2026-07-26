@@ -449,9 +449,36 @@ export async function startTelegramCallbackServer(
       resolve();
     });
   });
-  fs.chmodSync(options.socketPath, 0o660);
-  if (options.socketGroupId !== undefined) fs.chownSync(options.socketPath, process.getuid!(), options.socketGroupId);
-  const identity = fs.lstatSync(options.socketPath, { bigint: true });
+  let createdIdentity: fs.BigIntStats | undefined;
+  let identity: fs.BigIntStats;
+  try {
+    createdIdentity = fs.lstatSync(options.socketPath, { bigint: true });
+    fs.chmodSync(options.socketPath, 0o660);
+    if (options.socketGroupId !== undefined) {
+      const socket = fs.lstatSync(options.socketPath);
+      if (socket.gid !== options.socketGroupId) {
+        const groups = typeof process.getgroups === "function"
+          ? process.getgroups()
+          : typeof process.getgid === "function"
+            ? [process.getgid()]
+            : [socket.gid];
+        if (!groups.includes(options.socketGroupId)) {
+          throw new Error("Telegram callback socket did not inherit its configured group");
+        }
+        fs.chownSync(options.socketPath, process.getuid!(), options.socketGroupId);
+      }
+    }
+    identity = fs.lstatSync(options.socketPath, { bigint: true });
+  } catch (cause) {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    const current = createdIdentity && fs.existsSync(options.socketPath)
+      ? fs.lstatSync(options.socketPath, { bigint: true })
+      : undefined;
+    if (current && current.dev === createdIdentity!.dev && current.ino === createdIdentity!.ino) {
+      fs.unlinkSync(options.socketPath);
+    }
+    throw cause;
+  }
   let closed = false;
   return Object.freeze({
     async close() {
@@ -498,18 +525,22 @@ function prepareCallbackSocketDirectory(socketPath: string, groupId?: number): v
     : typeof process.getgid === "function"
       ? [process.getgid()]
       : [stat.gid];
-  if (!groups.includes(groupId)) {
+  if (groups.includes(groupId)) {
+    fs.chownSync(directory, uid, groupId);
+    fs.chmodSync(directory, GROUP_RUNTIME_DIRECTORY_MODE);
+  } else if (
+    stat.gid !== groupId ||
+    (stat.mode & 0o2777) !== 0o2710
+  ) {
     throw new Error("Telegram callback socket group is unavailable");
   }
-  fs.chownSync(directory, uid, groupId);
-  fs.chmodSync(directory, GROUP_RUNTIME_DIRECTORY_MODE);
   stat = fs.lstatSync(directory);
   if (
     !stat.isDirectory() ||
     stat.isSymbolicLink() ||
     stat.uid !== uid ||
     stat.gid !== groupId ||
-    (stat.mode & 0o077) !== 0o010
+    ![GROUP_RUNTIME_DIRECTORY_MODE, 0o2710].includes(stat.mode & 0o2777)
   ) {
     throw new Error("Telegram callback socket directory is unsafe");
   }
@@ -775,11 +806,13 @@ function telegramApprovalContent(display: AnyAuthorityApprovalDisplay): Readonly
       exactFact("Purchase authorization nonce", display.purchaseAuthorizationNonceDigest),
       exactFact("Purchase authorization facts", display.purchaseAuthorizationFactsDigest),
       exactFact("Additional-cost ceiling atomic", display.additionalCostCeilingAtomic),
-      exactFact("Finality floor", display.effectiveFinalityFloor),
+      exactFact("Merchant settlement assurance", display.execution.settlementAssurance),
+      exactFact("Sompi operator floor", display.operatorFinalityFloor),
+      exactFact("Effective finality floor", display.effectiveFinalityFloor),
+      exactFact("Depth-confirmed minimum DAA depth", display.depthConfirmationDaa),
       exactFact("Execution plan digest", display.execution.planDigest),
       exactFact("Execution mechanism", display.execution.mechanism),
       exactFact("Execution profile", display.execution.profile),
-      exactFact("Settlement assurance", display.execution.settlementAssurance),
       exactFact("Maximum charge atomic", display.execution.maximumChargeAtomic),
       exactFact("Channel ID", display.execution.channelId ?? "null"),
       exactFact("Channel epoch digest", display.execution.channelEpochDigest ?? "null"),

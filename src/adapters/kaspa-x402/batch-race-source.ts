@@ -5,8 +5,7 @@ import type {
   PurchaseJournal,
 } from "../../purchase/journal.js";
 import type { Sha256Digest } from "../../purchase/types.js";
-import { ChainEvidenceModule, meets } from "../../chain-evidence/module.js";
-import type { FinalityFloor } from "../../chain-evidence/types.js";
+import { ChainEvidenceModule } from "../../chain-evidence/module.js";
 import type { BatchActiveUtxoSource } from "./batch-payment-module.js";
 
 const HASH32 = /^[a-f0-9]{64}$/;
@@ -60,7 +59,6 @@ export class HttpsBatchClaimRaceSource implements BatchClaimRaceSource {
     baseUrl: string,
     private readonly chain: BatchActiveUtxoSource,
     private readonly evidence: ChainEvidenceModule,
-    private readonly floor: FinalityFloor,
     private readonly journal: BatchRaceRecoveryStore,
     fetcher: typeof globalThis.fetch,
   ) {
@@ -239,23 +237,23 @@ export class HttpsBatchClaimRaceSource implements BatchClaimRaceSource {
       watchedAddresses: [channel.escrowAddress, channel.payTo],
       mechanism: "native-covenant",
       protocolFinality: "accepted",
-      operatorFloor: this.floor,
       signal: input.signal,
     });
-    if (
-      observed.status !== "present" || !observed.level ||
-      !meets(observed.level, this.floor) ||
-      (observed.level !== "accepted" && observed.level !== "depth-confirmed")
-    ) return unknown("claim-chain-evidence-not-final");
-
+    if (observed.interpretation !== "accepted") {
+      return unknown("claim-chain-evidence-not-final");
+    }
+    const evidence = observed.evidence;
     return Object.freeze({
       status: "claim",
       transactionId: candidate.transactionId,
-      finality: observed.level,
+      finality:
+        evidence.level === "accepted"
+          ? "accepted" as const
+          : "depth-confirmed" as const,
       continuationOutpoint: Object.freeze({ txid: candidate.transactionId, index: 1 as const }),
       continuationScriptPublicKey: channel.activeScriptPublicKey,
       continuationFundingAmountAtomic: candidate.continuationFundingAmountAtomic,
-      detailDigest: observed.detailDigest as Sha256Digest,
+      detailDigest: evidence.detailDigest as Sha256Digest,
     });
   }
 }

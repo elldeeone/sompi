@@ -2,12 +2,14 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 const SOCKET_MODE = 0o660;
-const DIRECTORY_MODE = 0o710;
 const MAX_UNIX_SOCKET_PATH_BYTES = 100;
+
+export type SompiApiSocketDirectoryMode = 0o710 | 0o2710;
 
 export interface SompiApiSocketAccess {
   readonly expectedServerUserId: number;
   readonly runtimeGroupId: number;
+  readonly directoryMode?: SompiApiSocketDirectoryMode;
 }
 
 export class SompiApiSocketError extends Error {
@@ -41,7 +43,7 @@ export function prepareSompiApiSocketDirectory(
   }
   const directory = path.dirname(socketPath);
   const stat = fs.lstatSync(directory);
-  assertSecureDirectory(directory, stat, access);
+  assertSecureDirectory(directory, stat, access, false);
 }
 
 export function installAndVerifySompiApiSocket(
@@ -49,10 +51,32 @@ export function installAndVerifySompiApiSocket(
   access: SompiApiSocketAccess,
   expectedIdentity: Readonly<{ dev: bigint; ino: bigint }>
 ): void {
-  fs.chownSync(socketPath, access.expectedServerUserId, access.runtimeGroupId);
+  validateAccess(access);
+  validateSompiApiSocketPath(socketPath);
+  const before = fs.lstatSync(socketPath, { bigint: true });
+  if (
+    !before.isSocket() ||
+    before.isSymbolicLink() ||
+    before.uid !== BigInt(access.expectedServerUserId) ||
+    before.dev !== expectedIdentity.dev ||
+    before.ino !== expectedIdentity.ino
+  ) {
+    throw new SompiApiSocketError("Sompi API socket identity changed during startup");
+  }
+  if (socketDirectoryMode(access) === 0o2710) {
+    if (before.gid !== BigInt(access.runtimeGroupId)) {
+      throw new SompiApiSocketError("Sompi API socket did not inherit its configured group");
+    }
+  } else {
+    if (!currentGroupIds().includes(access.runtimeGroupId)) {
+      throw new SompiApiSocketError("Sompi API server cannot install a socket for an unjoined group");
+    }
+    fs.chownSync(socketPath, access.expectedServerUserId, access.runtimeGroupId);
+  }
   fs.chmodSync(socketPath, SOCKET_MODE);
-  const stat = verifySompiApiSocketForClient(socketPath, access);
-  if (BigInt(stat.dev) !== expectedIdentity.dev || BigInt(stat.ino) !== expectedIdentity.ino) {
+  verifyInstalledSompiApiSocket(socketPath, access, false);
+  const after = fs.lstatSync(socketPath, { bigint: true });
+  if (after.dev !== expectedIdentity.dev || after.ino !== expectedIdentity.ino) {
     throw new SompiApiSocketError("Sompi API socket identity changed during startup");
   }
 }
@@ -63,9 +87,17 @@ export function verifySompiApiSocketForClient(
 ): fs.Stats {
   validateAccess(access);
   validateSompiApiSocketPath(socketPath);
+  return verifyInstalledSompiApiSocket(socketPath, access, true);
+}
+
+function verifyInstalledSompiApiSocket(
+  socketPath: string,
+  access: SompiApiSocketAccess,
+  requireGroupAccess: boolean
+): fs.Stats {
   const directory = path.dirname(socketPath);
   const directoryStat = fs.lstatSync(directory);
-  assertSecureDirectory(directory, directoryStat, access);
+  assertSecureDirectory(directory, directoryStat, access, requireGroupAccess);
   const stat = fs.lstatSync(socketPath);
   if (
     !stat.isSocket() ||
@@ -97,7 +129,8 @@ export function removeOwnedSompiApiSocket(
 function assertSecureDirectory(
   directory: string,
   stat: fs.Stats,
-  access: SompiApiSocketAccess
+  access: SompiApiSocketAccess,
+  requireGroupAccess: boolean
 ): void {
   let realDirectory: string;
   try {
@@ -111,8 +144,11 @@ function assertSecureDirectory(
     stat.isSymbolicLink() ||
     stat.uid !== access.expectedServerUserId ||
     stat.gid !== access.runtimeGroupId ||
-    (stat.mode & 0o777) !== DIRECTORY_MODE ||
-    !currentGroupIds().includes(access.runtimeGroupId)
+    (stat.mode & 0o7777) !== socketDirectoryMode(access) ||
+    (requireGroupAccess && !currentGroupIds().includes(access.runtimeGroupId)) ||
+    (!requireGroupAccess &&
+      socketDirectoryMode(access) === 0o710 &&
+      !currentGroupIds().includes(access.runtimeGroupId))
   ) {
     throw new SompiApiSocketError("Sompi API socket directory is not securely installed");
   }
@@ -124,6 +160,17 @@ function validateAccess(access: SompiApiSocketAccess): void {
       throw new SompiApiSocketError("Sompi API socket access configuration is invalid");
     }
   }
+  if (
+    access.directoryMode !== undefined &&
+    access.directoryMode !== 0o710 &&
+    access.directoryMode !== 0o2710
+  ) {
+    throw new SompiApiSocketError("Sompi API socket access configuration is invalid");
+  }
+}
+
+function socketDirectoryMode(access: SompiApiSocketAccess): SompiApiSocketDirectoryMode {
+  return access.directoryMode ?? 0o710;
 }
 
 function currentUserId(): number {
@@ -131,6 +178,7 @@ function currentUserId(): number {
 }
 
 function currentGroupIds(): readonly number[] {
-  if (typeof process.getgroups === "function") return process.getgroups();
-  return typeof process.getgid === "function" ? [process.getgid()] : [0];
+  const groups = typeof process.getgroups === "function" ? process.getgroups() : [];
+  const primary = typeof process.getgid === "function" ? process.getgid() : 0;
+  return [...new Set([primary, ...groups])];
 }

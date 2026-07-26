@@ -6,6 +6,10 @@ import * as path from "node:path";
 import test from "node:test";
 import type { TestContext } from "node:test";
 
+import type {
+  ChainEvidenceFinalitySelector,
+  FinalityFloor,
+} from "../chain-evidence/types.js";
 import { SompiOperationFailure } from "../operation-failure.js";
 import {
   PolicyReservationError,
@@ -122,7 +126,7 @@ test("expired Transfer approval is one stable terminal failure", async (t) => {
     treasury: fixture.treasury,
     source: () => ({ vaultAddress: ADDRESS, vaultDigest: digest("vault") }),
     manifest: () => MANIFEST,
-    finalityFloor: "depth-confirmed",
+    finality: finalitySelector("depth-confirmed"),
     authorityTtlMs: 1,
     now: () => timestamps.shift() ?? 1_001,
   });
@@ -203,7 +207,7 @@ test("a post-approval Treasury race fails terminally without a retry capability"
     treasury: rejectingTreasury,
     source: () => ({ vaultAddress: ADDRESS, vaultDigest: digest("vault") }),
     manifest: () => MANIFEST,
-    finalityFloor: "depth-confirmed",
+    finality: finalitySelector("depth-confirmed"),
   });
   const result = await module.transfer({
     requestKey: "telegram:send:policy-rejected",
@@ -293,7 +297,7 @@ test("request keys, Authority facts, policy snapshots, and restart recovery stay
     treasury: recoveredTreasury,
     source: () => ({ vaultAddress: ADDRESS, vaultDigest: digest("vault") }),
     manifest: () => MANIFEST,
-    finalityFloor: "depth-confirmed",
+    finality: finalitySelector("depth-confirmed"),
   });
   const view = await recovered.recover(before.id);
   assert.equal(view.state, "receipted");
@@ -356,7 +360,7 @@ test("transactional Transfer request-key races return the same-intent winner and
     treasury: fixture.treasury,
     source: () => ({ vaultAddress: ADDRESS, vaultDigest: digest("vault") }),
     manifest: () => MANIFEST,
-    finalityFloor: "depth-confirmed",
+    finality: finalitySelector("depth-confirmed"),
     now: () => winner.expiresAtMs + 1,
   });
 
@@ -428,7 +432,7 @@ function setup(
     treasury,
     source: () => ({ vaultAddress: ADDRESS, vaultDigest: digest("vault") }),
     manifest: () => MANIFEST,
-    finalityFloor: "depth-confirmed",
+    finality: finalitySelector("depth-confirmed"),
   });
   return { directory, filename, journal, policyDigest, authority, treasury, module };
 }
@@ -437,6 +441,24 @@ function operationFailure(code: SompiOperationFailure["code"]): (error: unknown)
   return (error: unknown) =>
     error instanceof SompiOperationFailure &&
     error.code === code;
+}
+
+function finalitySelector(operatorFloor: FinalityFloor): ChainEvidenceFinalitySelector {
+  const selector: ChainEvidenceFinalitySelector = {
+    selectFinality(operation, protocolFinality) {
+      return Object.freeze({
+        operation,
+        protocolFinality,
+        operatorFloor,
+        effectiveFloor:
+          protocolFinality === "confirmed" || operatorFloor === "depth-confirmed"
+            ? "depth-confirmed"
+            : "accepted",
+        depthConfirmationDaa: "10",
+      });
+    },
+  };
+  return Object.freeze(selector);
 }
 
 class FakeAuthority implements TransferAuthorityModule {

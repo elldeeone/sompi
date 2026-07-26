@@ -1103,10 +1103,18 @@ function authorizationRequestSetup(journal: PurchaseJournal, seed: number): {
 } {
   const checkout = checkoutTermsSetup(journal, seed);
   journal.bindCheckoutTerms(checkout.purchaseId, checkout.input);
+  const authorizationRequestArtifact = JSON.stringify({
+    profile: "urn:sompi:authorization-request:2",
+    seed,
+    operatorFinalityFloor: "accepted",
+    effectiveFinalityFloor: "accepted",
+    depthConfirmationDaa: "10",
+    settlementAssurance: "accepted",
+  });
   const requestDigest = verifiedLinkedEvidence(
     journal,
     checkout.purchaseId,
-    `authorization-request-${seed}`,
+    authorizationRequestArtifact,
     "authorization-request"
   );
   const body = new Uint8Array();
@@ -1162,7 +1170,9 @@ function authorizationDecisionSetup(journal: PurchaseJournal, seed: number): {
         requestDigest: storedRequest.requestDigest,
         nonceDigest: storedRequest.nonceDigest,
         additionalCostCeilingAtomic: storedRequest.additionalCostCeilingAtomic,
+        operatorFinalityFloor: "accepted",
         effectiveFinalityFloor: storedRequest.effectiveFinalityFloor,
+        depthConfirmationDaa: "10",
         executionPlanDigest: storedRequest.executionPlanDigest,
         executionMechanism: storedRequest.executionMechanism,
         executionProfile: storedRequest.executionProfile,

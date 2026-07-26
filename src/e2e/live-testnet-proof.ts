@@ -156,6 +156,13 @@ const RESOURCE_URL = `${MERCHANT_ORIGIN}/paid-resource`;
 const RESOURCE_BODY = Buffer.from("Sompi live Testnet-10 generic x402 resource\n", "utf8");
 const AUTHORITY_TIMEOUT_MS = 5_000;
 const PROOF_TIMEOUT_MS = 12 * 60_000;
+const LIVE_CHAIN_EVIDENCE_FINALITY_POLICY = Object.freeze({
+  settlement: "accepted",
+  "direct-treasury": "accepted",
+  vault: "accepted",
+  staging: "accepted",
+  "recovery-release": "accepted",
+} as const);
 
 export const LIVE_TESTNET_PROOF_PROFILE =
   "urn:sompi:e2e:live-testnet10-generic-x402-exact:3" as const;
@@ -591,6 +598,7 @@ function composeLiveCoordinator(input: {
       now,
     }),
     new JournalChainEvidenceStore(input.journal),
+    LIVE_CHAIN_EVIDENCE_FINALITY_POLICY,
     now
   );
   const staging = new VaultTreasuryStaging({
@@ -598,7 +606,6 @@ function composeLiveCoordinator(input: {
     wallet: input.initialized.treasuryWallet,
     keyStore,
     chainEvidence,
-    finalityFloor: "accepted",
   });
   const canonicalStaging = createJournalTreasuryStagingMetadataSource(input.journal);
   const observedStaging = new JournalTreasuryStagingObservationSource(
@@ -610,7 +617,7 @@ function composeLiveCoordinator(input: {
     observedStagingSource: observedStaging,
     builder: new ExactTransactionBuilder({ keyStore, now }),
   });
-  const clientChain = new ChainEvidenceExactOutputSource(chainEvidence, "accepted");
+  const clientChain = new ChainEvidenceExactOutputSource(chainEvidence);
   const chainVerifier = new KaspaExactChainVerifier({
     stagingMetadata: new JournalChainTreasuryMetadataSource(
       canonicalStaging,
@@ -649,7 +656,10 @@ function composeLiveCoordinator(input: {
     recovery: new AbandonedStagingRecovery({
       keyStore,
       recoveryAddress: input.initialized.treasuryWallet.address,
-      observer: new ChainEvidenceStagingRecoveryRaceSource(chainEvidence, input.initialized.observerWallet, "accepted"),
+      observer: new ChainEvidenceStagingRecoveryRaceSource(
+        chainEvidence,
+        input.initialized.observerWallet
+      ),
       submitter: new RpcStagingRecoveryTransactionSubmitter({
         rpc: input.initialized.treasuryWallet,
         now,
@@ -658,7 +668,7 @@ function composeLiveCoordinator(input: {
     }),
     metadata: canonicalStaging,
     observedStaging,
-    finalityFloor: "accepted",
+    finality: chainEvidence,
   });
   const treasury = new VaultTreasuryModule({
     vault: input.initialized.vault,
@@ -688,6 +698,7 @@ function composeLiveCoordinator(input: {
       },
       workerId: `sompi-live-e2e-${config.runId}`,
       effectLeaseTtlMs: 20_000,
+      finality: chainEvidence,
     }
   );
   return Object.freeze({ coordinator, observedStaging, clientChain });

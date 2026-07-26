@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import Database from "better-sqlite3";
 
 export const JOURNAL_APPLICATION_ID = 0x534f4d50; // SOMP
-export const JOURNAL_SCHEMA_VERSION = 19;
+export const JOURNAL_SCHEMA_VERSION = 20;
 
 export const JOURNAL_SCHEMA_V1_SQL = `
   CREATE TABLE schema_migrations (
@@ -1313,7 +1313,9 @@ export const JOURNAL_SCHEMA_V17_SQL = `${JOURNAL_SCHEMA_V16_SQL}\n${JOURNAL_SCHE
 export const JOURNAL_SCHEMA_V18_SQL = `${JOURNAL_SCHEMA_V17_SQL}\n${JOURNAL_SCHEMA_V18_MIGRATION_SQL}`;
 /** Alpha.9 is a clean epoch boundary; its physical schema intentionally starts from V18's shape. */
 export const JOURNAL_SCHEMA_V19_SQL = JOURNAL_SCHEMA_V18_SQL;
-export const JOURNAL_SCHEMA_SQL = JOURNAL_SCHEMA_V19_SQL;
+/** Phase 3 authorization semantics use a new epoch with the same physical shape. */
+export const JOURNAL_SCHEMA_V20_SQL = JOURNAL_SCHEMA_V19_SQL;
+export const JOURNAL_SCHEMA_SQL = JOURNAL_SCHEMA_V20_SQL;
 
 export const JOURNAL_SCHEMA_V1_CHECKSUM = sha256Text(JOURNAL_SCHEMA_V1_SQL);
 export const JOURNAL_SCHEMA_V2_CHECKSUM = sha256Text(JOURNAL_SCHEMA_V2_SQL);
