@@ -9,13 +9,15 @@ import {
 } from "../../kaspa-wasm.js";
 import { assertPurchaseId, evidenceDigest } from "../../purchase/identity.js";
 import type {
-  KaspaTreasuryStagingContext,
+  VerifiedArtifact,
+} from "../../purchase/coordinator.js";
+import type {
   PreparedTreasuryStaging,
+  TreasuryStagingAdapterContext,
   TreasuryStagingRecoveryObservation,
   TreasuryStagingResult,
   TreasuryStagingSubmissionResult,
-  VerifiedArtifact,
-} from "../../purchase/coordinator.js";
+} from "../../treasury/purchase-staging.js";
 import type { PurchaseId, Sha256Digest } from "../../purchase/types.js";
 import type {
   ObservedVaultSpend,
@@ -1150,7 +1152,7 @@ function validateSignedVaultTransaction(input: {
 }
 
 function decodeForContext(
-  context: Readonly<KaspaTreasuryStagingContext>
+  context: Readonly<TreasuryStagingAdapterContext>
 ): VaultTreasuryStagingEnvelope {
   const envelope = decodeVaultTreasuryStagingEnvelope(context.staging.preparedBytes, {
     purchaseId: context.execution.purchaseId,

@@ -4,6 +4,15 @@ import type {
   Sha256Digest,
 } from "../purchase/types.js";
 import type {
+  EffectClaim,
+  EffectObservation,
+  EffectRecord,
+  EvidenceAttachmentRecord,
+  LeaseToken,
+  RecordObservedTreasuryStagingInput,
+  TreasuryStagingObservationRecord,
+} from "../purchase/journal.js";
+import type {
   ReservePurchaseCapacityInput,
   TreasuryPolicy,
   TreasuryPurchaseReservation,
@@ -168,6 +177,10 @@ export interface TreasuryOperationJournal {
     purchaseId: PurchaseId,
     attempt: number
   ): TreasuryStagingPlanRecord | undefined;
+  requireTreasuryStagingPlan(
+    purchaseId: PurchaseId,
+    attempt: number
+  ): TreasuryStagingPlanRecord;
   requirePurchaseExecutionContext(
     purchaseId: PurchaseId,
     attempt: number
@@ -186,6 +199,71 @@ export interface TreasuryOperationJournal {
     lease: TreasuryStagingPreparationLease,
     input: PlanTreasuryStagingInput
   ): TreasuryStagingPlanRecord;
+  readPreparedTreasuryStaging(
+    purchaseId: PurchaseId,
+    attempt: number
+  ): Buffer;
+  beginTreasuryStaging(
+    effectId: string,
+    reservationId: string,
+    holder: string,
+    ttlMs: number
+  ): EffectClaim | undefined;
+  requireEffect(id: string): EffectRecord;
+  effectClaimActive(effectId: string): boolean;
+  verifyEffectPreparedMaterial(effectId: string): true;
+  markEffectSubmitted(
+    claim: EffectClaim,
+    submissionDigest: Sha256Digest
+  ): EffectRecord;
+  markEffectAmbiguous(
+    claim: EffectClaim,
+    detailDigest?: Sha256Digest
+  ): EffectRecord;
+  recordEffectObservation(
+    effectId: string,
+    lease: LeaseToken,
+    observation: EffectObservation
+  ): EffectRecord;
+  findTreasuryStagingObservation(
+    purchaseId: PurchaseId,
+    attempt: number
+  ): TreasuryStagingObservationRecord | undefined;
+  recordObservedTreasuryStaging(
+    lease: LeaseToken,
+    input: RecordObservedTreasuryStagingInput
+  ): TreasuryStagingObservationRecord;
+  storeEvidence(
+    purchaseId: PurchaseId,
+    input: {
+      readonly bytes: Uint8Array;
+      readonly mediaType: string;
+      readonly profile: string;
+      readonly issuer?: string;
+      readonly kind: string;
+      readonly attempt?: number;
+    }
+  ): EvidenceAttachmentRecord;
+  recordEvidenceVerification(
+    digest: Sha256Digest,
+    input: {
+      readonly verifierId: string;
+      readonly profile: string;
+      readonly detailDigest: Sha256Digest;
+    }
+  ): void;
+  recordReconciliation(
+    lease: LeaseToken,
+    purchaseId: PurchaseId,
+    effectId: string | undefined,
+    outcome: string,
+    detailDigest?: Sha256Digest
+  ): Readonly<{
+    readonly purchaseId: PurchaseId;
+    readonly effectId?: string;
+    readonly outcome: string;
+    readonly detailDigest?: Sha256Digest;
+  }>;
   reservePolicy(input: {
     readonly id: string;
     readonly purchaseId: ReservePurchaseCapacityInput["purchaseId"];

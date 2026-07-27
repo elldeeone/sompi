@@ -23,9 +23,6 @@ import {
   type PreparedKaspaPayment,
   type PreparedTreasuryStaging,
   type SettlementResult,
-  type TreasuryStagingRecoveryObservation,
-  type TreasuryStagingSubmissionResult,
-  type TreasuryStagingResult,
   type TreasuryStagingRecoveryModule,
   type PreparedStagingRecovery,
   type StagingRecoveryPreparationContext,
@@ -76,7 +73,12 @@ import type {
   TreasuryOperationRecord,
 } from "../treasury/operation-journal.js";
 import { TreasuryOperationModule } from "../treasury/operations.js";
-import type { TreasuryStagingPreparationAdapter } from "../treasury/purchase-staging.js";
+import type {
+  TreasuryStagingAdapter,
+  TreasuryStagingRecoveryObservation,
+  TreasuryStagingResult,
+  TreasuryStagingSubmissionResult,
+} from "../treasury/purchase-staging.js";
 
 const NOW = Date.parse("2030-01-01T00:00:00.000Z");
 const TESTNET_PAYEE = "kaspatest:qpumuen7l8wthtz45p3ftn58pvrs9xlumvkuu2xet8egzkcklqtes5z8rkmpd";
@@ -523,14 +525,29 @@ test("ambiguous Treasury staging is observed before exact preparation and is nev
     assert.equal(dependencies.calls.submitStaging, 1);
     assert.equal(dependencies.calls.prepare, 1);
     assert.equal(dependencies.calls.submit, 1);
+    const effects = journal.effectsForPurchase(ambiguous.id);
     assert.deepEqual(
-      journal.effectsForPurchase(ambiguous.id)
+      effects
         .map(({ kind, state }) => ({ kind, state }))
         .sort((left, right) => left.kind.localeCompare(right.kind)),
       [
         { kind: "kaspa-x402-payment", state: "observed" },
         { kind: "treasury-staging", state: "observed" },
       ]
+    );
+    const stagingEffect = effects.find(
+      (effect) => effect.kind === "treasury-staging",
+    )!;
+    const stagingRuns = journal.reconciliationRuns(ambiguous.id).filter(
+      (run) => run.effectId === stagingEffect.id,
+    );
+    assert.equal(
+      stagingRuns.some((run) => run.outcome === "observer_unavailable"),
+      false,
+    );
+    assert.equal(
+      stagingRuns.some((run) => run.outcome === "treasury_staging_observed"),
+      true,
     );
   });
 });
@@ -1432,8 +1449,8 @@ class FakeDependencies {
       },
       preparePurchaseStaging: (input) =>
         treasury.preparePurchaseStaging(input),
-      submitStaging: (input) => treasury.submitStaging(input),
-      observeStaging: (input) => treasury.observeStaging(input),
+      executePurchaseStaging: (input) =>
+        treasury.executePurchaseStaging(input),
       prepareStagingRecovery: (input) =>
         treasury.prepareStagingRecovery(input),
       observeStagingRecovery: (input) =>
@@ -1443,9 +1460,7 @@ class FakeDependencies {
     };
   }
 
-  readonly payment: KaspaPaymentModule &
-    TreasuryStagingPreparationAdapter &
-    Pick<TreasuryModule, "submitStaging" | "observeStaging"> = {
+  readonly payment: KaspaPaymentModule & TreasuryStagingAdapter = {
     prepareStaging: async ({ execution, paymentRequirements }): Promise<PreparedTreasuryStaging> => {
       this.calls.prepareStaging++;
       assert.equal(evidenceDigest(paymentRequirements), evidenceDigest(`requirements:${execution.purchaseId}`));

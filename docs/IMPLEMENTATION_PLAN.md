@@ -1,6 +1,6 @@
 # Sompi implementation plan
 
-Status: **Architecture Phase 4 active; C3 complete**
+Status: **Architecture Phase 4 active; C4 complete**
 
 Starting commit: `89b0f1f404ce8e5f2ded88a5b1a99d8ca1743bba`
 
@@ -231,7 +231,7 @@ The canonical implementation starts from the existing
   recovery types.
 - [x] **P4.2:** Make one Treasury implementation own readiness, quote, policy,
   reservation, and shared capacity for Purchase and direct Movements.
-- [ ] **P4.3:** Make that implementation own staging preparation, durable plan
+- [x] **P4.3:** Make that implementation own staging preparation, durable plan
   and prepared bytes, effect fencing, submission, observation, ambiguity, and
   reconciliation.
 - [ ] **P4.4:** Make that implementation own abandoned staging recovery,
@@ -265,7 +265,7 @@ Implementation sequence:
    prevents policy and capacity from having two production owners.
 3. [x] **P4.C3 — Move staging preparation.** Move prepared transaction planning,
    durable prepared bytes, and preparation fences behind Treasury.
-4. [ ] **P4.C4 — Move staging execution.** Move submission, observation, ambiguity,
+4. [x] **P4.C4 — Move staging execution.** Move submission, observation, ambiguity,
    retry, and reconciliation behind Treasury.
 5. [ ] **P4.C5 — Move staging recovery.** Move abandoned staging recovery and lease
    takeover behind Treasury.
@@ -343,6 +343,29 @@ C3 completion evidence from 2026-07-26:
   sibling repositories did not change.
 - The focused C3 command ran 114 tests. All 114 passed. The full test command
   ran 609 tests: 608 passed and one privileged ownership test was skipped as
+  expected. Offline smoke passed.
+
+C4 completion evidence from 2026-07-27:
+
+- Purchase asks Treasury to execute one prepared staging attempt with only the
+  Purchase ID and attempt number.
+- Treasury owns the Effect claim, execution lease, adapter submission,
+  submission acknowledgement, ambiguity fence, observation, reconciliation,
+  and proof-backed retry.
+- Treasury reconstructs the adapter context from the durable plan and prepared
+  bytes. Purchase does not receive or submit those bytes.
+- Treasury validates and records the verified staging output. Purchase receives
+  only an observed, pending, or reconciliation-required result.
+- The Purchase reconciler no longer observes or records Treasury staging
+  Effects. It still owns payment-effect reconciliation.
+- Treasury interface tests prove immediate acceptance, ambiguous submission,
+  temporary pending evidence, proof-backed retry, immutable byte reuse, and
+  idempotent replay.
+- Abandoned staging recovery and lease takeover remain in Purchase until C5.
+- The physical Journal schema, Kaspa-x402 behavior and pin, public API, and
+  sibling repositories did not change.
+- The focused C4 command ran 88 tests. All 88 passed. The full test command ran
+  611 tests: 610 passed and one privileged ownership test was skipped as
   expected. Offline smoke passed.
 
 Verification gate:

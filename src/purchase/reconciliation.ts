@@ -7,7 +7,6 @@ import {
   type EffectRecord,
   type LeaseToken,
   type RecordPurchaseSettlementInput,
-  type RecordObservedTreasuryStagingInput,
 } from "./journal.js";
 import type { Sha256Digest } from "./types.js";
 import type { PurchaseId } from "./types.js";
@@ -17,10 +16,6 @@ export type ReconciliationObservation =
   | {
       status: "spend_observed";
       spend: Omit<RecordPurchaseSettlementInput, "effectId">;
-    }
-  | {
-      status: "treasury_staging_observed";
-      staging: Omit<RecordObservedTreasuryStagingInput, "effectId">;
     };
 
 export interface EffectObserver {
@@ -61,7 +56,12 @@ export class PurchaseReconciler {
     private readonly observers: ReadonlyMap<string, EffectObserver>
   ) {}
 
-  async reconcile(holder: string, ttlMs = 30_000, purchaseId?: PurchaseId): Promise<ReconciliationSummary> {
+  async reconcile(
+    holder: string,
+    ttlMs = 30_000,
+    purchaseId?: PurchaseId,
+    effectKinds?: ReadonlySet<string>,
+  ): Promise<ReconciliationSummary> {
     if (!holder.trim()) throw new JournalInvariantError("reconciliation holder is required");
     const leaseName = purchaseId ? `purchase-reconciliation:${purchaseId}` : "purchase-reconciliation";
     let lease = this.journal.acquireLease(leaseName, holder, ttlMs);
@@ -81,6 +81,7 @@ export class PurchaseReconciler {
     const results: ReconciliationEffectResult[] = [];
     try {
       for (const effect of this.journal.recoverableEffects(purchaseId)) {
+        if (effectKinds && !effectKinds.has(effect.kind)) continue;
         if (leaseError) break;
         lease = this.renewBeforeWrite(lease, ttlMs);
         this.journal.verifyEffectPreparedMaterial(effect.id);
@@ -178,26 +179,6 @@ export class PurchaseReconciler {
           results.push({ effectId: effect.id, status: "observed", detailDigest: spend.evidenceDigest });
           continue;
         }
-        if (observation.status === "treasury_staging_observed") {
-          const staging = this.journal.recordObservedTreasuryStaging(lease, {
-            effectId: effect.id,
-            ...observation.staging,
-          });
-          this.journal.recordReconciliation(
-            lease,
-            effect.purchaseId,
-            effect.id,
-            "treasury_staging_observed",
-            staging.evidenceDigest
-          );
-          results.push({
-            effectId: effect.id,
-            status: "observed",
-            detailDigest: staging.evidenceDigest,
-          });
-          continue;
-        }
-
         const updated = this.journal.recordEffectObservation(effect.id, lease, observation);
         const result = resultForObservation(effect.id, observation);
         this.journal.recordReconciliation(

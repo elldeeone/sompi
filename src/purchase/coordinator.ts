@@ -47,14 +47,11 @@ import {
   JournalRequestConflictError,
   PurchaseAdmissionError,
   PurchaseJournal,
-  TREASURY_STAGING_EFFECT_KIND,
-  TREASURY_STAGING_EVIDENCE_KIND,
   TREASURY_STAGING_RECOVERY_EFFECT_KIND,
   type EffectClaim,
   type EffectRecord,
   type PurchaseRecord,
   type RecordPurchaseSettlementInput,
-  type RecordObservedTreasuryStagingInput,
   type RecordTreasuryStagingRecoveryObservationInput,
   type TreasuryStagingObservationRecord,
   type TreasuryStagingRecoveryJournalContext,
@@ -84,12 +81,16 @@ import {
 import {
   TreasuryStagingPreparationError,
   type PreparedTreasuryStaging,
+  type PurchaseTreasuryStagingExecution,
   type PurchaseTreasuryStagingPreparation,
 } from "../treasury/purchase-staging.js";
 
 export type { PreparedTreasuryStaging } from "../treasury/purchase-staging.js";
 
 const PAYMENT_EFFECT_KIND = "kaspa-x402-payment";
+const PAYMENT_EFFECT_KINDS: ReadonlySet<string> = new Set([
+  PAYMENT_EFFECT_KIND,
+]);
 const PURCHASE_COORDINATION_TTL_MS = 60_000;
 const RECOVERY_TTL_MS = 30_000;
 const DEFAULT_EXECUTION_RESERVE_MS = 30_000;
@@ -213,16 +214,8 @@ export interface AuthorityModule {
  */
 export interface TreasuryModule
   extends PurchaseTreasuryCapacity,
-    PurchaseTreasuryStagingPreparation {
-  submitStaging(input: {
-    context: KaspaTreasuryStagingContext;
-    effect: EffectRecord;
-    signal: AbortSignal;
-  }): Promise<TreasuryStagingSubmissionResult>;
-  observeStaging(input: {
-    context: KaspaTreasuryStagingContext;
-    effect: EffectRecord;
-  }): Promise<TreasuryStagingRecoveryObservation>;
+    PurchaseTreasuryStagingPreparation,
+    PurchaseTreasuryStagingExecution {
   prepareStagingRecovery(
     input: Readonly<StagingRecoveryPreparationContext>
   ): Promise<Readonly<PreparedStagingRecovery>>;
@@ -245,29 +238,6 @@ export interface PreparedKaspaPayment extends PreparedPurchasePayment {
   transactionId?: string;
   requiredAssurance: "accepted" | "confirmed" | "channel-commitment";
 }
-
-export interface TreasuryStagingResult {
-  evidence: VerifiedArtifact;
-  transactionId: string;
-  outpoint: string;
-  stagingAmountAtomic: string;
-  fundingSource: "vault-treasury";
-}
-
-export type TreasuryStagingSubmissionResult =
-  | { status: "submitted"; submissionDigest: Sha256Digest }
-  | {
-      status: "staged";
-      submissionDigest: Sha256Digest;
-      staging: TreasuryStagingResult;
-    };
-
-export type TreasuryStagingRecoveryObservation =
-  | Exclude<
-      ReconciliationObservation,
-      { status: "spend_observed" | "treasury_staging_observed" }
-    >
-  | { status: "staged"; staging: TreasuryStagingResult };
 
 export interface SettlementResult {
   evidence: VerifiedArtifact;
@@ -333,20 +303,6 @@ export interface KaspaPreparedExecutionContext {
     profile: string;
     transactionId?: string;
     requiredAssurance: "accepted" | "confirmed" | "channel-commitment";
-    fundingSource: "vault-treasury";
-  };
-}
-
-export interface KaspaTreasuryStagingContext {
-  execution: KaspaPreparedExecutionContext["execution"];
-  request: KaspaRequestContext;
-  paymentRequirements: Uint8Array;
-  staging: {
-    preparedBytes: Uint8Array;
-    preparedDigest: Sha256Digest;
-    transactionId: string;
-    expectedOutpoint: string;
-    amountAtomic: string;
     fundingSource: "vault-treasury";
   };
 }
@@ -699,13 +655,15 @@ export class PurchaseCoordinator implements PurchaseModule {
       this.journal,
       new Map([
         [PAYMENT_EFFECT_KIND, { observe: (effect) => this.observePaymentEffect(effect) }],
-        [
-          TREASURY_STAGING_EFFECT_KIND,
-          { observe: (effect) => this.observeTreasuryStagingEffect(effect) },
-        ],
       ])
     );
-    const summary = await reconciler.reconcile(`${this.workerId}-recovery`, RECOVERY_TTL_MS, id);
+    const summary = await reconciler.reconcile(
+      `${this.workerId}-recovery`,
+      RECOVERY_TTL_MS,
+      id,
+      PAYMENT_EFFECT_KINDS,
+    );
+    await this.reconcileTreasuryStagingForRecovery(id);
     this.applyRecoverySummary(id, summary);
     const intent = this.persistedIntent(id);
     for (let step = 0; step < 8; step++) {
@@ -734,11 +692,36 @@ export class PurchaseCoordinator implements PurchaseModule {
       const exactSummary = await reconciler.reconcile(
         `${this.workerId}-exact-winner`,
         RECOVERY_TTL_MS,
-        id
+        id,
+        PAYMENT_EFFECT_KINDS,
       );
       this.applyRecoverySummary(id, exactSummary);
     }
     return this.status(id);
+  }
+
+  private async reconcileTreasuryStagingForRecovery(
+    id: PurchaseId,
+  ): Promise<void> {
+    const attempt = this.journal.paymentAttempts(id).at(-1);
+    if (!attempt) return;
+    const staging = this.journal.treasuryStagingRecoveryContext(
+      id,
+      attempt.attempt,
+    );
+    if (
+      !staging ||
+      staging.observation ||
+      !["executing", "submitted", "ambiguous", "retryable"].includes(
+        staging.effect.state,
+      )
+    ) {
+      return;
+    }
+    await this.treasury.executePurchaseStaging({
+      purchaseId: id,
+      attempt: attempt.attempt,
+    });
   }
 
   private async bindTerms(
@@ -1183,7 +1166,31 @@ export class PurchaseCoordinator implements PurchaseModule {
       return true;
     }
     if (!staging.observation) {
-      return this.submitTreasuryStaging(purchase, staging.effect.id, attempt.attempt);
+      const execution = await this.treasury.executePurchaseStaging({
+        purchaseId: purchase.id,
+        attempt: attempt.attempt,
+      });
+      if (execution.status === "pending") return false;
+      if (execution.status === "reconciliation_required") {
+        this.journal.transitionPurchase(
+          purchase.id,
+          "execution_prepared",
+          "failed_recoverable",
+          "treasury_staging_requires_reconciliation",
+          execution.detailDigest,
+        );
+        return false;
+      }
+      staging.observation = this.journal.findTreasuryStagingObservation(
+        purchase.id,
+        attempt.attempt,
+      );
+      if (!staging.observation) {
+        throw new PurchaseCoordinatorError(
+          "Treasury reported observed staging without a durable output",
+          "treasury_staging_invariant",
+        );
+      }
     }
 
     const terms = this.journal.requireCheckoutTerms(purchase.id);
@@ -1335,104 +1342,6 @@ export class PurchaseCoordinator implements PurchaseModule {
     return true;
   }
 
-  private async submitTreasuryStaging(
-    purchase: PurchaseRecord,
-    effectId: string,
-    attemptNumber: number
-  ): Promise<boolean> {
-    const recovery = this.journal.treasuryStagingRecoveryContext(
-      purchase.id,
-      attemptNumber
-    );
-    if (!recovery || recovery.effect.id !== effectId) {
-      throw new PurchaseCoordinatorError(
-        "Treasury staging recovery facts are inconsistent",
-        "treasury_staging_invariant"
-      );
-    }
-    if (recovery.observation) return true;
-    if (
-      ["executing", "submitted", "ambiguous", "failed_terminal"].includes(
-        recovery.effect.state
-      )
-    ) {
-      if (purchase.state === "execution_prepared") {
-        this.journal.transitionPurchase(
-          purchase.id,
-          "execution_prepared",
-          "failed_recoverable",
-          "treasury_staging_requires_reconciliation",
-          recovery.effect.submissionDigest ??
-            recovery.effect.resultDigest ??
-            recovery.effect.payloadDigest
-        );
-      }
-      return false;
-    }
-    const claim = this.journal.beginTreasuryStaging(
-      recovery.effect.id,
-      recovery.plan.reservationId,
-      `${this.workerId}-treasury-staging`,
-      this.effectLeaseTtlMs
-    );
-    if (!claim) return false;
-    let lease = claim.lease;
-    let leaseLost: unknown;
-    const abortController = new AbortController();
-    const heartbeat = setInterval(() => {
-      if (leaseLost) return;
-      try {
-        lease = this.journal.renewLease(lease, this.effectLeaseTtlMs);
-      } catch (error) {
-        leaseLost = error;
-        abortController.abort();
-      }
-    }, Math.max(10, Math.floor(this.effectLeaseTtlMs / 3)));
-    heartbeat.unref();
-    try {
-      const result = await this.treasury.submitStaging({
-        context: this.treasuryStagingContext(purchase.id, attemptNumber),
-        effect: claim.effect,
-        signal: abortController.signal,
-      });
-      if (leaseLost) throw leaseLost;
-      const activeClaim: EffectClaim = { effect: claim.effect, lease };
-      this.journal.markEffectSubmitted(activeClaim, result.submissionDigest);
-      if (result.status === "staged") {
-        this.recordTreasuryStaging(purchase.id, attemptNumber, activeClaim, result.staging);
-        return true;
-      }
-      this.journal.transitionPurchase(
-        purchase.id,
-        "execution_prepared",
-        "failed_recoverable",
-        "treasury_staging_submitted_unobserved",
-        result.submissionDigest
-      );
-      return false;
-    } catch (error) {
-      const detail = safeErrorDigest("treasury-staging-submit", error);
-      try {
-        if (!leaseLost) this.journal.markEffectAmbiguous({ effect: claim.effect, lease }, detail);
-      } finally {
-        const current = this.journal.requirePurchase(purchase.id);
-        if (current.state === "execution_prepared") {
-          this.journal.transitionPurchase(
-            purchase.id,
-            "execution_prepared",
-            "failed_recoverable",
-            "treasury_staging_submission_ambiguous",
-            detail
-          );
-        }
-      }
-      return false;
-    } finally {
-      clearInterval(heartbeat);
-      if (!leaseLost) this.journal.releaseLease(lease);
-    }
-  }
-
   private async preparePaymentExecution(
     purchase: PurchaseRecord,
     attemptNumber: number,
@@ -1550,21 +1459,6 @@ export class PurchaseCoordinator implements PurchaseModule {
     return preparation;
   }
 
-  private recordTreasuryStaging(
-    purchaseId: PurchaseId,
-    attemptNumber: number,
-    claim: EffectClaim,
-    staging: TreasuryStagingResult
-  ): void {
-    const input = this.validatedTreasuryStagingInput(
-      purchaseId,
-      attemptNumber,
-      claim.effect.id,
-      staging
-    );
-    this.journal.recordObservedTreasuryStaging(claim.lease, input);
-  }
-
   private recordSettlement(purchase: PurchaseRecord, claim: EffectClaim, settlement: SettlementResult): void {
     const input = this.validatedSettlementInput(purchase, claim.effect.id, settlement);
     this.journal.recordPurchaseSettlement(claim.lease, input);
@@ -1679,55 +1573,6 @@ export class PurchaseCoordinator implements PurchaseModule {
     };
   }
 
-  private validatedTreasuryStagingInput(
-    purchaseId: PurchaseId,
-    attemptNumber: number,
-    effectId: string,
-    staging: TreasuryStagingResult
-  ): RecordObservedTreasuryStagingInput {
-    const recovery = this.journal.treasuryStagingRecoveryContext(
-      purchaseId,
-      attemptNumber
-    );
-    if (!recovery || recovery.effect.id !== effectId) {
-      throw new PurchaseCoordinatorError(
-        "Treasury staging result has no matching immutable plan",
-        "treasury_staging_mismatch"
-      );
-    }
-    const exact: ReadonlyArray<[string, string, string]> = [
-      ["transaction", staging.transactionId, recovery.plan.plannedTransactionId],
-      ["outpoint", staging.outpoint, recovery.plan.expectedOutpoint],
-      ["amount", staging.stagingAmountAtomic, recovery.plan.stagingAmountAtomic],
-      ["funding source", staging.fundingSource, recovery.plan.fundingSource],
-    ];
-    for (const [field, actual, expected] of exact) {
-      if (actual !== expected) {
-        throw new PurchaseCoordinatorError(
-          `Treasury staging ${field} does not match its immutable plan`,
-          "treasury_staging_mismatch"
-        );
-      }
-    }
-    const digest = this.storeVerifiedArtifact(
-      purchaseId,
-      TREASURY_STAGING_EVIDENCE_KIND,
-      staging.evidence,
-      attemptNumber
-    );
-    return {
-      effectId,
-      reservationId: recovery.plan.reservationId,
-      transactionId: staging.transactionId,
-      outpoint: staging.outpoint,
-      stagingAmountAtomic: staging.stagingAmountAtomic,
-      fundingSource: staging.fundingSource,
-      evidenceDigest: digest,
-      evidenceVerificationProfile: staging.evidence.verification.profile,
-      evidenceVerifierId: staging.evidence.verification.verifierId,
-    };
-  }
-
   private async observePaymentEffect(effect: EffectRecord): Promise<ReconciliationObservation> {
     if (effect.attempt === undefined) {
       throw new PurchaseCoordinatorError("payment Effect has no Payment Attempt", "payment_invariant");
@@ -1743,32 +1588,6 @@ export class PurchaseCoordinator implements PurchaseModule {
     const purchase = this.journal.requirePurchase(effect.purchaseId);
     const spend = this.validatedSettlementInput(purchase, effect.id, observation.settlement);
     return { status: "spend_observed", spend: omitEffectId(spend) };
-  }
-
-  private async observeTreasuryStagingEffect(
-    effect: EffectRecord
-  ): Promise<ReconciliationObservation> {
-    if (effect.attempt === undefined) {
-      throw new PurchaseCoordinatorError(
-        "Treasury staging Effect has no Payment Attempt",
-        "treasury_staging_invariant"
-      );
-    }
-    const observation = await this.treasury.observeStaging({
-      context: this.treasuryStagingContext(effect.purchaseId, effect.attempt),
-      effect,
-    });
-    if (observation.status !== "staged") return observation;
-    const staging = this.validatedTreasuryStagingInput(
-      effect.purchaseId,
-      effect.attempt,
-      effect.id,
-      observation.staging
-    );
-    return {
-      status: "treasury_staging_observed",
-      staging: omitEffectId(staging),
-    };
   }
 
   private async obtainFulfilment(purchase: PurchaseRecord, intent: PurchaseIntent): Promise<boolean> {
@@ -2315,28 +2134,6 @@ export class PurchaseCoordinator implements PurchaseModule {
     const terms = this.journal.requireCheckoutTerms(purchaseId);
     const authorization = this.journal.requireAuthorization(purchaseId);
     return Math.min(terms.expiresAtMs, authorization.expiresAtMs) <= this.now();
-  }
-
-  private treasuryStagingContext(
-    purchaseId: PurchaseId,
-    attemptNumber: number
-  ): KaspaTreasuryStagingContext {
-    const execution = this.purchaseExecutionContext(purchaseId, attemptNumber);
-    const plan = this.journal.requireTreasuryStagingPlan(purchaseId, attemptNumber);
-    return {
-      ...execution,
-      staging: {
-        preparedBytes: this.journal.readPreparedTreasuryStaging(
-          purchaseId,
-          attemptNumber
-        ),
-        preparedDigest: plan.payloadDigest,
-        transactionId: plan.plannedTransactionId,
-        expectedOutpoint: plan.expectedOutpoint,
-        amountAtomic: plan.stagingAmountAtomic,
-        fundingSource: plan.fundingSource,
-      },
-    };
   }
 
   private preparedPaymentContext(

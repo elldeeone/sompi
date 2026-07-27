@@ -38,15 +38,11 @@ import type {
   KaspaPaymentModule,
   KaspaPreparedExecutionContext,
   KaspaRequestContext,
-  KaspaTreasuryStagingContext,
   PaymentRecoveryObservation,
   PaymentSubmissionResult,
   PreparedKaspaPayment,
   PurchaseEgressSession,
   SettlementResult,
-  TreasuryModule,
-  TreasuryStagingRecoveryObservation,
-  TreasuryStagingSubmissionResult,
   VerifiedArtifact,
 } from "../../purchase/coordinator.js";
 import type { EffectObservation } from "../../purchase/journal.js";
@@ -54,7 +50,11 @@ import type { PurchaseId, Sha256Digest } from "../../purchase/types.js";
 import type {
   PrepareTreasuryStagingAdapterInput,
   PreparedTreasuryStaging,
-  TreasuryStagingPreparationAdapter,
+  TreasuryStagingAdapter,
+  TreasuryStagingAdapterContext,
+  TreasuryStagingExecutionAdapter,
+  TreasuryStagingRecoveryObservation,
+  TreasuryStagingSubmissionResult,
 } from "../../treasury/purchase-staging.js";
 import type { SupportedProtocolProfiles } from "../../protocols/profiles.js";
 import type { PinnedHttpTransport } from "../../http/pinned-transport.js";
@@ -83,8 +83,8 @@ const DIGEST = /^sha256:[A-Za-z0-9_-]{43}$/;
 const UINT64_MAX = (1n << 64n) - 1n;
 
 type PrepareStagingInput = PrepareTreasuryStagingAdapterInput;
-type SubmitStagingInput = Parameters<TreasuryModule["submitStaging"]>[0];
-type ObserveStagingInput = Parameters<TreasuryModule["observeStaging"]>[0];
+type SubmitStagingInput = Parameters<TreasuryStagingExecutionAdapter["submitStaging"]>[0];
+type ObserveStagingInput = Parameters<TreasuryStagingExecutionAdapter["observeStaging"]>[0];
 type PreparePaymentInput = Parameters<KaspaPaymentModule["prepare"]>[0];
 type SubmitPaymentInput = Parameters<KaspaPaymentModule["submit"]>[0];
 type ObservePaymentInput = Parameters<KaspaPaymentModule["observe"]>[0];
@@ -214,9 +214,7 @@ interface ProcessedPaymentResponse {
  * owns the vault transaction and chain observation.
  */
 export class KaspaX402TreasuryStagingAdapter
-  implements
-    TreasuryStagingPreparationAdapter,
-    Pick<TreasuryModule, "submitStaging" | "observeStaging">
+  implements TreasuryStagingAdapter
 {
   private readonly driver: TreasuryStagingDriver;
   private readonly now: () => number;
@@ -944,7 +942,7 @@ export class KaspaX402ExactPaymentModule implements KaspaPaymentModule {
 }
 
 function assertTreasuryStagingContext(
-  context: KaspaTreasuryStagingContext,
+  context: TreasuryStagingAdapterContext,
   now: () => number,
   options: { allowExpired?: boolean } = {}
 ): void {
@@ -1370,7 +1368,7 @@ function validatePreparedStaging(
 
 function validateStagingSubmission(
   result: TreasuryStagingSubmissionResult,
-  context: KaspaTreasuryStagingContext
+  context: TreasuryStagingAdapterContext
 ): void {
   assertDigest(result.submissionDigest, "Treasury staging submission digest");
   if (result.status === "staged") validateStagingResult(result.staging, context);
@@ -1381,7 +1379,7 @@ function validateStagingSubmission(
 
 function validateStagingRecovery(
   result: TreasuryStagingRecoveryObservation,
-  context: KaspaTreasuryStagingContext
+  context: TreasuryStagingAdapterContext
 ): void {
   if (result.status === "staged") validateStagingResult(result.staging, context);
   else validatePassiveRecoveryObservation(result as PassiveRecoveryObservation);
@@ -1389,7 +1387,7 @@ function validateStagingRecovery(
 
 function validateStagingResult(
   result: Extract<TreasuryStagingSubmissionResult, { status: "staged" }>["staging"],
-  context: KaspaTreasuryStagingContext
+  context: TreasuryStagingAdapterContext
 ): void {
   if (
     result.transactionId !== context.staging.transactionId ||

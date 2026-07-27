@@ -39,6 +39,7 @@ import {
 import {
   TreasuryStagingPreparationError,
   type PreparePurchaseStagingInput,
+  type TreasuryStagingAdapter,
   type TreasuryStagingPreparationAdapter,
 } from "./purchase-staging.js";
 
@@ -474,6 +475,139 @@ test("Treasury rejects invalid Purchase staging before creating its fence", asyn
     );
     assert.equal(journal.findTreasuryStagingPlan(purchaseId, 1), undefined);
     assert.equal(journal.effectsForPurchase(purchaseId).length, 0);
+  });
+});
+
+test("Treasury submits and commits one prepared Purchase staging result", async () => {
+  await withFixture(async ({ journal, policy, wallet, vault, deposit }) => {
+    const purchaseId = authorizedPurchase(journal, 79, "100");
+    const preparedBytes = Buffer.from("executed-purchase-staging", "utf8");
+    const transactionId = "12".repeat(32);
+    let submitCalls = 0;
+    let observeCalls = 0;
+    const module = purchaseStagingModule({
+      journal,
+      policy,
+      adapters: [wallet, vault, deposit],
+      prepareStaging: async () => ({
+        preparedBytes,
+        preparedDigest: evidenceDigest(preparedBytes),
+        transactionId,
+        expectedOutpoint: `${transactionId}:0`,
+        stagingAmountAtomic: "110",
+        fundingSource: "vault-treasury",
+      }),
+      submitStaging: async ({ context, effect }) => {
+        submitCalls += 1;
+        assert.equal(effect.state, "executing");
+        assert.deepEqual(context.staging.preparedBytes, preparedBytes);
+        return {
+          status: "staged",
+          submissionDigest: evidenceDigest("staging-submit-accepted"),
+          staging: treasuryStagingResult(transactionId, "110", "accepted"),
+        };
+      },
+      observeStaging: async () => {
+        observeCalls += 1;
+        throw new Error("observed staging must not be observed again");
+      },
+    });
+    await module.reservePurchaseCapacity(
+      purchaseCapacityInput(journal, purchaseId, "res_staging_executed"),
+    );
+    const input = purchaseStagingInput(journal, purchaseId);
+    await module.preparePurchaseStaging(input);
+
+    const result = await module.executePurchaseStaging(input);
+    const plan = journal.requireTreasuryStagingPlan(purchaseId, 1);
+    const observation = journal.findTreasuryStagingObservation(purchaseId, 1);
+
+    assert.equal(result.status, "observed");
+    assert.equal(submitCalls, 1);
+    assert.equal(observeCalls, 0);
+    assert.equal(journal.requireEffect(plan.effectId).state, "observed");
+    assert.equal(observation?.transactionId, transactionId);
+    assert.equal(observation?.evidenceDigest, result.evidenceDigest);
+
+    assert.deepEqual(await module.executePurchaseStaging(input), result);
+    assert.equal(submitCalls, 1);
+  });
+});
+
+test("Treasury observes ambiguity and retries only after proof with the same bytes", async () => {
+  await withFixture(async ({ journal, policy, wallet, vault, deposit }) => {
+    const purchaseId = authorizedPurchase(journal, 80, "100");
+    const preparedBytes = Buffer.from("retry-purchase-staging", "utf8");
+    const transactionId = "34".repeat(32);
+    const submittedBytes: string[] = [];
+    let submitCalls = 0;
+    let observeCalls = 0;
+    const module = purchaseStagingModule({
+      journal,
+      policy,
+      adapters: [wallet, vault, deposit],
+      prepareStaging: async () => ({
+        preparedBytes,
+        preparedDigest: evidenceDigest(preparedBytes),
+        transactionId,
+        expectedOutpoint: `${transactionId}:0`,
+        stagingAmountAtomic: "110",
+        fundingSource: "vault-treasury",
+      }),
+      submitStaging: async ({ context }) => {
+        submitCalls += 1;
+        submittedBytes.push(
+          Buffer.from(context.staging.preparedBytes).toString("base64"),
+        );
+        if (submitCalls === 1) {
+          throw new Error("injected staging transport loss");
+        }
+        return {
+          status: "staged",
+          submissionDigest: evidenceDigest("staging-retry-accepted"),
+          staging: treasuryStagingResult(transactionId, "110", "retried"),
+        };
+      },
+      observeStaging: async () => {
+        observeCalls += 1;
+        if (observeCalls === 1) {
+          return {
+            status: "pending",
+            detailDigest: evidenceDigest("staging-still-pending"),
+          };
+        }
+        return {
+          status: "not_found",
+          safeToRetry: true,
+          detailDigest: evidenceDigest("staging-not-executed-proof"),
+        };
+      },
+    });
+    await module.reservePurchaseCapacity(
+      purchaseCapacityInput(journal, purchaseId, "res_staging_retry"),
+    );
+    const input = purchaseStagingInput(journal, purchaseId);
+    await module.preparePurchaseStaging(input);
+
+    const ambiguous = await module.executePurchaseStaging(input);
+    assert.equal(ambiguous.status, "reconciliation_required");
+    assert.equal(submitCalls, 1);
+
+    const pending = await module.executePurchaseStaging(input);
+    assert.equal(pending.status, "reconciliation_required");
+    assert.equal(submitCalls, 1);
+    assert.equal(observeCalls, 1);
+
+    const recovered = await module.executePurchaseStaging(input);
+    assert.equal(recovered.status, "observed");
+    assert.equal(submitCalls, 2);
+    assert.equal(observeCalls, 2);
+    assert.deepEqual(submittedBytes, [
+      preparedBytes.toString("base64"),
+      preparedBytes.toString("base64"),
+    ]);
+    const plan = journal.requireTreasuryStagingPlan(purchaseId, 1);
+    assert.equal(journal.requireEffect(plan.effectId).state, "observed");
   });
 });
 
@@ -1421,6 +1555,8 @@ function purchaseStagingModule(input: {
   policy: PolicyEngine;
   adapters: readonly TreasuryOperationAdapter[];
   prepareStaging: TreasuryStagingPreparationAdapter["prepareStaging"];
+  submitStaging?: TreasuryStagingAdapter["submitStaging"];
+  observeStaging?: TreasuryStagingAdapter["observeStaging"];
 }): TreasuryOperationModule {
   const unexpected = async (): Promise<never> => {
     throw new Error("test did not expect Treasury staging submission");
@@ -1439,8 +1575,8 @@ function purchaseStagingModule(input: {
       reservationTtlMs: 60_000,
       staging: {
         prepareStaging: input.prepareStaging,
-        submitStaging: unexpected,
-        observeStaging: unexpected,
+        submitStaging: input.submitStaging ?? unexpected,
+        observeStaging: input.observeStaging ?? unexpected,
       },
       stagingRecovery: {
         prepare: unexpected,
@@ -1754,4 +1890,31 @@ function verifiedEvidence(
     detailDigest: evidenceDigest(`verified:${value}`),
   });
   return artifact.digest;
+}
+
+function treasuryStagingResult(
+  transactionId: string,
+  stagingAmountAtomic: string,
+  seed: string,
+) {
+  const bytes = Buffer.from(`treasury-staging-observation:${seed}`, "utf8");
+  const profile = "urn:sompi:test:treasury-staging-observation:1";
+  return {
+    evidence: {
+      bytes,
+      mediaType: "application/json",
+      profile,
+      issuer: "test-treasury",
+      declaredDigest: evidenceDigest(bytes),
+      verification: {
+        verifierId: "test-treasury-verifier",
+        profile,
+        detailDigest: evidenceDigest(`verified:${seed}`),
+      },
+    },
+    transactionId,
+    outpoint: `${transactionId}:0`,
+    stagingAmountAtomic,
+    fundingSource: "vault-treasury" as const,
+  };
 }

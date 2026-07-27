@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: **2026-07-26**
+Last updated: **2026-07-27**
 
 ## Architecture programme
 
@@ -212,28 +212,29 @@ Architecture Phase 3 is complete.
 Architecture Phase 4 is active. It started from
 `aab94d95df42e7ffdf1ca3ff1c00bdd3e2e71fae`.
 
-Phase 4 C3 is complete. Treasury now owns Purchase staging preparation,
-prepared material validation, durable prepared bytes, and the planned Effect
-fence. Purchase asks Treasury to complete this operation through one
-`preparePurchaseStaging` method with only the Purchase ID and attempt number.
-It receives only the durable payload digest.
+Phase 4 C4 is complete. Treasury now owns Purchase staging preparation and
+execution. It owns prepared material validation, durable prepared bytes, the
+planned Effect fence, submission, observation, ambiguity, reconciliation, and
+proof-backed retry.
+
+Purchase uses two small Treasury operations. It calls
+`preparePurchaseStaging` and `executePurchaseStaging` with only the Purchase ID
+and attempt number. It does not receive or submit staging bytes. The Purchase
+reconciler no longer observes or records Treasury staging Effects.
 
 The Kaspa-x402 adapter still owns protocol checks and transaction preparation.
-Treasury owns when preparation runs and when its Sompi result becomes durable.
-The Journal reconstructs the exact durable execution context. Treasury
-acquires and renews an attempt-scoped preparation lease before adapter work.
-The Journal commits the plan under that lease. A repeated request returns the
-existing durable plan without another adapter call. A concurrent Treasury
-instance cannot prepare or sign the same attempt.
+It also owns staging submission and chain observation mechanisms. Treasury owns
+when those mechanisms run and when their Sompi outcome becomes durable. It
+reconstructs the exact adapter context from the Journal. An ambiguous effect
+is observed before any proof-backed retry. A retry uses the same durable bytes.
 
-Purchase still owns staging submission, observation, ambiguity, and
-reconciliation until C4. Purchase still owns abandoned staging recovery until
-C5. The physical Journal schema, Kaspa-x402 behavior and pin, public API, and
+Purchase still owns abandoned staging recovery and lease takeover until C5.
+The physical Journal schema, Kaspa-x402 behavior and pin, public API, and
 sibling repositories did not change.
 
-The focused C3 command ran 114 tests. All 114 passed. The full test command ran
-609 tests: 608 passed and one privileged ownership test was skipped as
+The focused C4 command ran 88 tests. All 88 passed. The full test command ran
+611 tests: 610 passed and one privileged ownership test was skipped as
 expected. Offline smoke passed.
 
-Phase 4 C4 is next. Do not start C4 until its staging execution move is
+Phase 4 C5 is next. Do not start C5 until its staging recovery move is
 explicitly started.

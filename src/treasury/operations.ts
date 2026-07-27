@@ -2,9 +2,14 @@ import { createHash, randomBytes } from "node:crypto";
 import { PolicyEngine } from "../policy.js";
 import { evidenceDigest } from "../purchase/identity.js";
 import type {
-  TreasuryModule as PurchaseTreasuryModule,
   TreasuryStagingRecoveryModule,
 } from "../purchase/coordinator.js";
+import type {
+  EffectClaim,
+  EffectObservation,
+  EffectRecord,
+  LeaseToken,
+} from "../purchase/journal.js";
 import {
   TreasuryPreparationError,
   type TreasuryOperationAdapter,
@@ -27,12 +32,18 @@ import {
 import {
   TreasuryStagingPreparationError,
   treasuryStagingPreparationLeaseName,
+  type ExecutePurchaseStagingInput,
   type PreparePurchaseStagingInput,
   type PreparedTreasuryStaging,
+  type PurchaseTreasuryStagingExecution,
   type PurchaseTreasuryStagingPreparation,
-  type TreasuryStagingPreparationAdapter,
+  type TreasuryStagingAdapter,
+  type TreasuryStagingAdapterContext,
+  type TreasuryStagingExecutionResult,
   type TreasuryStagingPreparationLease,
   type TreasuryStagingPreparationResult,
+  type TreasuryStagingRecoveryObservation,
+  type TreasuryStagingResult,
 } from "./purchase-staging.js";
 
 const OPERATION_KEY = /^[A-Za-z0-9._:-]{1,160}$/;
@@ -42,6 +53,8 @@ const TESTNET = "kaspa:testnet-10";
 const MAX_RECONCILED_RETRIES = 8;
 const DRIVER_LEASE_TTL_MS = 60_000;
 const STAGING_PREPARATION_LEASE_TTL_MS = 60_000;
+const STAGING_EXECUTION_LEASE_TTL_MS = 60_000;
+const STAGING_RECONCILIATION_LEASE_TTL_MS = 30_000;
 const DRIVER_WAIT_MS = 10;
 const DRIVER_WAIT_ATTEMPTS = 600;
 
@@ -84,8 +97,9 @@ export interface TreasuryPurchaseOptions {
   };
   readonly additionalCostCeilingAtomic: string;
   readonly reservationTtlMs?: number;
-  readonly staging: TreasuryStagingPreparationAdapter &
-    Pick<PurchaseTreasuryModule, "submitStaging" | "observeStaging">;
+  readonly stagingExecutionLeaseTtlMs?: number;
+  readonly stagingReconciliationLeaseTtlMs?: number;
+  readonly staging: TreasuryStagingAdapter;
   readonly stagingRecovery: TreasuryStagingRecoveryModule;
   readonly now?: () => number;
 }
@@ -121,13 +135,17 @@ export class TreasuryOperationNotFoundError extends TreasuryOperationError {
 }
 
 /**
- * Deep module for non-Purchase Treasury Movements.
+ * Deep Treasury module for Purchase staging and direct Treasury Movements.
  *
  * Its small interface owns idempotency, durable preparation, policy capacity,
  * submission ordering, ambiguity, reconciliation, and local commit. MCP does
  * not call wallet/vault mutation methods directly.
  */
-export class TreasuryOperationModule implements PurchaseTreasuryStagingPreparation {
+export class TreasuryOperationModule
+  implements
+    PurchaseTreasuryStagingPreparation,
+    PurchaseTreasuryStagingExecution
+{
   private readonly journal: TreasuryOperationJournal;
   private readonly policy: Pick<
     PolicyEngine,
@@ -140,6 +158,8 @@ export class TreasuryOperationModule implements PurchaseTreasuryStagingPreparati
     readonly vault: TreasuryPurchaseOptions["vault"];
     readonly additionalCostCeilingAtomic: string;
     readonly reservationTtlMs: number;
+    readonly stagingExecutionLeaseTtlMs: number;
+    readonly stagingReconciliationLeaseTtlMs: number;
     readonly staging: TreasuryPurchaseOptions["staging"];
     readonly stagingRecovery: TreasuryStagingRecoveryModule;
     readonly now: () => number;
@@ -190,6 +210,22 @@ export class TreasuryOperationModule implements PurchaseTreasuryStagingPreparati
       if (!Number.isSafeInteger(reservationTtlMs) || reservationTtlMs <= 0) {
         throw new TreasuryOperationError("Purchase Treasury reservation TTL is invalid");
       }
+      const stagingExecutionLeaseTtlMs =
+        purchase.stagingExecutionLeaseTtlMs ??
+        STAGING_EXECUTION_LEASE_TTL_MS;
+      const stagingReconciliationLeaseTtlMs =
+        purchase.stagingReconciliationLeaseTtlMs ??
+        STAGING_RECONCILIATION_LEASE_TTL_MS;
+      if (
+        !Number.isSafeInteger(stagingExecutionLeaseTtlMs) ||
+        stagingExecutionLeaseTtlMs <= 0 ||
+        !Number.isSafeInteger(stagingReconciliationLeaseTtlMs) ||
+        stagingReconciliationLeaseTtlMs <= 0
+      ) {
+        throw new TreasuryOperationError(
+          "Purchase Treasury staging lease TTL is invalid",
+        );
+      }
       this.purchase = Object.freeze({
         vault: purchase.vault,
         additionalCostCeilingAtomic: requireAtomic(
@@ -198,6 +234,8 @@ export class TreasuryOperationModule implements PurchaseTreasuryStagingPreparati
           true,
         ),
         reservationTtlMs,
+        stagingExecutionLeaseTtlMs,
+        stagingReconciliationLeaseTtlMs,
         staging: purchase.staging,
         stagingRecovery: purchase.stagingRecovery,
         now: purchase.now ?? Date.now,
@@ -453,33 +491,383 @@ export class TreasuryOperationModule implements PurchaseTreasuryStagingPreparati
     }
   }
 
-  async submitStaging(
-    input: Parameters<PurchaseTreasuryModule["submitStaging"]>[0],
-  ): ReturnType<PurchaseTreasuryModule["submitStaging"]> {
-    return this.requirePurchase().staging.submitStaging(input);
+  async executePurchaseStaging(
+    input: Readonly<ExecutePurchaseStagingInput>,
+  ): Promise<Readonly<TreasuryStagingExecutionResult>> {
+    this.requirePurchase();
+    for (let step = 0; step < 3; step += 1) {
+      const observation = this.journal.findTreasuryStagingObservation(
+        input.purchaseId,
+        input.attempt,
+      );
+      if (observation) {
+        return Object.freeze({
+          status: "observed",
+          evidenceDigest: observation.evidenceDigest,
+        });
+      }
+
+      const plan = this.journal.requireTreasuryStagingPlan(
+        input.purchaseId,
+        input.attempt,
+      );
+      const effect = this.journal.requireEffect(plan.effectId);
+      if (
+        effect.purchaseId !== input.purchaseId ||
+        effect.attempt !== input.attempt
+      ) {
+        throw new TreasuryStagingPreparationError(
+          "Treasury staging Effect does not match its durable plan",
+          "treasury_staging_mismatch",
+        );
+      }
+
+      if (effect.state === "planned" || effect.state === "retryable") {
+        return this.submitPreparedPurchaseStaging(input, effect);
+      }
+      if (
+        effect.state === "executing" ||
+        effect.state === "submitted" ||
+        effect.state === "ambiguous"
+      ) {
+        const reconciled = await this.reconcilePurchaseStaging(input, effect);
+        if (reconciled === "retry") continue;
+        return reconciled;
+      }
+      if (effect.state === "observed") {
+        throw new TreasuryStagingPreparationError(
+          "observed Treasury staging lost its durable output",
+          "treasury_staging_mismatch",
+        );
+      }
+      return Object.freeze({
+        status: "reconciliation_required",
+        detailDigest:
+          effect.resultDigest ??
+          effect.submissionDigest ??
+          effect.payloadDigest,
+      });
+    }
+    throw new TreasuryStagingPreparationError(
+      "Treasury staging exceeded its bounded execution steps",
+      "treasury_staging_busy",
+    );
   }
 
-  async observeStaging(
-    input: Parameters<PurchaseTreasuryModule["observeStaging"]>[0],
-  ): ReturnType<PurchaseTreasuryModule["observeStaging"]> {
-    return this.requirePurchase().staging.observeStaging(input);
+  private async submitPreparedPurchaseStaging(
+    input: Readonly<ExecutePurchaseStagingInput>,
+    effect: Readonly<EffectRecord>,
+  ): Promise<Readonly<TreasuryStagingExecutionResult>> {
+    const purchase = this.requirePurchase();
+    const plan = this.journal.requireTreasuryStagingPlan(
+      input.purchaseId,
+      input.attempt,
+    );
+    const claim = this.journal.beginTreasuryStaging(
+      effect.id,
+      plan.reservationId,
+      `${this.driverOwner}:staging`,
+      purchase.stagingExecutionLeaseTtlMs,
+    );
+    if (!claim) return Object.freeze({ status: "pending" });
+
+    let lease = claim.lease;
+    let leaseLost: unknown;
+    const abortController = new AbortController();
+    const heartbeat = setInterval(() => {
+      if (leaseLost) return;
+      try {
+        lease = this.journal.renewLease(
+          lease,
+          purchase.stagingExecutionLeaseTtlMs,
+        );
+      } catch (error) {
+        leaseLost = error;
+        abortController.abort();
+      }
+    }, Math.max(10, Math.floor(purchase.stagingExecutionLeaseTtlMs / 3)));
+    heartbeat.unref();
+
+    try {
+      let result;
+      try {
+        result = await purchase.staging.submitStaging({
+          context: this.purchaseStagingAdapterContext(input),
+          effect: claim.effect,
+          signal: abortController.signal,
+        });
+      } catch (error) {
+        const detailDigest = stagingErrorDigest("submit", error);
+        if (leaseLost) {
+          return Object.freeze({
+            status: "reconciliation_required",
+            detailDigest,
+          });
+        }
+        const activeClaim: EffectClaim = { effect: claim.effect, lease };
+        this.journal.markEffectAmbiguous(activeClaim, detailDigest);
+        return Object.freeze({
+          status: "reconciliation_required",
+          detailDigest,
+        });
+      }
+
+      if (leaseLost) {
+        return Object.freeze({
+          status: "reconciliation_required",
+          detailDigest: stagingErrorDigest("submit-lease", leaseLost),
+        });
+      }
+      const activeClaim: EffectClaim = { effect: claim.effect, lease };
+      this.journal.markEffectSubmitted(activeClaim, result.submissionDigest);
+      if (result.status === "submitted") {
+        return Object.freeze({
+          status: "reconciliation_required",
+          detailDigest: result.submissionDigest,
+        });
+      }
+      return this.recordObservedPurchaseStaging(
+        input,
+        activeClaim.lease,
+        result.staging,
+      );
+    } finally {
+      clearInterval(heartbeat);
+      if (!leaseLost) this.journal.releaseLease(lease);
+    }
+  }
+
+  private async reconcilePurchaseStaging(
+    input: Readonly<ExecutePurchaseStagingInput>,
+    effect: Readonly<EffectRecord>,
+  ): Promise<Readonly<TreasuryStagingExecutionResult> | "retry"> {
+    const purchase = this.requirePurchase();
+    const leaseName = `purchase-reconciliation:${input.purchaseId}`;
+    let lease = this.journal.acquireLease(
+      leaseName,
+      `${this.driverOwner}:staging-reconciliation`,
+      purchase.stagingReconciliationLeaseTtlMs,
+    );
+    if (!lease) return Object.freeze({ status: "pending" });
+
+    let leaseLost: unknown;
+    const heartbeat = setInterval(() => {
+      if (leaseLost) return;
+      try {
+        lease = this.journal.renewLease(
+          lease as LeaseToken,
+          purchase.stagingReconciliationLeaseTtlMs,
+        );
+      } catch (error) {
+        leaseLost = error;
+      }
+    }, Math.max(
+      10,
+      Math.floor(purchase.stagingReconciliationLeaseTtlMs / 3),
+    ));
+    heartbeat.unref();
+
+    try {
+      if (this.journal.effectClaimActive(effect.id)) {
+        this.journal.recordReconciliation(
+          lease,
+          input.purchaseId,
+          effect.id,
+          "executor_active",
+        );
+        return Object.freeze({ status: "pending" });
+      }
+      this.journal.verifyEffectPreparedMaterial(effect.id);
+
+      let observation: TreasuryStagingRecoveryObservation;
+      try {
+        observation = await purchase.staging.observeStaging({
+          context: this.purchaseStagingAdapterContext(input),
+          effect: this.journal.requireEffect(effect.id),
+        });
+      } catch (error) {
+        const detailDigest = stagingErrorDigest("observe", error);
+        if (leaseLost) {
+          return Object.freeze({
+            status: "reconciliation_required",
+            detailDigest,
+          });
+        }
+        lease = this.journal.renewLease(
+          lease,
+          purchase.stagingReconciliationLeaseTtlMs,
+        );
+        this.journal.recordReconciliation(
+          lease,
+          input.purchaseId,
+          effect.id,
+          "observer_error",
+          detailDigest,
+        );
+        return Object.freeze({
+          status: "reconciliation_required",
+          detailDigest,
+        });
+      }
+
+      if (leaseLost) {
+        return Object.freeze({
+          status: "reconciliation_required",
+          detailDigest: stagingErrorDigest("observe-lease", leaseLost),
+        });
+      }
+      lease = this.journal.renewLease(
+        lease,
+        purchase.stagingReconciliationLeaseTtlMs,
+      );
+      if (observation.status === "staged") {
+        const observed = this.recordObservedPurchaseStaging(
+          input,
+          lease,
+          observation.staging,
+        );
+        this.journal.recordReconciliation(
+          lease,
+          input.purchaseId,
+          effect.id,
+          "treasury_staging_observed",
+          observed.evidenceDigest,
+        );
+        return observed;
+      }
+
+      const updated = this.journal.recordEffectObservation(
+        effect.id,
+        lease,
+        stagingEffectObservation(observation),
+      );
+      const detailDigest =
+        observation.detailDigest ??
+        updated.resultDigest ??
+        updated.submissionDigest ??
+        updated.payloadDigest;
+      this.journal.recordReconciliation(
+        lease,
+        input.purchaseId,
+        effect.id,
+        updated.state === "retryable"
+          ? "retryable_after_observation"
+          : `effect_${updated.state}`,
+        detailDigest,
+      );
+      if (updated.state === "retryable") return "retry";
+      return Object.freeze({
+        status: "reconciliation_required",
+        detailDigest,
+      });
+    } finally {
+      clearInterval(heartbeat);
+      if (!leaseLost) this.journal.releaseLease(lease);
+    }
+  }
+
+  private purchaseStagingAdapterContext(
+    input: Readonly<ExecutePurchaseStagingInput>,
+  ): TreasuryStagingAdapterContext {
+    const execution = this.journal.requirePurchaseExecutionContext(
+      input.purchaseId,
+      input.attempt,
+    );
+    const plan = this.journal.requireTreasuryStagingPlan(
+      input.purchaseId,
+      input.attempt,
+    );
+    return Object.freeze({
+      ...execution,
+      staging: Object.freeze({
+        preparedBytes: this.journal.readPreparedTreasuryStaging(
+          input.purchaseId,
+          input.attempt,
+        ),
+        preparedDigest: plan.payloadDigest,
+        transactionId: plan.plannedTransactionId,
+        expectedOutpoint: plan.expectedOutpoint,
+        amountAtomic: plan.stagingAmountAtomic,
+        fundingSource: "vault-treasury" as const,
+      }),
+    });
+  }
+
+  private recordObservedPurchaseStaging(
+    input: Readonly<ExecutePurchaseStagingInput>,
+    lease: LeaseToken,
+    staging: Readonly<TreasuryStagingResult>,
+  ): Readonly<Extract<TreasuryStagingExecutionResult, { status: "observed" }>> {
+    const plan = this.journal.requireTreasuryStagingPlan(
+      input.purchaseId,
+      input.attempt,
+    );
+    if (
+      staging.transactionId !== plan.plannedTransactionId ||
+      staging.outpoint !== plan.expectedOutpoint ||
+      staging.stagingAmountAtomic !== plan.stagingAmountAtomic ||
+      staging.fundingSource !== plan.fundingSource
+    ) {
+      throw new TreasuryStagingPreparationError(
+        "observed Treasury staging changed its durable plan",
+        "treasury_staging_mismatch",
+      );
+    }
+    const artifactDigest = evidenceDigest(staging.evidence.bytes);
+    if (
+      (staging.evidence.declaredDigest !== undefined &&
+        staging.evidence.declaredDigest !== artifactDigest) ||
+      staging.evidence.profile !== staging.evidence.verification.profile
+    ) {
+      throw new TreasuryStagingPreparationError(
+        "Treasury staging evidence is not bound to its verified bytes",
+        "treasury_staging_mismatch",
+      );
+    }
+    const stored = this.journal.storeEvidence(input.purchaseId, {
+      bytes: staging.evidence.bytes,
+      mediaType: staging.evidence.mediaType,
+      profile: staging.evidence.profile,
+      issuer: staging.evidence.issuer,
+      kind: "treasury-staging-output",
+      attempt: input.attempt,
+    });
+    this.journal.recordEvidenceVerification(
+      stored.digest,
+      staging.evidence.verification,
+    );
+    const observed = this.journal.recordObservedTreasuryStaging(lease, {
+      effectId: plan.effectId,
+      reservationId: plan.reservationId,
+      transactionId: staging.transactionId,
+      outpoint: staging.outpoint,
+      stagingAmountAtomic: staging.stagingAmountAtomic,
+      fundingSource: staging.fundingSource,
+      evidenceDigest: stored.digest,
+      evidenceVerificationProfile: staging.evidence.verification.profile,
+      evidenceVerifierId: staging.evidence.verification.verifierId,
+    });
+    return Object.freeze({
+      status: "observed",
+      evidenceDigest: observed.evidenceDigest,
+    });
   }
 
   async prepareStagingRecovery(
-    input: Parameters<PurchaseTreasuryModule["prepareStagingRecovery"]>[0],
-  ): ReturnType<PurchaseTreasuryModule["prepareStagingRecovery"]> {
+    input: Parameters<TreasuryStagingRecoveryModule["prepare"]>[0],
+  ): ReturnType<TreasuryStagingRecoveryModule["prepare"]> {
     return this.requirePurchase().stagingRecovery.prepare(input);
   }
 
   async observeStagingRecovery(
-    input: Parameters<PurchaseTreasuryModule["observeStagingRecovery"]>[0],
-  ): ReturnType<PurchaseTreasuryModule["observeStagingRecovery"]> {
+    input: Parameters<TreasuryStagingRecoveryModule["observe"]>[0],
+  ): ReturnType<TreasuryStagingRecoveryModule["observe"]> {
     return this.requirePurchase().stagingRecovery.observe(input);
   }
 
   async submitStagingRecovery(
-    input: Parameters<PurchaseTreasuryModule["submitStagingRecovery"]>[0],
-  ): ReturnType<PurchaseTreasuryModule["submitStagingRecovery"]> {
+    input: Parameters<TreasuryStagingRecoveryModule["submit"]>[0],
+  ): ReturnType<TreasuryStagingRecoveryModule["submit"]> {
     return this.requirePurchase().stagingRecovery.submit(input);
   }
 
@@ -1147,6 +1535,17 @@ function stagingPreparationResult(
   payloadDigest: TreasuryStagingPreparationResult["payloadDigest"],
 ): Readonly<TreasuryStagingPreparationResult> {
   return Object.freeze({ payloadDigest });
+}
+
+function stagingEffectObservation(
+  observation: Exclude<TreasuryStagingRecoveryObservation, { status: "staged" }>,
+): EffectObservation {
+  return observation;
+}
+
+function stagingErrorDigest(domain: string, error: unknown) {
+  const name = error instanceof Error ? error.name : typeof error;
+  return evidenceDigest(`treasury-staging-${domain}:${name}`);
 }
 
 function stagingAtomic(value: string, label: string): bigint {
