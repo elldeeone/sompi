@@ -64,6 +64,21 @@ or a sibling repository. It does not include Phase 4 Treasury work.
 
 This phase implements accepted ADR-0012, ADR-0018, and ADR-0024.
 
+Architecture Phase 4 is complete. It started from
+`aab94d95df42e7ffdf1ca3ff1c00bdd3e2e71fae`.
+
+One `TreasuryModule` interface now owns quote, reservation, shared capacity,
+staging preparation, staging execution, staging inspection, ambiguity,
+reconciliation, and abandoned-staging recovery. One
+`TreasuryOperationModule` implements the interface for Purchase and all direct
+Movements.
+
+Purchase does not define Treasury lifecycle types or call Treasury Journal
+commands. Kaspa-x402 still owns its wire rules, transaction construction,
+submission mechanisms, and chain observation mechanisms. The physical Journal
+schema, public API, protocol pins, release, deployment, live host, and sibling
+repositories did not change.
+
 ## Current release
 
 Sompi `0.12.2` repairs the clean-host Hermes onboarding trust boundary.
@@ -176,6 +191,25 @@ The Architecture Phase 3 tree produced these local results:
 - The Kaspa-x402 source, wire behavior, packages, pins, fixtures, and
   conformance provenance did not change. The AP2 upstream pin did not change.
 
+The Architecture Phase 4 C7 candidate produced these results:
+
+- The complete release verifier passed 619 tests: 618 passed and one
+  privileged ownership test was skipped as expected.
+- Offline smoke, Hermes, all five Kaspa-x402 conformance checks, stored
+  evidence, local E2E, OpenAPI, Arazzo, dependency audit, package,
+  clean-install, licence, and onboarding-preview checks passed.
+- The funded Testnet-10 run completed three direct Treasury Movements, Purchase
+  staging, and one exact payment.
+- Staging and payment ambiguity both recovered to accepted evidence.
+- The proof runner stopped the first process with a submitted staging Effect
+  and a `failed_recoverable` Purchase. A second process observed the same Effect
+  and staging transaction. It did not create a duplicate effect.
+- The completed Journal contains three Treasury operations, two Effects, one
+  Payment Attempt, one Settlement, and one Merchant exact transaction.
+- The evidence verifier derives the restart comparison from public
+  before-and-after Journal facts and exact artifact digests.
+- The public Phase 4 report is in `evidence/phase4-c7/`.
+
 ## Funded evidence
 
 The [alpha.9 clean-cutover evidence](https://github.com/elldeeone/sompi/blob/c8fd02fa403b7e4f43dfa91653c0c232867d8ed8/evidence/alpha9-clean-cutover/README.md) is public and contains no secrets.
@@ -208,14 +242,10 @@ The deterministic Trusted Authority records signed human approval before an irre
 
 ## Next work
 
-Architecture Phase 3 is complete.
-Architecture Phase 4 is active. It started from
-`aab94d95df42e7ffdf1ca3ff1c00bdd3e2e71fae`.
-
-Phase 4 C6 is complete. Treasury defines one `TreasuryModule` interface for
-quote, reservation, staging preparation, staging execution, staging
-inspection, and staging recovery. One `TreasuryOperationModule` implements
-that interface.
+Architecture Phase 4 is complete. Treasury defines one `TreasuryModule`
+interface for quote, reservation, staging preparation, staging execution,
+staging inspection, and staging recovery. One `TreasuryOperationModule`
+implements that interface.
 
 Purchase does not define or export Treasury lifecycle types. It does not call
 Treasury Journal commands. Treasury returns stable staged-output data to
@@ -248,10 +278,11 @@ is observed before any proof-backed retry. A retry uses the same durable bytes.
 The physical Journal schema, Kaspa-x402 behavior and pin, public API, and
 sibling repositories did not change.
 
-The focused C6 command ran 81 tests. All 81 passed. The full test command ran
-619 tests: 618 passed and one privileged ownership test was skipped as
-expected. Offline smoke passed.
+The funded C7 evidence is complete. It records direct Movement execution,
+staging and payment ambiguity, a real process restart, recovery of the same
+staging Effect and transaction, and no duplicate effect.
 
-Phase 4 C7 is next. It runs the complete verification gates and then stops for
-a new architecture review. Do not run a funded Testnet-10 command without
-separate approval.
+The deletion test keeps four candidates for a future architecture review:
+owner-change persistence locality, Purchase lifecycle progression, runtime
+interface reduction, and shared Agent continuation mechanics. No next phase is
+active.

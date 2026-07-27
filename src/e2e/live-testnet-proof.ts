@@ -444,7 +444,13 @@ export async function runLiveTestnetProof(
     const intent = purchaseIntent(initialized.config, options.exactProfile);
     const ingress = await createLivePurchaseIngress(
       composition.coordinator,
-      options.purchaseIngress
+      options.purchaseIngress,
+      (error) => {
+        const detail = error instanceof Error
+          ? `${error.name}: ${error.message}`
+          : "unknown local API error";
+        options.onProgress?.(`local API request failed: ${detail}`);
+      }
     );
     resources.push(() => ingress.close());
     options.onProgress?.("running resumable human authorization and generic x402 Purchase");

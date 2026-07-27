@@ -1,6 +1,6 @@
 # Sompi implementation plan
 
-Status: **Architecture Phase 4 active; C6 complete**
+Status: **Architecture Phase 4 complete**
 
 Starting commit: `89b0f1f404ce8e5f2ded88a5b1a99d8ca1743bba`
 
@@ -250,7 +250,7 @@ The canonical implementation starts from the existing
   `VaultTreasuryModule`, replaced pass-through paths, duplicate wiring,
   Purchase-owned Treasury types, and shallow forwarding tests after equivalent
   Treasury interface tests pass.
-- [ ] **P4.9:** Stop after Phase 4. Repeat the deletion test and re-scope every
+- [x] **P4.9:** Stop after Phase 4. Repeat the deletion test and re-scope every
   remaining architecture candidate.
 
 Implementation sequence:
@@ -273,7 +273,7 @@ Implementation sequence:
    remaining Purchase-owned Treasury staging and recovery types, pass-through
    paths, and duplicate wiring. Verify that all current callers continue to
    use the same Treasury implementation.
-7. [ ] **P4.C7 — Verify and stop.** Run all offline gates, record separately
+7. [x] **P4.C7 — Verify and stop.** Run all offline gates, record separately
    authorized funded Testnet-10 evidence, update the state documents, and stop
    for a new architecture review.
 
@@ -422,6 +422,36 @@ C6 completion evidence from 2026-07-27:
   619 tests: 618 passed and one privileged ownership test was skipped as
   expected. Offline smoke passed.
 
+C7 completion evidence from 2026-07-27:
+
+- The complete release verifier passed 619 tests. Of these tests, 618 passed
+  and one privileged ownership test was skipped as expected.
+- Offline smoke, three Hermes tests, all five Kaspa-x402 conformance checks,
+  the stored-evidence checks, local E2E, OpenAPI, Arazzo, dependency audit,
+  package, clean-install, licence, and onboarding-preview checks passed.
+- Funded Testnet-10 preflight proved a synced, UTXO-indexed node and enough
+  source-wallet capacity before the approved command ran.
+- The first live attempt exposed a Phase 4 regression before Purchase staging:
+  the live-only policy did not include the final standard-native Merchant
+  payee after Treasury took ownership of policy checks.
+- The corrected live-only policy includes the exact disposable Merchant
+  address. A focused 17-test live-proof suite passed.
+- The funded restart proof completed three direct Treasury Movements, one
+  staging transaction, and one exact payment.
+- The proof runner stopped the first process after staging entered
+  `failed_recoverable`. The durable pre-restart prefix contains the submitted
+  staging Effect and its exact transaction ID.
+- A second process recovered the same Purchase, Effect, and staging
+  transaction. Staging moved through `ambiguous` to `observed`. The payment
+  moved through `executing`, `ambiguous`, and `observed`.
+- The completed Journal contains three Treasury operations, two Effects, one
+  Payment Attempt, one Settlement, and one Merchant exact transaction.
+- The evidence verifier derives these facts from the before-and-after Journal
+  records and exact artifact digests. It does not trust asserted restart
+  booleans.
+- Public evidence is in `evidence/phase4-c7/`. Private recovery state and
+  disposable Testnet keys remain outside the repository.
+
 Verification gate:
 
 - [x] **P4.G1:** Treasury interface tests cover readiness, quote, reservation,
@@ -438,14 +468,14 @@ Verification gate:
 - [x] **P4.G5:** Import and deletion checks prove that Purchase does not own
   Treasury lifecycle types or Treasury Journal commands. The old pass-through
   module, duplicate runtime wiring, and forwarding tests do not exist.
-- [ ] **P4.G6:** The complete unit suite, offline smoke, all five Kaspa-x402
+- [x] **P4.G6:** The complete unit suite, offline smoke, all five Kaspa-x402
   conformance checks, generated OpenAPI and Arazzo checks, and the release
   verifier pass.
-- [ ] **P4.G7:** Fresh funded Testnet-10 evidence proves staging execution,
+- [x] **P4.G7:** Fresh funded Testnet-10 evidence proves staging execution,
   direct Movement execution, ambiguous-effect recovery, and restart recovery
   without a duplicate effect. This gate requires separate approval before any
   funded command runs.
-- [ ] **P4.G8:** No public API, physical Journal schema, Kaspa-x402 source,
+- [x] **P4.G8:** No public API, physical Journal schema, Kaspa-x402 source,
   wire, package, pin, fixture, or conformance change, AP2 upstream pin change,
   release, deployment, live-host, sibling-repository, or deferred-work change
   is included.
@@ -455,21 +485,23 @@ Journal schema change or changes an accepted architecture decision. Do not add
 a universal payment-rail interface. A second real execution adapter must prove
 the need for that interface.
 
-## Post-Phase-4 re-scope candidates
+## Post-Phase-4 re-scope
 
-These items are recorded, not active. Re-test each candidate after Treasury is
-deepened. Remove any candidate that no longer provides proven leverage.
+Phase 4 repeated the deletion test for every recorded candidate. No next phase
+is active.
 
-- Direct Chain Evidence provenance in stable records.
-- Policy Change and Vault Migration locality.
-- Transfer persistence locality.
-- Funding Intake and Wallet View projection locality.
-- Purchase projection locality.
-- Purchase lifecycle progression.
-- Runtime interface reduction.
-- Shared Agent continuation mechanics.
-- Host Bootstrap to Operator Provisioning translation.
-- Host release binding and deeper Hermes compatibility ownership.
+| Candidate | Decision | Evidence |
+|---|---|---|
+| Direct Chain Evidence provenance in stable records | Remove | Chain Evidence already owns provenance. Stable records carry evidence digests. Raw protocol evidence stays in Evidence Attachments. |
+| Policy Change and Vault Migration locality | Keep as one owner-change persistence candidate | Both modules still depend on the concrete `PurchaseJournal` and call many lifecycle commands. A Sompi-owned persistence seam can improve locality without adding a database. |
+| Transfer persistence locality | Remove | Transfer already owns the narrow `TransferJournal` seam. The shared SQLite implementation preserves one transaction owner. |
+| Funding Intake and Wallet View projection locality | Remove | Both modules are bounded and use narrow `Pick` dependencies. There is no second implementation or proven behavior split. |
+| Purchase projection locality | Remove | The pure Purchase projector already owns stable summaries, evidence-digest projection, and fulfilment limits. |
+| Purchase lifecycle progression | Keep | The 1,980-line coordinator still owns a large progression and recovery decision surface. Its next review must find a deeper internal boundary, not split files by size. |
+| Runtime interface reduction | Keep | The 586-line composition root exposes 11 concrete runtime subsystems. A later review can test whether callers need this full surface. |
+| Shared Agent continuation mechanics | Keep | Purchase and Transfer have separate 171-line and 177-line continuation loops with the same deadline, progress, retry, and identity mechanics. |
+| Host Bootstrap to Operator Provisioning translation | Remove | Phase 3 added one explicit `operatorSpecForHostBootstrap` translation and the complete host proof passed. |
+| Host release binding and deeper Hermes compatibility ownership | Merge into the closed Host Bootstrap item | Phase 1 and Phase 3 fixed checkout durability, release binding, topology, rollback, and compatibility ownership. The release verifier passed. |
 
 ## Deferred work
 

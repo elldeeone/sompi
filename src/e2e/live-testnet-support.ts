@@ -218,6 +218,22 @@ export interface InitializedLiveProof {
   readonly vault: VaultManager;
 }
 
+export function livePurchasePolicy(config: LiveProofConfig): Readonly<{
+  maxSompiPerTx: "500000000";
+  maxSompiPerHour: "1000000000";
+  allowlist: readonly [string, string, string];
+}> {
+  return Object.freeze({
+    maxSompiPerTx: "500000000",
+    maxSompiPerHour: "1000000000",
+    allowlist: Object.freeze([
+      config.additiveHead.address,
+      config.vault.address,
+      config.wallets.merchantAddress,
+    ] as const),
+  });
+}
+
 export function liveProofLayout(root: string): LiveProofLayout {
   const resolved = path.resolve(root);
   return Object.freeze({
@@ -411,11 +427,7 @@ export async function bootstrapLiveProof(input: {
     maxSompiPerHour: "700000000",
     allowlist: [config.wallets.treasuryAddress],
   });
-  writePolicyOnce(layout.purchasePolicyPath, {
-    maxSompiPerTx: "500000000",
-    maxSompiPerHour: "1000000000",
-    allowlist: [config.additiveHead.address, config.vault.address],
-  });
+  writePolicyOnce(layout.purchasePolicyPath, livePurchasePolicy(config));
 
   let progress = readProgress(layout.progressPath, config.runId);
   if (

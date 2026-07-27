@@ -16,6 +16,7 @@ import {
   driveLiveTreasuryOperation,
   initializeLiveProof,
   liveBootstrapNeedsCapacity,
+  livePurchasePolicy,
   readProgress,
   readPrivateJsonState,
   reconcileLiveChainMilestoneInclusion,
@@ -102,6 +103,11 @@ test("live proof initialization is owner-only, fresh, and restart-stable before 
       ]).size,
       3
     );
+    assert.deepEqual(livePurchasePolicy(first.config).allowlist, [
+      first.config.additiveHead.address,
+      first.config.vault.address,
+      first.config.wallets.merchantAddress,
+    ]);
     const sensitiveBytes = [
       fs.readFileSync(path.join(first.config.wallets.treasuryDirectory, "wallet-key"), "utf8").trim(),
       fs.readFileSync(first.config.vault.ownerKeyPath, "utf8").trim(),

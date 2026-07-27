@@ -1,0 +1,18 @@
+{
+  "profile": "urn:sompi:evidence:phase4-c7:2",
+  "generatedAt": "2026-07-27T03:01:33.613Z",
+  "network": "kaspa:testnet-10",
+  "purchaseId": "pur_b8lSEJFzBPhTGPDYNRCSzw",
+  "purchaseState": "receipted",
+  "artifacts": {
+    "standardReport": {
+      "filename": "standard-native.json",
+      "sha256": "1bcce8f51cca40e52afb335fe3679b0fe2e0254ad83a29c9c5adb981c23ce4fb"
+    },
+    "restartProof": {
+      "filename": "restart-proof.json",
+      "sha256": "554c52aca3400355e8d4b3604e9dcb54845ef5e74e9777b0fc044cab0cfba3d2"
+    }
+  },
+  "privateMaterialIncluded": false
+}
