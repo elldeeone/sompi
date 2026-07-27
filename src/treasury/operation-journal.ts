@@ -1,4 +1,5 @@
 import type {
+  FundingSource,
   PurchaseId,
   Sha256Digest,
 } from "../purchase/types.js";
@@ -10,14 +11,7 @@ import type {
   LeaseToken,
   PaymentAttemptRecord,
   PaymentPreparationRecord,
-  PlanTreasuryStagingRecoveryInput,
   PurchaseSettlementRecord,
-  RecordObservedTreasuryStagingInput,
-  RecordTreasuryStagingRecoveryObservationInput,
-  TreasuryStagingObservationRecord,
-  TreasuryStagingRecoveryContext,
-  TreasuryStagingRecoveryJournalContext,
-  TreasuryStagingRecoveryPlanRecord,
 } from "../purchase/journal.js";
 import type {
   ReservePurchaseCapacityInput,
@@ -30,6 +24,148 @@ import type {
   TreasuryStagingPreparationLease,
   TreasuryStagingPlanRecord,
 } from "./purchase-staging.js";
+
+export const TREASURY_STAGING_EFFECT_KIND = "treasury-staging";
+export const TREASURY_STAGING_EVIDENCE_KIND = "treasury-staging-output";
+export const TREASURY_STAGING_RECOVERY_EFFECT_KIND =
+  "treasury-staging-recovery";
+
+export type PolicyDefinition = TreasuryPolicy;
+
+export interface PolicySnapshotRecord extends TreasuryPolicy {
+  readonly digest: Sha256Digest;
+  readonly version: number;
+  readonly activatedAtMs: number;
+}
+
+export interface ActivePolicyRecord {
+  readonly policy: PolicySnapshotRecord;
+  readonly activationGeneration: number;
+}
+
+export interface PolicyReservationInput {
+  readonly id: string;
+  readonly purchaseId: PurchaseId;
+  readonly policyDigest: Sha256Digest;
+  readonly payee: string;
+  readonly amountAtomic: string;
+  readonly additionalCostCeilingAtomic: string;
+  readonly fundingSource: FundingSource;
+  readonly expiresAtMs: number;
+  readonly approvalEvidenceDigest?: Sha256Digest;
+  readonly approvalVerificationProfile?: string;
+  readonly approvalVerifierId?: string;
+}
+
+export type PolicyReservationRecord = TreasuryPurchaseReservation;
+
+export interface RecordObservedTreasuryStagingInput {
+  readonly effectId: string;
+  readonly reservationId: string;
+  readonly transactionId: string;
+  readonly outpoint: string;
+  readonly stagingAmountAtomic: string;
+  readonly fundingSource: FundingSource;
+  readonly evidenceDigest: Sha256Digest;
+  readonly evidenceVerificationProfile: string;
+  readonly evidenceVerifierId: string;
+}
+
+export interface TreasuryStagingObservationRecord
+  extends RecordObservedTreasuryStagingInput {
+  readonly purchaseId: PurchaseId;
+  readonly attempt: number;
+  readonly observedAtMs: number;
+}
+
+export interface TreasuryStagingRecoveryContext {
+  readonly plan: TreasuryStagingPlanRecord;
+  readonly effect: EffectRecord;
+  readonly attempt: PaymentAttemptRecord;
+  readonly reservation: PolicyReservationRecord;
+  readonly observation?: TreasuryStagingObservationRecord;
+}
+
+export interface PlanTreasuryStagingRecoveryInput {
+  readonly purchaseId: PurchaseId;
+  readonly attempt: number;
+  readonly reservationId: string;
+  readonly stagingEffectId: string;
+  readonly idempotencyKey: string;
+  readonly payloadDigest: Sha256Digest;
+  readonly preparedBytes: Uint8Array;
+  readonly exactTransactionId?: string;
+  readonly recoveryTransactionId: string;
+  readonly recoveryOutpoint: string;
+  readonly recoveryAmountAtomic: string;
+  readonly stagingFeeAtomic: string;
+  readonly recoveryFeeAtomic: string;
+  readonly requiredFinality: string;
+  readonly authorizedAdditionalCostCeilingAtomic: string;
+}
+
+export interface TreasuryStagingRecoveryPlanRecord
+  extends Omit<PlanTreasuryStagingRecoveryInput, "preparedBytes"> {
+  readonly effectId: string;
+  readonly preparedRef: string;
+  readonly preparedByteLength: number;
+  readonly createdAtMs: number;
+}
+
+export type TreasuryStagingRecoveryObservationStatus =
+  | "safe_to_submit"
+  | "pending"
+  | "exact_payment_won"
+  | "recovery_won"
+  | "conflict";
+
+export interface RecordTreasuryStagingRecoveryObservationInput {
+  readonly status: TreasuryStagingRecoveryObservationStatus;
+  readonly evidenceDigest: Sha256Digest;
+  readonly readinessProofDigest?: Sha256Digest;
+  readonly readinessObservedAtMs?: number;
+  readonly readinessExpiresAtMs?: number;
+  readonly winningTransactionId?: string;
+  readonly winningFinality?: string;
+  readonly recoveryOutpoint?: string;
+  readonly recoveryAmountAtomic?: string;
+  readonly conflictReason?: string;
+}
+
+export interface TreasuryStagingRecoveryObservationRecord
+  extends RecordTreasuryStagingRecoveryObservationInput {
+  readonly sequence: number;
+  readonly effectId: string;
+  readonly leaseName: string;
+  readonly leaseGeneration: number;
+  readonly observedAtMs: number;
+}
+
+export interface TreasuryStagingRecoveryAccountingRecord {
+  readonly effectId: string;
+  readonly reservationId: string;
+  readonly purchaseId: PurchaseId;
+  readonly attempt: number;
+  readonly recoveryTransactionId: string;
+  readonly recoveryOutpoint: string;
+  readonly returnedAmountAtomic: string;
+  readonly stagingFeeAtomic: string;
+  readonly recoveryFeeAtomic: string;
+  readonly actualAdditionalCostAtomic: string;
+  readonly finality: string;
+  readonly evidenceDigest: Sha256Digest;
+  readonly observedAtMs: number;
+}
+
+export interface TreasuryStagingRecoveryJournalContext {
+  readonly plan: TreasuryStagingRecoveryPlanRecord;
+  readonly effect: EffectRecord;
+  readonly attempt: PaymentAttemptRecord;
+  readonly reservation: PolicyReservationRecord;
+  readonly staging: TreasuryStagingObservationRecord;
+  readonly observations: readonly TreasuryStagingRecoveryObservationRecord[];
+  readonly accounting?: TreasuryStagingRecoveryAccountingRecord;
+}
 
 export type TreasuryOperationKind = "wallet_send" | "vault_send" | "vault_deposit" | "batch_refund";
 export type TreasuryOperationState =
@@ -248,6 +384,10 @@ export interface TreasuryOperationJournal {
     lease: LeaseToken,
     input: RecordObservedTreasuryStagingInput
   ): TreasuryStagingObservationRecord;
+  abandonExpiredTreasuryStaging(
+    effectId: string,
+    reservationId: string
+  ): void;
   treasuryStagingRecoveryContext(
     purchaseId: PurchaseId,
     attempt: number

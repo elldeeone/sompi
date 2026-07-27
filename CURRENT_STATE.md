@@ -212,17 +212,32 @@ Architecture Phase 3 is complete.
 Architecture Phase 4 is active. It started from
 `aab94d95df42e7ffdf1ca3ff1c00bdd3e2e71fae`.
 
-Phase 4 C5 is complete. Treasury now owns Purchase staging preparation,
-execution, and abandoned staging recovery. It owns prepared material
-validation, durable prepared bytes, Effect fences, submission, observation,
-ambiguity, reconciliation, proof-backed retry, recovery planning, and lease
-takeover.
+Phase 4 C6 is complete. Treasury defines one `TreasuryModule` interface for
+quote, reservation, staging preparation, staging execution, staging
+inspection, and staging recovery. One `TreasuryOperationModule` implements
+that interface.
 
-Purchase uses three small Treasury operations. It calls
-`preparePurchaseStaging` and `executePurchaseStaging` with only the Purchase ID
-and attempt number. It calls `recoverPurchaseStaging` with only the Purchase
-ID. It does not receive or submit staging or recovery bytes. The Purchase
-reconciler no longer observes or records Treasury staging Effects.
+Purchase does not define or export Treasury lifecycle types. It does not call
+Treasury Journal commands. Treasury returns stable staged-output data to
+Purchase. Purchase uses a read-only Treasury query to reconstruct payment
+context after staging.
+
+Treasury owns expired staging abandonment. Staging preparation and recovery
+planning require the correct durable lease. Treasury owns policy, staging, and
+recovery Journal types. One `PurchaseJournal` SQLite implementation remains
+the transaction owner.
+
+Recovery records `execution_prepared` before it can start a planned staging
+effect. A normal Purchase retry reloads a durable staging observation after a
+recovery crash. A staging recovery plan accepts only its exact
+Purchase-scoped planning lease.
+
+Runtime constructs one `TreasuryOperationModule`. Purchase and all current
+direct Movement callers use that instance. Deletion tests prove that the old
+partial Treasury interfaces, the unfenced staging planner,
+`VaultTreasuryModule`, and duplicate runtime wiring do not exist. They also
+prove that Purchase does not call the global Treasury reservation-expiry
+command.
 
 The Kaspa-x402 adapter still owns protocol checks and transaction preparation.
 It also owns staging submission and chain observation mechanisms. Treasury owns
@@ -230,18 +245,13 @@ when those mechanisms run and when their Sompi outcome becomes durable. It
 reconstructs the exact adapter context from the Journal. An ambiguous effect
 is observed before any proof-backed retry. A retry uses the same durable bytes.
 
-The Kaspa-x402 recovery adapter still owns recovery transaction construction,
-submission, and chain observation mechanisms. Treasury owns recovery
-qualification, durable planning, recovery leases, takeover, and the durable
-winner. Purchase does not call that adapter or write staging recovery plans and
-observations.
-
 The physical Journal schema, Kaspa-x402 behavior and pin, public API, and
 sibling repositories did not change.
 
-The focused C5 command ran 74 tests. All 74 passed. The full test command ran
-613 tests: 612 passed and one privileged ownership test was skipped as
+The focused C6 command ran 81 tests. All 81 passed. The full test command ran
+619 tests: 618 passed and one privileged ownership test was skipped as
 expected. Offline smoke passed.
 
-Phase 4 C6 is next. Do not start C6 until its clean-cutover deletion is
-explicitly started.
+Phase 4 C7 is next. It runs the complete verification gates and then stops for
+a new architecture review. Do not run a funded Testnet-10 command without
+separate approval.

@@ -27,10 +27,13 @@ import {
   evidenceDigest,
   requestFingerprint,
 } from "../purchase/identity.js";
+import { PurchaseJournal } from "../purchase/journal.js";
 import {
-  PurchaseJournal,
   TREASURY_STAGING_EVIDENCE_KIND,
-} from "../purchase/journal.js";
+} from "../treasury/operation-journal.js";
+import {
+  treasuryStagingPreparationLeaseName,
+} from "../treasury/purchase-staging.js";
 import type { PurchaseId, Sha256Digest } from "../purchase/types.js";
 import { buildRedeemScript } from "../vault/template.js";
 import { VaultManager, generateOwnerKey } from "../vault.js";
@@ -588,7 +591,13 @@ async function withStagingJournal(
       paymentRequirements,
       additionalCostCeilingAtomic: ADDITIONAL_COST_CEILING,
     });
-    const plan = journal.planTreasuryStaging({
+    const preparationLease = journal.acquireLease(
+      treasuryStagingPreparationLeaseName(purchaseId, 1),
+      "runtime-source-staging-planner",
+      60_000,
+    );
+    assert.ok(preparationLease);
+    const plan = journal.commitTreasuryStagingPreparation(preparationLease, {
       purchaseId,
       attempt: 1,
       reservationId: reservation.id,
@@ -600,6 +609,7 @@ async function withStagingJournal(
       stagingAmountAtomic: prepared.stagingAmountAtomic,
       fundingSource: prepared.fundingSource,
     });
+    journal.releaseLease(preparationLease);
     journal.transitionPurchase(
       purchaseId,
       "authorised",

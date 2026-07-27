@@ -16,10 +16,10 @@ import {
   type TreasuryStagingMetadataSource,
 } from "../adapters/kaspa-x402/vault-treasury-staging.js";
 import { evidenceDigest } from "../purchase/identity.js";
+import { PurchaseJournal } from "../purchase/journal.js";
 import {
-  PurchaseJournal,
   TREASURY_STAGING_EVIDENCE_KIND,
-} from "../purchase/journal.js";
+} from "../treasury/operation-journal.js";
 import type {
   PurchaseId,
   Sha256Digest,

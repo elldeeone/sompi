@@ -10,12 +10,18 @@ import {
   JournalNotFoundError,
   PolicyReservationError,
   PurchaseJournal,
-  TREASURY_STAGING_EVIDENCE_KIND,
   type PreparePaymentAttemptInput,
-  type PolicyReservationInput,
-  type PolicySnapshotRecord,
   type PurchaseRecord,
 } from "./journal.js";
+import {
+  TREASURY_STAGING_EVIDENCE_KIND,
+  type PolicyReservationInput,
+  type PolicySnapshotRecord,
+} from "../treasury/operation-journal.js";
+import {
+  treasuryStagingPreparationLeaseName,
+  type PlanTreasuryStagingInput,
+} from "../treasury/purchase-staging.js";
 import {
   assertPurchaseRequestKey,
   createPaymentIdentifier,
@@ -643,10 +649,13 @@ test("a preparation fault leaves neither preparation nor state transition", () =
 test("treasury staging is durable, idempotent, and gates exact payment preparation", () => {
   withJournal(({ journal, reopen, clock }) => {
     const flow = plannedTreasuryStagingFlow(journal, 91, clock.value);
-    const retry = journal.planTreasuryStaging(flow.input);
+    const retry = commitTreasuryStaging(journal, flow.input);
     assert.equal(retry.effectId, flow.plan.effectId);
     assert.throws(
-      () => journal.planTreasuryStaging({ ...flow.input, stagingAmountAtomic: "69" }),
+      () => commitTreasuryStaging(
+        journal,
+        { ...flow.input, stagingAmountAtomic: "69" },
+      ),
       JournalInvariantError
     );
 
@@ -838,6 +847,12 @@ test("treasury staging transaction edges roll back cleanly across restart", () =
       identifier: createPaymentIdentifier(purchaseId, 1),
     });
     const input = treasuryStagingInput(purchaseId, reservation.id, 93);
+    const preparationLease = journal.acquireLease(
+      treasuryStagingPreparationLeaseName(purchaseId, 1),
+      "staging-crash-planner",
+      60_000,
+    );
+    assert.ok(preparationLease);
     journal.close();
 
     const planFault = new PurchaseJournal(filename, {
@@ -847,7 +862,13 @@ test("treasury staging transaction edges roll back cleanly across restart", () =
         if (point === "treasury_staging_plan.after_insert") throw new Error("staging-plan-crash");
       },
     });
-    assert.throws(() => planFault.planTreasuryStaging(input), /staging-plan-crash/);
+    assert.throws(
+      () => planFault.commitTreasuryStagingPreparation(
+        preparationLease,
+        input,
+      ),
+      /staging-plan-crash/,
+    );
     planFault.close();
 
     const afterPlanFault = new PurchaseJournal(filename, { now: clock.now, evidenceDirectory });
@@ -857,7 +878,11 @@ test("treasury staging transaction edges roll back cleanly across restart", () =
       []
     );
     assert.equal(afterPlanFault.requireReservation(reservation.id).state, "active");
-    const plan = afterPlanFault.planTreasuryStaging(input);
+    const plan = afterPlanFault.commitTreasuryStagingPreparation(
+      preparationLease,
+      input,
+    );
+    afterPlanFault.releaseLease(preparationLease);
     afterPlanFault.transitionPurchase(
       purchaseId,
       "authorised",
@@ -1759,8 +1784,25 @@ function plannedTreasuryStagingFlow(journal: PurchaseJournal, seed: number, now:
     identifier: createPaymentIdentifier(purchaseId, 1),
   });
   const input = treasuryStagingInput(purchaseId, reservation.id, seed);
-  const plan = journal.planTreasuryStaging(input);
+  const plan = commitTreasuryStaging(journal, input);
   return { purchaseId, policy, reservation, input, plan };
+}
+
+function commitTreasuryStaging(
+  journal: PurchaseJournal,
+  input: PlanTreasuryStagingInput,
+) {
+  const lease = journal.acquireLease(
+    treasuryStagingPreparationLeaseName(input.purchaseId, input.attempt),
+    "journal-test-staging-planner",
+    60_000,
+  );
+  assert.ok(lease);
+  try {
+    return journal.commitTreasuryStagingPreparation(lease, input);
+  } finally {
+    journal.releaseLease(lease);
+  }
 }
 
 function preparedPaymentFlow(journal: PurchaseJournal, seed: number, now: number) {

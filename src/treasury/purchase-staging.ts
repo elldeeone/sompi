@@ -129,6 +129,15 @@ export interface TreasuryStagingResult {
   readonly fundingSource: "vault-treasury";
 }
 
+/** Stable staged-output facts returned across the Treasury interface. */
+export interface TreasuryStagingOutput {
+  readonly transactionId: string;
+  readonly outpoint: string;
+  readonly amountAtomic: string;
+  readonly evidenceDigest: Sha256Digest;
+  readonly fundingSource: "vault-treasury";
+}
+
 export type TreasuryStagingSubmissionResult =
   | { readonly status: "submitted"; readonly submissionDigest: Sha256Digest }
   | {
@@ -159,8 +168,12 @@ export interface ExecutePurchaseStagingInput {
 
 export type TreasuryStagingExecutionResult =
   | {
+      readonly status: "not_planned";
+    }
+  | {
       readonly status: "observed";
       readonly evidenceDigest: Sha256Digest;
+      readonly staging: TreasuryStagingOutput;
     }
   | {
       readonly status: "reconciliation_required";
@@ -176,20 +189,6 @@ export interface TreasuryStagingPreparationLease {
   readonly holder: string;
   readonly generation: number;
   readonly expiresAtMs: number;
-}
-
-/** Purchase-facing Treasury operation. It returns only after durable planning. */
-export interface PurchaseTreasuryStagingPreparation {
-  preparePurchaseStaging(
-    input: Readonly<PreparePurchaseStagingInput>
-  ): Promise<Readonly<TreasuryStagingPreparationResult>>;
-}
-
-/** Purchase-facing Treasury operation for one already-prepared staging plan. */
-export interface PurchaseTreasuryStagingExecution {
-  executePurchaseStaging(
-    input: Readonly<ExecutePurchaseStagingInput>
-  ): Promise<Readonly<TreasuryStagingExecutionResult>>;
 }
 
 /** Protocol adapter behind Treasury. It prepares bytes but cannot persist them. */

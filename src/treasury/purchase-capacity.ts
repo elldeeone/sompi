@@ -17,6 +17,12 @@ export interface TreasuryQuote {
   readonly blockerCode?: string;
 }
 
+export interface TreasuryQuoteInput {
+  readonly purchaseId: PurchaseId;
+  readonly fundingMode: TreasuryPurchaseFundingMode;
+  readonly terms: CheckoutTerms;
+}
+
 export type TreasuryPurchaseFundingMode =
   | "staged-payment"
   | "precapitalized-channel";
@@ -72,18 +78,6 @@ export type ReservePurchaseCapacityResult =
       readonly status: "reserved";
       readonly reservation: TreasuryPurchaseReservation;
     };
-
-/** Purchase-facing Treasury seam for readiness and durable policy capacity. */
-export interface PurchaseTreasuryCapacity {
-  quote(input: {
-    readonly purchaseId: PurchaseId;
-    readonly fundingMode: TreasuryPurchaseFundingMode;
-    readonly terms: CheckoutTerms;
-  }): Promise<TreasuryQuote>;
-  reservePurchaseCapacity(
-    input: Readonly<ReservePurchaseCapacityInput>
-  ): Promise<Readonly<ReservePurchaseCapacityResult>>;
-}
 
 export type TreasuryCapacityErrorCode =
   | "treasury_policy_changed"

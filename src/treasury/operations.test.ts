@@ -17,12 +17,12 @@ import {
 import {
   PolicyReservationError,
   PurchaseJournal,
-  type PolicySnapshotRecord,
 } from "../purchase/journal.js";
 import type { PurchaseId, Sha256Digest } from "../purchase/types.js";
 import { PolicyEngine } from "../policy.js";
 import type {
   PreparedTreasuryOperationMaterial,
+  PolicySnapshotRecord,
   TreasuryOperationKind,
   TreasuryOperationRecord,
 } from "./operation-journal.js";
@@ -360,6 +360,10 @@ test("Treasury durably plans Purchase staging once before returning", async () =
       purchaseCapacityInput(journal, purchaseId, "res_staging_owned"),
     );
     const input = purchaseStagingInput(journal, purchaseId);
+    assert.deepEqual(await module.executePurchaseStaging(input), {
+      status: "not_planned",
+    });
+    assert.equal(await module.getPurchaseStaging(input), undefined);
 
     const result = await module.preparePurchaseStaging(input);
     const plan = journal.requireTreasuryStagingPlan(purchaseId, 1);
@@ -533,6 +537,15 @@ test("Treasury submits and commits one prepared Purchase staging result", async 
     assert.equal(journal.requireEffect(plan.effectId).state, "observed");
     assert.equal(observation?.transactionId, transactionId);
     assert.equal(observation?.evidenceDigest, result.evidenceDigest);
+    if (result.status !== "observed") return;
+    assert.deepEqual(result.staging, {
+      transactionId,
+      outpoint: `${transactionId}:0`,
+      amountAtomic: "110",
+      evidenceDigest: result.evidenceDigest,
+      fundingSource: "vault-treasury",
+    });
+    assert.deepEqual(await module.getPurchaseStaging(input), result.staging);
 
     assert.deepEqual(await module.executePurchaseStaging(input), result);
     assert.equal(submitCalls, 1);

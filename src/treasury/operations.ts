@@ -9,8 +9,6 @@ import {
   type EffectObservation,
   type EffectRecord,
   type LeaseToken,
-  type RecordTreasuryStagingRecoveryObservationInput,
-  type TreasuryStagingRecoveryJournalContext,
 } from "../purchase/journal.js";
 import {
   TreasuryPreparationError,
@@ -21,15 +19,18 @@ import {
   type TreasuryOperationKind,
   type TreasuryOperationRecord,
   type TreasuryDriverLease,
+  type RecordTreasuryStagingRecoveryObservationInput,
   type TreasurySubmissionOutcome,
+  type TreasuryStagingObservationRecord,
+  type TreasuryStagingRecoveryJournalContext,
 } from "./operation-journal.js";
 import {
   TreasuryCapacityError,
-  type PurchaseTreasuryCapacity,
   type ReservePurchaseCapacityInput,
   type ReservePurchaseCapacityResult,
   type TreasuryPolicy,
   type TreasuryQuote,
+  type TreasuryQuoteInput,
 } from "./purchase-capacity.js";
 import {
   TreasuryStagingPreparationError,
@@ -37,25 +38,25 @@ import {
   type ExecutePurchaseStagingInput,
   type PreparePurchaseStagingInput,
   type PreparedTreasuryStaging,
-  type PurchaseTreasuryStagingExecution,
-  type PurchaseTreasuryStagingPreparation,
   type TreasuryStagingAdapter,
   type TreasuryStagingAdapterContext,
   type TreasuryStagingExecutionResult,
+  type TreasuryStagingOutput,
   type TreasuryStagingPreparationLease,
   type TreasuryStagingPreparationResult,
   type TreasuryStagingRecoveryObservation,
   type TreasuryStagingResult,
 } from "./purchase-staging.js";
 import {
+  treasuryStagingRecoveryPlanningLeaseName,
   type PreparedStagingRecovery,
   type PurchaseStagingRecoveryResult,
-  type PurchaseTreasuryStagingRecovery,
   type RecoverPurchaseStagingInput,
   type StagingRecoveryObservation,
   type StagingRecoveryPreparationContext,
   type TreasuryStagingRecoveryAdapter,
 } from "./staging-recovery.js";
+import type { TreasuryModule } from "./module.js";
 
 const OPERATION_KEY = /^[A-Za-z0-9._:-]{1,160}$/;
 const ADDRESS = /^kaspatest:[a-z0-9]+$/;
@@ -153,12 +154,7 @@ export class TreasuryOperationNotFoundError extends TreasuryOperationError {
  * submission ordering, ambiguity, reconciliation, and local commit. MCP does
  * not call wallet/vault mutation methods directly.
  */
-export class TreasuryOperationModule
-  implements
-    PurchaseTreasuryStagingPreparation,
-    PurchaseTreasuryStagingExecution,
-    PurchaseTreasuryStagingRecovery
-{
+export class TreasuryOperationModule implements TreasuryModule {
   private readonly journal: TreasuryOperationJournal;
   private readonly policy: Pick<
     PolicyEngine,
@@ -258,7 +254,7 @@ export class TreasuryOperationModule
   }
 
   async quote(
-    input: Parameters<PurchaseTreasuryCapacity["quote"]>[0],
+    input: Readonly<TreasuryQuoteInput>,
   ): Promise<TreasuryQuote> {
     const purchase = this.requirePurchase();
     if (input.fundingMode === "precapitalized-channel") {
@@ -517,13 +513,15 @@ export class TreasuryOperationModule
         return Object.freeze({
           status: "observed",
           evidenceDigest: observation.evidenceDigest,
+          staging: treasuryStagingOutput(observation),
         });
       }
 
-      const plan = this.journal.requireTreasuryStagingPlan(
+      const plan = this.journal.findTreasuryStagingPlan(
         input.purchaseId,
         input.attempt,
       );
+      if (!plan) return Object.freeze({ status: "not_planned" });
       const effect = this.journal.requireEffect(plan.effectId);
       if (
         effect.purchaseId !== input.purchaseId ||
@@ -533,6 +531,15 @@ export class TreasuryOperationModule
           "Treasury staging Effect does not match its durable plan",
           "treasury_staging_mismatch",
         );
+      }
+      this.journal.expireReservations();
+      const reservation = this.journal.requireReservation(plan.reservationId);
+      if (effect.state === "planned" && reservation.state === "expired") {
+        this.journal.abandonExpiredTreasuryStaging(
+          effect.id,
+          reservation.id,
+        );
+        return Object.freeze({ status: "pending" });
       }
 
       if (effect.state === "planned" || effect.state === "retryable") {
@@ -565,6 +572,19 @@ export class TreasuryOperationModule
       "Treasury staging exceeded its bounded execution steps",
       "treasury_staging_busy",
     );
+  }
+
+  async getPurchaseStaging(
+    input: Readonly<ExecutePurchaseStagingInput>,
+  ): Promise<Readonly<TreasuryStagingOutput> | undefined> {
+    this.requirePurchase();
+    const observation = this.journal.findTreasuryStagingObservation(
+      input.purchaseId,
+      input.attempt,
+    );
+    return observation === undefined
+      ? undefined
+      : treasuryStagingOutput(observation);
   }
 
   private async submitPreparedPurchaseStaging(
@@ -863,6 +883,7 @@ export class TreasuryOperationModule
     return Object.freeze({
       status: "observed",
       evidenceDigest: observed.evidenceDigest,
+      staging: treasuryStagingOutput(observed),
     });
   }
 
@@ -921,7 +942,7 @@ export class TreasuryOperationModule
       }
 
       const acquiredPlanningLease = this.journal.acquireLease(
-        `treasury-staging-recovery-plan:${input.purchaseId}`,
+        treasuryStagingRecoveryPlanningLeaseName(input.purchaseId),
         `${this.driverOwner}:staging-recovery-plan`,
         purchase.stagingExecutionLeaseTtlMs,
       );
@@ -1923,6 +1944,18 @@ function stagingPreparationResult(
   payloadDigest: TreasuryStagingPreparationResult["payloadDigest"],
 ): Readonly<TreasuryStagingPreparationResult> {
   return Object.freeze({ payloadDigest });
+}
+
+function treasuryStagingOutput(
+  observation: Readonly<TreasuryStagingObservationRecord>,
+): TreasuryStagingOutput {
+  return Object.freeze({
+    transactionId: observation.transactionId,
+    outpoint: observation.outpoint,
+    amountAtomic: observation.stagingAmountAtomic,
+    evidenceDigest: observation.evidenceDigest,
+    fundingSource: "vault-treasury",
+  });
 }
 
 function validatePreparedStagingRecovery(

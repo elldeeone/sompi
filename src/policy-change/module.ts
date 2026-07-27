@@ -9,8 +9,10 @@ import {
   PolicyReservationError,
   PurchaseJournal,
   type PolicyChangeJournalRecord,
-  type PolicySnapshotRecord,
 } from "../purchase/journal.js";
+import type {
+  PolicySnapshotRecord,
+} from "../treasury/operation-journal.js";
 import type {
   PolicyChangeAuthorityModule,
   PolicyChangeDecision,

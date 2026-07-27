@@ -1,6 +1,6 @@
 # Sompi implementation plan
 
-Status: **Architecture Phase 4 active; C5 complete**
+Status: **Architecture Phase 4 active; C6 complete**
 
 Starting commit: `89b0f1f404ce8e5f2ded88a5b1a99d8ca1743bba`
 
@@ -226,7 +226,7 @@ The canonical implementation starts from the existing
 `TreasuryOperationModule`. It absorbs the required behavior from
 `VaultTreasuryModule` and Purchase. Do not create a third Treasury wrapper.
 
-- [ ] **P4.1:** Move the Treasury interface and its domain types from Purchase
+- [x] **P4.1:** Move the Treasury interface and its domain types from Purchase
   into Treasury. Purchase must not define Treasury policy, quote, staging, or
   recovery types.
 - [x] **P4.2:** Make one Treasury implementation own readiness, quote, policy,
@@ -236,17 +236,17 @@ The canonical implementation starts from the existing
   reconciliation.
 - [x] **P4.4:** Make that implementation own abandoned staging recovery,
   including lease takeover and the choice to observe, retry, or release.
-- [ ] **P4.5:** Use the same implementation for direct Movements from Transfer,
+- [x] **P4.5:** Use the same implementation for direct Movements from Transfer,
   Funding Intake, batch work, operator activation, and other current callers.
-- [ ] **P4.6:** Keep one `PurchaseJournal` SQLite implementation. Preserve one
+- [x] **P4.6:** Keep one `PurchaseJournal` SQLite implementation. Preserve one
   atomic transaction for policy, reservation, capacity, effect, and recovery
   state. Do not add a Treasury database or a second transaction owner.
-- [ ] **P4.7:** Keep Kaspa-x402 payment construction, wire handling, transaction
+- [x] **P4.7:** Keep Kaspa-x402 payment construction, wire handling, transaction
   submission mechanisms, chain observation mechanisms, and Merchant settlement
   inside injected Kaspa-x402 adapters. Treasury owns when these mechanisms run
   and the durable Sompi outcome. Stable Treasury and Purchase state must use
   Sompi domain types.
-- [ ] **P4.8:** Construct one Treasury implementation at runtime. Delete
+- [x] **P4.8:** Construct one Treasury implementation at runtime. Delete
   `VaultTreasuryModule`, replaced pass-through paths, duplicate wiring,
   Purchase-owned Treasury types, and shallow forwarding tests after equivalent
   Treasury interface tests pass.
@@ -269,7 +269,7 @@ Implementation sequence:
    retry, and reconciliation behind Treasury.
 5. [x] **P4.C5 — Move staging recovery.** Move abandoned staging recovery and lease
    takeover behind Treasury.
-6. [ ] **P4.C6 — Complete the clean cutover.** After C3, C4, and C5, delete the
+6. [x] **P4.C6 — Complete the clean cutover.** After C3, C4, and C5, delete the
    remaining Purchase-owned Treasury staging and recovery types, pass-through
    paths, and duplicate wiring. Verify that all current callers continue to
    use the same Treasury implementation.
@@ -392,20 +392,50 @@ C5 completion evidence from 2026-07-27:
   613 tests: 612 passed and one privileged ownership test was skipped as
   expected. Offline smoke passed.
 
+C6 completion evidence from 2026-07-27:
+
+- Treasury defines one `TreasuryModule` interface for quote, reservation,
+  staging preparation, staging execution, staging inspection, and staging
+  recovery.
+- Purchase does not define or export Treasury lifecycle types. It does not
+  call Treasury Journal commands.
+- Treasury returns stable staged-output data to Purchase. Purchase uses a
+  read-only Treasury query to reconstruct payment context after staging.
+- Treasury owns expired staging abandonment. Staging preparation and recovery
+  planning require the correct durable lease.
+- Recovery records `execution_prepared` before it can start a planned staging
+  effect. A normal Purchase retry reloads a durable staging observation after
+  a recovery crash.
+- A staging recovery plan accepts only its exact Purchase-scoped planning
+  lease.
+- Treasury owns policy, staging, and recovery Journal types. One
+  `PurchaseJournal` SQLite implementation remains the transaction owner.
+- Runtime constructs one `TreasuryOperationModule`. Purchase and all current
+  direct Movement callers use that instance.
+- Deletion tests prove that the old partial Treasury interfaces, the unfenced
+  staging planner, `VaultTreasuryModule`, and duplicate runtime wiring do not
+  exist. They also prove that Purchase does not call the global Treasury
+  reservation-expiry command.
+- The physical Journal schema, Kaspa-x402 behavior and pin, public API, and
+  sibling repositories did not change.
+- The focused C6 command ran 81 tests. All 81 passed. The full test command ran
+  619 tests: 618 passed and one privileged ownership test was skipped as
+  expected. Offline smoke passed.
+
 Verification gate:
 
-- [ ] **P4.G1:** Treasury interface tests cover readiness, quote, reservation,
+- [x] **P4.G1:** Treasury interface tests cover readiness, quote, reservation,
   staging, direct Movement, and effect recovery.
-- [ ] **P4.G2:** Concurrent Purchase and direct Movement tests prove shared
+- [x] **P4.G2:** Concurrent Purchase and direct Movement tests prove shared
   capacity, policy replacement, expiry, cancellation, and recovery use one
   atomic Journal transaction.
-- [ ] **P4.G3:** Staging tests cover cancellation, ambiguous submission,
+- [x] **P4.G3:** Staging tests cover cancellation, ambiguous submission,
   preparation fences, restart, reconciliation, recovery races, and one winning
   effect.
-- [ ] **P4.G4:** Direct Movement tests cover lease takeover, stale
+- [x] **P4.G4:** Direct Movement tests cover lease takeover, stale
   predecessors, cancellation, ambiguous submission, preparation fences,
   restart, and adapter failures.
-- [ ] **P4.G5:** Import and deletion checks prove that Purchase does not own
+- [x] **P4.G5:** Import and deletion checks prove that Purchase does not own
   Treasury lifecycle types or Treasury Journal commands. The old pass-through
   module, duplicate runtime wiring, and forwarding tests do not exist.
 - [ ] **P4.G6:** The complete unit suite, offline smoke, all five Kaspa-x402

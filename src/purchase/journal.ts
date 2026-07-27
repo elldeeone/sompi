@@ -47,7 +47,22 @@ import {
   type PurchaseExecutionPlan,
 } from "./execution-plan.js";
 import type {
+  ActivePolicyRecord,
+  PlanTreasuryStagingRecoveryInput,
+  PolicyDefinition,
+  PolicyReservationInput,
+  PolicyReservationRecord,
+  PolicySnapshotRecord,
   PreparedTreasuryOperation,
+  RecordObservedTreasuryStagingInput,
+  RecordTreasuryStagingRecoveryObservationInput,
+  TreasuryStagingObservationRecord,
+  TreasuryStagingRecoveryAccountingRecord,
+  TreasuryStagingRecoveryContext,
+  TreasuryStagingRecoveryJournalContext,
+  TreasuryStagingRecoveryObservationRecord,
+  TreasuryStagingRecoveryObservationStatus,
+  TreasuryStagingRecoveryPlanRecord,
   TreasuryOperationIntent,
   TreasuryOperationPreflight,
   TreasuryOperationObservationStatus,
@@ -56,6 +71,11 @@ import type {
   TreasurySubmissionOutcome,
   TreasuryDriverClaim,
   TreasuryDriverLease,
+} from "../treasury/operation-journal.js";
+import {
+  TREASURY_STAGING_EFFECT_KIND,
+  TREASURY_STAGING_EVIDENCE_KIND,
+  TREASURY_STAGING_RECOVERY_EFFECT_KIND,
 } from "../treasury/operation-journal.js";
 import {
   CHAIN_EVIDENCE_OPERATOR_PROFILE,
@@ -82,8 +102,6 @@ import type {
 import type { TransferJournalIntent } from "../transfer/journal.js";
 import type { TreasuryOperationView } from "../treasury/operations.js";
 import type {
-  TreasuryPolicy,
-  TreasuryPurchaseReservation,
   TreasuryReservationState,
 } from "../treasury/purchase-capacity.js";
 import {
@@ -93,15 +111,9 @@ import {
   type TreasuryStagingPreparationLease,
   type TreasuryStagingPlanRecord,
 } from "../treasury/purchase-staging.js";
-
-/*
- * These aliases keep existing Journal callers buildable until the Phase 4 C6
- * deletion pass removes the old import path.
- */
-export type {
-  PlanTreasuryStagingInput,
-  TreasuryStagingPlanRecord,
-} from "../treasury/purchase-staging.js";
+import {
+  treasuryStagingRecoveryPlanningLeaseName,
+} from "../treasury/staging-recovery.js";
 
 const PAYMENT_ATTEMPT_STATES = ["planned", "prepared", "submitted", "observed", "failed"] as const;
 const EFFECT_STATES = [
@@ -116,9 +128,6 @@ const EFFECT_STATES = [
 ] as const;
 const RESERVATION_STATES = ["active", "in_flight", "spent", "released", "expired"] as const;
 
-export const TREASURY_STAGING_EFFECT_KIND = "treasury-staging";
-export const TREASURY_STAGING_EVIDENCE_KIND = "treasury-staging-output";
-export const TREASURY_STAGING_RECOVERY_EFFECT_KIND = "treasury-staging-recovery";
 export const PURCHASE_RECEIPT_PROFILE = "urn:sompi:receipt:purchase:1" as const;
 
 type PaymentAttemptState = (typeof PAYMENT_ATTEMPT_STATES)[number];
@@ -1058,19 +1067,6 @@ export interface EvidenceVerificationInput {
   detailDigest: Sha256Digest;
 }
 
-export type PolicyDefinition = TreasuryPolicy;
-
-export interface PolicySnapshotRecord extends TreasuryPolicy {
-  digest: Sha256Digest;
-  version: number;
-  activatedAtMs: number;
-}
-
-export interface ActivePolicyRecord {
-  readonly policy: PolicySnapshotRecord;
-  readonly activationGeneration: number;
-}
-
 export type PolicyChangeJournalState =
   | "created"
   | "awaiting_authority"
@@ -1176,22 +1172,6 @@ export interface CreateVaultMigrationJournalInput {
   expiresAtMs: number;
 }
 
-export interface PolicyReservationInput {
-  id: string;
-  purchaseId: PurchaseId;
-  policyDigest: Sha256Digest;
-  payee: string;
-  amountAtomic: string;
-  additionalCostCeilingAtomic: string;
-  fundingSource: FundingSource;
-  expiresAtMs: number;
-  approvalEvidenceDigest?: Sha256Digest;
-  approvalVerificationProfile?: string;
-  approvalVerifierId?: string;
-}
-
-export type PolicyReservationRecord = TreasuryPurchaseReservation;
-
 export interface CreatePaymentAttemptInput {
   purchaseId: PurchaseId;
   attempt: number;
@@ -1229,114 +1209,6 @@ export interface PaymentPreparationRecord extends Omit<PreparePaymentAttemptInpu
   preparedRef: string;
   preparedByteLength: number;
   createdAtMs: number;
-}
-
-export interface RecordObservedTreasuryStagingInput {
-  effectId: string;
-  reservationId: string;
-  transactionId: string;
-  outpoint: string;
-  stagingAmountAtomic: string;
-  fundingSource: FundingSource;
-  evidenceDigest: Sha256Digest;
-  evidenceVerificationProfile: string;
-  evidenceVerifierId: string;
-}
-
-export interface TreasuryStagingObservationRecord
-  extends RecordObservedTreasuryStagingInput {
-  purchaseId: PurchaseId;
-  attempt: number;
-  observedAtMs: number;
-}
-
-export interface TreasuryStagingRecoveryContext {
-  plan: TreasuryStagingPlanRecord;
-  effect: EffectRecord;
-  attempt: PaymentAttemptRecord;
-  reservation: PolicyReservationRecord;
-  observation?: TreasuryStagingObservationRecord;
-}
-
-export interface PlanTreasuryStagingRecoveryInput {
-  purchaseId: PurchaseId;
-  attempt: number;
-  reservationId: string;
-  stagingEffectId: string;
-  idempotencyKey: string;
-  payloadDigest: Sha256Digest;
-  preparedBytes: Uint8Array;
-  exactTransactionId?: string;
-  recoveryTransactionId: string;
-  recoveryOutpoint: string;
-  recoveryAmountAtomic: string;
-  stagingFeeAtomic: string;
-  recoveryFeeAtomic: string;
-  requiredFinality: string;
-  authorizedAdditionalCostCeilingAtomic: string;
-}
-
-export interface TreasuryStagingRecoveryPlanRecord
-  extends Omit<PlanTreasuryStagingRecoveryInput, "preparedBytes"> {
-  effectId: string;
-  preparedRef: string;
-  preparedByteLength: number;
-  createdAtMs: number;
-}
-
-export type TreasuryStagingRecoveryObservationStatus =
-  | "safe_to_submit"
-  | "pending"
-  | "exact_payment_won"
-  | "recovery_won"
-  | "conflict";
-
-export interface RecordTreasuryStagingRecoveryObservationInput {
-  status: TreasuryStagingRecoveryObservationStatus;
-  evidenceDigest: Sha256Digest;
-  readinessProofDigest?: Sha256Digest;
-  readinessObservedAtMs?: number;
-  readinessExpiresAtMs?: number;
-  winningTransactionId?: string;
-  winningFinality?: string;
-  recoveryOutpoint?: string;
-  recoveryAmountAtomic?: string;
-  conflictReason?: string;
-}
-
-export interface TreasuryStagingRecoveryObservationRecord
-  extends RecordTreasuryStagingRecoveryObservationInput {
-  sequence: number;
-  effectId: string;
-  leaseName: string;
-  leaseGeneration: number;
-  observedAtMs: number;
-}
-
-export interface TreasuryStagingRecoveryAccountingRecord {
-  effectId: string;
-  reservationId: string;
-  purchaseId: PurchaseId;
-  attempt: number;
-  recoveryTransactionId: string;
-  recoveryOutpoint: string;
-  returnedAmountAtomic: string;
-  stagingFeeAtomic: string;
-  recoveryFeeAtomic: string;
-  actualAdditionalCostAtomic: string;
-  finality: string;
-  evidenceDigest: Sha256Digest;
-  observedAtMs: number;
-}
-
-export interface TreasuryStagingRecoveryJournalContext {
-  plan: TreasuryStagingRecoveryPlanRecord;
-  effect: EffectRecord;
-  attempt: PaymentAttemptRecord;
-  reservation: PolicyReservationRecord;
-  staging: TreasuryStagingObservationRecord;
-  observations: readonly TreasuryStagingRecoveryObservationRecord[];
-  accounting?: TreasuryStagingRecoveryAccountingRecord;
 }
 
 export interface PlanEffectInput {
@@ -5022,27 +4894,18 @@ export class PurchaseJournal {
     lease: TreasuryStagingPreparationLease,
     input: PlanTreasuryStagingInput,
   ): TreasuryStagingPlanRecord {
-    return this.planTreasuryStaging(input, lease);
-  }
-
-  planTreasuryStaging(
-    input: PlanTreasuryStagingInput,
-    preparationLease?: TreasuryStagingPreparationLease,
-  ): TreasuryStagingPlanRecord {
     validateTreasuryStagingPlanInput(input);
     const stored = this.storePreparedMaterial(input.preparedBytes, input.payloadDigest);
     const plan = this.db.transaction(() => {
-      if (preparationLease) {
-        if (
-          preparationLease.name !==
-          treasuryStagingPreparationLeaseName(input.purchaseId, input.attempt)
-        ) {
-          throw new JournalFencingError(
-            "Treasury staging preparation lease does not match its Payment Attempt"
-          );
-        }
-        this.assertLeaseInternal(preparationLease, this.timestamp());
+      if (
+        lease.name !==
+        treasuryStagingPreparationLeaseName(input.purchaseId, input.attempt)
+      ) {
+        throw new JournalFencingError(
+          "Treasury staging preparation lease does not match its Payment Attempt"
+        );
       }
+      this.assertLeaseInternal(lease, this.timestamp());
       const attempt = this.requirePaymentAttempt(input.purchaseId, input.attempt);
       const effectRow = this.db
         .prepare("SELECT * FROM effects WHERE idempotency_key = ?")
@@ -5360,12 +5223,20 @@ export class PurchaseJournal {
 
   planTreasuryStagingRecovery(
     input: PlanTreasuryStagingRecoveryInput,
-    lease?: LeaseToken
+    lease: LeaseToken
   ): TreasuryStagingRecoveryPlanRecord {
     validateTreasuryStagingRecoveryPlanInput(input);
+    if (
+      lease.name !==
+      treasuryStagingRecoveryPlanningLeaseName(input.purchaseId)
+    ) {
+      throw new JournalFencingError(
+        "Treasury staging recovery planning lease does not match its Purchase",
+      );
+    }
     const stored = this.storePreparedMaterial(input.preparedBytes, input.payloadDigest);
     const plan = this.db.transaction(() => {
-      if (lease) this.assertLeaseInternal(lease);
+      this.assertLeaseInternal(lease);
       const existingEffectRow = this.db
         .prepare("SELECT * FROM effects WHERE idempotency_key = ?")
         .get(input.idempotencyKey) as EffectRow | undefined;

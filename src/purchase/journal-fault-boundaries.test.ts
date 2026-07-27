@@ -4,11 +4,24 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 
-import type {
-  PreparedTreasuryOperation,
-  TreasuryDriverLease,
-  TreasuryOperationIntent,
+import {
+  TREASURY_STAGING_EVIDENCE_KIND,
+  type PlanTreasuryStagingRecoveryInput,
+  type PolicyReservationInput,
+  type PolicySnapshotRecord,
+  type PreparedTreasuryOperation,
+  type RecordObservedTreasuryStagingInput,
+  type RecordTreasuryStagingRecoveryObservationInput,
+  type TreasuryDriverLease,
+  type TreasuryOperationIntent,
 } from "../treasury/operation-journal.js";
+import {
+  treasuryStagingPreparationLeaseName,
+  type PlanTreasuryStagingInput,
+} from "../treasury/purchase-staging.js";
+import {
+  treasuryStagingRecoveryPlanningLeaseName,
+} from "../treasury/staging-recovery.js";
 import { authorizationFactsDigest } from "./contracts.js";
 import {
   assertPurchaseRequestKey,
@@ -20,25 +33,19 @@ import {
 import {
   JOURNAL_FAULT_POINTS,
   PURCHASE_RECEIPT_PROFILE,
-  TREASURY_STAGING_EVIDENCE_KIND,
+  JournalFencingError,
   JournalNotFoundError,
   PurchaseJournal,
   type BindCheckoutTermsInput,
   type BatchChannelJournalRecord,
   type JournalFaultPoint,
   type LeaseToken,
-  type PlanTreasuryStagingInput,
-  type PlanTreasuryStagingRecoveryInput,
-  type PolicyReservationInput,
-  type PolicySnapshotRecord,
   type PreparePaymentAttemptInput,
   type RecordAuthorizationDecisionInput,
   type RecordAuthorizationRequestInput,
   type RecordFulfilmentInput,
   type RecordPurchaseSettlementInput,
-  type RecordObservedTreasuryStagingInput,
   type RecordReceiptInput,
-  type RecordTreasuryStagingRecoveryObservationInput,
 } from "./journal.js";
 import type { PurchaseId, Sha256Digest } from "./types.js";
 import type { TransferAuthorizationFacts, TransferAuthorityDecision, TransferReceipt } from "../transfer/types.js";
@@ -108,6 +115,41 @@ test("fault-boundary scenario manifest exactly covers every declared Journal fau
 test("every Journal fault point rolls back atomically and its exact action recovers after restart", () => {
   for (const point of JOURNAL_FAULT_POINTS) {
     assertFaultBoundary(point, FAULT_BOUNDARY_SCENARIOS[point]);
+  }
+});
+
+test("staging recovery planning rejects a live lease from another scope", () => {
+  const directory = fs.mkdtempSync(
+    path.join(os.tmpdir(), "sompi-staging-recovery-lease-"),
+  );
+  const filename = path.join(directory, "purchase.sqlite");
+  const evidenceDirectory = path.join(directory, "evidence");
+  const clock = testClock();
+  let journal: PurchaseJournal | undefined;
+  try {
+    journal = openJournal(filename, evidenceDirectory, clock);
+    const setup = stagingRecoveryPlanSetup(journal, 91, clock.value);
+    const unrelatedLease = journal.acquireLease(
+      `unrelated-recovery-plan:${setup.purchaseId}`,
+      "unrelated-recovery-planner",
+      60_000,
+    );
+    assert.ok(unrelatedLease);
+
+    assert.throws(
+      () => journal!.planTreasuryStagingRecovery(
+        setup.input,
+        unrelatedLease,
+      ),
+      JournalFencingError,
+    );
+    assert.equal(
+      journal.findTreasuryStagingRecoveryPlan(setup.purchaseId, 1),
+      undefined,
+    );
+  } finally {
+    journal?.close();
+    fs.rmSync(directory, { recursive: true, force: true });
   }
 });
 
@@ -509,8 +551,15 @@ function treasuryStagingPlanScenario(
   clock: TestClock
 ): FaultBoundaryScenario {
   const setup = treasuryStagingPlanSetup(journal, 8, clock.value);
+  const lease = journal.acquireLease(
+    treasuryStagingPreparationLeaseName(setup.purchaseId, 1),
+    "fault-boundary-staging-planner",
+    60_000,
+  );
+  assert.ok(lease);
   return {
-    act: (target) => target.planTreasuryStaging(setup.input),
+    act: (target) =>
+      target.commitTreasuryStagingPreparation(lease, setup.input),
     assertRolledBack(target) {
       assert.equal(target.treasuryStagingRecoveryContext(setup.purchaseId, 1), undefined);
       assert.equal(target.requireReservation(setup.reservationId).state, "active");
@@ -562,8 +611,15 @@ function stagingRecoveryPlanScenario(
   clock: TestClock
 ): FaultBoundaryScenario {
   const setup = stagingRecoveryPlanSetup(journal, 10, clock.value);
+  const lease = journal.acquireLease(
+    treasuryStagingRecoveryPlanningLeaseName(setup.purchaseId),
+    "fault-boundary-recovery-planner",
+    60_000,
+  );
+  assert.ok(lease);
   return {
-    act: (target) => target.planTreasuryStagingRecovery(setup.input),
+    act: (target) =>
+      target.planTreasuryStagingRecovery(setup.input, lease),
     assertRolledBack(target) {
       assert.equal(target.findTreasuryStagingRecoveryPlan(setup.purchaseId, 1), undefined);
       assert.equal(target.requireEffect(setup.stagingEffectId).state, "observed");
@@ -1280,7 +1336,7 @@ function observedTreasuryStagingSetup(
   observationInput: RecordObservedTreasuryStagingInput;
 } {
   const setup = treasuryStagingPlanSetup(journal, seed, now);
-  const plan = journal.planTreasuryStaging(setup.input);
+  const plan = commitTreasuryStaging(journal, setup.input);
   journal.transitionPurchase(
     setup.purchaseId,
     "authorised",
@@ -1381,7 +1437,7 @@ function stagingRecoveryObservationSetup(
   recoveryInput: PlanTreasuryStagingRecoveryInput;
 } {
   const setup = stagingRecoveryPlanSetup(journal, seed, now);
-  const plan = journal.planTreasuryStagingRecovery(setup.input);
+  const plan = planTreasuryStagingRecovery(journal, setup.input);
   const claim = journal.beginTreasuryStagingRecovery(
     plan.effectId,
     `staging-recovery-holder-${seed}`,
@@ -1394,6 +1450,40 @@ function stagingRecoveryObservationSetup(
     lease: claim.lease,
     recoveryInput: setup.input,
   };
+}
+
+function commitTreasuryStaging(
+  journal: PurchaseJournal,
+  input: PlanTreasuryStagingInput,
+) {
+  const lease = journal.acquireLease(
+    treasuryStagingPreparationLeaseName(input.purchaseId, input.attempt),
+    "fault-boundary-staging-setup",
+    60_000,
+  );
+  assert.ok(lease);
+  try {
+    return journal.commitTreasuryStagingPreparation(lease, input);
+  } finally {
+    journal.releaseLease(lease);
+  }
+}
+
+function planTreasuryStagingRecovery(
+  journal: PurchaseJournal,
+  input: PlanTreasuryStagingRecoveryInput,
+) {
+  const lease = journal.acquireLease(
+    treasuryStagingRecoveryPlanningLeaseName(input.purchaseId),
+    "fault-boundary-recovery-setup",
+    60_000,
+  );
+  assert.ok(lease);
+  try {
+    return journal.planTreasuryStagingRecovery(input, lease);
+  } finally {
+    journal.releaseLease(lease);
+  }
 }
 
 function submittedPaymentSetup(

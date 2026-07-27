@@ -21,11 +21,13 @@ import {
   type PaymentRecoveryObservation,
   type PaymentSubmissionResult,
   type PreparedKaspaPayment,
-  type PreparedTreasuryStaging,
   type SettlementResult,
-  type TreasuryModule,
   type VerifiedArtifact,
 } from "./coordinator.js";
+import type { TreasuryModule } from "../treasury/module.js";
+import type {
+  PreparedTreasuryStaging,
+} from "../treasury/purchase-staging.js";
 import {
   authorizationFacts,
   authorizationFactsDigest,
@@ -551,6 +553,87 @@ test("ambiguous Treasury staging is observed before exact preparation and is nev
       stagingRuns.some((run) => run.outcome === "treasury_staging_observed"),
       true,
     );
+  });
+});
+
+test("recovery advances Purchase before it starts a durably planned Treasury staging effect", async () => {
+  await withFixture(async ({ coordinator, dependencies, intent, journal }) => {
+    const transition = journal.transitionPurchase.bind(journal);
+    let crashBeforePreparedState = true;
+    journal.transitionPurchase = ((
+      ...args: Parameters<PurchaseJournal["transitionPurchase"]>
+    ) => {
+      if (
+        crashBeforePreparedState &&
+        args[1] === "authorised" &&
+        args[2] === "execution_prepared"
+      ) {
+        crashBeforePreparedState = false;
+        throw new Error("crash-after-staging-plan");
+      }
+      return transition(...args);
+    }) as PurchaseJournal["transitionPurchase"];
+
+    await assert.rejects(
+      () => coordinator.purchase(intent),
+      /crash-after-staging-plan/,
+    );
+    const purchaseId = dependencies.lastPurchaseId;
+    assert.equal(journal.requirePurchase(purchaseId).state, "authorised");
+    assert.equal(
+      journal.requireEffect(
+        journal.requireTreasuryStagingPlan(purchaseId, 1).effectId,
+      ).state,
+      "planned",
+    );
+    assert.equal(dependencies.calls.submitStaging, 0);
+
+    dependencies.onStagingSubmit = () => {
+      assert.equal(
+        journal.requirePurchase(purchaseId).state,
+        "execution_prepared",
+      );
+    };
+    const completed = await coordinator.recover(purchaseId);
+    assert.equal(completed.state, "receipted");
+  });
+});
+
+test("a normal Purchase retry rehydrates staging observed before a recovery crash", async () => {
+  await withFixture(async ({ coordinator, dependencies, intent, journal }) => {
+    dependencies.stagingSubmitMode = "throw";
+    const ambiguous = await coordinator.purchase(intent);
+    assert.equal(ambiguous.state, "failed_recoverable");
+
+    dependencies.stagingObserveMode = "staged";
+    const recordObserved =
+      journal.recordObservedTreasuryStaging.bind(journal);
+    let crashAfterObservation = true;
+    journal.recordObservedTreasuryStaging = ((
+      ...args: Parameters<PurchaseJournal["recordObservedTreasuryStaging"]>
+    ) => {
+      const observation = recordObserved(...args);
+      if (crashAfterObservation) {
+        crashAfterObservation = false;
+        throw new Error("crash-after-staging-observation");
+      }
+      return observation;
+    }) as PurchaseJournal["recordObservedTreasuryStaging"];
+
+    await assert.rejects(
+      () => coordinator.recover(ambiguous.id),
+      /crash-after-staging-observation/,
+    );
+    assert.equal(
+      journal.requirePurchase(ambiguous.id).state,
+      "failed_recoverable",
+    );
+    assert.ok(
+      journal.findTreasuryStagingObservation(ambiguous.id, 1),
+    );
+
+    const completed = await coordinator.purchase(intent);
+    assert.equal(completed.state, "receipted");
   });
 });
 
@@ -1453,6 +1536,8 @@ class FakeDependencies {
         treasury.preparePurchaseStaging(input),
       executePurchaseStaging: (input) =>
         treasury.executePurchaseStaging(input),
+      getPurchaseStaging: (input) =>
+        treasury.getPurchaseStaging(input),
       recoverPurchaseStaging: (input) =>
         treasury.recoverPurchaseStaging(input),
     };

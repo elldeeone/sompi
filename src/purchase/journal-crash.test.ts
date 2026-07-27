@@ -9,10 +9,12 @@ import {
   JournalNotFoundError,
   PurchaseJournal,
   type JournalFaultPoint,
-  type PolicyReservationInput,
-  type PolicySnapshotRecord,
   type PreparePaymentAttemptInput,
 } from "./journal.js";
+import type {
+  PolicyReservationInput,
+  PolicySnapshotRecord,
+} from "../treasury/operation-journal.js";
 import {
   assertPurchaseRequestKey,
   createPaymentIdentifier,

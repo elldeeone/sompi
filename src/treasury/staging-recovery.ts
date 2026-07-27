@@ -9,6 +9,12 @@ export interface RecoverPurchaseStagingInput {
   readonly purchaseId: PurchaseId;
 }
 
+export function treasuryStagingRecoveryPlanningLeaseName(
+  purchaseId: PurchaseId,
+): string {
+  return `treasury-staging-recovery-plan:${purchaseId}`;
+}
+
 export type PurchaseStagingRecoveryResult = Readonly<{
   status:
     | "none"
@@ -17,13 +23,6 @@ export type PurchaseStagingRecoveryResult = Readonly<{
     | "recovery_won"
     | "conflict";
 }>;
-
-/** Purchase-facing Treasury operation for abandoned staging recovery. */
-export interface PurchaseTreasuryStagingRecovery {
-  recoverPurchaseStaging(
-    input: Readonly<RecoverPurchaseStagingInput>,
-  ): Promise<PurchaseStagingRecoveryResult>;
-}
 
 export interface StagingRecoveryPreparationContext {
   readonly purchaseId: PurchaseId;
