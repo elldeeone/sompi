@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import Database from "better-sqlite3";
 
@@ -19,10 +19,18 @@ assertFreshTarget(options.directory);
 assertAbsent(options.report, "live report");
 assertAbsent(options.restartEvidence, "restart evidence");
 runBuild();
+const { createPhase4RestartEvidence } = await import(
+  pathToFileURL(
+    path.join(
+      root,
+      "dist",
+      "e2e",
+      "phase4-c7-restart-evidence.js",
+    ),
+  ).href
+);
 
-const firstStartedAt = new Date().toISOString();
 const first = await runLiveInvocation(true);
-const firstStoppedAt = new Date().toISOString();
 if (!first.stopRequested || first.signal !== "SIGTERM") {
   throw new Error("first live invocation did not stop at recoverable ambiguity");
 }
@@ -30,8 +38,11 @@ const beforeRestart = readPublicSnapshot(options.directory, "before_restart");
 if (beforeRestart.purchase.state !== "failed_recoverable") {
   throw new Error("pre-restart Purchase is not recoverable");
 }
+const firstBoundary = readFirstInvocationBoundary(
+  options.directory,
+  beforeRestart.purchase.id,
+);
 
-const secondStartedAt = new Date().toISOString();
 const second = await runLiveInvocation(false);
 const secondCompletedAt = new Date().toISOString();
 if (second.code !== 0 || second.signal !== null) {
@@ -43,20 +54,16 @@ writeRestartEvidence({
   beforeRestart,
   afterRestart,
   report,
-  processBoundary: Object.freeze({
-    firstInvocation: Object.freeze({
-      sequence: 1,
-      startedAt: firstStartedAt,
-      stoppedAt: firstStoppedAt,
-      stopTrigger: "purchase-failed-recoverable",
-      exitSignal: first.signal,
-    }),
-    secondInvocation: Object.freeze({
-      sequence: 2,
-      startedAt: secondStartedAt,
-      completedAt: secondCompletedAt,
-      exitCode: second.code,
-    }),
+  process: Object.freeze({
+    ...firstBoundary,
+    firstDurableRecoveryAtMs: readFirstDurableRecoveryAt(
+      options.directory,
+      afterRestart.purchase.id,
+      firstBoundary.durableStopRecordedAtMs,
+    ),
+    secondCompletedAt,
+    firstExitSignal: first.signal,
+    secondExitCode: second.code,
   }),
 });
 
@@ -103,29 +110,88 @@ function runLiveInvocation(stopAtRecoverable) {
 }
 
 function writeRestartEvidence(input) {
-  const recoveredEffectIds = verifyRestart(
-    input.beforeRestart,
-    input.afterRestart,
-    input.report
-  );
-  const evidence = Object.freeze({
-    profile: PROFILE,
-    generatedAt: new Date().toISOString(),
-    network: "kaspa:testnet-10",
-    exactProfile: "standard-native",
-    processBoundary: input.processBoundary,
-    recoveredEffectIds: Object.freeze(recoveredEffectIds),
+  const evidence = createPhase4RestartEvidence({
     beforeRestart: input.beforeRestart,
     afterRestart: input.afterRestart,
+    report: input.report,
+    process: input.process,
   });
   writeAtomicJson(options.restartEvidence, evidence);
   process.stdout.write(`${JSON.stringify({
     profile: PROFILE,
     restartEvidence: options.restartEvidence,
     purchaseId: input.afterRestart.purchase.id,
-    recoveredEffectIds,
+    recoveredEffectIds: evidence.recoveredEffectIds,
     exactTransactionId: input.afterRestart.merchantExactTransactionIds[0],
   }, null, 2)}\n`);
+}
+
+function readFirstInvocationBoundary(directory, purchaseId) {
+  const purchase = openReadOnly(
+    path.join(directory, "purchase", "journal.sqlite"),
+  );
+  try {
+    const row = purchase.prepare(`
+      SELECT
+        MIN(created_at_ms) AS durable_activity_started_at_ms,
+        MAX(
+          CASE
+            WHEN to_state = 'failed_recoverable'
+             AND reason_code = 'treasury_staging_requires_reconciliation'
+            THEN created_at_ms
+          END
+        ) AS durable_stop_recorded_at_ms
+      FROM purchase_transitions
+      WHERE purchase_id = ?
+    `).get(purchaseId);
+    const durableActivityStartedAtMs =
+      row?.durable_activity_started_at_ms;
+    const durableStopRecordedAtMs =
+      row?.durable_stop_recorded_at_ms;
+    if (
+      !Number.isSafeInteger(durableActivityStartedAtMs) ||
+      !Number.isSafeInteger(durableStopRecordedAtMs) ||
+      durableActivityStartedAtMs > durableStopRecordedAtMs
+    ) {
+      throw new Error(
+        "first invocation has no valid durable Purchase boundary",
+      );
+    }
+    return Object.freeze({
+      durableActivityStartedAtMs,
+      durableStopRecordedAtMs,
+    });
+  } finally {
+    purchase.close();
+  }
+}
+
+function readFirstDurableRecoveryAt(
+  directory,
+  purchaseId,
+  durableStopRecordedAtMs,
+) {
+  const purchase = openReadOnly(
+    path.join(directory, "purchase", "journal.sqlite"),
+  );
+  try {
+    const row = purchase.prepare(`
+      SELECT MIN(effect_transitions.created_at_ms) AS first_recovery_at_ms
+      FROM effect_transitions
+      JOIN effects
+        ON effects.id = effect_transitions.effect_id
+      WHERE effects.purchase_id = ?
+        AND effect_transitions.created_at_ms > ?
+    `).get(purchaseId, durableStopRecordedAtMs);
+    if (!Number.isSafeInteger(row?.first_recovery_at_ms)) {
+      throw new Error(
+        "second invocation has no durable recovery transition",
+      );
+    }
+    return row.first_recovery_at_ms;
+  } finally {
+    purchase.close();
+  }
 }
 
 function readPublicSnapshot(directory, stage) {
@@ -231,64 +297,6 @@ function readDirectMovements(database) {
   }));
 }
 
-function verifyRestart(before, after, report) {
-  if (
-    before.stage !== "before_restart" ||
-    after.stage !== "after_restart" ||
-    before.purchase.id !== after.purchase.id ||
-    before.purchase.state !== "failed_recoverable" ||
-    after.purchase.state !== "receipted" ||
-    report.purchase?.id !== after.purchase.id ||
-    report.purchase?.state !== after.purchase.state
-  ) {
-    throw new Error("restart Purchase identity or lifecycle is invalid");
-  }
-  if (
-    before.directMovements.length !== 3 ||
-    before.directMovements.some((movement) =>
-      movement.state !== "completed" || !isTransactionId(movement.transactionId)
-    ) ||
-    JSON.stringify(before.directMovements) !== JSON.stringify(after.directMovements)
-  ) {
-    throw new Error("restart changed a completed direct Movement");
-  }
-  assertUnique(before.effects.map((effect) => effect.id), "pre-restart Effect");
-  assertUnique(after.effects.map((effect) => effect.id), "post-restart Effect");
-  const afterEffects = new Map(after.effects.map((effect) => [effect.id, effect]));
-  const recoverableEffects = before.effects.filter((effect) =>
-    effect.state === "submitted" || effect.state === "ambiguous"
-  );
-  if (recoverableEffects.length === 0) {
-    throw new Error("pre-restart snapshot has no submitted or ambiguous Effect");
-  }
-  for (const effect of recoverableEffects) {
-    const recovered = afterEffects.get(effect.id);
-    if (
-      !isTransactionId(effect.transactionId) ||
-      recovered?.state !== "observed" ||
-      recovered.transactionId !== effect.transactionId
-    ) {
-      throw new Error("restart did not observe the same ambiguous Effect");
-    }
-  }
-  if (
-    after.effects.length !== 2 ||
-    after.paymentAttempts.length !== 1 ||
-    after.settlements.length !== 1 ||
-    after.merchantExactTransactionIds.length !== 1 ||
-    after.settlements[0].transactionId !== after.merchantExactTransactionIds[0] ||
-    after.settlements[0].transactionId !== report.transactions?.exactTransactionId
-  ) {
-    throw new Error("post-restart payment evidence is incomplete");
-  }
-  assertUnique(
-    after.effects.map((effect) => effect.transactionId).filter(isTransactionId),
-    "post-restart Effect transaction"
-  );
-  assertUnique(after.merchantExactTransactionIds, "Merchant exact transaction");
-  return recoverableEffects.map((effect) => effect.id).sort();
-}
-
 function openReadOnly(filename) {
   return new Database(filename, {
     readonly: true,
@@ -347,16 +355,6 @@ function assertAbsent(filename, label) {
   }
   if (fs.existsSync(filename)) {
     throw new Error(`${label} target already exists`);
-  }
-}
-
-function isTransactionId(value) {
-  return typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
-}
-
-function assertUnique(values, label) {
-  if (new Set(values).size !== values.length) {
-    throw new Error(`${label} identity is duplicated`);
   }
 }
 

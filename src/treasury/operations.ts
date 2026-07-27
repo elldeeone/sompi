@@ -14,6 +14,7 @@ import {
   TreasuryPreparationError,
   type TreasuryOperationAdapter,
 } from "./operation-adapters.js";
+import { TreasuryLeaseLifecycle } from "./lease-lifecycle.js";
 import {
   type TreasuryOperationJournal,
   type TreasuryOperationKind,
@@ -42,7 +43,6 @@ import {
   type TreasuryStagingAdapterContext,
   type TreasuryStagingExecutionResult,
   type TreasuryStagingOutput,
-  type TreasuryStagingPreparationLease,
   type TreasuryStagingPreparationResult,
   type TreasuryStagingRecoveryObservation,
   type TreasuryStagingResult,
@@ -386,7 +386,7 @@ export class TreasuryOperationModule implements TreasuryModule {
       input.purchaseId,
       input.attempt,
     );
-    let lease = this.journal.acquireLease(
+    const lease = this.journal.acquireLease(
       leaseName,
       this.driverOwner,
       STAGING_PREPARATION_LEASE_TTL_MS,
@@ -404,20 +404,11 @@ export class TreasuryOperationModule implements TreasuryModule {
         "treasury_staging_busy",
       );
     }
-
-    let leaseLost: unknown;
-    const heartbeat = setInterval(() => {
-      if (leaseLost) return;
-      try {
-        lease = this.journal.renewLease(
-          lease as TreasuryStagingPreparationLease,
-          STAGING_PREPARATION_LEASE_TTL_MS,
-        );
-      } catch (error) {
-        leaseLost = error;
-      }
-    }, Math.max(10, Math.floor(STAGING_PREPARATION_LEASE_TTL_MS / 3)));
-    heartbeat.unref();
+    const leaseLifecycle = new TreasuryLeaseLifecycle(
+      this.journal,
+      lease,
+      STAGING_PREPARATION_LEASE_TTL_MS,
+    );
     try {
       const winningPlan = this.journal.findTreasuryStagingPlan(
         input.purchaseId,
@@ -463,17 +454,14 @@ export class TreasuryOperationModule implements TreasuryModule {
         paymentRequirements: Uint8Array.from(context.paymentRequirements),
         additionalCostCeilingAtomic: reservation.additionalCostCeilingAtomic,
       });
-      if (leaseLost) {
+      if (leaseLifecycle.leaseLost) {
         throw new TreasuryStagingPreparationError(
           "Treasury staging preparation lost its exclusive lease",
           "treasury_staging_busy",
-          { cause: leaseLost },
+          { cause: leaseLifecycle.lossCause },
         );
       }
-      lease = this.journal.renewLease(
-        lease,
-        STAGING_PREPARATION_LEASE_TTL_MS,
-      );
+      leaseLifecycle.renew();
       const preparedBytes = Uint8Array.from(prepared.preparedBytes);
       validatePreparedPurchaseStaging(
         prepared,
@@ -481,22 +469,24 @@ export class TreasuryOperationModule implements TreasuryModule {
         BigInt(reservation.amountAtomic) +
           BigInt(reservation.additionalCostCeilingAtomic),
       );
-      const plan = this.journal.commitTreasuryStagingPreparation(lease, {
-        purchaseId: input.purchaseId,
-        attempt: input.attempt,
-        reservationId: reservation.id,
-        idempotencyKey: `treasury-staging:${attempt.identifier}`,
-        payloadDigest: prepared.preparedDigest,
-        preparedBytes,
-        plannedTransactionId: prepared.transactionId,
-        expectedOutpoint: prepared.expectedOutpoint,
-        stagingAmountAtomic: prepared.stagingAmountAtomic,
-        fundingSource: prepared.fundingSource,
-      });
+      const plan = this.journal.commitTreasuryStagingPreparation(
+        leaseLifecycle.lease,
+        {
+          purchaseId: input.purchaseId,
+          attempt: input.attempt,
+          reservationId: reservation.id,
+          idempotencyKey: `treasury-staging:${attempt.identifier}`,
+          payloadDigest: prepared.preparedDigest,
+          preparedBytes,
+          plannedTransactionId: prepared.transactionId,
+          expectedOutpoint: prepared.expectedOutpoint,
+          stagingAmountAtomic: prepared.stagingAmountAtomic,
+          fundingSource: prepared.fundingSource,
+        },
+      );
       return stagingPreparationResult(plan.payloadDigest);
     } finally {
-      clearInterval(heartbeat);
-      if (!leaseLost) this.journal.releaseLease(lease);
+      leaseLifecycle.close();
     }
   }
 
@@ -604,22 +594,12 @@ export class TreasuryOperationModule implements TreasuryModule {
     );
     if (!claim) return Object.freeze({ status: "pending" });
 
-    let lease = claim.lease;
-    let leaseLost: unknown;
-    const abortController = new AbortController();
-    const heartbeat = setInterval(() => {
-      if (leaseLost) return;
-      try {
-        lease = this.journal.renewLease(
-          lease,
-          purchase.stagingExecutionLeaseTtlMs,
-        );
-      } catch (error) {
-        leaseLost = error;
-        abortController.abort();
-      }
-    }, Math.max(10, Math.floor(purchase.stagingExecutionLeaseTtlMs / 3)));
-    heartbeat.unref();
+    const leaseLifecycle = new TreasuryLeaseLifecycle(
+      this.journal,
+      claim.lease,
+      purchase.stagingExecutionLeaseTtlMs,
+      { abortOnLoss: true },
+    );
 
     try {
       let result;
@@ -627,17 +607,20 @@ export class TreasuryOperationModule implements TreasuryModule {
         result = await purchase.staging.submitStaging({
           context: this.purchaseStagingAdapterContext(input),
           effect: claim.effect,
-          signal: abortController.signal,
+          signal: leaseLifecycle.signal,
         });
       } catch (error) {
         const detailDigest = stagingErrorDigest("submit", error);
-        if (leaseLost) {
+        if (leaseLifecycle.leaseLost) {
           return Object.freeze({
             status: "reconciliation_required",
             detailDigest,
           });
         }
-        const activeClaim: EffectClaim = { effect: claim.effect, lease };
+        const activeClaim: EffectClaim = {
+          effect: claim.effect,
+          lease: leaseLifecycle.lease,
+        };
         this.journal.markEffectAmbiguous(activeClaim, detailDigest);
         return Object.freeze({
           status: "reconciliation_required",
@@ -645,13 +628,19 @@ export class TreasuryOperationModule implements TreasuryModule {
         });
       }
 
-      if (leaseLost) {
+      if (leaseLifecycle.leaseLost) {
         return Object.freeze({
           status: "reconciliation_required",
-          detailDigest: stagingErrorDigest("submit-lease", leaseLost),
+          detailDigest: stagingErrorDigest(
+            "submit-lease",
+            leaseLifecycle.lossCause,
+          ),
         });
       }
-      const activeClaim: EffectClaim = { effect: claim.effect, lease };
+      const activeClaim: EffectClaim = {
+        effect: claim.effect,
+        lease: leaseLifecycle.lease,
+      };
       this.journal.markEffectSubmitted(activeClaim, result.submissionDigest);
       if (result.status === "submitted") {
         return Object.freeze({
@@ -665,8 +654,7 @@ export class TreasuryOperationModule implements TreasuryModule {
         result.staging,
       );
     } finally {
-      clearInterval(heartbeat);
-      if (!leaseLost) this.journal.releaseLease(lease);
+      leaseLifecycle.close();
     }
   }
 
@@ -676,34 +664,22 @@ export class TreasuryOperationModule implements TreasuryModule {
   ): Promise<Readonly<TreasuryStagingExecutionResult> | "retry"> {
     const purchase = this.requirePurchase();
     const leaseName = `purchase-reconciliation:${input.purchaseId}`;
-    let lease = this.journal.acquireLease(
+    const lease = this.journal.acquireLease(
       leaseName,
       `${this.driverOwner}:staging-reconciliation`,
       purchase.stagingReconciliationLeaseTtlMs,
     );
     if (!lease) return Object.freeze({ status: "pending" });
-
-    let leaseLost: unknown;
-    const heartbeat = setInterval(() => {
-      if (leaseLost) return;
-      try {
-        lease = this.journal.renewLease(
-          lease as LeaseToken,
-          purchase.stagingReconciliationLeaseTtlMs,
-        );
-      } catch (error) {
-        leaseLost = error;
-      }
-    }, Math.max(
-      10,
-      Math.floor(purchase.stagingReconciliationLeaseTtlMs / 3),
-    ));
-    heartbeat.unref();
+    const leaseLifecycle = new TreasuryLeaseLifecycle(
+      this.journal,
+      lease,
+      purchase.stagingReconciliationLeaseTtlMs,
+    );
 
     try {
       if (this.journal.effectClaimActive(effect.id)) {
         this.journal.recordReconciliation(
-          lease,
+          leaseLifecycle.lease,
           input.purchaseId,
           effect.id,
           "executor_active",
@@ -720,18 +696,15 @@ export class TreasuryOperationModule implements TreasuryModule {
         });
       } catch (error) {
         const detailDigest = stagingErrorDigest("observe", error);
-        if (leaseLost) {
+        if (leaseLifecycle.leaseLost) {
           return Object.freeze({
             status: "reconciliation_required",
             detailDigest,
           });
         }
-        lease = this.journal.renewLease(
-          lease,
-          purchase.stagingReconciliationLeaseTtlMs,
-        );
+        leaseLifecycle.renew();
         this.journal.recordReconciliation(
-          lease,
+          leaseLifecycle.lease,
           input.purchaseId,
           effect.id,
           "observer_error",
@@ -743,24 +716,24 @@ export class TreasuryOperationModule implements TreasuryModule {
         });
       }
 
-      if (leaseLost) {
+      if (leaseLifecycle.leaseLost) {
         return Object.freeze({
           status: "reconciliation_required",
-          detailDigest: stagingErrorDigest("observe-lease", leaseLost),
+          detailDigest: stagingErrorDigest(
+            "observe-lease",
+            leaseLifecycle.lossCause,
+          ),
         });
       }
-      lease = this.journal.renewLease(
-        lease,
-        purchase.stagingReconciliationLeaseTtlMs,
-      );
+      leaseLifecycle.renew();
       if (observation.status === "staged") {
         const observed = this.recordObservedPurchaseStaging(
           input,
-          lease,
+          leaseLifecycle.lease,
           observation.staging,
         );
         this.journal.recordReconciliation(
-          lease,
+          leaseLifecycle.lease,
           input.purchaseId,
           effect.id,
           "treasury_staging_observed",
@@ -771,7 +744,7 @@ export class TreasuryOperationModule implements TreasuryModule {
 
       const updated = this.journal.recordEffectObservation(
         effect.id,
-        lease,
+        leaseLifecycle.lease,
         stagingEffectObservation(observation),
       );
       const detailDigest =
@@ -780,7 +753,7 @@ export class TreasuryOperationModule implements TreasuryModule {
         updated.submissionDigest ??
         updated.payloadDigest;
       this.journal.recordReconciliation(
-        lease,
+        leaseLifecycle.lease,
         input.purchaseId,
         effect.id,
         updated.state === "retryable"
@@ -794,8 +767,7 @@ export class TreasuryOperationModule implements TreasuryModule {
         detailDigest,
       });
     } finally {
-      clearInterval(heartbeat);
-      if (!leaseLost) this.journal.releaseLease(lease);
+      leaseLifecycle.close();
     }
   }
 
@@ -947,23 +919,11 @@ export class TreasuryOperationModule implements TreasuryModule {
         purchase.stagingExecutionLeaseTtlMs,
       );
       if (!acquiredPlanningLease) return stagingRecoveryResult("pending");
-      let planningLease = acquiredPlanningLease;
-      let leaseLost: unknown;
-      const heartbeat = setInterval(() => {
-        if (leaseLost) return;
-        try {
-          planningLease = this.journal.renewLease(
-            planningLease,
-            purchase.stagingExecutionLeaseTtlMs,
-          );
-        } catch (error) {
-          leaseLost = error;
-        }
-      }, Math.max(
-        10,
-        Math.floor(purchase.stagingExecutionLeaseTtlMs / 3),
-      ));
-      heartbeat.unref();
+      const leaseLifecycle = new TreasuryLeaseLifecycle(
+        this.journal,
+        acquiredPlanningLease,
+        purchase.stagingExecutionLeaseTtlMs,
+      );
       try {
         recovery = this.journal.treasuryStagingRecoveryJournalContext(
           input.purchaseId,
@@ -989,11 +949,10 @@ export class TreasuryOperationModule implements TreasuryModule {
             exactPayment?.transactionId,
             staged.observation.stagingAmountAtomic,
           );
-          if (leaseLost) return stagingRecoveryResult("pending");
-          planningLease = this.journal.renewLease(
-            planningLease,
-            purchase.stagingExecutionLeaseTtlMs,
-          );
+          if (leaseLifecycle.leaseLost) {
+            return stagingRecoveryResult("pending");
+          }
+          leaseLifecycle.renew();
           this.journal.planTreasuryStagingRecovery(
             {
               purchaseId: input.purchaseId,
@@ -1013,7 +972,7 @@ export class TreasuryOperationModule implements TreasuryModule {
               authorizedAdditionalCostCeilingAtomic:
                 staged.reservation.additionalCostCeilingAtomic,
             },
-            planningLease,
+            leaseLifecycle.lease,
           );
           recovery = this.journal.treasuryStagingRecoveryJournalContext(
             input.purchaseId,
@@ -1026,8 +985,7 @@ export class TreasuryOperationModule implements TreasuryModule {
         }
         throw error;
       } finally {
-        clearInterval(heartbeat);
-        if (!leaseLost) this.journal.releaseLease(planningLease);
+        leaseLifecycle.close();
       }
     }
 
@@ -1091,22 +1049,15 @@ export class TreasuryOperationModule implements TreasuryModule {
       purchase.stagingExecutionLeaseTtlMs,
     );
     if (!claim) return stagingRecoveryResult("pending");
-    let lease = claim.lease;
-    let leaseLost: unknown;
-    const abortController = new AbortController();
-    const heartbeat = setInterval(() => {
-      if (leaseLost) return;
-      try {
-        lease = this.journal.renewLease(
-          lease,
-          purchase.stagingExecutionLeaseTtlMs,
-        );
-      } catch (error) {
-        leaseLost = error;
-        abortController.abort();
-      }
-    }, Math.max(10, Math.floor(purchase.stagingExecutionLeaseTtlMs / 3)));
-    heartbeat.unref();
+    const leaseLifecycle = new TreasuryLeaseLifecycle(
+      this.journal,
+      claim.lease,
+      purchase.stagingExecutionLeaseTtlMs,
+      {
+        abortOnLoss: true,
+        ignoreReleaseFencing: true,
+      },
+    );
 
     try {
       const preparedBytes =
@@ -1118,20 +1069,27 @@ export class TreasuryOperationModule implements TreasuryModule {
       try {
         observed = await purchase.stagingRecovery.observe({
           preparedBytes,
-          signal: abortController.signal,
+          signal: leaseLifecycle.signal,
         });
       } catch (error) {
-        if (leaseLost) return stagingRecoveryResult("pending");
+        if (leaseLifecycle.leaseLost) {
+          return stagingRecoveryResult("pending");
+        }
         this.journal.markEffectAmbiguous(
-          { effect: claim.effect, lease },
+          {
+            effect: claim.effect,
+            lease: leaseLifecycle.lease,
+          },
           stagingErrorDigest("recovery-observe", error),
         );
         return stagingRecoveryResult("pending");
       }
-      if (leaseLost) return stagingRecoveryResult("pending");
+      if (leaseLifecycle.leaseLost) {
+        return stagingRecoveryResult("pending");
+      }
       const outcome = this.recordStagingRecoveryObservation(
         recovery.effect.id,
-        lease,
+        leaseLifecycle.lease,
         observed,
       );
       if (observed.status !== "safe_to_submit") return outcome;
@@ -1141,25 +1099,38 @@ export class TreasuryOperationModule implements TreasuryModule {
         submitted = await purchase.stagingRecovery.submit({
           preparedBytes,
           readiness: observed.readiness,
-          signal: abortController.signal,
+          signal: leaseLifecycle.signal,
         });
       } catch (error) {
-        if (leaseLost) return stagingRecoveryResult("pending");
+        if (leaseLifecycle.leaseLost) {
+          return stagingRecoveryResult("pending");
+        }
         this.journal.markEffectAmbiguous(
-          { effect: claim.effect, lease },
+          {
+            effect: claim.effect,
+            lease: leaseLifecycle.lease,
+          },
           stagingErrorDigest("recovery-submit", error),
         );
         return stagingRecoveryResult("pending");
       }
-      if (leaseLost) return stagingRecoveryResult("pending");
+      if (leaseLifecycle.leaseLost) {
+        return stagingRecoveryResult("pending");
+      }
       if (submitted.transactionId !== recovery.plan.recoveryTransactionId) {
         this.journal.markEffectAmbiguous(
-          { effect: claim.effect, lease },
+          {
+            effect: claim.effect,
+            lease: leaseLifecycle.lease,
+          },
           evidenceDigest("treasury-staging-recovery:transaction-mismatch"),
         );
         return stagingRecoveryResult("pending");
       }
-      const activeClaim: EffectClaim = { effect: claim.effect, lease };
+      const activeClaim: EffectClaim = {
+        effect: claim.effect,
+        lease: leaseLifecycle.lease,
+      };
       if (submitted.status === "accepted") {
         this.journal.markEffectSubmitted(
           activeClaim,
@@ -1178,14 +1149,7 @@ export class TreasuryOperationModule implements TreasuryModule {
       }
       throw error;
     } finally {
-      clearInterval(heartbeat);
-      if (!leaseLost) {
-        try {
-          this.journal.releaseLease(lease);
-        } catch (error) {
-          if (!(error instanceof JournalFencingError)) throw error;
-        }
-      }
+      leaseLifecycle.close();
     }
   }
 
@@ -1199,24 +1163,12 @@ export class TreasuryOperationModule implements TreasuryModule {
       purchase.stagingReconciliationLeaseTtlMs,
     );
     if (!acquiredLease) return stagingRecoveryResult("pending");
-    let lease = acquiredLease;
-    let leaseLost: unknown;
-    let released = false;
-    const heartbeat = setInterval(() => {
-      if (leaseLost) return;
-      try {
-        lease = this.journal.renewLease(
-          lease,
-          purchase.stagingReconciliationLeaseTtlMs,
-        );
-      } catch (error) {
-        leaseLost = error;
-      }
-    }, Math.max(
-      10,
-      Math.floor(purchase.stagingReconciliationLeaseTtlMs / 3),
-    ));
-    heartbeat.unref();
+    const leaseLifecycle = new TreasuryLeaseLifecycle(
+      this.journal,
+      acquiredLease,
+      purchase.stagingReconciliationLeaseTtlMs,
+      { ignoreReleaseFencing: true },
+    );
 
     try {
       if (this.journal.effectClaimActive(recovery.effect.id)) {
@@ -1228,14 +1180,13 @@ export class TreasuryOperationModule implements TreasuryModule {
           recovery.plan.attempt,
         ),
       });
-      if (leaseLost) return stagingRecoveryResult("pending");
-      lease = this.journal.renewLease(
-        lease,
-        purchase.stagingReconciliationLeaseTtlMs,
-      );
+      if (leaseLifecycle.leaseLost) {
+        return stagingRecoveryResult("pending");
+      }
+      leaseLifecycle.renew();
       const outcome = this.recordStagingRecoveryObservation(
         recovery.effect.id,
-        lease,
+        leaseLifecycle.lease,
         observed,
       );
       if (observed.status !== "safe_to_submit") return outcome;
@@ -1245,8 +1196,7 @@ export class TreasuryOperationModule implements TreasuryModule {
         recovery.plan.attempt,
       );
       if (!refreshed) return stagingRecoveryResult("pending");
-      this.journal.releaseLease(lease);
-      released = true;
+      leaseLifecycle.release();
       return this.drivePurchaseStagingRecovery(refreshed);
     } catch (error) {
       if (error instanceof JournalFencingError) {
@@ -1254,14 +1204,7 @@ export class TreasuryOperationModule implements TreasuryModule {
       }
       throw error;
     } finally {
-      clearInterval(heartbeat);
-      if (!released && !leaseLost) {
-        try {
-          this.journal.releaseLease(lease);
-        } catch (error) {
-          if (!(error instanceof JournalFencingError)) throw error;
-        }
-      }
+      leaseLifecycle.close();
     }
   }
 

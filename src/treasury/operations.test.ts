@@ -192,43 +192,121 @@ test("observed fact survives a local commit crash without observation or submiss
   });
 });
 
-test("direct and Purchase reservations share one transactional hourly capacity", async () => {
+test("concurrent Purchase and direct Movement lifecycles share one cross-handle transaction owner", async () => {
   await withFixture(
-    async ({ directory, journal, policy, wallet, vault, deposit }) => {
-      wallet.prepareErrors = 1;
-      const module = new TreasuryOperationModule({
-        journal,
-        policy,
-        adapters: [wallet, vault, deposit],
-        feeCeilingAtomic: "10",
+    async ({
+      directory,
+      journal,
+      policy,
+      module,
+      now,
+      advanceTime,
+    }) => {
+      const secondJournal = new PurchaseJournal(
+        path.join(directory, "purchase.sqlite"),
+        { now },
+      );
+      const secondPolicy = new PolicyEngine({
+        maxSompiPerTx: 1_000n,
+        maxSompiPerHour: 1_000n,
+        allowlist: [DESTINATION],
       });
-      await assert.rejects(
-        module.execute({
-          operationKey: "direct:capacity:first",
+      const secondWallet = new FakeAdapter("wallet_send", "4");
+      const secondModule = new TreasuryOperationModule({
+        journal: secondJournal,
+        policy: secondPolicy,
+        adapters: [
+          secondWallet,
+          new FakeAdapter("vault_send", "5"),
+          new FakeAdapter("vault_deposit", "6"),
+        ],
+        feeCeilingAtomic: "10",
+        purchase: purchaseOptions(now),
+      });
+      let releasePreparation!: () => void;
+      secondWallet.prepareGate = new Promise<void>((resolve) => {
+        releasePreparation = resolve;
+      });
+      try {
+        const purchaseId = authorizedPurchase(journal, 71, "390");
+        const purchaseInput = purchaseCapacityInput(
+          journal,
+          purchaseId,
+          "res_concurrent_interface",
+        );
+        const directExecution = secondModule.execute({
+          operationKey: "direct:concurrent-interface",
           kind: "wallet_send",
           destination: DESTINATION,
           amountAtomic: "590",
-        }),
-        /injected prepare crash/
-      );
-      assert.equal(journal.treasuryPolicyCapacityUsed(), 600n);
+        });
+        for (
+          let attempt = 0;
+          attempt < 100 && secondWallet.prepareCalls === 0;
+          attempt += 1
+        ) {
+          await new Promise((resolve) => setImmediate(resolve));
+        }
+        assert.equal(secondWallet.prepareCalls, 1);
 
-      const purchaseId = authorizedPurchase(journal, 71, "390");
-      const snapshot = journal.requireActivePolicy();
-      reservePurchase(journal, purchaseId, snapshot, "res_combined_exact", "390", "10");
-      assert.equal(journal.treasuryPolicyCapacityUsed(), 1_000n);
+        const purchaseCapacity =
+          await module.reservePurchaseCapacity(purchaseInput);
+        assert.equal(purchaseCapacity.status, "reserved");
+        assert.equal(journal.treasuryPolicyCapacityUsed(), 1_000n);
+        assert.equal(
+          secondJournal.treasuryPolicyCapacityUsed(),
+          1_000n,
+        );
 
-      const otherHandle = new PurchaseJournal(path.join(directory, "purchase.sqlite"), {
-        now: () => NOW,
-      });
-      try {
-        const otherPurchase = authorizedPurchase(otherHandle, 72, "1");
-        assert.throws(
-          () => reservePurchase(otherHandle, otherPurchase, snapshot, "res_combined_over", "1", "0"),
-          PolicyReservationError
+        policy.activate({
+          maxSompiPerTx: 500n,
+          maxSompiPerHour: 5_000n,
+          allowlist: [DESTINATION],
+        });
+        const replacement = module.authorizationContext();
+        assert.notEqual(
+          replacement.policyDigest,
+          purchaseCapacity.status === "reserved"
+            ? purchaseCapacity.reservation.policyDigest
+            : undefined,
+        );
+        await assert.rejects(
+          secondModule.reservePurchaseCapacity(purchaseInput),
+          (error: unknown) =>
+            error instanceof TreasuryCapacityError &&
+            error.code === "treasury_policy_changed",
+        );
+
+        const cancellation = await module.cancel(
+          "direct:concurrent-interface",
+        );
+        assert.equal(cancellation.cancellationRequested, true);
+        releasePreparation();
+        const cancelled = await directExecution;
+        assert.equal(cancelled.state, "failed_terminal");
+        assert.equal(secondWallet.submitCalls, 0);
+        assert.equal(journal.treasuryPolicyCapacityUsed(), 400n);
+        assert.equal(
+          (
+            await module.recover("direct:concurrent-interface")
+          ).state,
+          "failed_terminal",
+        );
+
+        advanceTime(60_001);
+        const expired =
+          await module.reservePurchaseCapacity(purchaseInput);
+        assert.equal(expired.status, "reserved");
+        if (expired.status !== "reserved") return;
+        assert.equal(expired.reservation.state, "expired");
+        assert.equal(journal.treasuryPolicyCapacityUsed(), 0n);
+        assert.equal(
+          secondJournal.treasuryPolicyCapacityUsed(),
+          0n,
         );
       } finally {
-        otherHandle.close();
+        releasePreparation?.();
+        secondJournal.close();
       }
     },
     { maxPerPaymentAtomic: "1000", maxPerHourAtomic: "1000" }

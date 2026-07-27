@@ -210,6 +210,21 @@ The Architecture Phase 4 C7 candidate produced these results:
   before-and-after Journal facts and exact artifact digests.
 - The public Phase 4 report is in `evidence/phase4-c7/`.
 
+The Phase 4 review remediation produced these results:
+
+- The C7 proof runner now writes the durable process-boundary schema that the
+  evidence verifier requires. A non-funded test reconstructs the committed
+  restart artifact exactly.
+- A cross-handle interface test now runs a Purchase reservation and a direct
+  Movement at the same time. It proves shared capacity, policy replacement,
+  cancellation, recovery, and expiry.
+- One internal Treasury lease lifecycle now owns heartbeat, renewal, loss,
+  abort, and release behavior for staging work. The public interface did not
+  change.
+- The full test command ran 620 tests: 619 passed and one privileged ownership
+  test was skipped as expected. Offline smoke and stored-evidence verification
+  passed.
+
 ## Funded evidence
 
 The [alpha.9 clean-cutover evidence](https://github.com/elldeeone/sompi/blob/c8fd02fa403b7e4f43dfa91653c0c232867d8ed8/evidence/alpha9-clean-cutover/README.md) is public and contains no secrets.

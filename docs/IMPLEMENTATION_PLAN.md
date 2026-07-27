@@ -480,6 +480,19 @@ Verification gate:
   release, deployment, live-host, sibling-repository, or deferred-work change
   is included.
 
+Post-completion review remediation from 2026-07-27:
+
+- The C7 proof runner produces the durable process-boundary schema that the
+  evidence verifier requires. A non-funded test reconstructs the committed
+  restart artifact exactly.
+- P4.G2 now has one cross-handle interface test. It runs Purchase reservation
+  and direct Movement preparation at the same time.
+- One internal Treasury lease lifecycle owns the repeated staging heartbeat,
+  renewal, loss, abort, and release behavior. `TreasuryModule` did not change.
+- The full test command ran 620 tests: 619 passed and one privileged ownership
+  test was skipped as expected. Offline smoke and stored-evidence verification
+  passed.
+
 Add or amend an ADR before implementation if the cutover needs a physical
 Journal schema change or changes an accepted architecture decision. Do not add
 a universal payment-rail interface. A second real execution adapter must prove
