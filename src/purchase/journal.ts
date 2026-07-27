@@ -5359,11 +5359,13 @@ export class PurchaseJournal {
   }
 
   planTreasuryStagingRecovery(
-    input: PlanTreasuryStagingRecoveryInput
+    input: PlanTreasuryStagingRecoveryInput,
+    lease?: LeaseToken
   ): TreasuryStagingRecoveryPlanRecord {
     validateTreasuryStagingRecoveryPlanInput(input);
     const stored = this.storePreparedMaterial(input.preparedBytes, input.payloadDigest);
     const plan = this.db.transaction(() => {
+      if (lease) this.assertLeaseInternal(lease);
       const existingEffectRow = this.db
         .prepare("SELECT * FROM effects WHERE idempotency_key = ?")
         .get(input.idempotencyKey) as EffectRow | undefined;

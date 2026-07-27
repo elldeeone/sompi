@@ -1,14 +1,16 @@
 import { createHash, randomBytes } from "node:crypto";
 import { PolicyEngine } from "../policy.js";
+import { paymentFinalityMeets } from "../purchase/finality.js";
 import { evidenceDigest } from "../purchase/identity.js";
-import type {
-  TreasuryStagingRecoveryModule,
-} from "../purchase/coordinator.js";
-import type {
-  EffectClaim,
-  EffectObservation,
-  EffectRecord,
-  LeaseToken,
+import {
+  JournalFencingError,
+  JournalNotFoundError,
+  type EffectClaim,
+  type EffectObservation,
+  type EffectRecord,
+  type LeaseToken,
+  type RecordTreasuryStagingRecoveryObservationInput,
+  type TreasuryStagingRecoveryJournalContext,
 } from "../purchase/journal.js";
 import {
   TreasuryPreparationError,
@@ -45,11 +47,21 @@ import {
   type TreasuryStagingRecoveryObservation,
   type TreasuryStagingResult,
 } from "./purchase-staging.js";
+import {
+  type PreparedStagingRecovery,
+  type PurchaseStagingRecoveryResult,
+  type PurchaseTreasuryStagingRecovery,
+  type RecoverPurchaseStagingInput,
+  type StagingRecoveryObservation,
+  type StagingRecoveryPreparationContext,
+  type TreasuryStagingRecoveryAdapter,
+} from "./staging-recovery.js";
 
 const OPERATION_KEY = /^[A-Za-z0-9._:-]{1,160}$/;
 const ADDRESS = /^kaspatest:[a-z0-9]+$/;
 const ATOMIC = /^[1-9][0-9]*$/;
 const TESTNET = "kaspa:testnet-10";
+const PURCHASE_PAYMENT_EFFECT_KIND = "kaspa-x402-payment";
 const MAX_RECONCILED_RETRIES = 8;
 const DRIVER_LEASE_TTL_MS = 60_000;
 const STAGING_PREPARATION_LEASE_TTL_MS = 60_000;
@@ -100,7 +112,7 @@ export interface TreasuryPurchaseOptions {
   readonly stagingExecutionLeaseTtlMs?: number;
   readonly stagingReconciliationLeaseTtlMs?: number;
   readonly staging: TreasuryStagingAdapter;
-  readonly stagingRecovery: TreasuryStagingRecoveryModule;
+  readonly stagingRecovery: TreasuryStagingRecoveryAdapter;
   readonly now?: () => number;
 }
 
@@ -144,7 +156,8 @@ export class TreasuryOperationNotFoundError extends TreasuryOperationError {
 export class TreasuryOperationModule
   implements
     PurchaseTreasuryStagingPreparation,
-    PurchaseTreasuryStagingExecution
+    PurchaseTreasuryStagingExecution,
+    PurchaseTreasuryStagingRecovery
 {
   private readonly journal: TreasuryOperationJournal;
   private readonly policy: Pick<
@@ -161,7 +174,7 @@ export class TreasuryOperationModule
     readonly stagingExecutionLeaseTtlMs: number;
     readonly stagingReconciliationLeaseTtlMs: number;
     readonly staging: TreasuryPurchaseOptions["staging"];
-    readonly stagingRecovery: TreasuryStagingRecoveryModule;
+    readonly stagingRecovery: TreasuryStagingRecoveryAdapter;
     readonly now: () => number;
   };
   /** Only an optimization; durable Journal driver generations are authoritative. */
@@ -853,22 +866,397 @@ export class TreasuryOperationModule
     });
   }
 
-  async prepareStagingRecovery(
-    input: Parameters<TreasuryStagingRecoveryModule["prepare"]>[0],
-  ): ReturnType<TreasuryStagingRecoveryModule["prepare"]> {
-    return this.requirePurchase().stagingRecovery.prepare(input);
+  async recoverPurchaseStaging(
+    input: Readonly<RecoverPurchaseStagingInput>,
+  ): Promise<PurchaseStagingRecoveryResult> {
+    const purchase = this.requirePurchase();
+    const attempts = this.journal.paymentAttempts(input.purchaseId);
+    if (attempts.length !== 1) return stagingRecoveryResult("none");
+    const attempt = attempts[0];
+    let recovery = this.journal.treasuryStagingRecoveryJournalContext(
+      input.purchaseId,
+      attempt.attempt,
+    );
+
+    if (
+      this.journal.findSettlementForPurchase(input.purchaseId) &&
+      !recovery
+    ) {
+      return stagingRecoveryResult("none");
+    }
+    const staged = this.journal.treasuryStagingRecoveryContext(
+      input.purchaseId,
+      attempt.attempt,
+    );
+    if (
+      !staged?.observation ||
+      (!recovery && staged.reservation.state !== "in_flight")
+    ) {
+      return stagingRecoveryResult("none");
+    }
+
+    if (!recovery) {
+      const purchaseRecord = this.journal.requirePurchase(input.purchaseId);
+      const paymentEffect = this.journal
+        .effectsForPurchase(input.purchaseId)
+        .find((effect) => effect.kind === PURCHASE_PAYMENT_EFFECT_KIND);
+      const terminalPayment = Boolean(
+        paymentEffect &&
+          ["failed_terminal", "abandoned"].includes(paymentEffect.state),
+      );
+      const execution = this.journal.requirePurchaseExecutionContext(
+        input.purchaseId,
+        attempt.attempt,
+      );
+      const authorizationExpired =
+        Math.min(
+          Date.parse(execution.execution.terms.expiresAt),
+          execution.execution.authorizationRequest.expiresAtMs,
+        ) <= purchase.now();
+      if (
+        purchaseRecord.state !== "failed_recoverable" ||
+        (!authorizationExpired && !terminalPayment)
+      ) {
+        return stagingRecoveryResult("none");
+      }
+
+      const acquiredPlanningLease = this.journal.acquireLease(
+        `treasury-staging-recovery-plan:${input.purchaseId}`,
+        `${this.driverOwner}:staging-recovery-plan`,
+        purchase.stagingExecutionLeaseTtlMs,
+      );
+      if (!acquiredPlanningLease) return stagingRecoveryResult("pending");
+      let planningLease = acquiredPlanningLease;
+      let leaseLost: unknown;
+      const heartbeat = setInterval(() => {
+        if (leaseLost) return;
+        try {
+          planningLease = this.journal.renewLease(
+            planningLease,
+            purchase.stagingExecutionLeaseTtlMs,
+          );
+        } catch (error) {
+          leaseLost = error;
+        }
+      }, Math.max(
+        10,
+        Math.floor(purchase.stagingExecutionLeaseTtlMs / 3),
+      ));
+      heartbeat.unref();
+      try {
+        recovery = this.journal.treasuryStagingRecoveryJournalContext(
+          input.purchaseId,
+          attempt.attempt,
+        );
+        if (!recovery) {
+          const exactPayment = this.stagingRecoveryExactPayment(
+            input.purchaseId,
+            attempt.attempt,
+          );
+          const prepared = await purchase.stagingRecovery.prepare({
+            purchaseId: input.purchaseId,
+            paymentIdentifier: attempt.identifier,
+            terms: execution.execution.terms,
+            paymentRequirements: execution.paymentRequirements,
+            stagingEvidenceDigest: staged.observation.evidenceDigest,
+            exactPayment,
+            authorizedAdditionalCostCeilingAtomic:
+              staged.reservation.additionalCostCeilingAtomic,
+          });
+          validatePreparedStagingRecovery(
+            prepared,
+            exactPayment?.transactionId,
+            staged.observation.stagingAmountAtomic,
+          );
+          if (leaseLost) return stagingRecoveryResult("pending");
+          planningLease = this.journal.renewLease(
+            planningLease,
+            purchase.stagingExecutionLeaseTtlMs,
+          );
+          this.journal.planTreasuryStagingRecovery(
+            {
+              purchaseId: input.purchaseId,
+              attempt: attempt.attempt,
+              reservationId: staged.reservation.id,
+              stagingEffectId: staged.effect.id,
+              idempotencyKey: `treasury-staging-recovery:${attempt.identifier}`,
+              payloadDigest: prepared.preparedDigest,
+              preparedBytes: Uint8Array.from(prepared.preparedBytes),
+              exactTransactionId: prepared.exactTransactionId,
+              recoveryTransactionId: prepared.recoveryTransactionId,
+              recoveryOutpoint: prepared.recoveryOutpoint,
+              recoveryAmountAtomic: prepared.recoveryAmountAtomic,
+              stagingFeeAtomic: prepared.stagingFeeAtomic,
+              recoveryFeeAtomic: prepared.recoveryFeeAtomic,
+              requiredFinality: prepared.requiredFinality,
+              authorizedAdditionalCostCeilingAtomic:
+                staged.reservation.additionalCostCeilingAtomic,
+            },
+            planningLease,
+          );
+          recovery = this.journal.treasuryStagingRecoveryJournalContext(
+            input.purchaseId,
+            attempt.attempt,
+          );
+        }
+      } catch (error) {
+        if (error instanceof JournalFencingError) {
+          return stagingRecoveryResult("pending");
+        }
+        throw error;
+      } finally {
+        clearInterval(heartbeat);
+        if (!leaseLost) this.journal.releaseLease(planningLease);
+      }
+    }
+
+    if (!recovery) return stagingRecoveryResult("pending");
+    return this.drivePurchaseStagingRecovery(recovery);
   }
 
-  async observeStagingRecovery(
-    input: Parameters<TreasuryStagingRecoveryModule["observe"]>[0],
-  ): ReturnType<TreasuryStagingRecoveryModule["observe"]> {
-    return this.requirePurchase().stagingRecovery.observe(input);
+  private stagingRecoveryExactPayment(
+    purchaseId: RecoverPurchaseStagingInput["purchaseId"],
+    attempt: number,
+  ): StagingRecoveryPreparationContext["exactPayment"] | undefined {
+    try {
+      const preparation = this.journal.requirePaymentPreparation(
+        purchaseId,
+        attempt,
+      );
+      if (
+        preparation.mechanism !== "single-transaction" ||
+        !preparation.transactionId
+      ) {
+        return undefined;
+      }
+      return Object.freeze({
+        preparedBytes: this.journal.readPreparedPayment(purchaseId, attempt),
+        preparedDigest: preparation.payloadDigest,
+        transactionId: preparation.transactionId,
+        requiredFinality: preparation.requiredAssurance,
+      });
+    } catch (error) {
+      if (error instanceof JournalNotFoundError) return undefined;
+      throw error;
+    }
   }
 
-  async submitStagingRecovery(
-    input: Parameters<TreasuryStagingRecoveryModule["submit"]>[0],
-  ): ReturnType<TreasuryStagingRecoveryModule["submit"]> {
-    return this.requirePurchase().stagingRecovery.submit(input);
+  private async drivePurchaseStagingRecovery(
+    recovery: TreasuryStagingRecoveryJournalContext,
+  ): Promise<PurchaseStagingRecoveryResult> {
+    if (recovery.accounting) return stagingRecoveryResult("recovery_won");
+    if (recovery.effect.state === "observed") {
+      return stagingRecoveryResult("exact_payment_won");
+    }
+    if (recovery.effect.state === "failed_terminal") {
+      return stagingRecoveryResult("conflict");
+    }
+    if (
+      recovery.effect.state === "planned" ||
+      recovery.effect.state === "retryable"
+    ) {
+      return this.drivePlannedPurchaseStagingRecovery(recovery);
+    }
+    return this.reconcilePurchaseStagingRecovery(recovery);
+  }
+
+  private async drivePlannedPurchaseStagingRecovery(
+    recovery: TreasuryStagingRecoveryJournalContext,
+  ): Promise<PurchaseStagingRecoveryResult> {
+    const purchase = this.requirePurchase();
+    const claim = this.journal.beginTreasuryStagingRecovery(
+      recovery.effect.id,
+      `${this.driverOwner}:staging-recovery`,
+      purchase.stagingExecutionLeaseTtlMs,
+    );
+    if (!claim) return stagingRecoveryResult("pending");
+    let lease = claim.lease;
+    let leaseLost: unknown;
+    const abortController = new AbortController();
+    const heartbeat = setInterval(() => {
+      if (leaseLost) return;
+      try {
+        lease = this.journal.renewLease(
+          lease,
+          purchase.stagingExecutionLeaseTtlMs,
+        );
+      } catch (error) {
+        leaseLost = error;
+        abortController.abort();
+      }
+    }, Math.max(10, Math.floor(purchase.stagingExecutionLeaseTtlMs / 3)));
+    heartbeat.unref();
+
+    try {
+      const preparedBytes =
+        this.journal.readPreparedTreasuryStagingRecovery(
+          recovery.plan.purchaseId,
+          recovery.plan.attempt,
+        );
+      let observed: Readonly<StagingRecoveryObservation>;
+      try {
+        observed = await purchase.stagingRecovery.observe({
+          preparedBytes,
+          signal: abortController.signal,
+        });
+      } catch (error) {
+        if (leaseLost) return stagingRecoveryResult("pending");
+        this.journal.markEffectAmbiguous(
+          { effect: claim.effect, lease },
+          stagingErrorDigest("recovery-observe", error),
+        );
+        return stagingRecoveryResult("pending");
+      }
+      if (leaseLost) return stagingRecoveryResult("pending");
+      const outcome = this.recordStagingRecoveryObservation(
+        recovery.effect.id,
+        lease,
+        observed,
+      );
+      if (observed.status !== "safe_to_submit") return outcome;
+
+      let submitted;
+      try {
+        submitted = await purchase.stagingRecovery.submit({
+          preparedBytes,
+          readiness: observed.readiness,
+          signal: abortController.signal,
+        });
+      } catch (error) {
+        if (leaseLost) return stagingRecoveryResult("pending");
+        this.journal.markEffectAmbiguous(
+          { effect: claim.effect, lease },
+          stagingErrorDigest("recovery-submit", error),
+        );
+        return stagingRecoveryResult("pending");
+      }
+      if (leaseLost) return stagingRecoveryResult("pending");
+      if (submitted.transactionId !== recovery.plan.recoveryTransactionId) {
+        this.journal.markEffectAmbiguous(
+          { effect: claim.effect, lease },
+          evidenceDigest("treasury-staging-recovery:transaction-mismatch"),
+        );
+        return stagingRecoveryResult("pending");
+      }
+      const activeClaim: EffectClaim = { effect: claim.effect, lease };
+      if (submitted.status === "accepted") {
+        this.journal.markEffectSubmitted(
+          activeClaim,
+          submitted.submissionDigest,
+        );
+      } else {
+        this.journal.markEffectAmbiguous(
+          activeClaim,
+          submitted.submissionDigest,
+        );
+      }
+      return stagingRecoveryResult("pending");
+    } catch (error) {
+      if (error instanceof JournalFencingError) {
+        return stagingRecoveryResult("pending");
+      }
+      throw error;
+    } finally {
+      clearInterval(heartbeat);
+      if (!leaseLost) {
+        try {
+          this.journal.releaseLease(lease);
+        } catch (error) {
+          if (!(error instanceof JournalFencingError)) throw error;
+        }
+      }
+    }
+  }
+
+  private async reconcilePurchaseStagingRecovery(
+    recovery: TreasuryStagingRecoveryJournalContext,
+  ): Promise<PurchaseStagingRecoveryResult> {
+    const purchase = this.requirePurchase();
+    const acquiredLease = this.journal.acquireLease(
+      `purchase-reconciliation:${recovery.plan.purchaseId}`,
+      `${this.driverOwner}:staging-recovery-observer`,
+      purchase.stagingReconciliationLeaseTtlMs,
+    );
+    if (!acquiredLease) return stagingRecoveryResult("pending");
+    let lease = acquiredLease;
+    let leaseLost: unknown;
+    let released = false;
+    const heartbeat = setInterval(() => {
+      if (leaseLost) return;
+      try {
+        lease = this.journal.renewLease(
+          lease,
+          purchase.stagingReconciliationLeaseTtlMs,
+        );
+      } catch (error) {
+        leaseLost = error;
+      }
+    }, Math.max(
+      10,
+      Math.floor(purchase.stagingReconciliationLeaseTtlMs / 3),
+    ));
+    heartbeat.unref();
+
+    try {
+      if (this.journal.effectClaimActive(recovery.effect.id)) {
+        return stagingRecoveryResult("pending");
+      }
+      const observed = await purchase.stagingRecovery.observe({
+        preparedBytes: this.journal.readPreparedTreasuryStagingRecovery(
+          recovery.plan.purchaseId,
+          recovery.plan.attempt,
+        ),
+      });
+      if (leaseLost) return stagingRecoveryResult("pending");
+      lease = this.journal.renewLease(
+        lease,
+        purchase.stagingReconciliationLeaseTtlMs,
+      );
+      const outcome = this.recordStagingRecoveryObservation(
+        recovery.effect.id,
+        lease,
+        observed,
+      );
+      if (observed.status !== "safe_to_submit") return outcome;
+
+      const refreshed = this.journal.treasuryStagingRecoveryJournalContext(
+        recovery.plan.purchaseId,
+        recovery.plan.attempt,
+      );
+      if (!refreshed) return stagingRecoveryResult("pending");
+      this.journal.releaseLease(lease);
+      released = true;
+      return this.drivePurchaseStagingRecovery(refreshed);
+    } catch (error) {
+      if (error instanceof JournalFencingError) {
+        return stagingRecoveryResult("pending");
+      }
+      throw error;
+    } finally {
+      clearInterval(heartbeat);
+      if (!released && !leaseLost) {
+        try {
+          this.journal.releaseLease(lease);
+        } catch (error) {
+          if (!(error instanceof JournalFencingError)) throw error;
+        }
+      }
+    }
+  }
+
+  private recordStagingRecoveryObservation(
+    effectId: string,
+    lease: LeaseToken,
+    observed: Readonly<StagingRecoveryObservation>,
+  ): PurchaseStagingRecoveryResult {
+    this.journal.recordTreasuryStagingRecoveryObservation(
+      effectId,
+      lease,
+      stagingRecoveryJournalObservation(observed),
+    );
+    return stagingRecoveryResult(
+      observed.status === "safe_to_submit" ? "pending" : observed.status,
+    );
   }
 
   async execute(
@@ -1537,6 +1925,108 @@ function stagingPreparationResult(
   return Object.freeze({ payloadDigest });
 }
 
+function validatePreparedStagingRecovery(
+  prepared: Readonly<PreparedStagingRecovery>,
+  exactTransactionId: string | undefined,
+  stagingAmountAtomic: string,
+): void {
+  if (
+    !(prepared.preparedBytes instanceof Uint8Array) ||
+    prepared.preparedBytes.byteLength === 0 ||
+    evidenceDigest(prepared.preparedBytes) !== prepared.preparedDigest ||
+    prepared.exactTransactionId !== exactTransactionId ||
+    !/^[a-f0-9]{64}$/.test(prepared.recoveryTransactionId) ||
+    prepared.recoveryOutpoint !== `${prepared.recoveryTransactionId}:0`
+  ) {
+    throw new TreasuryStagingPreparationError(
+      "prepared staging recovery changed its immutable identity",
+      "treasury_staging_mismatch",
+    );
+  }
+  const returned = stagingRecoveryAtomic(
+    prepared.recoveryAmountAtomic,
+    "staging recovery returned amount",
+  );
+  const stagingFee = stagingRecoveryAtomic(
+    prepared.stagingFeeAtomic,
+    "staging transaction fee",
+    true,
+  );
+  const recoveryFee = stagingRecoveryAtomic(
+    prepared.recoveryFeeAtomic,
+    "staging recovery fee",
+  );
+  const staged = stagingRecoveryAtomic(
+    stagingAmountAtomic,
+    "observed staging amount",
+  );
+  if (returned + recoveryFee !== staged || stagingFee < 0n) {
+    throw new TreasuryStagingPreparationError(
+      "prepared staging recovery does not conserve the observed staged value",
+      "treasury_staging_mismatch",
+    );
+  }
+  if (
+    !paymentFinalityMeets(
+      prepared.requiredFinality,
+      prepared.requiredFinality,
+    )
+  ) {
+    throw new TreasuryStagingPreparationError(
+      "prepared staging recovery finality is unsupported",
+      "treasury_staging_mismatch",
+    );
+  }
+}
+
+function stagingRecoveryJournalObservation(
+  observed: Readonly<StagingRecoveryObservation>,
+): RecordTreasuryStagingRecoveryObservationInput {
+  switch (observed.status) {
+    case "safe_to_submit":
+      return {
+        status: "safe_to_submit",
+        evidenceDigest: observed.evidenceDigest,
+        readinessProofDigest: observed.readiness.proofDigest,
+        readinessObservedAtMs: observed.readiness.observedAtMs,
+        readinessExpiresAtMs: observed.readiness.expiresAtMs,
+      };
+    case "pending":
+      return {
+        status: "pending",
+        evidenceDigest: observed.evidenceDigest,
+      };
+    case "exact_payment_won":
+      return {
+        status: "exact_payment_won",
+        evidenceDigest: observed.evidenceDigest,
+        winningTransactionId: observed.transactionId,
+        winningFinality: observed.finality,
+      };
+    case "recovery_won":
+      return {
+        status: "recovery_won",
+        evidenceDigest: observed.evidenceDigest,
+        winningTransactionId: observed.transactionId,
+        winningFinality: observed.finality,
+        recoveryOutpoint: observed.recoveryOutpoint,
+        recoveryAmountAtomic: observed.recoveryAmountAtomic,
+      };
+    case "conflict":
+      return {
+        status: "conflict",
+        evidenceDigest: observed.evidenceDigest,
+        conflictReason: observed.reason,
+      };
+  }
+}
+
+function stagingRecoveryResult(
+  status: PurchaseStagingRecoveryResult["status"],
+): PurchaseStagingRecoveryResult {
+  return Object.freeze({ status });
+}
+
 function stagingEffectObservation(
   observation: Exclude<TreasuryStagingRecoveryObservation, { status: "staged" }>,
 ): EffectObservation {
@@ -1552,6 +2042,24 @@ function stagingAtomic(value: string, label: string): bigint {
   if (
     typeof value !== "string" ||
     !/^[1-9][0-9]*$/.test(value) ||
+    BigInt(value) > (1n << 64n) - 1n
+  ) {
+    throw new TreasuryStagingPreparationError(
+      `${label} is invalid`,
+      "treasury_staging_mismatch",
+    );
+  }
+  return BigInt(value);
+}
+
+function stagingRecoveryAtomic(
+  value: string,
+  label: string,
+  allowZero = false,
+): bigint {
+  if (
+    typeof value !== "string" ||
+    !(allowZero ? /^(?:0|[1-9][0-9]*)$/ : /^[1-9][0-9]*$/).test(value) ||
     BigInt(value) > (1n << 64n) - 1n
   ) {
     throw new TreasuryStagingPreparationError(

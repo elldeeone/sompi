@@ -23,9 +23,6 @@ import {
   type PreparedKaspaPayment,
   type PreparedTreasuryStaging,
   type SettlementResult,
-  type TreasuryStagingRecoveryModule,
-  type PreparedStagingRecovery,
-  type StagingRecoveryPreparationContext,
   type TreasuryModule,
   type VerifiedArtifact,
 } from "./coordinator.js";
@@ -79,6 +76,11 @@ import type {
   TreasuryStagingResult,
   TreasuryStagingSubmissionResult,
 } from "../treasury/purchase-staging.js";
+import type {
+  PreparedStagingRecovery,
+  StagingRecoveryPreparationContext,
+  TreasuryStagingRecoveryAdapter,
+} from "../treasury/staging-recovery.js";
 
 const NOW = Date.parse("2030-01-01T00:00:00.000Z");
 const TESTNET_PAYEE = "kaspatest:qpumuen7l8wthtz45p3ftn58pvrs9xlumvkuu2xet8egzkcklqtes5z8rkmpd";
@@ -1451,12 +1453,8 @@ class FakeDependencies {
         treasury.preparePurchaseStaging(input),
       executePurchaseStaging: (input) =>
         treasury.executePurchaseStaging(input),
-      prepareStagingRecovery: (input) =>
-        treasury.prepareStagingRecovery(input),
-      observeStagingRecovery: (input) =>
-        treasury.observeStagingRecovery(input),
-      submitStagingRecovery: (input) =>
-        treasury.submitStagingRecovery(input),
+      recoverPurchaseStaging: (input) =>
+        treasury.recoverPurchaseStaging(input),
     };
   }
 
@@ -1603,7 +1601,7 @@ class FakeDependencies {
     },
   };
 
-  readonly stagingRecovery: TreasuryStagingRecoveryModule = {
+  readonly stagingRecovery: TreasuryStagingRecoveryAdapter = {
     prepare: async (input) => {
       this.recoveryCalls.prepare++;
       this.recoveryPreparedInputs.push(structuredClone(input));

@@ -1,5 +1,4 @@
 import type {
-  PaymentIdentifier,
   PurchaseId,
   Sha256Digest,
 } from "../purchase/types.js";
@@ -9,8 +8,16 @@ import type {
   EffectRecord,
   EvidenceAttachmentRecord,
   LeaseToken,
+  PaymentAttemptRecord,
+  PaymentPreparationRecord,
+  PlanTreasuryStagingRecoveryInput,
+  PurchaseSettlementRecord,
   RecordObservedTreasuryStagingInput,
+  RecordTreasuryStagingRecoveryObservationInput,
   TreasuryStagingObservationRecord,
+  TreasuryStagingRecoveryContext,
+  TreasuryStagingRecoveryJournalContext,
+  TreasuryStagingRecoveryPlanRecord,
 } from "../purchase/journal.js";
 import type {
   ReservePurchaseCapacityInput,
@@ -169,10 +176,18 @@ export interface TreasuryOperationJournal {
   requirePaymentAttempt(
     purchaseId: PurchaseId,
     attempt: number
-  ): Readonly<{
-    identifier: PaymentIdentifier;
-    state: "planned" | "prepared" | "submitted" | "observed" | "failed";
-  }>;
+  ): PaymentAttemptRecord;
+  paymentAttempts(purchaseId: PurchaseId): PaymentAttemptRecord[];
+  effectsForPurchase(purchaseId: PurchaseId): EffectRecord[];
+  findSettlementForPurchase(
+    purchaseId: PurchaseId
+  ): PurchaseSettlementRecord | undefined;
+  requirePurchase(purchaseId: PurchaseId): Readonly<{ readonly state: string }>;
+  requirePaymentPreparation(
+    purchaseId: PurchaseId,
+    attempt: number
+  ): PaymentPreparationRecord;
+  readPreparedPayment(purchaseId: PurchaseId, attempt: number): Buffer;
   findTreasuryStagingPlan(
     purchaseId: PurchaseId,
     attempt: number
@@ -233,6 +248,32 @@ export interface TreasuryOperationJournal {
     lease: LeaseToken,
     input: RecordObservedTreasuryStagingInput
   ): TreasuryStagingObservationRecord;
+  treasuryStagingRecoveryContext(
+    purchaseId: PurchaseId,
+    attempt: number
+  ): TreasuryStagingRecoveryContext | undefined;
+  treasuryStagingRecoveryJournalContext(
+    purchaseId: PurchaseId,
+    attempt: number
+  ): TreasuryStagingRecoveryJournalContext | undefined;
+  planTreasuryStagingRecovery(
+    input: PlanTreasuryStagingRecoveryInput,
+    lease: LeaseToken
+  ): TreasuryStagingRecoveryPlanRecord;
+  readPreparedTreasuryStagingRecovery(
+    purchaseId: PurchaseId,
+    attempt: number
+  ): Buffer;
+  beginTreasuryStagingRecovery(
+    effectId: string,
+    holder: string,
+    ttlMs: number
+  ): EffectClaim | undefined;
+  recordTreasuryStagingRecoveryObservation(
+    effectId: string,
+    lease: LeaseToken,
+    input: RecordTreasuryStagingRecoveryObservationInput
+  ): TreasuryStagingRecoveryJournalContext;
   storeEvidence(
     purchaseId: PurchaseId,
     input: {

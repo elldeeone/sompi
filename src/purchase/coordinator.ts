@@ -47,14 +47,11 @@ import {
   JournalRequestConflictError,
   PurchaseAdmissionError,
   PurchaseJournal,
-  TREASURY_STAGING_RECOVERY_EFFECT_KIND,
   type EffectClaim,
   type EffectRecord,
   type PurchaseRecord,
   type RecordPurchaseSettlementInput,
-  type RecordTreasuryStagingRecoveryObservationInput,
   type TreasuryStagingObservationRecord,
-  type TreasuryStagingRecoveryJournalContext,
 } from "./journal.js";
 import { projectPurchaseView, type PurchaseProjectionSnapshot } from "./projection.js";
 import {
@@ -84,6 +81,9 @@ import {
   type PurchaseTreasuryStagingExecution,
   type PurchaseTreasuryStagingPreparation,
 } from "../treasury/purchase-staging.js";
+import type {
+  PurchaseTreasuryStagingRecovery,
+} from "../treasury/staging-recovery.js";
 
 export type { PreparedTreasuryStaging } from "../treasury/purchase-staging.js";
 
@@ -215,20 +215,8 @@ export interface AuthorityModule {
 export interface TreasuryModule
   extends PurchaseTreasuryCapacity,
     PurchaseTreasuryStagingPreparation,
-    PurchaseTreasuryStagingExecution {
-  prepareStagingRecovery(
-    input: Readonly<StagingRecoveryPreparationContext>
-  ): Promise<Readonly<PreparedStagingRecovery>>;
-  observeStagingRecovery(input: {
-    preparedBytes: Uint8Array;
-    signal?: AbortSignal;
-  }): Promise<Readonly<StagingRecoveryObservation>>;
-  submitStagingRecovery(input: {
-    preparedBytes: Uint8Array;
-    readiness: Readonly<StagingRecoveryReadiness>;
-    signal: AbortSignal;
-  }): Promise<Readonly<StagingRecoverySubmission>>;
-}
+    PurchaseTreasuryStagingExecution,
+    PurchaseTreasuryStagingRecovery {}
 
 export interface PreparedKaspaPayment extends PreparedPurchasePayment {
   preparedBytes: Uint8Array;
@@ -337,89 +325,6 @@ export interface KaspaPaymentModule {
     context: KaspaPreparedExecutionContext;
     egress: PurchaseEgressSession;
   }): Promise<FulfilmentResult>;
-}
-
-export interface StagingRecoveryPreparationContext {
-  purchaseId: PurchaseId;
-  paymentIdentifier: PaymentIdentifier;
-  terms: CheckoutTerms;
-  paymentRequirements: Uint8Array;
-  stagingEvidenceDigest: Sha256Digest;
-  exactPayment?: {
-    preparedBytes: Uint8Array;
-    preparedDigest: Sha256Digest;
-    transactionId: string;
-    requiredFinality: string;
-  };
-  authorizedAdditionalCostCeilingAtomic: string;
-}
-
-export interface PreparedStagingRecovery {
-  preparedBytes: Uint8Array;
-  preparedDigest: Sha256Digest;
-  exactTransactionId?: string;
-  recoveryTransactionId: string;
-  recoveryOutpoint: string;
-  recoveryAmountAtomic: string;
-  stagingFeeAtomic: string;
-  recoveryFeeAtomic: string;
-  requiredFinality: string;
-}
-
-export interface StagingRecoveryReadiness {
-  proofDigest: Sha256Digest;
-  observedAtMs: number;
-  expiresAtMs: number;
-  /** Adapter-owned, in-memory token. Only the persisted proof facts are canonical. */
-  token: unknown;
-}
-
-export type StagingRecoveryObservation =
-  | {
-      status: "safe_to_submit";
-      evidenceDigest: Sha256Digest;
-      readiness: StagingRecoveryReadiness;
-    }
-  | { status: "pending"; evidenceDigest: Sha256Digest }
-  | {
-      status: "exact_payment_won";
-      transactionId: string;
-      finality: string;
-      evidenceDigest: Sha256Digest;
-    }
-  | {
-      status: "recovery_won";
-      transactionId: string;
-      recoveryOutpoint: string;
-      recoveryAmountAtomic: string;
-      finality: string;
-      evidenceDigest: Sha256Digest;
-    }
-  | {
-      status: "conflict";
-      reason: string;
-      evidenceDigest: Sha256Digest;
-    };
-
-export type StagingRecoverySubmission =
-  | { status: "accepted"; transactionId: string; submissionDigest: Sha256Digest }
-  | { status: "ambiguous"; transactionId: string; submissionDigest: Sha256Digest }
-  | { status: "conflict"; transactionId: string; submissionDigest: Sha256Digest };
-
-/** Kaspa-specific recovery remains behind this Purchase-owned internal seam. */
-export interface TreasuryStagingRecoveryModule {
-  prepare(
-    input: Readonly<StagingRecoveryPreparationContext>
-  ): Promise<Readonly<PreparedStagingRecovery>>;
-  observe(input: {
-    preparedBytes: Uint8Array;
-    signal?: AbortSignal;
-  }): Promise<Readonly<StagingRecoveryObservation>>;
-  submit(input: {
-    preparedBytes: Uint8Array;
-    readiness: Readonly<StagingRecoveryReadiness>;
-    signal: AbortSignal;
-  }): Promise<Readonly<StagingRecoverySubmission>>;
 }
 
 export interface PurchaseReceiptResult {
@@ -687,8 +592,10 @@ export class PurchaseCoordinator implements PurchaseModule {
       }
       break;
     }
-    const stagingRecovery = await this.recoverAbandonedStaging(id);
-    if (stagingRecovery === "exact_payment_won") {
+    const stagingRecovery = await this.treasury.recoverPurchaseStaging({
+      purchaseId: id,
+    });
+    if (stagingRecovery.status === "exact_payment_won") {
       const exactSummary = await reconciler.reconcile(
         `${this.workerId}-exact-winner`,
         RECOVERY_TTL_MS,
@@ -1682,266 +1589,6 @@ export class PurchaseCoordinator implements PurchaseModule {
     return this.journal.requirePurchase(purchase.id).state === "receipted";
   }
 
-  private async recoverAbandonedStaging(
-    purchaseId: PurchaseId
-  ): Promise<"none" | "pending" | "exact_payment_won" | "recovery_won" | "conflict"> {
-    const attempts = this.journal.paymentAttempts(purchaseId);
-    if (attempts.length !== 1) return "none";
-    const attempt = attempts[0];
-    let recovery = this.journal.treasuryStagingRecoveryJournalContext(
-      purchaseId,
-      attempt.attempt
-    );
-    // A settlement normally means no recovery race is needed. If a race was
-    // already durably planned, however, it must still observe the exact winner
-    // and close its Effect; otherwise a completed Purchase is projected as
-    // requiring recovery forever.
-    if (this.journal.findSettlementForPurchase(purchaseId) && !recovery) {
-      return "none";
-    }
-    const staged = this.journal.treasuryStagingRecoveryContext(
-      purchaseId,
-      attempt.attempt
-    );
-    if (
-      !staged?.observation ||
-      (!recovery && staged.reservation.state !== "in_flight")
-    ) {
-      return "none";
-    }
-    if (!recovery) {
-      const purchase = this.journal.requirePurchase(purchaseId);
-      const paymentEffect = this.paymentEffect(purchaseId, false);
-      const terminalPayment = Boolean(
-        paymentEffect && ["failed_terminal", "abandoned"].includes(paymentEffect.state)
-      );
-      if (
-        purchase.state !== "failed_recoverable" ||
-        (!this.executionAuthorizationExpired(purchaseId) && !terminalPayment)
-      ) {
-        return "none";
-      }
-      const planningLease = this.journal.acquireLease(
-        `treasury-staging-recovery-plan:${purchaseId}`,
-        `${this.workerId}-staging-recovery-plan`,
-        this.effectLeaseTtlMs
-      );
-      if (!planningLease) return "pending";
-      try {
-        recovery = this.journal.treasuryStagingRecoveryJournalContext(
-          purchaseId,
-          attempt.attempt
-        );
-        if (!recovery) {
-          let exactPayment:
-            | StagingRecoveryPreparationContext["exactPayment"]
-            | undefined;
-          try {
-            const preparation = this.journal.requirePaymentPreparation(
-              purchaseId,
-              attempt.attempt
-            );
-            if (preparation.mechanism === "single-transaction" && preparation.transactionId) {
-              exactPayment = {
-                preparedBytes: this.journal.readPreparedPayment(
-                  purchaseId,
-                  attempt.attempt
-                ),
-                preparedDigest: preparation.payloadDigest,
-                transactionId: preparation.transactionId,
-                requiredFinality: preparation.requiredAssurance,
-              };
-            }
-          } catch (error) {
-            if (!(error instanceof JournalNotFoundError)) throw error;
-          }
-          const terms = this.journal.requireCheckoutTerms(purchaseId);
-          const prepared = await this.treasury.prepareStagingRecovery({
-            purchaseId,
-            paymentIdentifier: attempt.identifier,
-            terms: canonicalTermsCopy(terms),
-            paymentRequirements: this.journal.readEvidence(
-              terms.paymentRequirementsDigest
-            ),
-            stagingEvidenceDigest: staged.observation.evidenceDigest,
-            exactPayment,
-            authorizedAdditionalCostCeilingAtomic:
-              staged.reservation.additionalCostCeilingAtomic,
-          });
-          validatePreparedStagingRecovery(
-            prepared,
-            exactPayment?.transactionId,
-            staged.observation.stagingAmountAtomic
-          );
-          this.journal.planTreasuryStagingRecovery({
-            purchaseId,
-            attempt: attempt.attempt,
-            reservationId: staged.reservation.id,
-            stagingEffectId: staged.effect.id,
-            idempotencyKey: `treasury-staging-recovery:${attempt.identifier}`,
-            payloadDigest: prepared.preparedDigest,
-            preparedBytes: Uint8Array.from(prepared.preparedBytes),
-            exactTransactionId: prepared.exactTransactionId,
-            recoveryTransactionId: prepared.recoveryTransactionId,
-            recoveryOutpoint: prepared.recoveryOutpoint,
-            recoveryAmountAtomic: prepared.recoveryAmountAtomic,
-            stagingFeeAtomic: prepared.stagingFeeAtomic,
-            recoveryFeeAtomic: prepared.recoveryFeeAtomic,
-            requiredFinality: prepared.requiredFinality,
-            authorizedAdditionalCostCeilingAtomic:
-              staged.reservation.additionalCostCeilingAtomic,
-          });
-          recovery = this.journal.treasuryStagingRecoveryJournalContext(
-            purchaseId,
-            attempt.attempt
-          );
-        }
-      } finally {
-        this.journal.releaseLease(planningLease);
-      }
-    }
-    if (!recovery) return "pending";
-    return this.driveStagingRecovery(recovery);
-  }
-
-  private async driveStagingRecovery(
-    recovery: TreasuryStagingRecoveryJournalContext
-  ): Promise<"pending" | "exact_payment_won" | "recovery_won" | "conflict"> {
-    if (recovery.accounting) return "recovery_won";
-    if (recovery.effect.state === "observed") return "exact_payment_won";
-    if (recovery.effect.state === "failed_terminal") return "conflict";
-    if (recovery.effect.state === "planned" || recovery.effect.state === "retryable") {
-      const claim = this.journal.beginTreasuryStagingRecovery(
-        recovery.effect.id,
-        `${this.workerId}-staging-recovery`,
-        this.effectLeaseTtlMs
-      );
-      if (!claim) return "pending";
-      let lease = claim.lease;
-      let leaseLost: unknown;
-      const abortController = new AbortController();
-      const heartbeat = setInterval(() => {
-        if (leaseLost) return;
-        try {
-          lease = this.journal.renewLease(lease, this.effectLeaseTtlMs);
-        } catch (error) {
-          leaseLost = error;
-          abortController.abort();
-        }
-      }, Math.max(10, Math.floor(this.effectLeaseTtlMs / 3)));
-      heartbeat.unref();
-      try {
-        const preparedBytes = this.journal.readPreparedTreasuryStagingRecovery(
-          recovery.plan.purchaseId,
-          recovery.plan.attempt
-        );
-        const observed = await this.treasury.observeStagingRecovery({
-          preparedBytes,
-          signal: abortController.signal,
-        });
-        if (leaseLost) throw leaseLost;
-        const outcome = this.recordStagingRecoveryObservation(
-          recovery.effect.id,
-          lease,
-          observed
-        );
-        if (observed.status !== "safe_to_submit") return outcome;
-        // The readiness was observed and durably recorded under this exact
-        // live Effect fence. The adapter token is intentionally never stored.
-        const submitted = await this.treasury.submitStagingRecovery({
-          preparedBytes,
-          readiness: observed.readiness,
-          signal: abortController.signal,
-        });
-        if (leaseLost) throw leaseLost;
-        const activeClaim: EffectClaim = { effect: claim.effect, lease };
-        if (submitted.status === "accepted") {
-          this.journal.markEffectSubmitted(activeClaim, submitted.submissionDigest);
-        } else {
-          this.journal.markEffectAmbiguous(activeClaim, submitted.submissionDigest);
-        }
-        return "pending";
-      } catch (error) {
-        if (!leaseLost) {
-          const current = this.journal.requireEffect(recovery.effect.id);
-          if (current.state === "executing" || current.state === "submitted") {
-            this.journal.markEffectAmbiguous(
-              { effect: claim.effect, lease },
-              safeErrorDigest("staging-recovery-submit", error)
-            );
-          }
-        }
-        return "pending";
-      } finally {
-        clearInterval(heartbeat);
-        if (!leaseLost) this.journal.releaseLease(lease);
-      }
-    }
-
-    const reconcileLease = this.journal.acquireLease(
-      `purchase-reconciliation:${recovery.plan.purchaseId}`,
-      `${this.workerId}-staging-recovery-observer`,
-      RECOVERY_TTL_MS
-    );
-    if (!reconcileLease) return "pending";
-    try {
-      if (this.journal.effectClaimActive(recovery.effect.id)) return "pending";
-      const observed = await this.treasury.observeStagingRecovery({
-        preparedBytes: this.journal.readPreparedTreasuryStagingRecovery(
-          recovery.plan.purchaseId,
-          recovery.plan.attempt
-        ),
-      });
-      const outcome = this.recordStagingRecoveryObservation(
-        recovery.effect.id,
-        reconcileLease,
-        observed
-      );
-      if (observed.status === "safe_to_submit") {
-        const refreshed = this.journal.treasuryStagingRecoveryJournalContext(
-          recovery.plan.purchaseId,
-          recovery.plan.attempt
-        )!;
-        this.journal.releaseLease(reconcileLease);
-        return this.driveStagingRecovery(refreshed);
-      }
-      return outcome;
-    } catch (error) {
-      if (error instanceof JournalEffectBusyError) return "pending";
-      throw error;
-    } finally {
-      // A safe-to-submit observation releases before claiming the Effect.
-      try {
-        this.journal.releaseLease(reconcileLease);
-      } catch {
-        // Already released before the fresh fenced observation.
-      }
-    }
-  }
-
-  private recordStagingRecoveryObservation(
-    effectId: string,
-    lease: Parameters<PurchaseJournal["recordTreasuryStagingRecoveryObservation"]>[1],
-    observed: Readonly<StagingRecoveryObservation>
-  ): "pending" | "exact_payment_won" | "recovery_won" | "conflict" {
-    this.journal.recordTreasuryStagingRecoveryObservation(
-      effectId,
-      lease,
-      stagingRecoveryJournalObservation(observed)
-    );
-    switch (observed.status) {
-      case "safe_to_submit":
-      case "pending":
-        return "pending";
-      case "exact_payment_won":
-        return "exact_payment_won";
-      case "recovery_won":
-        return "recovery_won";
-      case "conflict":
-        return "conflict";
-    }
-  }
-
   private resumeProofBackedState(purchase: PurchaseRecord): boolean {
     const spend = this.journal.findSettlementForPurchase(purchase.id);
     if (spend) {
@@ -2356,97 +2003,6 @@ function stagingOutput(
     evidenceDigest: staging.evidenceDigest,
     fundingSource: staging.fundingSource,
   });
-}
-
-function validatePreparedStagingRecovery(
-  prepared: Readonly<PreparedStagingRecovery>,
-  exactTransactionId: string | undefined,
-  stagingAmountAtomic: string
-): void {
-  if (
-    !(prepared.preparedBytes instanceof Uint8Array) ||
-    prepared.preparedBytes.byteLength === 0 ||
-    evidenceDigest(prepared.preparedBytes) !== prepared.preparedDigest ||
-    prepared.exactTransactionId !== exactTransactionId ||
-    !/^[a-f0-9]{64}$/.test(prepared.recoveryTransactionId) ||
-    prepared.recoveryOutpoint !== `${prepared.recoveryTransactionId}:0`
-  ) {
-    throw new PurchaseCoordinatorError(
-      "prepared staging recovery changed its immutable identity",
-      "staging_recovery_mismatch"
-    );
-  }
-  const returned = requireAtomicDecimal(
-    prepared.recoveryAmountAtomic,
-    false,
-    "staging recovery returned amount"
-  );
-  const stagingFee = requireAtomicDecimal(
-    prepared.stagingFeeAtomic,
-    true,
-    "staging transaction fee"
-  );
-  const recoveryFee = requireAtomicDecimal(
-    prepared.recoveryFeeAtomic,
-    false,
-    "staging recovery fee"
-  );
-  const staged = requireAtomicDecimal(
-    stagingAmountAtomic,
-    false,
-    "observed staging amount"
-  );
-  if (returned + recoveryFee !== staged || stagingFee < 0n) {
-    throw new PurchaseCoordinatorError(
-      "prepared staging recovery does not conserve the observed staged value",
-      "staging_recovery_mismatch"
-    );
-  }
-  if (!paymentFinalityMeets(prepared.requiredFinality, prepared.requiredFinality)) {
-    throw new PurchaseCoordinatorError(
-      "prepared staging recovery finality is unsupported",
-      "staging_recovery_mismatch"
-    );
-  }
-}
-
-function stagingRecoveryJournalObservation(
-  observed: Readonly<StagingRecoveryObservation>
-): RecordTreasuryStagingRecoveryObservationInput {
-  switch (observed.status) {
-    case "safe_to_submit":
-      return {
-        status: "safe_to_submit",
-        evidenceDigest: observed.evidenceDigest,
-        readinessProofDigest: observed.readiness.proofDigest,
-        readinessObservedAtMs: observed.readiness.observedAtMs,
-        readinessExpiresAtMs: observed.readiness.expiresAtMs,
-      };
-    case "pending":
-      return { status: "pending", evidenceDigest: observed.evidenceDigest };
-    case "exact_payment_won":
-      return {
-        status: "exact_payment_won",
-        evidenceDigest: observed.evidenceDigest,
-        winningTransactionId: observed.transactionId,
-        winningFinality: observed.finality,
-      };
-    case "recovery_won":
-      return {
-        status: "recovery_won",
-        evidenceDigest: observed.evidenceDigest,
-        winningTransactionId: observed.transactionId,
-        winningFinality: observed.finality,
-        recoveryOutpoint: observed.recoveryOutpoint,
-        recoveryAmountAtomic: observed.recoveryAmountAtomic,
-      };
-    case "conflict":
-      return {
-        status: "conflict",
-        evidenceDigest: observed.evidenceDigest,
-        conflictReason: observed.reason,
-      };
-  }
 }
 
 function reservationState(

@@ -1,6 +1,6 @@
 # Sompi implementation plan
 
-Status: **Architecture Phase 4 active; C4 complete**
+Status: **Architecture Phase 4 active; C5 complete**
 
 Starting commit: `89b0f1f404ce8e5f2ded88a5b1a99d8ca1743bba`
 
@@ -234,7 +234,7 @@ The canonical implementation starts from the existing
 - [x] **P4.3:** Make that implementation own staging preparation, durable plan
   and prepared bytes, effect fencing, submission, observation, ambiguity, and
   reconciliation.
-- [ ] **P4.4:** Make that implementation own abandoned staging recovery,
+- [x] **P4.4:** Make that implementation own abandoned staging recovery,
   including lease takeover and the choice to observe, retry, or release.
 - [ ] **P4.5:** Use the same implementation for direct Movements from Transfer,
   Funding Intake, batch work, operator activation, and other current callers.
@@ -267,7 +267,7 @@ Implementation sequence:
    durable prepared bytes, and preparation fences behind Treasury.
 4. [x] **P4.C4 — Move staging execution.** Move submission, observation, ambiguity,
    retry, and reconciliation behind Treasury.
-5. [ ] **P4.C5 — Move staging recovery.** Move abandoned staging recovery and lease
+5. [x] **P4.C5 — Move staging recovery.** Move abandoned staging recovery and lease
    takeover behind Treasury.
 6. [ ] **P4.C6 — Complete the clean cutover.** After C3, C4, and C5, delete the
    remaining Purchase-owned Treasury staging and recovery types, pass-through
@@ -366,6 +366,30 @@ C4 completion evidence from 2026-07-27:
   sibling repositories did not change.
 - The focused C4 command ran 88 tests. All 88 passed. The full test command ran
   611 tests: 610 passed and one privileged ownership test was skipped as
+  expected. Offline smoke passed.
+
+C5 completion evidence from 2026-07-27:
+
+- Purchase asks Treasury to recover abandoned staging with only the Purchase
+  ID.
+- Treasury owns recovery qualification, immutable sweep preparation, the
+  durable recovery plan, preparation and execution leases, lease takeover,
+  observation, submission, and winner recording.
+- Treasury reconstructs the exact terms, payment requirements, staged output,
+  reservation, and optional exact-payment candidate from the Journal.
+- The Kaspa-x402 recovery adapter owns recovery transaction construction,
+  submission, and chain observation mechanisms. It cannot choose or persist a
+  recovery.
+- Purchase no longer calls the recovery adapter or writes staging recovery
+  plans and observations.
+- Treasury interface tests prove one durable recovery, an expired execution
+  lease takeover, one winning recovery Effect, and no duplicate submission.
+  Existing Purchase tests prove restart recovery, the exact-payment winner,
+  conflict, and the authorized additional-cost ceiling.
+- The physical Journal schema, Kaspa-x402 behavior and pin, public API, and
+  sibling repositories did not change.
+- The focused C5 command ran 74 tests. All 74 passed. The full test command ran
+  613 tests: 612 passed and one privileged ownership test was skipped as
   expected. Offline smoke passed.
 
 Verification gate:

@@ -14,8 +14,8 @@ import type {
   StagingRecoveryPreparationContext,
   StagingRecoveryReadiness,
   StagingRecoverySubmission,
-  TreasuryStagingRecoveryModule,
-} from "../../purchase/coordinator.js";
+  TreasuryStagingRecoveryAdapter,
+} from "../../treasury/staging-recovery.js";
 import type { Sha256Digest } from "../../purchase/types.js";
 import { evidenceDigest } from "../../purchase/identity.js";
 import type { ChainEvidenceFinalitySelector } from "../../chain-evidence/types.js";
@@ -51,7 +51,7 @@ export interface KaspaStagingRecoveryModuleOptions {
  * Purchase seam.
  */
 export class KaspaStagingRecoveryModule
-  implements TreasuryStagingRecoveryModule
+  implements TreasuryStagingRecoveryAdapter
 {
   constructor(private readonly options: KaspaStagingRecoveryModuleOptions) {
     if (

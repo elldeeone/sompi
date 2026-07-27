@@ -212,14 +212,16 @@ Architecture Phase 3 is complete.
 Architecture Phase 4 is active. It started from
 `aab94d95df42e7ffdf1ca3ff1c00bdd3e2e71fae`.
 
-Phase 4 C4 is complete. Treasury now owns Purchase staging preparation and
-execution. It owns prepared material validation, durable prepared bytes, the
-planned Effect fence, submission, observation, ambiguity, reconciliation, and
-proof-backed retry.
+Phase 4 C5 is complete. Treasury now owns Purchase staging preparation,
+execution, and abandoned staging recovery. It owns prepared material
+validation, durable prepared bytes, Effect fences, submission, observation,
+ambiguity, reconciliation, proof-backed retry, recovery planning, and lease
+takeover.
 
-Purchase uses two small Treasury operations. It calls
+Purchase uses three small Treasury operations. It calls
 `preparePurchaseStaging` and `executePurchaseStaging` with only the Purchase ID
-and attempt number. It does not receive or submit staging bytes. The Purchase
+and attempt number. It calls `recoverPurchaseStaging` with only the Purchase
+ID. It does not receive or submit staging or recovery bytes. The Purchase
 reconciler no longer observes or records Treasury staging Effects.
 
 The Kaspa-x402 adapter still owns protocol checks and transaction preparation.
@@ -228,13 +230,18 @@ when those mechanisms run and when their Sompi outcome becomes durable. It
 reconstructs the exact adapter context from the Journal. An ambiguous effect
 is observed before any proof-backed retry. A retry uses the same durable bytes.
 
-Purchase still owns abandoned staging recovery and lease takeover until C5.
+The Kaspa-x402 recovery adapter still owns recovery transaction construction,
+submission, and chain observation mechanisms. Treasury owns recovery
+qualification, durable planning, recovery leases, takeover, and the durable
+winner. Purchase does not call that adapter or write staging recovery plans and
+observations.
+
 The physical Journal schema, Kaspa-x402 behavior and pin, public API, and
 sibling repositories did not change.
 
-The focused C4 command ran 88 tests. All 88 passed. The full test command ran
-611 tests: 610 passed and one privileged ownership test was skipped as
+The focused C5 command ran 74 tests. All 74 passed. The full test command ran
+613 tests: 612 passed and one privileged ownership test was skipped as
 expected. Offline smoke passed.
 
-Phase 4 C5 is next. Do not start C5 until its staging recovery move is
+Phase 4 C6 is next. Do not start C6 until its clean-cutover deletion is
 explicitly started.

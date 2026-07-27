@@ -42,6 +42,11 @@ import {
   type TreasuryStagingAdapter,
   type TreasuryStagingPreparationAdapter,
 } from "./purchase-staging.js";
+import type {
+  PreparedStagingRecovery,
+  StagingRecoveryObservation,
+  TreasuryStagingRecoveryAdapter,
+} from "./staging-recovery.js";
 
 const NOW = 1_900_000_000_000;
 const DESTINATION = "kaspatest:merchant";
@@ -608,6 +613,139 @@ test("Treasury observes ambiguity and retries only after proof with the same byt
     ]);
     const plan = journal.requireTreasuryStagingPlan(purchaseId, 1);
     assert.equal(journal.requireEffect(plan.effectId).state, "observed");
+  });
+});
+
+test("Treasury plans, submits, and completes abandoned staging recovery through one interface", async () => {
+  await withFixture(async ({
+    journal,
+    policy,
+    wallet,
+    vault,
+    deposit,
+    now,
+    advanceTime,
+  }) => {
+    const purchaseId = authorizedPurchase(journal, 81, "100");
+    const stagingTransactionId = "56".repeat(32);
+    const recovery = new FakeStagingRecoveryAdapter(now);
+    const module = purchaseStagingModule({
+      journal,
+      policy,
+      adapters: [wallet, vault, deposit],
+      prepareStaging: async () => preparedStaging(stagingTransactionId, "110"),
+      submitStaging: async () => ({
+        status: "staged",
+        submissionDigest: evidenceDigest("recoverable-staging-submission"),
+        staging: treasuryStagingResult(stagingTransactionId, "110", "recoverable"),
+      }),
+      observeStaging: async () => {
+        throw new Error("test did not expect staging observation");
+      },
+      stagingRecovery: recovery,
+      now,
+    });
+    await prepareRecoverableStaging(
+      journal,
+      module,
+      purchaseId,
+      "res_staging_recovery_owned",
+    );
+    advanceTime(Date.parse("2100-01-01T00:00:00.000Z") - now());
+
+    recovery.observeMode = "safe_to_submit";
+    const submitted = await module.recoverPurchaseStaging({ purchaseId });
+    assert.equal(submitted.status, "pending");
+    assert.equal(recovery.prepareCalls, 1);
+    assert.equal(recovery.submitCalls, 1);
+    assert.ok(journal.requireTreasuryStagingRecoveryPlan(purchaseId, 1));
+
+    recovery.observeMode = "recovery_won";
+    const recovered = await module.recoverPurchaseStaging({ purchaseId });
+    assert.equal(recovered.status, "recovery_won");
+    assert.equal(recovery.prepareCalls, 1);
+    assert.equal(recovery.submitCalls, 1);
+    assert.equal(
+      journal.treasuryStagingRecoveryJournalContext(purchaseId, 1)?.reservation
+        .state,
+      "released",
+    );
+
+    assert.equal(
+      (await module.recoverPurchaseStaging({ purchaseId })).status,
+      "recovery_won",
+    );
+    assert.equal(recovery.submitCalls, 1);
+  });
+});
+
+test("Treasury takes over an expired staging recovery lease without a duplicate effect", async () => {
+  await withFixture(async ({
+    journal,
+    policy,
+    wallet,
+    vault,
+    deposit,
+    now,
+    advanceTime,
+  }) => {
+    const purchaseId = authorizedPurchase(journal, 82, "100");
+    const stagingTransactionId = "78".repeat(32);
+    const recovery = new FakeStagingRecoveryAdapter(now);
+    const moduleFor = () =>
+      purchaseStagingModule({
+        journal,
+        policy,
+        adapters: [wallet, vault, deposit],
+        prepareStaging: async () =>
+          preparedStaging(stagingTransactionId, "110"),
+        submitStaging: async () => ({
+          status: "staged",
+          submissionDigest: evidenceDigest("takeover-staging-submission"),
+          staging: treasuryStagingResult(
+            stagingTransactionId,
+            "110",
+            "takeover",
+          ),
+        }),
+        observeStaging: async () => {
+          throw new Error("test did not expect staging observation");
+        },
+        stagingRecovery: recovery,
+        now,
+      });
+    const first = moduleFor();
+    await prepareRecoverableStaging(
+      journal,
+      first,
+      purchaseId,
+      "res_staging_recovery_takeover",
+    );
+    advanceTime(Date.parse("2100-01-01T00:00:00.000Z") - now());
+    recovery.observeMode = "safe_to_submit";
+    const blockedObservation = recovery.blockNextObservation();
+
+    const staleDriver = first.recoverPurchaseStaging({ purchaseId });
+    await blockedObservation.entered;
+    advanceTime(60_001);
+
+    const successor = await moduleFor().recoverPurchaseStaging({ purchaseId });
+    assert.equal(successor.status, "pending");
+    assert.equal(recovery.submitCalls, 1);
+
+    blockedObservation.release();
+    assert.equal((await staleDriver).status, "pending");
+    assert.equal(recovery.submitCalls, 1);
+
+    recovery.observeMode = "recovery_won";
+    const winner = await moduleFor().recoverPurchaseStaging({ purchaseId });
+    assert.equal(winner.status, "recovery_won");
+    assert.equal(recovery.submitCalls, 1);
+    assert.equal(
+      journal.treasuryStagingRecoveryJournalContext(purchaseId, 1)?.effect
+        .state,
+      "observed",
+    );
   });
 });
 
@@ -1550,6 +1688,152 @@ function notSubmitted(transactionId: string): TreasuryOperationProbe {
   return { status: "not_submitted", detail: { status: "not_submitted", transactionId } };
 }
 
+class FakeStagingRecoveryAdapter implements TreasuryStagingRecoveryAdapter {
+  prepareCalls = 0;
+  observeCalls = 0;
+  submitCalls = 0;
+  observeMode:
+    | "safe_to_submit"
+    | "pending"
+    | "exact_payment_won"
+    | "recovery_won"
+    | "conflict" = "pending";
+  private observationGate?: {
+    readonly entered: Promise<void>;
+    readonly release: () => void;
+  };
+
+  constructor(private readonly now: () => number) {}
+
+  blockNextObservation(): {
+    readonly entered: Promise<void>;
+    readonly release: () => void;
+  } {
+    let markEntered!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      markEntered = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.observationGate = {
+      entered,
+      release: () => release(),
+    };
+    const gate = this.observationGate;
+    this.blockedObservation = async () => {
+      markEntered();
+      await blocked;
+    };
+    return gate;
+  }
+
+  private blockedObservation?: () => Promise<void>;
+
+  async prepare(
+    input: Parameters<TreasuryStagingRecoveryAdapter["prepare"]>[0],
+  ): Promise<Readonly<PreparedStagingRecovery>> {
+    this.prepareCalls += 1;
+    const recoveryTransactionId = "90".repeat(32);
+    const preparedBytes = Buffer.from(
+      JSON.stringify({
+        purchaseId: input.purchaseId,
+        exactTransactionId: input.exactPayment?.transactionId ?? null,
+        recoveryTransactionId,
+      }),
+      "utf8",
+    );
+    return Object.freeze({
+      preparedBytes,
+      preparedDigest: evidenceDigest(preparedBytes),
+      exactTransactionId: input.exactPayment?.transactionId,
+      recoveryTransactionId,
+      recoveryOutpoint: `${recoveryTransactionId}:0`,
+      recoveryAmountAtomic: "109",
+      stagingFeeAtomic: "1",
+      recoveryFeeAtomic: "1",
+      requiredFinality: "accepted",
+    });
+  }
+
+  async observe(
+    input: Parameters<TreasuryStagingRecoveryAdapter["observe"]>[0],
+  ): Promise<Readonly<StagingRecoveryObservation>> {
+    this.observeCalls += 1;
+    const blocked = this.blockedObservation;
+    this.blockedObservation = undefined;
+    if (blocked) await blocked();
+    const prepared = JSON.parse(
+      Buffer.from(input.preparedBytes).toString("utf8"),
+    ) as {
+      exactTransactionId: string | null;
+      recoveryTransactionId: string;
+    };
+    const evidence = evidenceDigest(
+      `staging-recovery:${this.observeMode}:${this.observeCalls}`,
+    );
+    switch (this.observeMode) {
+      case "safe_to_submit": {
+        const observedAtMs = this.now();
+        return {
+          status: "safe_to_submit",
+          evidenceDigest: evidence,
+          readiness: {
+            proofDigest: evidenceDigest(`readiness:${this.observeCalls}`),
+            observedAtMs,
+            expiresAtMs: observedAtMs + 1_000,
+            token: Object.freeze({ call: this.observeCalls }),
+          },
+        };
+      }
+      case "pending":
+        return { status: "pending", evidenceDigest: evidence };
+      case "exact_payment_won":
+        if (!prepared.exactTransactionId) {
+          throw new Error("test recovery has no exact payment candidate");
+        }
+        return {
+          status: "exact_payment_won",
+          transactionId: prepared.exactTransactionId,
+          finality: "accepted",
+          evidenceDigest: evidence,
+        };
+      case "recovery_won":
+        return {
+          status: "recovery_won",
+          transactionId: prepared.recoveryTransactionId,
+          recoveryOutpoint: `${prepared.recoveryTransactionId}:0`,
+          recoveryAmountAtomic: "109",
+          finality: "accepted",
+          evidenceDigest: evidence,
+        };
+      case "conflict":
+        return {
+          status: "conflict",
+          reason: "unknown_staging_spender",
+          evidenceDigest: evidence,
+        };
+    }
+  }
+
+  async submit(
+    input: Parameters<TreasuryStagingRecoveryAdapter["submit"]>[0],
+  ) {
+    this.submitCalls += 1;
+    const prepared = JSON.parse(
+      Buffer.from(input.preparedBytes).toString("utf8"),
+    ) as { recoveryTransactionId: string };
+    return {
+      status: "accepted" as const,
+      transactionId: prepared.recoveryTransactionId,
+      submissionDigest: evidenceDigest(
+        `staging-recovery-submit:${this.submitCalls}`,
+      ),
+    };
+  }
+}
+
 function purchaseStagingModule(input: {
   journal: PurchaseJournal;
   policy: PolicyEngine;
@@ -1557,6 +1841,8 @@ function purchaseStagingModule(input: {
   prepareStaging: TreasuryStagingPreparationAdapter["prepareStaging"];
   submitStaging?: TreasuryStagingAdapter["submitStaging"];
   observeStaging?: TreasuryStagingAdapter["observeStaging"];
+  stagingRecovery?: TreasuryStagingRecoveryAdapter;
+  now?: () => number;
 }): TreasuryOperationModule {
   const unexpected = async (): Promise<never> => {
     throw new Error("test did not expect Treasury staging submission");
@@ -1578,13 +1864,61 @@ function purchaseStagingModule(input: {
         submitStaging: input.submitStaging ?? unexpected,
         observeStaging: input.observeStaging ?? unexpected,
       },
-      stagingRecovery: {
+      stagingRecovery: input.stagingRecovery ?? {
         prepare: unexpected,
         observe: unexpected,
         submit: unexpected,
       },
-      now: () => NOW,
+      now: input.now ?? (() => NOW),
     },
+  });
+}
+
+async function prepareRecoverableStaging(
+  journal: PurchaseJournal,
+  module: TreasuryOperationModule,
+  purchaseId: PurchaseId,
+  reservationId: string,
+): Promise<void> {
+  await module.reservePurchaseCapacity(
+    purchaseCapacityInput(journal, purchaseId, reservationId),
+  );
+  const input = purchaseStagingInput(journal, purchaseId);
+  const preparation = await module.preparePurchaseStaging(input);
+  journal.transitionPurchase(
+    purchaseId,
+    "authorised",
+    "execution_prepared",
+    "test_treasury_staging_prepared",
+    preparation.payloadDigest,
+  );
+  const execution = await module.executePurchaseStaging(input);
+  assert.equal(execution.status, "observed");
+  if (execution.status !== "observed") return;
+  journal.transitionPurchase(
+    purchaseId,
+    "execution_prepared",
+    "failed_recoverable",
+    "test_treasury_staging_abandoned",
+    execution.evidenceDigest,
+  );
+}
+
+function preparedStaging(
+  transactionId: string,
+  stagingAmountAtomic: string,
+) {
+  const preparedBytes = Buffer.from(
+    `prepared-staging:${transactionId}`,
+    "utf8",
+  );
+  return Object.freeze({
+    preparedBytes,
+    preparedDigest: evidenceDigest(preparedBytes),
+    transactionId,
+    expectedOutpoint: `${transactionId}:0`,
+    stagingAmountAtomic,
+    fundingSource: "vault-treasury" as const,
   });
 }
 
@@ -1613,6 +1947,7 @@ async function withFixture(
     vault: FakeAdapter;
     deposit: FakeAdapter;
     module: TreasuryOperationModule;
+    now(): number;
     advanceTime(milliseconds: number): void;
   }) => Promise<void>,
   limits: {
@@ -1659,6 +1994,7 @@ async function withFixture(
       vault,
       deposit,
       module,
+      now,
       advanceTime(milliseconds: number) {
         currentTime += milliseconds;
       },
