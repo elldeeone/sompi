@@ -1,15 +1,44 @@
-const PROFILE = "urn:sompi:evidence:phase4-c7-restart-proof:1";
 const NETWORK = "kaspa:testnet-10";
 const EXACT_PROFILE = "standard-native";
 const RECONSTRUCTION = "durable-journal-transition-prefix";
 
-export interface Phase4RestartMovement {
+export type RestartEvidenceSet = "phase4-c7" | "phase5-c5";
+
+interface RestartEvidenceConfiguration {
+  readonly restartProfile: string;
+  readonly verificationProfile: string;
+  readonly phaseBase?: string;
+  readonly assertions?: Readonly<Record<string, true>>;
+}
+
+const CONFIGURATIONS: Readonly<
+  Record<RestartEvidenceSet, RestartEvidenceConfiguration>
+> = Object.freeze({
+  "phase4-c7": Object.freeze({
+    restartProfile: "urn:sompi:evidence:phase4-c7-restart-proof:1",
+    verificationProfile: "urn:sompi:evidence:phase4-c7:2",
+  }),
+  "phase5-c5": Object.freeze({
+    restartProfile: "urn:sompi:evidence:phase5-c5-restart-proof:1",
+    verificationProfile: "urn:sompi:evidence:phase5-c5:1",
+    phaseBase: "a258727aca0e735fe5ca97253c20abe9eb6a742f",
+    assertions: Object.freeze({
+      samePurchaseAcrossRestart: true,
+      sameStagingEffectAcrossRestart: true,
+      sameStagingTransactionAcrossRestart: true,
+      onePaymentEffect: true,
+      oneMerchantExactTransaction: true,
+    }),
+  }),
+});
+
+export interface RestartMovement {
   readonly kind: string;
   readonly state: string;
   readonly transactionId: string;
 }
 
-export interface Phase4RestartEffect {
+export interface RestartEffect {
   readonly id: string;
   readonly kind: string;
   readonly state: string;
@@ -17,34 +46,35 @@ export interface Phase4RestartEffect {
   readonly transitions: readonly string[];
 }
 
-export interface Phase4RestartPaymentAttempt {
+export interface RestartPaymentAttempt {
   readonly purchaseId: string;
   readonly attempt: number;
   readonly identifier: string;
   readonly state: string;
 }
 
-export interface Phase4RestartSettlement {
+export interface RestartSettlement {
   readonly purchaseId: string;
   readonly attempt: number;
   readonly transactionId: string;
 }
 
-export interface Phase4RestartSnapshot {
+export interface RestartSnapshot {
   readonly stage: "before_restart" | "after_restart";
   readonly capturedAt: string;
   readonly purchase: {
     readonly id: string;
     readonly state: string;
   };
-  readonly directMovements: readonly Phase4RestartMovement[];
-  readonly effects: readonly Phase4RestartEffect[];
-  readonly paymentAttempts: readonly Phase4RestartPaymentAttempt[];
-  readonly settlements: readonly Phase4RestartSettlement[];
+  readonly directMovements: readonly RestartMovement[];
+  readonly effects: readonly RestartEffect[];
+  readonly paymentAttempts: readonly RestartPaymentAttempt[];
+  readonly settlements: readonly RestartSettlement[];
   readonly merchantExactTransactionIds: readonly string[];
 }
 
-export interface Phase4RestartReport {
+export interface RestartReport {
+  readonly network?: string;
   readonly purchase?: {
     readonly id?: string;
     readonly state?: string;
@@ -54,7 +84,7 @@ export interface Phase4RestartReport {
   };
 }
 
-export interface Phase4RestartProcessFacts {
+export interface RestartProcessFacts {
   readonly durableActivityStartedAtMs: number;
   readonly durableStopRecordedAtMs: number;
   readonly firstDurableRecoveryAtMs: number;
@@ -63,13 +93,26 @@ export interface Phase4RestartProcessFacts {
   readonly secondExitCode: 0;
 }
 
-export function createPhase4RestartEvidence(input: {
-  readonly beforeRestart: Phase4RestartSnapshot;
-  readonly afterRestart: Phase4RestartSnapshot;
-  readonly report: Phase4RestartReport;
-  readonly process: Phase4RestartProcessFacts;
+export function restartEvidenceConfiguration(
+  evidenceSet: string,
+): RestartEvidenceConfiguration {
+  const configuration =
+    CONFIGURATIONS[evidenceSet as RestartEvidenceSet];
+  if (configuration === undefined) {
+    throw new Error(`unsupported restart evidence set: ${evidenceSet}`);
+  }
+  return configuration;
+}
+
+export function createRestartEvidence(input: {
+  readonly evidenceSet: string;
+  readonly beforeRestart: RestartSnapshot;
+  readonly afterRestart: RestartSnapshot;
+  readonly report: RestartReport;
+  readonly process: RestartProcessFacts;
   readonly generatedAt?: string;
 }) {
+  const configuration = restartEvidenceConfiguration(input.evidenceSet);
   const processBoundary = processBoundaryFrom(input.process);
   const beforeRestart = Object.freeze({
     ...input.beforeRestart,
@@ -83,7 +126,7 @@ export function createPhase4RestartEvidence(input: {
     input.report,
   );
   return Object.freeze({
-    profile: PROFILE,
+    profile: configuration.restartProfile,
     generatedAt: requireIsoTimestamp(
       input.generatedAt ?? new Date().toISOString(),
       "restart evidence generation",
@@ -97,7 +140,53 @@ export function createPhase4RestartEvidence(input: {
   });
 }
 
-function processBoundaryFrom(process: Phase4RestartProcessFacts) {
+export function createRestartVerification(input: {
+  readonly evidenceSet: string;
+  readonly report: RestartReport;
+  readonly reportSha256: string;
+  readonly restartSha256: string;
+  readonly generatedAt?: string;
+}) {
+  const configuration = restartEvidenceConfiguration(input.evidenceSet);
+  if (
+    input.report.network !== NETWORK ||
+    typeof input.report.purchase?.id !== "string" ||
+    input.report.purchase?.state !== "receipted"
+  ) {
+    throw new Error("restart verification report is invalid");
+  }
+  requireSha256(input.reportSha256, "standard report");
+  requireSha256(input.restartSha256, "restart proof");
+  return Object.freeze({
+    profile: configuration.verificationProfile,
+    generatedAt: requireIsoTimestamp(
+      input.generatedAt ?? new Date().toISOString(),
+      "restart verification generation",
+    ),
+    network: NETWORK,
+    ...(configuration.phaseBase === undefined
+      ? {}
+      : { phaseBase: configuration.phaseBase }),
+    purchaseId: input.report.purchase.id,
+    purchaseState: input.report.purchase.state,
+    artifacts: Object.freeze({
+      standardReport: Object.freeze({
+        filename: "standard-native.json",
+        sha256: input.reportSha256,
+      }),
+      restartProof: Object.freeze({
+        filename: "restart-proof.json",
+        sha256: input.restartSha256,
+      }),
+    }),
+    ...(configuration.assertions === undefined
+      ? {}
+      : { assertions: configuration.assertions }),
+    privateMaterialIncluded: false,
+  });
+}
+
+function processBoundaryFrom(process: RestartProcessFacts) {
   const durableActivityStartedAt = isoFromMilliseconds(
     process.durableActivityStartedAtMs,
     "first durable activity",
@@ -149,10 +238,10 @@ function processBoundaryFrom(process: Phase4RestartProcessFacts) {
 
 function verifyRestart(
   before: Readonly<
-    Phase4RestartSnapshot & { readonly captureMethod: string }
+    RestartSnapshot & { readonly captureMethod: string }
   >,
-  after: Phase4RestartSnapshot,
-  report: Phase4RestartReport,
+  after: RestartSnapshot,
+  report: RestartReport,
 ): string[] {
   if (
     before.stage !== "before_restart" ||
@@ -251,6 +340,12 @@ function requireIsoTimestamp(value: string, label: string): string {
     throw new Error(`${label} timestamp is invalid`);
   }
   return value;
+}
+
+function requireSha256(value: string, label: string): void {
+  if (!/^[a-f0-9]{64}$/.test(value)) {
+    throw new Error(`${label} SHA-256 is invalid`);
+  }
 }
 
 function isTransactionId(value: unknown): value is string {

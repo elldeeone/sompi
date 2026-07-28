@@ -1,0 +1,147 @@
+{
+  "profile": "urn:sompi:evidence:phase5-c5-restart-proof:1",
+  "generatedAt": "2026-07-28T06:48:24.538Z",
+  "network": "kaspa:testnet-10",
+  "exactProfile": "standard-native",
+  "processBoundary": {
+    "firstInvocation": {
+      "sequence": 1,
+      "durableActivityStartedAt": "2026-07-28T06:48:06.854Z",
+      "durableStopRecordedAt": "2026-07-28T06:48:07.181Z",
+      "stopTrigger": "purchase-failed-recoverable",
+      "exitSignal": "SIGTERM"
+    },
+    "secondInvocation": {
+      "sequence": 2,
+      "firstDurableRecoveryAt": "2026-07-28T06:48:08.132Z",
+      "completedAt": "2026-07-28T06:48:24.534Z",
+      "exitCode": 0
+    },
+    "reconstruction": "durable-journal-transition-prefix"
+  },
+  "recoveredEffectIds": [
+    "eff_naZHqLKJWXXqbUCKF02uLA"
+  ],
+  "beforeRestart": {
+    "stage": "before_restart",
+    "capturedAt": "2026-07-28T06:48:07.181Z",
+    "purchase": {
+      "id": "pur_219srWkwAKUD1Ti0uB3jvQ",
+      "state": "failed_recoverable"
+    },
+    "directMovements": [
+      {
+        "kind": "wallet_send",
+        "state": "completed",
+        "transactionId": "86bbef979db51c453875bba65fb93aeac2c3a755099f948a8cb16f136641283b"
+      },
+      {
+        "kind": "wallet_send",
+        "state": "completed",
+        "transactionId": "feb2fe50d8678366ae0df81816cc4c17863798cff44a8ddbb6a1c127653710b4"
+      },
+      {
+        "kind": "vault_deposit",
+        "state": "completed",
+        "transactionId": "c3aae7ef9ffe9d95825ade9b56e6ed3c39e4199989a017ce118e2aa422e5108e"
+      }
+    ],
+    "effects": [
+      {
+        "id": "eff_naZHqLKJWXXqbUCKF02uLA",
+        "kind": "treasury-staging",
+        "state": "submitted",
+        "transactionId": "fb00dda7cbbef8f844a5bba2e3ce547a8da3e1f61d4bd9860152139471bd096c",
+        "transitions": [
+          "planned",
+          "executing",
+          "submitted"
+        ]
+      }
+    ],
+    "paymentAttempts": [
+      {
+        "purchaseId": "pur_219srWkwAKUD1Ti0uB3jvQ",
+        "attempt": 1,
+        "identifier": "pay_KJ6zKSXnESYCaVwCa2X0KMZ33DX0FKODeo0593n1b2E",
+        "state": "planned"
+      }
+    ],
+    "settlements": [],
+    "merchantExactTransactionIds": [],
+    "captureMethod": "durable-journal-transition-prefix"
+  },
+  "afterRestart": {
+    "stage": "after_restart",
+    "capturedAt": "2026-07-28T06:48:24.536Z",
+    "purchase": {
+      "id": "pur_219srWkwAKUD1Ti0uB3jvQ",
+      "state": "receipted"
+    },
+    "directMovements": [
+      {
+        "kind": "wallet_send",
+        "state": "completed",
+        "transactionId": "86bbef979db51c453875bba65fb93aeac2c3a755099f948a8cb16f136641283b"
+      },
+      {
+        "kind": "wallet_send",
+        "state": "completed",
+        "transactionId": "feb2fe50d8678366ae0df81816cc4c17863798cff44a8ddbb6a1c127653710b4"
+      },
+      {
+        "kind": "vault_deposit",
+        "state": "completed",
+        "transactionId": "c3aae7ef9ffe9d95825ade9b56e6ed3c39e4199989a017ce118e2aa422e5108e"
+      }
+    ],
+    "effects": [
+      {
+        "id": "eff_naZHqLKJWXXqbUCKF02uLA",
+        "kind": "treasury-staging",
+        "state": "observed",
+        "transactionId": "fb00dda7cbbef8f844a5bba2e3ce547a8da3e1f61d4bd9860152139471bd096c",
+        "transitions": [
+          "planned",
+          "executing",
+          "submitted",
+          "ambiguous",
+          "ambiguous",
+          "ambiguous",
+          "ambiguous",
+          "observed"
+        ]
+      },
+      {
+        "id": "eff_m_hSciWf_tCaxR5Y_txcfA",
+        "kind": "kaspa-x402-payment",
+        "state": "observed",
+        "transactionId": "5fc3771335704b9a724dfa110cfd2bcdc0da4674950d4f366b3b6fce6d6f72f6",
+        "transitions": [
+          "planned",
+          "executing",
+          "ambiguous",
+          "observed"
+        ]
+      }
+    ],
+    "paymentAttempts": [
+      {
+        "purchaseId": "pur_219srWkwAKUD1Ti0uB3jvQ",
+        "attempt": 1,
+        "identifier": "pay_KJ6zKSXnESYCaVwCa2X0KMZ33DX0FKODeo0593n1b2E",
+        "state": "observed"
+      }
+    ],
+    "settlements": [
+      {
+        "purchaseId": "pur_219srWkwAKUD1Ti0uB3jvQ",
+        "attempt": 1,
+        "transactionId": "5fc3771335704b9a724dfa110cfd2bcdc0da4674950d4f366b3b6fce6d6f72f6"
+      }
+    ],
+    "merchantExactTransactionIds": [
+      "5fc3771335704b9a724dfa110cfd2bcdc0da4674950d4f366b3b6fce6d6f72f6"
+    ]
+  }
+}

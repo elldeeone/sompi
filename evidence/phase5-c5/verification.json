@@ -1,0 +1,26 @@
+{
+  "profile": "urn:sompi:evidence:phase5-c5:1",
+  "generatedAt": "2026-07-28T06:48:24.538Z",
+  "network": "kaspa:testnet-10",
+  "phaseBase": "a258727aca0e735fe5ca97253c20abe9eb6a742f",
+  "purchaseId": "pur_219srWkwAKUD1Ti0uB3jvQ",
+  "purchaseState": "receipted",
+  "artifacts": {
+    "standardReport": {
+      "filename": "standard-native.json",
+      "sha256": "f9ac0bc9413ed94b09c29c23de724378e19df5a81181859693154544261a40b0"
+    },
+    "restartProof": {
+      "filename": "restart-proof.json",
+      "sha256": "8ac215de641aa69085765a3588f48fc69e65121069e41d335d1d55bab45611d6"
+    }
+  },
+  "assertions": {
+    "samePurchaseAcrossRestart": true,
+    "sameStagingEffectAcrossRestart": true,
+    "sameStagingTransactionAcrossRestart": true,
+    "onePaymentEffect": true,
+    "oneMerchantExactTransaction": true
+  },
+  "privateMaterialIncluded": false
+}

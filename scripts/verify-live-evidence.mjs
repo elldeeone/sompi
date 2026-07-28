@@ -10,10 +10,16 @@ const historicalEvidence = path.join(root, "evidence", "live-testnet10");
 const currentEvidence = path.join(root, "evidence", "generic-x402-cutover");
 const walletTransferEvidence = path.join(root, "evidence", "wallet-transfer");
 const phase4Evidence = path.join(root, "evidence", "phase4-c7");
+const phase5Evidence = path.join(root, "evidence", "phase5-c5");
 const phase4Expected = Object.freeze({
   "standard-native.json": "1bcce8f51cca40e52afb335fe3679b0fe2e0254ad83a29c9c5adb981c23ce4fb",
   "restart-proof.json": "554c52aca3400355e8d4b3604e9dcb54845ef5e74e9777b0fc044cab0cfba3d2",
   "verification.json": "168093a9edaf25d94ad57c1fb15d005f87f01893ed2c0b59d07d118c363881ba",
+});
+const phase5Expected = Object.freeze({
+  "standard-native.json": "f9ac0bc9413ed94b09c29c23de724378e19df5a81181859693154544261a40b0",
+  "restart-proof.json": "8ac215de641aa69085765a3588f48fc69e65121069e41d335d1d55bab45611d6",
+  "verification.json": "89018859b541887d0644e07c64927b7bbafcdb07b6ae0724439fc50e9a46c6cf",
 });
 const historicalExpected = Object.freeze({
   "standard-native.json": Object.freeze({
@@ -299,115 +305,13 @@ if (
   )
 ) throw new Error("0.10.0 automatic-funding evidence invariants changed");
 
-const phase4Artifacts = Object.fromEntries(
-  Object.entries(phase4Expected).map(([filename, digest]) => {
-    const bytes = fs.readFileSync(path.join(phase4Evidence, filename));
-    if (createHash("sha256").update(bytes).digest("hex") !== digest) {
-      throw new Error(`Phase 4 C7 evidence ${filename} digest changed`);
-    }
-    return [
-      filename,
-      JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
-    ];
-  })
-);
-const phase4Report = phase4Artifacts["standard-native.json"];
-const phase4Restart = phase4Artifacts["restart-proof.json"];
-const phase4Verification = phase4Artifacts["verification.json"];
-const phase4Encoded = JSON.stringify({
-  phase4Report,
-  phase4Restart,
-  phase4Verification,
-});
-const beforeRestart = phase4Restart.beforeRestart;
-const afterRestart = phase4Restart.afterRestart;
-const directMovements = afterRestart?.directMovements;
-const beforeStaging = beforeRestart?.effects?.[0];
-const afterStaging = afterRestart?.effects?.find(
-  (effect) => effect.id === beforeStaging?.id
-);
-const afterPayment = afterRestart?.effects?.find(
-  (effect) => effect.kind === "kaspa-x402-payment"
-);
-const beforeAttempt = beforeRestart?.paymentAttempts?.[0];
-const afterAttempt = afterRestart?.paymentAttempts?.[0];
-const firstStartedAt = Date.parse(
-  phase4Restart.processBoundary?.firstInvocation?.durableActivityStartedAt ?? ""
-);
-const firstStoppedAt = Date.parse(
-  phase4Restart.processBoundary?.firstInvocation?.durableStopRecordedAt ?? ""
-);
-const secondStartedAt = Date.parse(
-  phase4Restart.processBoundary?.secondInvocation?.firstDurableRecoveryAt ?? ""
-);
-const secondCompletedAt = Date.parse(
-  phase4Restart.processBoundary?.secondInvocation?.completedAt ?? ""
-);
-if (
-  phase4Report.profile !== "urn:sompi:e2e:live-testnet10-generic-x402-exact:3" ||
-  phase4Report.network !== "kaspa:testnet-10" ||
-  phase4Report.purchase?.state !== "receipted" ||
-  phase4Report.evidenceHandling?.publicFactsOnly !== true ||
-  phase4Restart.profile !== "urn:sompi:evidence:phase4-c7-restart-proof:1" ||
-  phase4Restart.network !== phase4Report.network ||
-  phase4Restart.exactProfile !== "standard-native" ||
-  phase4Verification.profile !== "urn:sompi:evidence:phase4-c7:2" ||
-  phase4Verification.network !== phase4Report.network ||
-  phase4Verification.purchaseId !== phase4Report.purchase?.id ||
-  phase4Verification.purchaseState !== phase4Report.purchase?.state ||
-  phase4Verification.artifacts?.standardReport?.filename !== "standard-native.json" ||
-  phase4Verification.artifacts?.standardReport?.sha256 !==
-    phase4Expected["standard-native.json"] ||
-  phase4Verification.artifacts?.restartProof?.filename !== "restart-proof.json" ||
-  phase4Verification.artifacts?.restartProof?.sha256 !==
-    phase4Expected["restart-proof.json"] ||
-  phase4Restart.processBoundary?.firstInvocation?.sequence !== 1 ||
-  phase4Restart.processBoundary?.firstInvocation?.stopTrigger !==
-    "purchase-failed-recoverable" ||
-  phase4Restart.processBoundary?.firstInvocation?.exitSignal !== "SIGTERM" ||
-  phase4Restart.processBoundary?.secondInvocation?.sequence !== 2 ||
-  phase4Restart.processBoundary?.secondInvocation?.exitCode !== 0 ||
-  phase4Restart.processBoundary?.reconstruction !==
-    "durable-journal-transition-prefix" ||
-  !Number.isFinite(firstStartedAt) ||
-  !Number.isFinite(firstStoppedAt) ||
-  !Number.isFinite(secondStartedAt) ||
-  !Number.isFinite(secondCompletedAt) ||
-  !(firstStartedAt <= firstStoppedAt &&
-    firstStoppedAt < secondStartedAt &&
-    secondStartedAt <= secondCompletedAt) ||
-  beforeRestart?.stage !== "before_restart" ||
-  beforeRestart?.captureMethod !== "durable-journal-transition-prefix" ||
-  beforeRestart?.purchase?.id !== phase4Report.purchase?.id ||
-  beforeRestart?.purchase?.state !== "failed_recoverable" ||
-  afterRestart?.stage !== "after_restart" ||
-  afterRestart?.purchase?.id !== beforeRestart?.purchase?.id ||
-  afterRestart?.purchase?.state !== phase4Report.purchase?.state ||
-  !Array.isArray(directMovements) ||
-  directMovements.length !== 3 ||
-  JSON.stringify(directMovements.map((movement) => movement.kind)) !==
-    JSON.stringify(["wallet_send", "wallet_send", "vault_deposit"]) ||
-  directMovements.some((movement) =>
-    movement.state !== "completed" ||
-    !/^[a-f0-9]{64}$/.test(movement.transactionId)
-  ) ||
-  JSON.stringify(beforeRestart?.directMovements) !== JSON.stringify(directMovements) ||
-  new Set(directMovements.map((movement) => movement.transactionId)).size !== 3 ||
-  directMovements[0].transactionId !== phase4Report.bootstrapFunding?.transactionId ||
-  directMovements[1].transactionId !== phase4Report.additiveHead?.created?.transactionId ||
-  directMovements[2].transactionId !== phase4Report.vaultDeposit?.transactionId ||
-  beforeRestart?.effects?.length !== 1 ||
-  beforeStaging?.kind !== "treasury-staging" ||
-  beforeStaging?.state !== "submitted" ||
-  beforeStaging?.transactionId !== phase4Report.transactions?.stagingTransactionId ||
-  JSON.stringify(beforeStaging?.transitions) !==
-    JSON.stringify(["planned", "executing", "submitted"]) ||
-  phase4Restart.recoveredEffectIds?.length !== 1 ||
-  phase4Restart.recoveredEffectIds[0] !== beforeStaging?.id ||
-  afterRestart?.effects?.length !== 2 ||
-  afterStaging?.state !== "observed" ||
-  afterStaging?.transactionId !== beforeStaging?.transactionId ||
-  JSON.stringify(afterStaging?.transitions) !== JSON.stringify([
+verifyFundedRestartEvidence({
+  label: "Phase 4 C7",
+  directory: phase4Evidence,
+  expected: phase4Expected,
+  restartProfile: "urn:sompi:evidence:phase4-c7-restart-proof:1",
+  verificationProfile: "urn:sompi:evidence:phase4-c7:2",
+  stagingTransitions: [
     "planned",
     "executing",
     "submitted",
@@ -415,39 +319,216 @@ if (
     "ambiguous",
     "ambiguous",
     "observed",
-  ]) ||
-  afterPayment?.state !== "observed" ||
-  afterPayment?.transactionId !== phase4Report.transactions?.exactTransactionId ||
-  JSON.stringify(afterPayment?.transitions) !==
-    JSON.stringify(["planned", "executing", "ambiguous", "observed"]) ||
-  beforeRestart?.paymentAttempts?.length !== 1 ||
-  beforeAttempt?.purchaseId !== phase4Report.purchase?.id ||
-  beforeAttempt?.attempt !== 1 ||
-  beforeAttempt?.state !== "planned" ||
-  afterRestart?.paymentAttempts?.length !== 1 ||
-  afterAttempt?.purchaseId !== beforeAttempt?.purchaseId ||
-  afterAttempt?.attempt !== beforeAttempt?.attempt ||
-  afterAttempt?.identifier !== beforeAttempt?.identifier ||
-  afterAttempt?.state !== "observed" ||
-  beforeRestart?.settlements?.length !== 0 ||
-  beforeRestart?.merchantExactTransactionIds?.length !== 0 ||
-  afterRestart?.settlements?.length !== 1 ||
-  afterRestart.settlements[0]?.purchaseId !== phase4Report.purchase?.id ||
-  afterRestart.settlements[0]?.attempt !== 1 ||
-  afterRestart.settlements[0]?.transactionId !==
-    phase4Report.transactions?.exactTransactionId ||
-  afterRestart?.merchantExactTransactionIds?.length !== 1 ||
-  afterRestart.merchantExactTransactionIds[0] !==
-    phase4Report.transactions?.exactTransactionId ||
-  phase4Verification.privateMaterialIncluded !== false ||
-  /(?:privateKey|wallet-key|owner\.key|ipc-mac\.key|sourceWalletDirectory|nodeUrl|telegramBotToken|apiCredential)/i.test(
-    phase4Encoded
-  )
-) throw new Error("Phase 4 C7 funded evidence invariants changed");
+  ],
+  verificationAssertions: [],
+});
+
+verifyFundedRestartEvidence({
+  label: "Phase 5 C5",
+  directory: phase5Evidence,
+  expected: phase5Expected,
+  restartProfile: "urn:sompi:evidence:phase5-c5-restart-proof:1",
+  verificationProfile: "urn:sompi:evidence:phase5-c5:1",
+  phaseBase: "a258727aca0e735fe5ca97253c20abe9eb6a742f",
+  stagingTransitions: [
+    "planned",
+    "executing",
+    "submitted",
+    "ambiguous",
+    "ambiguous",
+    "ambiguous",
+    "ambiguous",
+    "observed",
+  ],
+  verificationAssertions: [
+    "samePurchaseAcrossRestart",
+    "sameStagingEffectAcrossRestart",
+    "sameStagingTransactionAcrossRestart",
+    "onePaymentEffect",
+    "oneMerchantExactTransaction",
+  ],
+});
 
 process.stdout.write(
-  "Generic x402, wallet/Transfer, historical TN10, and Phase 4 C7 evidence passed.\n"
+  "Generic x402, wallet/Transfer, historical TN10, Phase 4 C7, and Phase 5 C5 evidence passed.\n"
 );
+
+function verifyFundedRestartEvidence(configuration) {
+  const artifacts = readDigestBoundArtifacts(
+    configuration.label,
+    configuration.directory,
+    configuration.expected,
+  );
+  const report = artifacts["standard-native.json"];
+  const restart = artifacts["restart-proof.json"];
+  const verification = artifacts["verification.json"];
+  const before = restart.beforeRestart;
+  const after = restart.afterRestart;
+  const directMovements = after?.directMovements;
+  const beforeStaging = before?.effects?.[0];
+  const afterStaging = after?.effects?.find(
+    (effect) => effect.id === beforeStaging?.id,
+  );
+  const afterPayment = after?.effects?.find(
+    (effect) => effect.kind === "kaspa-x402-payment",
+  );
+  const beforeAttempt = before?.paymentAttempts?.[0];
+  const afterAttempt = after?.paymentAttempts?.[0];
+  const firstStartedAt = Date.parse(
+    restart.processBoundary?.firstInvocation?.durableActivityStartedAt ?? "",
+  );
+  const firstStoppedAt = Date.parse(
+    restart.processBoundary?.firstInvocation?.durableStopRecordedAt ?? "",
+  );
+  const secondStartedAt = Date.parse(
+    restart.processBoundary?.secondInvocation?.firstDurableRecoveryAt ?? "",
+  );
+  const secondCompletedAt = Date.parse(
+    restart.processBoundary?.secondInvocation?.completedAt ?? "",
+  );
+  const assertionNames = Object.keys(verification.assertions ?? {}).sort();
+  const expectedAssertionNames =
+    [...configuration.verificationAssertions].sort();
+  const encoded = JSON.stringify({ report, restart, verification });
+
+  if (
+    report.profile !== "urn:sompi:e2e:live-testnet10-generic-x402-exact:3" ||
+    report.network !== "kaspa:testnet-10" ||
+    report.exactProfile !== "standard-native" ||
+    report.purchaseIngress !== "http-api" ||
+    report.purchase?.state !== "receipted" ||
+    report.liveKaspaTestnet10ExecutionProved !== true ||
+    report.evidenceHandling?.publicFactsOnly !== true ||
+    report.idempotency?.duplicatePurchaseReturnedSameId !== true ||
+    report.idempotency?.duplicateMerchantPaidRequestReturnedSameTransaction !== true ||
+    report.idempotency?.uniqueMerchantExactTransactions !== 1 ||
+    restart.profile !== configuration.restartProfile ||
+    restart.network !== report.network ||
+    restart.exactProfile !== report.exactProfile ||
+    verification.profile !== configuration.verificationProfile ||
+    verification.network !== report.network ||
+    verification.purchaseId !== report.purchase?.id ||
+    verification.purchaseState !== report.purchase?.state ||
+    (configuration.phaseBase === undefined
+      ? Object.hasOwn(verification, "phaseBase")
+      : verification.phaseBase !== configuration.phaseBase) ||
+    verification.artifacts?.standardReport?.filename !==
+      "standard-native.json" ||
+    verification.artifacts?.standardReport?.sha256 !==
+      configuration.expected["standard-native.json"] ||
+    verification.artifacts?.restartProof?.filename !==
+      "restart-proof.json" ||
+    verification.artifacts?.restartProof?.sha256 !==
+      configuration.expected["restart-proof.json"] ||
+    JSON.stringify(assertionNames) !==
+      JSON.stringify(expectedAssertionNames) ||
+    assertionNames.some(
+      (name) => verification.assertions[name] !== true,
+    ) ||
+    restart.processBoundary?.firstInvocation?.sequence !== 1 ||
+    restart.processBoundary?.firstInvocation?.stopTrigger !==
+      "purchase-failed-recoverable" ||
+    restart.processBoundary?.firstInvocation?.exitSignal !== "SIGTERM" ||
+    restart.processBoundary?.secondInvocation?.sequence !== 2 ||
+    restart.processBoundary?.secondInvocation?.exitCode !== 0 ||
+    restart.processBoundary?.reconstruction !==
+      "durable-journal-transition-prefix" ||
+    !Number.isFinite(firstStartedAt) ||
+    !Number.isFinite(firstStoppedAt) ||
+    !Number.isFinite(secondStartedAt) ||
+    !Number.isFinite(secondCompletedAt) ||
+    !(firstStartedAt <= firstStoppedAt &&
+      firstStoppedAt < secondStartedAt &&
+      secondStartedAt <= secondCompletedAt) ||
+    before?.stage !== "before_restart" ||
+    before?.captureMethod !== "durable-journal-transition-prefix" ||
+    before?.purchase?.id !== report.purchase?.id ||
+    before?.purchase?.state !== "failed_recoverable" ||
+    after?.stage !== "after_restart" ||
+    after?.purchase?.id !== before?.purchase?.id ||
+    after?.purchase?.state !== report.purchase?.state ||
+    !Array.isArray(directMovements) ||
+    directMovements.length !== 3 ||
+    JSON.stringify(directMovements.map((movement) => movement.kind)) !==
+      JSON.stringify(["wallet_send", "wallet_send", "vault_deposit"]) ||
+    directMovements.some(
+      (movement) =>
+        movement.state !== "completed" ||
+        !/^[a-f0-9]{64}$/.test(movement.transactionId),
+    ) ||
+    JSON.stringify(before?.directMovements) !==
+      JSON.stringify(directMovements) ||
+    new Set(directMovements.map((movement) => movement.transactionId))
+      .size !== 3 ||
+    directMovements[0].transactionId !==
+      report.bootstrapFunding?.transactionId ||
+    directMovements[1].transactionId !==
+      report.additiveHead?.created?.transactionId ||
+    directMovements[2].transactionId !==
+      report.vaultDeposit?.transactionId ||
+    before?.effects?.length !== 1 ||
+    beforeStaging?.kind !== "treasury-staging" ||
+    beforeStaging?.state !== "submitted" ||
+    beforeStaging?.transactionId !==
+      report.transactions?.stagingTransactionId ||
+    JSON.stringify(beforeStaging?.transitions) !==
+      JSON.stringify(["planned", "executing", "submitted"]) ||
+    restart.recoveredEffectIds?.length !== 1 ||
+    restart.recoveredEffectIds[0] !== beforeStaging?.id ||
+    after?.effects?.length !== 2 ||
+    afterStaging?.state !== "observed" ||
+    afterStaging?.transactionId !== beforeStaging?.transactionId ||
+    JSON.stringify(afterStaging?.transitions) !==
+      JSON.stringify(configuration.stagingTransitions) ||
+    afterPayment?.state !== "observed" ||
+    afterPayment?.transactionId !==
+      report.transactions?.exactTransactionId ||
+    JSON.stringify(afterPayment?.transitions) !==
+      JSON.stringify(["planned", "executing", "ambiguous", "observed"]) ||
+    before?.paymentAttempts?.length !== 1 ||
+    beforeAttempt?.purchaseId !== report.purchase?.id ||
+    beforeAttempt?.attempt !== 1 ||
+    beforeAttempt?.state !== "planned" ||
+    after?.paymentAttempts?.length !== 1 ||
+    afterAttempt?.purchaseId !== beforeAttempt?.purchaseId ||
+    afterAttempt?.attempt !== beforeAttempt?.attempt ||
+    afterAttempt?.identifier !== beforeAttempt?.identifier ||
+    afterAttempt?.state !== "observed" ||
+    before?.settlements?.length !== 0 ||
+    before?.merchantExactTransactionIds?.length !== 0 ||
+    after?.settlements?.length !== 1 ||
+    after.settlements[0]?.purchaseId !== report.purchase?.id ||
+    after.settlements[0]?.attempt !== 1 ||
+    after.settlements[0]?.transactionId !==
+      report.transactions?.exactTransactionId ||
+    after?.merchantExactTransactionIds?.length !== 1 ||
+    after.merchantExactTransactionIds[0] !==
+      report.transactions?.exactTransactionId ||
+    verification.privateMaterialIncluded !== false ||
+    /(?:privateKey|wallet-key|owner\.key|ipc-mac\.key|sourceWalletDirectory|nodeUrl|telegramBotToken|apiCredential)/i.test(
+      encoded,
+    )
+  ) {
+    throw new Error(
+      `${configuration.label} funded evidence invariants changed`,
+    );
+  }
+}
+
+function readDigestBoundArtifacts(label, directory, expected) {
+  return Object.fromEntries(
+    Object.entries(expected).map(([filename, digest]) => {
+      const bytes = fs.readFileSync(path.join(directory, filename));
+      if (createHash("sha256").update(bytes).digest("hex") !== digest) {
+        throw new Error(`${label} evidence ${filename} digest changed`);
+      }
+      return [
+        filename,
+        JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)),
+      ];
+    }),
+  );
+}
 
 function readHistorical(filename) {
   return JSON.parse(fs.readFileSync(path.join(historicalEvidence, filename), "utf8"));

@@ -1319,10 +1319,10 @@ test("reconciliation renews its fence across a slow observer", async () => {
       payloadDigest: evidenceDigest(preparedBytes),
       preparedBytes,
     });
-    const claim = journal.claimEffect(effect.id, "executor", 5);
+    const claim = journal.claimEffect(effect.id, "executor", 30_000);
     assert.ok(claim);
     journal.markEffectSubmitted(claim, evidenceDigest("slow-accepted"));
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.equal(journal.releaseLease(claim.lease), true);
     const reconciler = new PurchaseReconciler(
       journal,
       new Map([

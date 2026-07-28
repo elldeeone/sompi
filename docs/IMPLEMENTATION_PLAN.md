@@ -1,6 +1,6 @@
 # Sompi implementation plan
 
-Status: **Architecture Phase 5 C4 complete**
+Status: **Architecture Phase 5 complete**
 
 Starting commit: `89b0f1f404ce8e5f2ded88a5b1a99d8ca1743bba`
 
@@ -520,8 +520,8 @@ test for each retained candidate.
 ### Phase 5: Deepen Purchase progression and reduce runtime exposure
 
 Phase 4 is complete. Phase 5 is scoped against commit
-`a258727aca0e735fe5ca97253c20abe9eb6a742f`. P5.C1 through P5.C3 are
-complete. P5.C4 is complete. P5.C5 is next.
+`a258727aca0e735fe5ca97253c20abe9eb6a742f`. P5.C1 through P5.C5 are
+complete.
 
 Purpose: remove two proven internal decision leaks. Keep the stable Purchase
 interface, process authority, durable state, and protocol seams unchanged.
@@ -559,7 +559,7 @@ Implementation sequence:
    private construction without creating duplicate composition roots,
    Journals, wallets, or cleanup paths. Delete the broad interface and replaced
    tests after the role interfaces pass. Estimated effort: 2–4 days.
-5. [ ] **P5.C5 — Verify and stop.** Run every Phase 5 gate, complete an
+5. [x] **P5.C5 — Verify and stop.** Run every Phase 5 gate, complete an
    independent architecture review, update the state documents, and stop before
    any deferred candidate starts. Estimated effort: 1–2 days.
 
@@ -647,32 +647,65 @@ C4 completion evidence from 2026-07-28:
   offline command passed 630 tests: 629 passed and one privileged ownership
   test was skipped as expected. Offline smoke passed.
 
+C5 completion evidence from 2026-07-28:
+
+- Independent specification and standards reviews found no actionable issue.
+  The reviews confirmed one private Purchase progression surface, three narrow
+  runtime roles, one private composition root, one Journal, and unchanged
+  protocol boundaries.
+- The complete unit command ran 633 tests. Of these tests, 632 passed and one
+  privileged ownership test was skipped as expected. Offline smoke passed.
+- A Journal test no longer depends on a 5 millisecond lease surviving scheduler
+  delay. It uses a production-sized lease and explicitly releases it before
+  reconciliation. The focused test passed 40 concurrent stress runs.
+- The complete release verifier passed the unit, Hermes, five Kaspa-x402
+  conformance, stored-evidence, local E2E, generated OpenAPI, generated
+  Arazzo, package, clean-install, licence, and source-tree checks.
+- A separately authorized Testnet-10 run stopped the first process with one
+  submitted staging Effect. The second process recovered the same Purchase,
+  Effect, and staging transaction. It created one payment Effect and one
+  Merchant exact transaction. The Purchase reached `receipted`.
+- The public Phase 5 evidence is in `evidence/phase5-c5/`. The retained private
+  run state is outside the repository.
+- One fail-closed runner generates Phase 4 or Phase 5 restart evidence from
+  its explicit evidence-set configuration. Live mode persists the real process
+  boundary before it writes public evidence. Retained mode requires that
+  owner-only record to match the Journal.
+- Two consecutive retained regenerations produced the same Phase 5 restart
+  proof and digest manifest without a new transaction. The runner accepts only
+  the three canonical public evidence filenames in one directory.
+- One shared verifier checks the complete Phase 4 and Phase 5 restart
+  contract. Phase-specific configuration contains only the fixed profile,
+  staging transition sequence, phase base, and assertion names.
+- No public interface, physical Journal schema, AP2 or Kaspa-x402 adapter,
+  protocol pin, release, deployment, live host, or sibling repository changed.
+
 Each checkpoint must leave the repository buildable. Add interface tests before
 deleting the behavior or interface that they replace.
 
 Verification gate:
 
-- [ ] **P5.G1:** Purchase interface tests prove the same durable result for
+- [x] **P5.G1:** Purchase interface tests prove the same durable result for
   normal progression and recovery from every supported resumable state.
-- [ ] **P5.G2:** Failure-injection and restart tests prove that consolidated
+- [x] **P5.G2:** Failure-injection and restart tests prove that consolidated
   progression does not repeat authorization, Treasury staging, payment,
   settlement, or fulfilment effects.
-- [ ] **P5.G3:** Deletion checks prove that Purchase has one state-to-action
+- [x] **P5.G3:** Deletion checks prove that Purchase has one state-to-action
   progression decision surface. No public progression seam or generic workflow
   implementation exists.
-- [ ] **P5.G4:** Runtime interface tests prove least-capability API,
+- [x] **P5.G4:** Runtime interface tests prove least-capability API,
   offline-owner, and bootstrap roles, including construction failure and
   idempotent cleanup.
-- [ ] **P5.G5:** Deletion checks prove that the broad
+- [x] **P5.G5:** Deletion checks prove that the broad
   `SompiPurchaseRuntime` interface and production access to unused runtime
   properties do not exist. One Journal transaction owner remains.
-- [ ] **P5.G6:** The complete unit suite, offline smoke, all five Kaspa-x402
+- [x] **P5.G6:** The complete unit suite, offline smoke, all five Kaspa-x402
   conformance checks, generated OpenAPI and Arazzo checks, stored-evidence
   checks, and the release verifier pass.
-- [ ] **P5.G7:** Fresh, separately authorized Testnet-10 evidence proves
+- [x] **P5.G7:** Fresh, separately authorized Testnet-10 evidence proves
   restart recovery of one Purchase without a duplicate staging or payment
   effect.
-- [ ] **P5.G8:** No public interface, physical Journal schema, AP2 or
+- [x] **P5.G8:** No public interface, physical Journal schema, AP2 or
   Kaspa-x402 adapter, protocol pin, release, deployment, live-host, or sibling
   repository change is included.
 

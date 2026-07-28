@@ -79,9 +79,8 @@ submission mechanisms, and chain observation mechanisms. The physical Journal
 schema, public API, protocol pins, release, deployment, live host, and sibling
 repositories did not change.
 
-Architecture Phase 5 is scoped against
-`a258727aca0e735fe5ca97253c20abe9eb6a742f`. P5.C1 through P5.C4 are
-complete. P5.C5 is next.
+Architecture Phase 5 is complete. It started from
+`a258727aca0e735fe5ca97253c20abe9eb6a742f`.
 
 Phase 5 has two objectives:
 
@@ -149,6 +148,30 @@ privileged ownership test was skipped as expected. Offline smoke passed. C4
 changes cleanup behavior only. It does not change Purchase operation behavior,
 the public interface, physical Journal schema, AP2 or Kaspa-x402 adapters,
 protocol pins, release, deployment, live host, or sibling repositories.
+
+P5.C5 completed the stop gates. Independent specification and standards
+reviews found no actionable issue. The complete release verifier passed unit,
+Hermes, Kaspa-x402 conformance, stored-evidence, local E2E, OpenAPI, Arazzo,
+package, clean-install, licence, and source-tree checks.
+
+A separately authorized Testnet-10 run stopped the first process with one
+submitted staging Effect. The second process recovered the same Purchase,
+Effect, and staging transaction. It created one payment Effect and one
+Merchant exact transaction. The Purchase reached `receipted`. The public
+evidence is in `evidence/phase5-c5/`. Private recovery state remains outside
+the repository.
+
+One fail-closed runner now generates either the Phase 4 or Phase 5 restart
+profile. Live mode persists the real process boundary. Retained mode requires
+that owner-only record to match the Journal. Two consecutive retained runs
+produced the same Phase 5 proof and digest manifest without a new transaction.
+One shared verifier checks both evidence sets with the same complete invariant
+checks.
+
+Phase 5 did not change the public interface, physical Journal schema, AP2 or
+Kaspa-x402 adapter, protocol pin, release, deployment, live host, or sibling
+repository. It did not start owner-change persistence, shared Agent
+continuation, or another deferred candidate.
 
 ## Current release
 
@@ -328,7 +351,7 @@ The deterministic Trusted Authority records signed human approval before an irre
 
 ## Next work
 
-Architecture Phase 5 C4 is complete. C5 is next.
+Architecture Phase 5 is complete. The stop gate is active.
 
 1. P5.C1 characterized Purchase progression through the existing interface.
 2. P5.C2 consolidated normal and recovery state routing behind one private
@@ -337,9 +360,10 @@ Architecture Phase 5 C4 is complete. C5 is next.
    offline-owner, and bootstrap roles.
 4. P5.C4 replaced the broad runtime interface with narrow role interfaces and
    gave each role one memoized cleanup contract.
-5. P5.C5 runs the complete proof, review, deletion, and stop gates.
+5. P5.C5 passed the complete proof, review, deletion, and stop gates.
 
 Phase 5 does not change the stable Purchase interface, physical Journal schema,
 process authority, AP2 or Kaspa-x402 adapters, protocol pins, release,
 deployment, live host, or sibling repositories. It does not include
-owner-change persistence or shared Agent continuation work.
+owner-change persistence or shared Agent continuation work. Start no deferred
+candidate without a separate scope decision.
