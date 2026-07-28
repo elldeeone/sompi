@@ -17,6 +17,7 @@ import {
   type AuthorityResult,
   type CheckoutTermsModule,
   type FulfilmentModule,
+  type KaspaPreparedExecutionContext,
   type KaspaPaymentModule,
   type PaymentRecoveryObservation,
   type PaymentSubmissionResult,
@@ -74,6 +75,7 @@ import type {
 import { TreasuryOperationModule } from "../treasury/operations.js";
 import type {
   TreasuryStagingAdapter,
+  TreasuryStagingAdapterContext,
   TreasuryStagingRecoveryObservation,
   TreasuryStagingResult,
   TreasuryStagingSubmissionResult,
@@ -298,6 +300,52 @@ test("authority pending and denial stop before treasury or payment execution", a
   });
 });
 
+test("recover leaves normal-entry states unchanged until purchase resumes them", async () => {
+  await withFixture(async ({ coordinator, dependencies, intent }) => {
+    dependencies.quoteReady = false;
+    const termsBound = await coordinator.purchase(intent);
+    assert.equal(termsBound.state, "terms_bound");
+    const termsBoundCalls = {
+      protocol: { ...dependencies.calls },
+      stagingRecovery: { ...dependencies.recoveryCalls },
+    };
+
+    const unchangedTerms = await coordinator.recover(termsBound.id);
+    assert.equal(unchangedTerms.state, "terms_bound");
+    assert.deepEqual(dependencies.calls, termsBoundCalls.protocol);
+    assert.deepEqual(
+      dependencies.recoveryCalls,
+      termsBoundCalls.stagingRecovery,
+    );
+
+    dependencies.quoteReady = true;
+    dependencies.authorityMode = "pending";
+    const awaitingAuthority = await coordinator.purchase(intent);
+    assert.equal(awaitingAuthority.state, "awaiting_authority");
+    const awaitingAuthorityCalls = {
+      protocol: { ...dependencies.calls },
+      stagingRecovery: { ...dependencies.recoveryCalls },
+    };
+
+    const unchangedAuthority = await coordinator.recover(
+      awaitingAuthority.id,
+    );
+    assert.equal(unchangedAuthority.state, "awaiting_authority");
+    assert.deepEqual(dependencies.calls, awaitingAuthorityCalls.protocol);
+    assert.deepEqual(
+      dependencies.recoveryCalls,
+      awaitingAuthorityCalls.stagingRecovery,
+    );
+
+    dependencies.authorityMode = "approved";
+    const completed = await coordinator.purchase(intent);
+    assert.equal(completed.state, "receipted");
+    assert.equal(dependencies.calls.authority, 2);
+    assert.equal(dependencies.calls.submitStaging, 1);
+    assert.equal(dependencies.calls.submit, 1);
+  });
+});
+
 test("authority expires before the Checkout deadline to preserve the execution window", async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-execution-reserve-"));
   fs.chmodSync(directory, 0o700);
@@ -508,6 +556,40 @@ test("ambiguous submission is observed by recover without resubmission, then ful
   });
 });
 
+test("submitted payment waits for recovery observation without replaying its external effect", async () => {
+  await withFixture(async ({ coordinator, dependencies, intent, journal }) => {
+    dependencies.submitMode = "submitted";
+    const submitted = await coordinator.purchase(intent);
+    assert.equal(submitted.state, "submitted");
+    assert.equal(dependencies.calls.submit, 1);
+    const submittedCalls = { ...dependencies.calls };
+
+    const replay = await coordinator.purchase(intent);
+    assert.equal(replay.state, "submitted");
+    assert.deepEqual(dependencies.calls, submittedCalls);
+
+    dependencies.observeMode = "pending";
+    const firstPending = await coordinator.recover(submitted.id);
+    assert.equal(firstPending.state, "failed_recoverable");
+    assert.equal(dependencies.calls.observe, 1);
+    assert.equal(dependencies.calls.submit, 1);
+
+    const secondPending = await coordinator.recover(submitted.id);
+    assert.equal(secondPending.state, "failed_recoverable");
+    assert.equal(dependencies.calls.observe, 2);
+    assert.equal(dependencies.calls.submit, 1);
+
+    dependencies.observeMode = "settled";
+    const completed = await coordinator.recover(submitted.id);
+    assert.equal(completed.state, "receipted");
+    assert.equal(dependencies.calls.observe, 3);
+    assert.equal(dependencies.calls.submit, 1);
+    assert.equal(dependencies.calls.fulfilment, 1);
+    assert.equal(journal.paymentAttempts(submitted.id).length, 1);
+    assert.equal(journal.receipts(submitted.id).length, 1);
+  });
+});
+
 test("ambiguous Treasury staging is observed before exact preparation and is never blindly resubmitted", async () => {
   await withFixture(async ({ coordinator, dependencies, intent, journal }) => {
     dependencies.stagingSubmitMode = "throw";
@@ -520,12 +602,17 @@ test("ambiguous Treasury staging is observed before exact preparation and is nev
 
     dependencies.stagingObserveMode = "pending";
     assert.equal((await coordinator.recover(ambiguous.id)).state, "failed_recoverable");
+    assert.equal(dependencies.calls.observeStaging, 1);
+    assert.equal(dependencies.calls.submitStaging, 1);
+    assert.equal((await coordinator.recover(ambiguous.id)).state, "failed_recoverable");
+    assert.equal(dependencies.calls.observeStaging, 2);
     assert.equal(dependencies.calls.submitStaging, 1);
     assert.equal(dependencies.calls.prepare, 0);
 
     dependencies.stagingObserveMode = "staged";
     const completed = await coordinator.recover(ambiguous.id);
     assert.equal(completed.state, "receipted");
+    assert.equal(dependencies.calls.observeStaging, 3);
     assert.equal(dependencies.calls.submitStaging, 1);
     assert.equal(dependencies.calls.prepare, 1);
     assert.equal(dependencies.calls.submit, 1);
@@ -751,49 +838,92 @@ test("known-denied egress is rejected before durable Purchase or evidence admiss
   });
 });
 
-test("restart after durable preparation reuses exact bytes instead of preparing or signing again", async () => {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), "sompi-coordinator-prepared-"));
-  fs.chmodSync(directory, 0o700);
-  const filename = path.join(directory, "purchase.sqlite");
-  const dependencies = new FakeDependencies();
-  let effectInsertions = 0;
-  let journal = new PurchaseJournal(filename, {
-    now: () => NOW,
-    faultInjector(point: JournalFaultPoint) {
-      // Treasury staging is the first Effect; crash on the exact payment
-      // Effect created after durable preparation.
-      if (point === "effect.after_insert" && ++effectInsertions === 2) {
-        throw new Error("crash-after-preparation");
-      }
-    },
-  });
-  const intent = makeIntent();
-  try {
-    let coordinator = makeCoordinator(journal, dependencies);
-    await assert.rejects(() => coordinator.purchase(intent), /crash-after-preparation/);
-    assert.equal(dependencies.calls.prepare, 1);
-    const id = dependencies.lastPurchaseId;
-    assert.equal(journal.requirePaymentAttempt(id, 1).state, "prepared");
-    assert.equal(journal.requirePurchase(id).state, "execution_prepared");
-    journal.close();
+test("purchase and recover after restart reuse durable preparation without repeating an external effect", async () => {
+  for (const entrypoint of ["purchase", "recover"] as const) {
+    const directory = fs.mkdtempSync(
+      path.join(os.tmpdir(), `sompi-coordinator-prepared-${entrypoint}-`),
+    );
+    fs.chmodSync(directory, 0o700);
+    const filename = path.join(directory, "purchase.sqlite");
+    const initialDependencies = new FakeDependencies();
+    let effectInsertions = 0;
+    let journal = new PurchaseJournal(filename, {
+      now: () => NOW,
+      faultInjector(point: JournalFaultPoint) {
+        // Treasury staging is the first Effect. Crash on the exact payment
+        // Effect created after durable preparation.
+        if (point === "effect.after_insert" && ++effectInsertions === 2) {
+          throw new Error("crash-after-preparation");
+        }
+      },
+    });
+    const intent = makeIntent();
+    try {
+      let coordinator = makeCoordinator(journal, initialDependencies);
+      await assert.rejects(
+        () => coordinator.purchase(intent),
+        /crash-after-preparation/,
+      );
+      assert.equal(initialDependencies.calls.authority, 1);
+      assert.equal(initialDependencies.calls.submitStaging, 1);
+      assert.equal(initialDependencies.calls.prepare, 1);
+      assert.equal(initialDependencies.calls.submit, 0);
+      const id = initialDependencies.lastPurchaseId;
+      assert.equal(journal.requirePaymentAttempt(id, 1).state, "prepared");
+      assert.equal(journal.requirePurchase(id).state, "execution_prepared");
+      const preparedBytesBeforeRestart = Uint8Array.from(
+        journal.readPreparedPayment(id, 1),
+      );
+      journal.close();
 
-    dependencies.quoteAdditionalCost = "999";
-    dependencies.policyPerPayment = "9999";
-    const dynamicCallsBeforeRestart = {
-      quote: dependencies.calls.quote,
-      policy: dependencies.calls.policy,
-    };
-    journal = new PurchaseJournal(filename, { now: () => NOW + 1_000 });
-    coordinator = makeCoordinator(journal, dependencies, NOW + 1_000);
-    const completed = await coordinator.purchase(intent);
-    assert.equal(completed.state, "receipted");
-    assert.equal(dependencies.calls.prepare, 1);
-    assert.equal(dependencies.calls.submit, 1);
-    assert.equal(dependencies.calls.quote, dynamicCallsBeforeRestart.quote);
-    assert.equal(dependencies.calls.policy, dynamicCallsBeforeRestart.policy);
-  } finally {
-    journal.close();
-    fs.rmSync(directory, { recursive: true, force: true });
+      const restartedDependencies = new FakeDependencies();
+      restartedDependencies.quoteAdditionalCost = "999";
+      restartedDependencies.policyPerPayment = "9999";
+      journal = new PurchaseJournal(filename, { now: () => NOW + 1_000 });
+      coordinator = makeCoordinator(
+        journal,
+        restartedDependencies,
+        NOW + 1_000,
+      );
+      const completed = entrypoint === "purchase"
+        ? await coordinator.purchase(intent)
+        : await coordinator.recover(id);
+      assert.equal(completed.state, "receipted");
+      assert.deepEqual(restartedDependencies.calls, {
+        checkout: 0,
+        authority: 0,
+        policy: 0,
+        quote: 0,
+        prepareStaging: 0,
+        submitStaging: 0,
+        observeStaging: 0,
+        prepare: 0,
+        submit: 1,
+        observe: 0,
+        fulfilment: 1,
+      });
+      assert.deepEqual(
+        restartedDependencies.submittedPreparedBytes,
+        [preparedBytesBeforeRestart],
+      );
+      assert.equal(journal.paymentAttempts(id).length, 1);
+      assert.equal(
+        journal.effectsForPurchase(id).filter(
+          (effect) => effect.kind === "treasury-staging",
+        ).length,
+        1,
+      );
+      assert.equal(
+        journal.effectsForPurchase(id).filter(
+          (effect) => effect.kind === "kaspa-x402-payment",
+        ).length,
+        1,
+      );
+      assert.equal(journal.receipts(id).length, 1);
+    } finally {
+      journal.close();
+      fs.rmSync(directory, { recursive: true, force: true });
+    }
   }
 });
 
@@ -1242,7 +1372,7 @@ test("coordinator requires an address-pinned egress session for direct and redir
 
 async function withFixture(
   run: (fixture: {
-    coordinator: PurchaseCoordinator;
+    coordinator: PurchaseModule;
     dependencies: FakeDependencies;
     intent: PurchaseIntent;
     journal: PurchaseJournal;
@@ -1277,7 +1407,7 @@ function makeCoordinator(
   dependencies: FakeDependencies,
   currentTime: number | (() => number) = NOW,
   executionReserveMs = 0
-): PurchaseCoordinator {
+): PurchaseModule {
   const now = typeof currentTime === "function" ? currentTime : () => currentTime;
   let entropyCounter = 1;
   const coordinator = new PurchaseCoordinator(
@@ -1399,6 +1529,7 @@ class FakeDependencies {
   recoveryCalls = { prepare: 0, observe: 0, submit: 0 };
   recoveryPreparedInputs: StagingRecoveryPreparationContext[] = [];
   recoveryObservedBytes: string[] = [];
+  submittedPreparedBytes: Uint8Array[] = [];
   calls = {
     checkout: 0,
     authority: 0,
@@ -1412,9 +1543,6 @@ class FakeDependencies {
     observe: 0,
     fulfilment: 0,
   };
-  private prepared = new Map<string, PreparedKaspaPayment>();
-  private staged = new Map<string, PreparedTreasuryStaging>();
-
   readonly checkout: CheckoutTermsModule = {
     discover: async ({ purchaseId, resourceFingerprint, egress }) => {
       this.calls.checkout++;
@@ -1557,7 +1685,6 @@ class FakeDependencies {
         stagingAmountAtomic: "70",
         fundingSource: "vault-treasury",
       };
-      this.staged.set(execution.purchaseId, prepared);
       this.onStagingPrepared?.();
       return prepared;
     },
@@ -1567,7 +1694,7 @@ class FakeDependencies {
       const purchaseId = context.execution.purchaseId;
       assert.equal(
         evidenceDigest(context.staging.preparedBytes),
-        this.staged.get(purchaseId)?.preparedDigest
+        context.staging.preparedDigest,
       );
       if (this.stagingSubmitMode === "throw") {
         throw new Error("simulated Treasury staging transport loss");
@@ -1580,10 +1707,10 @@ class FakeDependencies {
       return {
         status: "staged",
         submissionDigest,
-        staging: this.stagingResult(purchaseId),
+        staging: this.stagingResult(purchaseId, context.staging),
       };
     },
-    observeStaging: async ({ effect }): Promise<TreasuryStagingRecoveryObservation> => {
+    observeStaging: async ({ context, effect }): Promise<TreasuryStagingRecoveryObservation> => {
       this.calls.observeStaging++;
       if (this.stagingObserveMode === "pending") {
         return { status: "pending", detailDigest: evidenceDigest("treasury-staging-pending") };
@@ -1598,15 +1725,18 @@ class FakeDependencies {
           detailDigest: evidenceDigest("treasury-staging-not-found"),
         };
       }
-      return { status: "staged", staging: this.stagingResult(effect.purchaseId) };
+      return {
+        status: "staged",
+        staging: this.stagingResult(effect.purchaseId, context.staging),
+      };
     },
     prepare: async ({ execution, paymentRequirements, staging }): Promise<PreparedKaspaPayment> => {
       this.calls.prepare++;
       assert.equal(evidenceDigest(paymentRequirements), evidenceDigest(`requirements:${execution.purchaseId}`));
       if (this.executionMechanism === "single-transaction") {
         assert.ok(staging);
-        assert.equal(staging.outpoint, this.staged.get(execution.purchaseId)?.expectedOutpoint);
-        assert.equal(staging.amountAtomic, this.staged.get(execution.purchaseId)?.stagingAmountAtomic);
+        assert.equal(staging.outpoint, `${"cd".repeat(32)}:0`);
+        assert.equal(staging.amountAtomic, "70");
       } else {
         assert.equal(staging, undefined);
       }
@@ -1634,7 +1764,6 @@ class FakeDependencies {
         fundingSource: "vault-treasury",
       };
       const result = this.preparedMutation?.(prepared) ?? prepared;
-      this.prepared.set(execution.purchaseId, result);
       this.onExactPrepared?.();
       return result;
     },
@@ -1642,12 +1771,16 @@ class FakeDependencies {
       this.calls.submit++;
       const purchaseId = context.execution.purchaseId;
       const preparedBytes = context.preparation.preparedBytes;
-      assert.equal(evidenceDigest(preparedBytes), this.prepared.get(purchaseId)?.preparedDigest);
+      this.submittedPreparedBytes.push(Uint8Array.from(preparedBytes));
+      assert.equal(
+        evidenceDigest(preparedBytes),
+        context.preparation.preparedDigest,
+      );
       if (this.submitMode === "throw") throw new Error("simulated transport loss");
       if (this.submitMode === "submitted") {
         return { status: "submitted", submissionDigest: evidenceDigest(`submission:${purchaseId}`) };
       }
-      const settlement = this.settlement(purchaseId);
+      const settlement = this.settlement(context);
       return {
         status: "settled",
         submissionDigest: evidenceDigest(`submission:${purchaseId}`),
@@ -1662,7 +1795,7 @@ class FakeDependencies {
           : undefined,
       };
     },
-    observe: async ({ effect }): Promise<PaymentRecoveryObservation> => {
+    observe: async ({ context }): Promise<PaymentRecoveryObservation> => {
       this.calls.observe++;
       if (this.observeMode === "pending") return { status: "pending", detailDigest: evidenceDigest("pending") };
       if (this.observeMode === "conflict") {
@@ -1682,7 +1815,7 @@ class FakeDependencies {
           detailDigest: evidenceDigest("terminal-payment-failure"),
         };
       }
-      return { status: "settled", settlement: this.settlement(effect.purchaseId) };
+      return { status: "settled", settlement: this.settlement(context) };
     },
   };
 
@@ -1817,45 +1950,53 @@ class FakeDependencies {
     };
   }
 
-  private settlement(purchaseId: string): SettlementResult {
-    const prepared = this.prepared.get(purchaseId);
-    if (!prepared) throw new Error("no fake preparation");
-    const transactionId = prepared.transactionId;
-    if (prepared.mechanism === "single-transaction") {
+  private settlement(context: KaspaPreparedExecutionContext): SettlementResult {
+    const { execution, preparation } = context;
+    const transactionId = preparation.transactionId;
+    if (preparation.mechanism === "single-transaction") {
       assert.equal(typeof transactionId, "string");
     }
     const settlement: SettlementResult = {
-      evidence: artifact(`settlement:${purchaseId}`, "test-settlement", "merchant:test"),
-      executionId: prepared.executionId,
-      mechanism: prepared.mechanism,
-      profile: prepared.profile,
-      ...(prepared.mechanism === "single-transaction"
+      evidence: artifact(
+        `settlement:${execution.purchaseId}`,
+        "test-settlement",
+        "merchant:test",
+      ),
+      executionId: preparation.executionId,
+      mechanism: preparation.mechanism,
+      profile: preparation.profile,
+      ...(preparation.mechanism === "single-transaction"
         ? { transactionId: transactionId!, outpoint: `${transactionId}:1` }
         : { commitmentId: "bc".repeat(32) }),
-      amountAtomic: prepared.mechanism === "single-transaction" ? prepared.amountAtomic : "40",
-      additionalCostAtomic: prepared.mechanism === "single-transaction" ? "2" : "0",
-      asset: prepared.asset,
-      network: prepared.network,
-      payTo: prepared.payTo,
-      settlementAssurance: prepared.requiredAssurance,
+      amountAtomic:
+        preparation.mechanism === "single-transaction"
+          ? execution.terms.amountAtomic
+          : "40",
+      additionalCostAtomic:
+        preparation.mechanism === "single-transaction" ? "2" : "0",
+      asset: execution.terms.asset,
+      network: execution.terms.network,
+      payTo: execution.terms.payTo,
+      settlementAssurance: preparation.requiredAssurance,
       fundingSource: "vault-treasury",
     };
     return this.settlementMutation?.(settlement) ?? settlement;
   }
 
-  private stagingResult(purchaseId: string): TreasuryStagingResult {
-    const staged = this.staged.get(purchaseId);
-    if (!staged) throw new Error("no fake Treasury staging preparation");
+  private stagingResult(
+    purchaseId: string,
+    staging: TreasuryStagingAdapterContext["staging"],
+  ): TreasuryStagingResult {
     return {
       evidence: artifact(
         `treasury-staging-observation:${purchaseId}`,
         "test-treasury-staging",
         "kaspa-observer:test"
       ),
-      transactionId: staged.transactionId,
-      outpoint: staged.expectedOutpoint,
-      stagingAmountAtomic: staged.stagingAmountAtomic,
-      fundingSource: staged.fundingSource,
+      transactionId: staging.transactionId,
+      outpoint: staging.expectedOutpoint,
+      stagingAmountAtomic: staging.amountAtomic,
+      fundingSource: staging.fundingSource,
     };
   }
 }
@@ -2160,7 +2301,7 @@ function makeIntent(): PurchaseIntent {
   };
 }
 
-async function safeStatus(coordinator: PurchaseCoordinator, id: FakeDependencies["lastPurchaseId"]) {
+async function safeStatus(coordinator: PurchaseModule, id: FakeDependencies["lastPurchaseId"]) {
   assert.ok(id);
   return coordinator.status(id);
 }

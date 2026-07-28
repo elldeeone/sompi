@@ -1,6 +1,6 @@
 # Sompi implementation plan
 
-Status: **Architecture Phase 5 scoped**
+Status: **Architecture Phase 5 C1 complete**
 
 Starting commit: `89b0f1f404ce8e5f2ded88a5b1a99d8ca1743bba`
 
@@ -520,7 +520,8 @@ test for each retained candidate.
 ### Phase 5: Deepen Purchase progression and reduce runtime exposure
 
 Phase 4 is complete. Phase 5 is scoped against commit
-`a258727aca0e735fe5ca97253c20abe9eb6a742f`. Implementation has not started.
+`a258727aca0e735fe5ca97253c20abe9eb6a742f`. P5.C1 is complete. P5.C2 has not
+started.
 
 Purpose: remove two proven internal decision leaks. Keep the stable Purchase
 interface, process authority, durable state, and protocol seams unchanged.
@@ -540,7 +541,7 @@ shared Agent continuation work.
 
 Implementation sequence:
 
-1. [ ] **P5.C1 — Characterize Purchase progression.** Add tests through the
+1. [x] **P5.C1 — Characterize Purchase progression.** Add tests through the
    existing Purchase interface for normal progression, recovery progression,
    restart, unchanged-state bounds, and no duplicate external effect. Do not
    change runtime behavior. Estimated effort: 0.5–1 day.
@@ -561,6 +562,24 @@ Implementation sequence:
 5. [ ] **P5.C5 — Verify and stop.** Run every Phase 5 gate, complete an
    independent architecture review, update the state documents, and stop before
    any deferred candidate starts. Estimated effort: 1–2 days.
+
+C1 completion evidence from 2026-07-28:
+
+- The coordinator fixture exposes only `PurchaseModule`. The test does not use
+  a new progression interface or a private coordinator action.
+- Recovery leaves `terms_bound` and `awaiting_authority` unchanged. It does not
+  request human approval or start a Treasury or payment effect. Normal
+  `purchase` progression can resume both states.
+- A submitted payment stays unchanged on normal replay. Repeated pending
+  recovery observes it once per request and never submits it again. A later
+  Settlement completes the same Purchase.
+- Repeated pending Treasury staging recovery does not prepare an exact payment
+  or submit staging again. After a Journal restart, both entrypoints use fresh
+  adapter objects and reuse the durable payment preparation. Each result has
+  one staging Effect and one payment Effect.
+- The Purchase coordinator suite passed 39 tests. The complete offline command
+  passed 622 tests: 621 passed and one privileged ownership test was skipped as
+  expected. Offline smoke passed.
 
 Each checkpoint must leave the repository buildable. Add interface tests before
 deleting the behavior or interface that they replace.

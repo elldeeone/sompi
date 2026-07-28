@@ -80,7 +80,8 @@ schema, public API, protocol pins, release, deployment, live host, and sibling
 repositories did not change.
 
 Architecture Phase 5 is scoped against
-`a258727aca0e735fe5ca97253c20abe9eb6a742f`. Implementation has not started.
+`a258727aca0e735fe5ca97253c20abe9eb6a742f`. P5.C1 is complete. P5.C2 has not
+started.
 
 Phase 5 has two objectives:
 
@@ -92,6 +93,13 @@ Phase 5 has two objectives:
 The scope review defers owner-change persistence locality because a new
 interface would mirror high-level Journal commands. It also defers shared Agent
 continuation because the original trigger has not fired.
+
+P5.C1 characterizes progression only through `PurchaseModule`. Tests now cover
+normal-only entry states, submitted recovery, repeated unchanged recovery,
+Treasury staging ambiguity, and both entrypoints after restart from durable
+payment preparation with fresh adapter objects. They prove one durable staging
+Effect and one payment Effect without changing runtime behavior or a public
+interface.
 
 ## Current release
 
@@ -271,10 +279,10 @@ The deterministic Trusted Authority records signed human approval before an irre
 
 ## Next work
 
-Architecture Phase 5 is scoped but inactive.
+Architecture Phase 5 C1 is complete. C2 is next.
 
-1. P5.C1 characterizes Purchase progression through the existing interface.
-2. P5.C2 consolidates normal and recovery state routing behind one private
+1. P5.C1 characterized Purchase progression through the existing interface.
+2. P5.C2 will consolidate normal and recovery state routing behind one private
    progression implementation.
 3. P5.C3 characterizes the exact runtime needs of the API, offline-owner, and
    bootstrap roles.
