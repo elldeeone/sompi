@@ -351,6 +351,22 @@ export interface PurchaseCoordinatorOptions {
   finality: ChainEvidenceFinalitySelector;
 }
 
+type PurchaseProgressionContext =
+  | Readonly<{
+      mode: "coordinate";
+      purchaseId: PurchaseId;
+      intent: PurchaseIntent;
+      initialEgress: PurchaseEgressSession;
+      signal?: AbortSignal;
+    }>
+  | Readonly<{
+      mode: "recover";
+      purchaseId: PurchaseId;
+      intent: PurchaseIntent | undefined;
+      stagingExecution: Readonly<TreasuryStagingExecutionResult> | undefined;
+      signal?: AbortSignal;
+    }>;
+
 export class PurchaseCoordinatorError extends Error {
   constructor(message: string, readonly code: string, options?: { cause?: unknown }) {
     super(message, options);
@@ -453,45 +469,14 @@ export class PurchaseCoordinator implements PurchaseModule {
     );
     if (!lease) return this.status(purchase.id);
     try {
-      for (let step = 0; step < 16; step++) {
-        signal?.throwIfAborted();
-        const current = this.journal.requirePurchase(purchase.id);
-        switch (current.state) {
-          case "created":
-            await this.bindTerms(current, canonicalIntent, initialEgress);
-            continue;
-          case "terms_bound":
-            if (!(await this.createAuthorizationRequest(current, canonicalIntent))) return this.status(current.id);
-            continue;
-          case "awaiting_authority":
-            if (!(await this.requestAuthorization(current))) return this.status(current.id);
-            continue;
-          case "authorised":
-            if (!(await this.prepareExecution(current))) return this.status(current.id);
-            continue;
-          case "execution_prepared":
-            if (!(await this.submitExecution(current))) return this.status(current.id);
-            continue;
-          case "submitted":
-            return this.status(current.id);
-          case "settled":
-          case "fulfilled":
-            if (!(await this.obtainFulfilment(current, canonicalIntent))) return this.status(current.id);
-            continue;
-          case "receipted":
-          case "denied":
-          case "cancelled":
-          case "expired":
-          case "failed_terminal":
-            return this.status(current.id);
-          case "failed_recoverable":
-            if (!(await this.resumeProofBackedState(current))) {
-              return this.status(current.id);
-            }
-            continue;
-        }
-      }
-      throw new PurchaseCoordinatorError("Purchase lifecycle exceeded its deterministic step bound", "step_bound");
+      await this.progressPurchase({
+        mode: "coordinate",
+        purchaseId: purchase.id,
+        intent: canonicalIntent,
+        initialEgress,
+        signal,
+      });
+      return this.status(purchase.id);
     } catch (error) {
       if (
         signal?.aborted &&
@@ -556,29 +541,13 @@ export class PurchaseCoordinator implements PurchaseModule {
       await this.reconcileTreasuryStagingForRecovery(id);
     this.applyRecoverySummary(id, summary);
     const intent = this.persistedIntent(id);
-    for (let step = 0; step < 8; step++) {
-      signal?.throwIfAborted();
-      const current = this.journal.requirePurchase(id);
-      if (current.state === "failed_recoverable") {
-        if (!(await this.resumeProofBackedState(current, stagingExecution))) {
-          break;
-        }
-        continue;
-      }
-      if (current.state === "authorised") {
-        if (!(await this.prepareExecution(current))) break;
-        continue;
-      }
-      if (current.state === "execution_prepared") {
-        if (!(await this.submitExecution(current))) break;
-        continue;
-      }
-      if (current.state === "settled" || current.state === "fulfilled") {
-        if (!intent || !(await this.obtainFulfilment(current, intent))) break;
-        continue;
-      }
-      break;
-    }
+    await this.progressPurchase({
+      mode: "recover",
+      purchaseId: id,
+      intent,
+      stagingExecution,
+      signal,
+    });
     const stagingRecovery = await this.treasury.recoverPurchaseStaging({
       purchaseId: id,
     });
@@ -592,6 +561,78 @@ export class PurchaseCoordinator implements PurchaseModule {
       this.applyRecoverySummary(id, exactSummary);
     }
     return this.status(id);
+  }
+
+  private async progressPurchase(
+    context: PurchaseProgressionContext,
+  ): Promise<void> {
+    const stepBound = context.mode === "coordinate" ? 16 : 8;
+    for (let step = 0; step < stepBound; step++) {
+      context.signal?.throwIfAborted();
+      const current = this.journal.requirePurchase(context.purchaseId);
+      switch (current.state) {
+        case "created":
+          if (context.mode === "recover") return;
+          await this.bindTerms(current, context.intent, context.initialEgress);
+          continue;
+        case "terms_bound":
+          if (
+            context.mode === "recover" ||
+            !(await this.createAuthorizationRequest(current, context.intent))
+          ) {
+            return;
+          }
+          continue;
+        case "awaiting_authority":
+          if (context.mode === "recover" || !(await this.requestAuthorization(current))) {
+            return;
+          }
+          continue;
+        case "authorised":
+          if (!(await this.prepareExecution(current))) return;
+          continue;
+        case "execution_prepared":
+          if (!(await this.submitExecution(current))) return;
+          continue;
+        case "submitted":
+          return;
+        case "settled":
+        case "fulfilled":
+          if (!context.intent || !(await this.obtainFulfilment(current, context.intent))) {
+            return;
+          }
+          continue;
+        case "receipted":
+        case "denied":
+        case "cancelled":
+        case "expired":
+        case "failed_terminal":
+          return;
+        case "failed_recoverable":
+          if (
+            !(await this.resumeProofBackedState(
+              current,
+              context.mode === "recover" ? context.stagingExecution : undefined,
+            ))
+          ) {
+            return;
+          }
+          continue;
+        default: {
+          const unsupportedState: never = current.state;
+          throw new PurchaseCoordinatorError(
+            `unsupported Purchase state: ${String(unsupportedState)}`,
+            "state_invariant",
+          );
+        }
+      }
+    }
+    if (context.mode === "coordinate") {
+      throw new PurchaseCoordinatorError(
+        "Purchase lifecycle exceeded its deterministic step bound",
+        "step_bound",
+      );
+    }
   }
 
   private async reconcileTreasuryStagingForRecovery(

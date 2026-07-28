@@ -1,6 +1,6 @@
 # Sompi implementation plan
 
-Status: **Architecture Phase 5 C1 complete**
+Status: **Architecture Phase 5 C2 complete**
 
 Starting commit: `89b0f1f404ce8e5f2ded88a5b1a99d8ca1743bba`
 
@@ -520,8 +520,8 @@ test for each retained candidate.
 ### Phase 5: Deepen Purchase progression and reduce runtime exposure
 
 Phase 4 is complete. Phase 5 is scoped against commit
-`a258727aca0e735fe5ca97253c20abe9eb6a742f`. P5.C1 is complete. P5.C2 has not
-started.
+`a258727aca0e735fe5ca97253c20abe9eb6a742f`. P5.C1 and P5.C2 are complete.
+P5.C3 has not started.
 
 Purpose: remove two proven internal decision leaks. Keep the stable Purchase
 interface, process authority, durable state, and protocol seams unchanged.
@@ -545,7 +545,7 @@ Implementation sequence:
    existing Purchase interface for normal progression, recovery progression,
    restart, unchanged-state bounds, and no duplicate external effect. Do not
    change runtime behavior. Estimated effort: 0.5–1 day.
-2. [ ] **P5.C2 — Consolidate Purchase progression.** Use one private
+2. [x] **P5.C2 — Consolidate Purchase progression.** Use one private
    progression implementation after normal-entry and recovery-specific work.
    Keep action implementations inside Purchase. Delete the duplicate
    state-routing loop after equivalent interface tests pass. Estimated effort:
@@ -580,6 +580,25 @@ C1 completion evidence from 2026-07-28:
 - The Purchase coordinator suite passed 39 tests. The complete offline command
   passed 622 tests: 621 passed and one privileged ownership test was skipped as
   expected. Offline smoke passed.
+
+C2 completion evidence from 2026-07-28:
+
+- One private `progressPurchase` implementation owns the bounded loop and the
+  state-to-action decision for all 14 Purchase states.
+- Normal entry keeps admission, the coordination lease, and cancellation
+  cleanup. Recovery keeps payment reconciliation, Treasury staging
+  reconciliation, and the post-progression staging-recovery sweep.
+- Recovery leaves `created`, `terms_bound`, and `awaiting_authority` unchanged.
+  Normal entry can resume each state.
+- The deletion test proves one case for each Purchase state, one call site for
+  each lifecycle action, and two calls to the private progression method.
+  `PurchaseModule` still exposes only `purchase`, `status`, and `recover`.
+- The change does not add a workflow engine or a public progression seam. It
+  does not change protocol adapters, the Journal schema, runtime composition,
+  protocol pins, or a sibling repository.
+- The focused Purchase and boundary command passed 41 tests. The complete
+  offline command passed 624 tests: 623 passed and one privileged ownership
+  test was skipped as expected. Offline smoke passed.
 
 Each checkpoint must leave the repository buildable. Add interface tests before
 deleting the behavior or interface that they replace.

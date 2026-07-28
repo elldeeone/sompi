@@ -80,8 +80,8 @@ schema, public API, protocol pins, release, deployment, live host, and sibling
 repositories did not change.
 
 Architecture Phase 5 is scoped against
-`a258727aca0e735fe5ca97253c20abe9eb6a742f`. P5.C1 is complete. P5.C2 has not
-started.
+`a258727aca0e735fe5ca97253c20abe9eb6a742f`. P5.C1 and P5.C2 are complete.
+P5.C3 has not started.
 
 Phase 5 has two objectives:
 
@@ -100,6 +100,19 @@ Treasury staging ambiguity, and both entrypoints after restart from durable
 payment preparation with fresh adapter objects. They prove one durable staging
 Effect and one payment Effect without changing runtime behavior or a public
 interface.
+
+P5.C2 replaces the separate normal and recovery state-routing loops with one
+private Purchase progression implementation. Normal entry keeps admission,
+lease, and cancellation work. Recovery keeps reconciliation and the
+post-progression staging-recovery sweep. The existing 16-step normal bound and
+8-step recovery bound are unchanged.
+
+The deletion test proves that each Purchase state and lifecycle action has one
+progression decision site. `PurchaseModule` still exposes only `purchase`,
+`status`, and `recover`. There is no public progression seam or workflow
+engine. The Journal schema, runtime composition, AP2 and Kaspa-x402 adapters,
+protocol pins, release, deployment, live host, and sibling repositories did
+not change.
 
 ## Current release
 
@@ -279,10 +292,10 @@ The deterministic Trusted Authority records signed human approval before an irre
 
 ## Next work
 
-Architecture Phase 5 C1 is complete. C2 is next.
+Architecture Phase 5 C2 is complete. C3 is next.
 
 1. P5.C1 characterized Purchase progression through the existing interface.
-2. P5.C2 will consolidate normal and recovery state routing behind one private
+2. P5.C2 consolidated normal and recovery state routing behind one private
    progression implementation.
 3. P5.C3 characterizes the exact runtime needs of the API, offline-owner, and
    bootstrap roles.

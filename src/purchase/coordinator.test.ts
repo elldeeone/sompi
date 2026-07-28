@@ -65,7 +65,13 @@ import {
   PurchaseJournal,
   type JournalFaultPoint,
 } from "./journal.js";
-import type { CheckoutTerms, PurchaseId, PurchaseIntent, PurchaseModule } from "./types.js";
+import type {
+  CheckoutTerms,
+  PurchaseId,
+  PurchaseIntent,
+  PurchaseModule,
+  PurchaseView,
+} from "./types.js";
 import {
   type TreasuryOperationAdapter,
 } from "../treasury/operation-adapters.js";
@@ -297,6 +303,56 @@ test("authority pending and denial stop before treasury or payment execution", a
     assert.equal(denied.authorization.status, "denied");
     assert.equal(dependencies.calls.policy, 0);
     assert.equal(dependencies.calls.submit, 0);
+  });
+});
+
+test("recover leaves a public created Purchase unchanged until purchase resumes it", async () => {
+  await withFixture(async ({ coordinator, dependencies, intent }) => {
+    let checkoutStarted!: () => void;
+    let releaseCheckout!: () => void;
+    const started = new Promise<void>((resolve) => {
+      checkoutStarted = resolve;
+    });
+    const blocked = new Promise<void>((resolve) => {
+      releaseCheckout = resolve;
+    });
+    dependencies.onCheckoutDiscover = async () => {
+      checkoutStarted();
+      await blocked;
+    };
+
+    const first = coordinator.purchase(intent);
+    await started;
+    let created: PurchaseView | undefined;
+    try {
+      created = await coordinator.purchase(intent);
+      assert.equal(created.state, "created");
+      const callsWhileCreated = {
+        protocol: { ...dependencies.calls },
+        stagingRecovery: { ...dependencies.recoveryCalls },
+      };
+
+      const unchanged = await coordinator.recover(created.id);
+      assert.equal(unchanged.state, "created");
+      assert.deepEqual(dependencies.calls, callsWhileCreated.protocol);
+      assert.deepEqual(
+        dependencies.recoveryCalls,
+        callsWhileCreated.stagingRecovery,
+      );
+    } finally {
+      releaseCheckout();
+      await first;
+    }
+
+    assert.ok(created);
+    assert.equal(created.state, "created");
+    const completed = await first;
+    assert.equal(completed.state, "receipted");
+    assert.equal(completed.id, created.id);
+    assert.equal(dependencies.calls.checkout, 1);
+    assert.equal(dependencies.calls.authority, 1);
+    assert.equal(dependencies.calls.submitStaging, 1);
+    assert.equal(dependencies.calls.submit, 1);
   });
 });
 
@@ -1520,6 +1576,7 @@ class FakeDependencies {
   stagingRecoverySubmitMode: "accepted" | "ambiguous" | "conflict" = "accepted";
   stagingRecoveryFeeAtomic = "1";
   stagingFeeAtomic = "1";
+  onCheckoutDiscover?: () => void | Promise<void>;
   onStagingObserved?: () => void;
   onAuthorityRequest?: () => void;
   onStagingPrepared?: () => void;
@@ -1548,6 +1605,7 @@ class FakeDependencies {
       this.calls.checkout++;
       this.lastPurchaseId = purchaseId;
       assert.deepEqual(egress.request.connection.addresses, [{ address: "93.184.216.34", family: 4 }]);
+      await this.onCheckoutDiscover?.();
       if (this.redirectLocation) await egress.redirect(egress.request, this.redirectLocation);
       if (this.checkoutDelayMs) await new Promise((resolve) => setTimeout(resolve, this.checkoutDelayMs));
       const requirementsBytes = `requirements:${purchaseId}`;
