@@ -8,13 +8,16 @@ import {
   authorityRuntimePaths,
   initializeAuthorityRuntime,
 } from "../authority/runtime.js";
+import { SqliteAuthorityReplayStore } from "../authority/replay-store.js";
 import {
   assertPurchaseRequestKey,
   createPurchaseId,
   requestFingerprint,
 } from "../purchase/identity.js";
+import { PurchaseJournal } from "../purchase/journal.js";
 import { publishOperatorManifestForTests } from "../operator/manifest.js";
 import { VaultManager, generateOwnerKey, vaultStaticConfigurationDigest } from "../vault.js";
+import { KaspaWallet } from "../wallet.js";
 import {
   purchaseRuntimeConfigFromEnv,
   type SompiPurchaseRuntimeConfig,
@@ -137,43 +140,63 @@ test("production composition rejects a signer socket owned by the MCP OS user", 
   }
 });
 
-test("partial construction closes the journal and a failed disconnect cannot skip durable-store close", async () => {
+test("partial construction after both durable stores open closes both stores", async () => {
   const fixture = await runtimeFixture();
+  const cleanup = instrumentRuntimeCleanup();
   try {
-    fs.mkdirSync(fixture.config.authority.clientReplayDatabase, { mode: 0o700 });
+    fs.writeFileSync(fixture.config.stagingKeyDirectory, "not a directory\n", {
+      mode: 0o600,
+    });
     assert.throws(
       () =>
         createSompiPurchaseRuntime(fixture.config, {
           now: () => NOW,
           resolver: publicResolver,
         }),
-      /replay|database path is unsafe/
+      /staging key directory|secure staging key directory/
     );
-    assert.equal(fs.existsSync(`${fixture.config.journalDatabase}-wal`), false);
-    assert.equal(fs.existsSync(`${fixture.config.journalDatabase}-shm`), false);
-
-    fs.rmSync(fixture.config.authority.clientReplayDatabase, {
-      recursive: true,
-      force: true,
-    });
-    const runtime = createSompiPurchaseRuntime(fixture.config, {
-      now: () => NOW,
-      resolver: publicResolver,
-    });
-    let disconnects = 0;
-    Object.defineProperty(runtime.wallet, "disconnect", {
-      configurable: true,
-      value: async () => {
-        disconnects += 1;
-        throw new Error("injected disconnect failure");
-      },
-    });
-    await assert.rejects(runtime.close(), /cleanup failed/);
-    assert.throws(() => runtime.journal.schemaVersion(), /not open/);
-    await assert.rejects(runtime.close(), /cleanup failed/);
-    assert.equal(disconnects, 1);
+    assert.equal(cleanup.calls.journal, 1);
+    assert.equal(cleanup.calls.authorityReplay, 1);
+    for (const database of [
+      fixture.config.journalDatabase,
+      fixture.config.authority.clientReplayDatabase,
+    ]) {
+      assert.equal(fs.existsSync(`${database}-wal`), false);
+      assert.equal(fs.existsSync(`${database}-shm`), false);
+    }
   } finally {
+    cleanup.restore();
     fixture.dispose();
+  }
+});
+
+test("runtime cleanup is memoized and attempts every resource after any cleanup failure", async () => {
+  for (const failure of ["authorityReplay", "journal", "wallet"] as const) {
+    const fixture = await runtimeFixture();
+    const cleanup = instrumentRuntimeCleanup({ failure });
+    try {
+      const runtime = createSompiPurchaseRuntime(fixture.config, {
+        now: () => NOW,
+        resolver: publicResolver,
+      });
+      const closable: Readonly<{ close(): Promise<void> }> = runtime;
+      const first = closable.close();
+      const concurrent = closable.close();
+      assert.equal(concurrent, first);
+      await assert.rejects(first, /cleanup failed/);
+
+      const repeated = closable.close();
+      assert.equal(repeated, first);
+      await assert.rejects(repeated, /cleanup failed/);
+      assert.deepEqual(cleanup.calls, {
+        journal: 1,
+        authorityReplay: 1,
+        wallet: 1,
+      });
+    } finally {
+      cleanup.restore();
+      fixture.dispose();
+    }
   }
 });
 
@@ -272,4 +295,62 @@ async function runtimeFixture(): Promise<RuntimeFixture> {
 
 async function publicResolver(): Promise<readonly [{ address: string; family: 4 }]> {
   return [{ address: "8.8.8.8", family: 4 }] as const;
+}
+
+function instrumentRuntimeCleanup(
+  options: Readonly<{
+    failure?: "journal" | "authorityReplay" | "wallet";
+  }> = {},
+): Readonly<{
+  calls: {
+    journal: number;
+    authorityReplay: number;
+    wallet: number;
+  };
+  restore(): void;
+}> {
+  const calls = {
+    journal: 0,
+    authorityReplay: 0,
+    wallet: 0,
+  };
+  const journalClose = PurchaseJournal.prototype.close;
+  const authorityReplayClose = SqliteAuthorityReplayStore.prototype.close;
+  const walletDisconnect = KaspaWallet.prototype.disconnect;
+
+  PurchaseJournal.prototype.close = function instrumentedJournalClose(): void {
+    calls.journal += 1;
+    journalClose.call(this);
+    if (options.failure === "journal") {
+      throw new Error("injected Journal cleanup failure");
+    }
+  };
+  SqliteAuthorityReplayStore.prototype.close =
+    function instrumentedAuthorityReplayClose(): void {
+      calls.authorityReplay += 1;
+      authorityReplayClose.call(this);
+      if (options.failure === "authorityReplay") {
+        throw new Error("injected Authority replay-store cleanup failure");
+      }
+    };
+  KaspaWallet.prototype.disconnect =
+    async function instrumentedWalletDisconnect(): Promise<void> {
+      calls.wallet += 1;
+      await walletDisconnect.call(this);
+      if (options.failure === "wallet") {
+        throw new Error("injected wallet cleanup failure");
+      }
+    };
+
+  let restored = false;
+  return {
+    calls,
+    restore() {
+      if (restored) return;
+      restored = true;
+      PurchaseJournal.prototype.close = journalClose;
+      SqliteAuthorityReplayStore.prototype.close = authorityReplayClose;
+      KaspaWallet.prototype.disconnect = walletDisconnect;
+    },
+  };
 }

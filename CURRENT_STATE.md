@@ -80,8 +80,8 @@ schema, public API, protocol pins, release, deployment, live host, and sibling
 repositories did not change.
 
 Architecture Phase 5 is scoped against
-`a258727aca0e735fe5ca97253c20abe9eb6a742f`. P5.C1 and P5.C2 are complete.
-P5.C3 has not started.
+`a258727aca0e735fe5ca97253c20abe9eb6a742f`. P5.C1 through P5.C3 are
+complete. P5.C4 has not started.
 
 Phase 5 has two objectives:
 
@@ -113,6 +113,24 @@ progression decision site. `PurchaseModule` still exposes only `purchase`,
 engine. The Journal schema, runtime composition, AP2 and Kaspa-x402 adapters,
 protocol pins, release, deployment, live host, and sibling repositories did
 not change.
+
+P5.C3 characterizes the three production runtime roles without changing
+production source. The API uses Purchase, Transfer, Wallet View, Policy Change,
+Vault Migration proposal, Funding Intake, and cleanup capabilities. The
+offline-owner role uses Vault Migration execution with the exact vault, wallet,
+and Chain Evidence dependencies. Bootstrap activation uses the funding address
+and balance, active vault address, Treasury operation lifecycle, and cleanup.
+
+The role tests reject access to the complete runtime object. They map method
+use at the existing narrow seams and prove the existing cleanup locations. A
+construction failure after both SQLite stores open closes both stores. Runtime
+cleanup returns one Promise and attempts each owned resource once.
+
+The complete offline command ran 628 tests. Of these tests, 627 passed and one
+privileged ownership test was skipped as expected. Offline smoke passed. C3
+does not change the public interface, physical Journal schema, runtime
+behavior, AP2 or Kaspa-x402 adapters, protocol pins, release, deployment, live
+host, or sibling repositories.
 
 ## Current release
 
@@ -292,14 +310,15 @@ The deterministic Trusted Authority records signed human approval before an irre
 
 ## Next work
 
-Architecture Phase 5 C2 is complete. C3 is next.
+Architecture Phase 5 C3 is complete. C4 is next.
 
 1. P5.C1 characterized Purchase progression through the existing interface.
 2. P5.C2 consolidated normal and recovery state routing behind one private
    progression implementation.
-3. P5.C3 characterizes the exact runtime needs of the API, offline-owner, and
-   bootstrap roles.
-4. P5.C4 replaces the broad runtime interface with narrow role interfaces.
+3. P5.C3 characterized the exact runtime needs and cleanup paths of the API,
+   offline-owner, and bootstrap roles.
+4. P5.C4 replaces the broad runtime interface with narrow role interfaces and
+   gives each role one memoized cleanup contract.
 5. P5.C5 runs the complete proof, review, deletion, and stop gates.
 
 Phase 5 does not change the stable Purchase interface, physical Journal schema,

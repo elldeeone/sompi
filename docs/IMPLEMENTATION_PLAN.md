@@ -1,6 +1,6 @@
 # Sompi implementation plan
 
-Status: **Architecture Phase 5 C2 complete**
+Status: **Architecture Phase 5 C3 complete**
 
 Starting commit: `89b0f1f404ce8e5f2ded88a5b1a99d8ca1743bba`
 
@@ -520,8 +520,8 @@ test for each retained candidate.
 ### Phase 5: Deepen Purchase progression and reduce runtime exposure
 
 Phase 4 is complete. Phase 5 is scoped against commit
-`a258727aca0e735fe5ca97253c20abe9eb6a742f`. P5.C1 and P5.C2 are complete.
-P5.C3 has not started.
+`a258727aca0e735fe5ca97253c20abe9eb6a742f`. P5.C1 through P5.C3 are
+complete. P5.C4 has not started.
 
 Purpose: remove two proven internal decision leaks. Keep the stable Purchase
 interface, process authority, durable state, and protocol seams unchanged.
@@ -550,7 +550,7 @@ Implementation sequence:
    Keep action implementations inside Purchase. Delete the duplicate
    state-routing loop after equivalent interface tests pass. Estimated effort:
    4–7 days.
-3. [ ] **P5.C3 — Characterize runtime roles.** Add interface tests that prove
+3. [x] **P5.C3 — Characterize runtime roles.** Add interface tests that prove
    the exact capabilities and cleanup behavior needed by the API,
    offline-owner vault-migration, and bootstrap vault-activation entrypoints.
    Do not change runtime behavior. Estimated effort: 0.5–1 day.
@@ -598,6 +598,26 @@ C2 completion evidence from 2026-07-28:
   protocol pins, or a sibling repository.
 - The focused Purchase and boundary command passed 41 tests. The complete
   offline command passed 624 tests: 623 passed and one privileged ownership
+  test was skipped as expected. Offline smoke passed.
+
+C3 completion evidence from 2026-07-28:
+
+- TypeScript syntax-tree tests prove the exact runtime capabilities used by
+  the API, offline-owner Vault Migration, and bootstrap vault activation.
+  They reject whole-runtime passing, spreading, and indexed access.
+- The tests also prove method use at the existing narrow seams. The API
+  application uses only its operation methods, the Funding Intake runner uses
+  only `reconcile`, and bootstrap Treasury work uses only `status`, `execute`,
+  and `recover`.
+- The API keeps normal and failed-start cleanup paths. Offline-owner migration
+  and bootstrap activation close the runtime in `finally` blocks.
+- A failure after both SQLite stores open closes both stores. Repeated cleanup
+  returns one Promise and attempts Journal, Authority replay-store, and wallet
+  cleanup once. C4 must apply this contract to each role interface.
+- No production source, public interface, Journal schema, runtime behavior,
+  protocol adapter, protocol pin, release, deployment, live host, or sibling
+  repository changed. The focused command passed 22 tests. The complete
+  offline command passed 628 tests: 627 passed and one privileged ownership
   test was skipped as expected. Offline smoke passed.
 
 Each checkpoint must leave the repository buildable. Add interface tests before
