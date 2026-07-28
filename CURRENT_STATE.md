@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: **2026-07-27**
+Last updated: **2026-07-28**
 
 ## Architecture programme
 
@@ -78,6 +78,20 @@ commands. Kaspa-x402 still owns its wire rules, transaction construction,
 submission mechanisms, and chain observation mechanisms. The physical Journal
 schema, public API, protocol pins, release, deployment, live host, and sibling
 repositories did not change.
+
+Architecture Phase 5 is scoped against
+`a258727aca0e735fe5ca97253c20abe9eb6a742f`. Implementation has not started.
+
+Phase 5 has two objectives:
+
+- Purchase uses one internal progression implementation for normal execution
+  and recovery after each entrypoint completes its specific work.
+- The API, offline-owner, and bootstrap roles receive narrow runtime
+  interfaces instead of the broad `SompiPurchaseRuntime` interface.
+
+The scope review defers owner-change persistence locality because a new
+interface would mirror high-level Journal commands. It also defers shared Agent
+continuation because the original trigger has not fired.
 
 ## Current release
 
@@ -257,47 +271,17 @@ The deterministic Trusted Authority records signed human approval before an irre
 
 ## Next work
 
-Architecture Phase 4 is complete. Treasury defines one `TreasuryModule`
-interface for quote, reservation, staging preparation, staging execution,
-staging inspection, and staging recovery. One `TreasuryOperationModule`
-implements that interface.
+Architecture Phase 5 is scoped but inactive.
 
-Purchase does not define or export Treasury lifecycle types. It does not call
-Treasury Journal commands. Treasury returns stable staged-output data to
-Purchase. Purchase uses a read-only Treasury query to reconstruct payment
-context after staging.
+1. P5.C1 characterizes Purchase progression through the existing interface.
+2. P5.C2 consolidates normal and recovery state routing behind one private
+   progression implementation.
+3. P5.C3 characterizes the exact runtime needs of the API, offline-owner, and
+   bootstrap roles.
+4. P5.C4 replaces the broad runtime interface with narrow role interfaces.
+5. P5.C5 runs the complete proof, review, deletion, and stop gates.
 
-Treasury owns expired staging abandonment. Staging preparation and recovery
-planning require the correct durable lease. Treasury owns policy, staging, and
-recovery Journal types. One `PurchaseJournal` SQLite implementation remains
-the transaction owner.
-
-Recovery records `execution_prepared` before it can start a planned staging
-effect. A normal Purchase retry reloads a durable staging observation after a
-recovery crash. A staging recovery plan accepts only its exact
-Purchase-scoped planning lease.
-
-Runtime constructs one `TreasuryOperationModule`. Purchase and all current
-direct Movement callers use that instance. Deletion tests prove that the old
-partial Treasury interfaces, the unfenced staging planner,
-`VaultTreasuryModule`, and duplicate runtime wiring do not exist. They also
-prove that Purchase does not call the global Treasury reservation-expiry
-command.
-
-The Kaspa-x402 adapter still owns protocol checks and transaction preparation.
-It also owns staging submission and chain observation mechanisms. Treasury owns
-when those mechanisms run and when their Sompi outcome becomes durable. It
-reconstructs the exact adapter context from the Journal. An ambiguous effect
-is observed before any proof-backed retry. A retry uses the same durable bytes.
-
-The physical Journal schema, Kaspa-x402 behavior and pin, public API, and
-sibling repositories did not change.
-
-The funded C7 evidence is complete. It records direct Movement execution,
-staging and payment ambiguity, a real process restart, recovery of the same
-staging Effect and transaction, and no duplicate effect.
-
-The deletion test keeps four candidates for a future architecture review:
-owner-change persistence locality, Purchase lifecycle progression, runtime
-interface reduction, and shared Agent continuation mechanics. No next phase is
-active.
+Phase 5 does not change the stable Purchase interface, physical Journal schema,
+process authority, AP2 or Kaspa-x402 adapters, protocol pins, release,
+deployment, live host, or sibling repositories. It does not include
+owner-change persistence or shared Agent continuation work.

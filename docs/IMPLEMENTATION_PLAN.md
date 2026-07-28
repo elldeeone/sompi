@@ -1,6 +1,6 @@
 # Sompi implementation plan
 
-Status: **Architecture Phase 4 complete**
+Status: **Architecture Phase 5 scoped**
 
 Starting commit: `89b0f1f404ce8e5f2ded88a5b1a99d8ca1743bba`
 
@@ -500,21 +500,100 @@ the need for that interface.
 
 ## Post-Phase-4 re-scope
 
-Phase 4 repeated the deletion test for every recorded candidate. No next phase
-is active.
+Phase 4 repeated the deletion test for every recorded candidate. The Phase 5
+scope review then applied the original report trigger and repeated the deletion
+test for each retained candidate.
 
 | Candidate | Decision | Evidence |
 |---|---|---|
 | Direct Chain Evidence provenance in stable records | Remove | Chain Evidence already owns provenance. Stable records carry evidence digests. Raw protocol evidence stays in Evidence Attachments. |
-| Policy Change and Vault Migration locality | Keep as one owner-change persistence candidate | Both modules still depend on the concrete `PurchaseJournal` and call many lifecycle commands. A Sompi-owned persistence seam can improve locality without adding a database. |
+| Policy Change and Vault Migration locality | Defer | Both modules use high-level domain commands on the one concrete `PurchaseJournal`. A new persistence interface would mirror these commands and would not remove complexity. Reopen this candidate after a second persistence implementation or a repeated ownership defect. |
 | Transfer persistence locality | Remove | Transfer already owns the narrow `TransferJournal` seam. The shared SQLite implementation preserves one transaction owner. |
 | Funding Intake and Wallet View projection locality | Remove | Both modules are bounded and use narrow `Pick` dependencies. There is no second implementation or proven behavior split. |
 | Purchase projection locality | Remove | The pure Purchase projector already owns stable summaries, evidence-digest projection, and fulfilment limits. |
-| Purchase lifecycle progression | Keep | The 1,980-line coordinator still owns a large progression and recovery decision surface. Its next review must find a deeper internal boundary, not split files by size. |
-| Runtime interface reduction | Keep | The 586-line composition root exposes 11 concrete runtime subsystems. A later review can test whether callers need this full surface. |
-| Shared Agent continuation mechanics | Keep | Purchase and Transfer have separate 171-line and 177-line continuation loops with the same deadline, progress, retry, and identity mechanics. |
+| Purchase lifecycle progression | Activate in Phase 5 | Phase 4 changed Treasury effect ownership and recovery order. The coordinator still has separate normal and recovery state-routing loops. One internal progression implementation can remove this duplicated decision surface without changing the Purchase interface. |
+| Runtime interface reduction | Activate in Phase 5 | The composition root exposes 14 concrete runtime properties. The API, offline-owner, and bootstrap entrypoints each use a smaller role-specific subset. |
+| Shared Agent continuation mechanics | Defer | The original trigger has not fired. There is no third continuation policy or another shared correction. Purchase and Transfer keep separate valid lifecycle rules. |
 | Host Bootstrap to Operator Provisioning translation | Remove | Phase 3 added one explicit `operatorSpecForHostBootstrap` translation and the complete host proof passed. |
 | Host release binding and deeper Hermes compatibility ownership | Merge into the closed Host Bootstrap item | Phase 1 and Phase 3 fixed checkout durability, release binding, topology, rollback, and compatibility ownership. The release verifier passed. |
+
+### Phase 5: Deepen Purchase progression and reduce runtime exposure
+
+Phase 4 is complete. Phase 5 is scoped against commit
+`a258727aca0e735fe5ca97253c20abe9eb6a742f`. Implementation has not started.
+
+Purpose: remove two proven internal decision leaks. Keep the stable Purchase
+interface, process authority, durable state, and protocol seams unchanged.
+
+The phase has two implementation objectives:
+
+- Purchase uses one internal progression implementation after each entrypoint
+  completes its entry-specific work. Normal execution and recovery no longer
+  contain separate state-to-action decision surfaces.
+- Runtime composition presents the smallest interface needed by the API,
+  offline-owner, and bootstrap roles. Private construction can be shared, but
+  production roles do not receive unused capabilities.
+
+Do not create a workflow engine, a runtime plug-in system, a second Journal, or
+a public progression interface. Do not include owner-change persistence or
+shared Agent continuation work.
+
+Implementation sequence:
+
+1. [ ] **P5.C1 — Characterize Purchase progression.** Add tests through the
+   existing Purchase interface for normal progression, recovery progression,
+   restart, unchanged-state bounds, and no duplicate external effect. Do not
+   change runtime behavior. Estimated effort: 0.5–1 day.
+2. [ ] **P5.C2 — Consolidate Purchase progression.** Use one private
+   progression implementation after normal-entry and recovery-specific work.
+   Keep action implementations inside Purchase. Delete the duplicate
+   state-routing loop after equivalent interface tests pass. Estimated effort:
+   4–7 days.
+3. [ ] **P5.C3 — Characterize runtime roles.** Add interface tests that prove
+   the exact capabilities and cleanup behavior needed by the API,
+   offline-owner vault-migration, and bootstrap vault-activation entrypoints.
+   Do not change runtime behavior. Estimated effort: 0.5–1 day.
+4. [ ] **P5.C4 — Reduce runtime exposure.** Replace the broad exported runtime
+   interface with the smallest role-specific interfaces proved by C3. Share
+   private construction without creating duplicate composition roots,
+   Journals, wallets, or cleanup paths. Delete the broad interface and replaced
+   tests after the role interfaces pass. Estimated effort: 2–4 days.
+5. [ ] **P5.C5 — Verify and stop.** Run every Phase 5 gate, complete an
+   independent architecture review, update the state documents, and stop before
+   any deferred candidate starts. Estimated effort: 1–2 days.
+
+Each checkpoint must leave the repository buildable. Add interface tests before
+deleting the behavior or interface that they replace.
+
+Verification gate:
+
+- [ ] **P5.G1:** Purchase interface tests prove the same durable result for
+  normal progression and recovery from every supported resumable state.
+- [ ] **P5.G2:** Failure-injection and restart tests prove that consolidated
+  progression does not repeat authorization, Treasury staging, payment,
+  settlement, or fulfilment effects.
+- [ ] **P5.G3:** Deletion checks prove that Purchase has one state-to-action
+  progression decision surface. No public progression seam or generic workflow
+  implementation exists.
+- [ ] **P5.G4:** Runtime interface tests prove least-capability API,
+  offline-owner, and bootstrap roles, including construction failure and
+  idempotent cleanup.
+- [ ] **P5.G5:** Deletion checks prove that the broad
+  `SompiPurchaseRuntime` interface and production access to unused runtime
+  properties do not exist. One Journal transaction owner remains.
+- [ ] **P5.G6:** The complete unit suite, offline smoke, all five Kaspa-x402
+  conformance checks, generated OpenAPI and Arazzo checks, stored-evidence
+  checks, and the release verifier pass.
+- [ ] **P5.G7:** Fresh, separately authorized Testnet-10 evidence proves
+  restart recovery of one Purchase without a duplicate staging or payment
+  effect.
+- [ ] **P5.G8:** No public interface, physical Journal schema, AP2 or
+  Kaspa-x402 adapter, protocol pin, release, deployment, live-host, or sibling
+  repository change is included.
+
+This phase deepens implementations accepted in ADR-0002, ADR-0008, ADR-0013,
+ADR-0015, and ADR-0018. It does not change an accepted decision. Add or amend
+an ADR before implementation if a checkpoint changes one of those decisions.
 
 ## Deferred work
 
