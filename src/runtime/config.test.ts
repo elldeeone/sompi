@@ -8,15 +8,15 @@ import { publishOperatorManifestForTests } from "../operator/manifest.js";
 import { VaultManager, generateOwnerKey, vaultStaticConfigurationDigest } from "../vault.js";
 import {
   SompiRuntimeConfigError,
-  assertSompiPurchaseRuntimeConfig,
-  purchaseRuntimeConfigFromEnv,
+  assertSompiRuntimeConfig,
+  sompiRuntimeConfigFromEnv,
   secureRuntimeDirectory,
 } from "./config.js";
 
 test("runtime environment accepts only deployment locators and exact Operator Manifest projections", () => {
   const fixture = runtimeFixture();
   try {
-    const config = purchaseRuntimeConfigFromEnv(
+    const config = sompiRuntimeConfigFromEnv(
       fixture.environment,
       fixture.root,
       { allowSameUserOperatorManifestForTests: true }
@@ -36,9 +36,13 @@ test("runtime environment accepts only deployment locators and exact Operator Ma
     assert.equal(Object.hasOwn(config, "egressProtocols"), false);
     assert.equal(Object.hasOwn(config, "policyPath"), false);
     assert.equal(Object.isFrozen(config), true);
+    assert.equal(Object.isFrozen(config.policy), true);
     assert.equal(Object.isFrozen(config.operatorManifest.manifest), true);
+    assert.throws(() => {
+      (config.policy as { maxSompiPerTx: bigint }).maxSompiPerTx = 1n;
+    }, TypeError);
     assert.equal(fs.statSync(config.dataDirectory).mode & 0o777, 0o700);
-    assert.doesNotThrow(() => assertSompiPurchaseRuntimeConfig(config));
+    assert.doesNotThrow(() => assertSompiRuntimeConfig(config));
   } finally {
     fixture.close();
   }
@@ -58,7 +62,7 @@ test("removed operator environment fails before creating wallet or journal state
     const fixture = runtimeFixture();
     try {
       assert.throws(
-        () => purchaseRuntimeConfigFromEnv(
+        () => sompiRuntimeConfigFromEnv(
           { ...fixture.environment, [name]: "attacker-controlled" },
           fixture.root,
           { allowSameUserOperatorManifestForTests: true }
@@ -77,7 +81,7 @@ test("production configuration rejects a manifest replaceable by the MCP user", 
   const fixture = runtimeFixture();
   try {
     assert.throws(
-      () => purchaseRuntimeConfigFromEnv(fixture.environment, fixture.root),
+      () => sompiRuntimeConfigFromEnv(fixture.environment, fixture.root),
       /owner must differ/
     );
   } finally {
@@ -88,7 +92,7 @@ test("production configuration rejects a manifest replaceable by the MCP user", 
 test("programmatic runtime configuration rejects manifest projection drift and unknown fields", () => {
   const fixture = runtimeFixture();
   try {
-    const config = purchaseRuntimeConfigFromEnv(
+    const config = sompiRuntimeConfigFromEnv(
       fixture.environment,
       fixture.root,
       { allowSameUserOperatorManifestForTests: true }
@@ -100,7 +104,7 @@ test("programmatic runtime configuration rejects manifest projection drift and u
       { ...config, policy: { ...config.policy, maxSompiPerTx: 1n } },
       { ...config, finalityFloors: { ...config.finalityFloors, settlement: "accepted" } },
     ]) {
-      assert.throws(() => assertSompiPurchaseRuntimeConfig(changed), SompiRuntimeConfigError);
+      assert.throws(() => assertSompiRuntimeConfig(changed), SompiRuntimeConfigError);
     }
   } finally {
     fixture.close();

@@ -13,6 +13,7 @@ test("production entrypoints use only their exact runtime capabilities", () => {
     {
       name: "API",
       source: sourceFile(path.join(SOURCE_ROOT, "api-main.ts")),
+      factory: "createSompiApiRuntime",
       capabilities: [
         "close",
         "fundingIntake",
@@ -26,6 +27,7 @@ test("production entrypoints use only their exact runtime capabilities", () => {
     {
       name: "offline-owner Vault Migration",
       source: sourceFile(path.join(SOURCE_ROOT, "operator-main.ts")),
+      factory: "createSompiOfflineOwnerRuntime",
       capabilities: [
         "chainEvidence",
         "close",
@@ -39,6 +41,7 @@ test("production entrypoints use only their exact runtime capabilities", () => {
       source: sourceFile(
         path.join(SOURCE_ROOT, "operator", "vault-activation.ts"),
       ),
+      factory: "createSompiBootstrapRuntime",
       capabilities: [
         "close",
         "treasuryOperations",
@@ -58,6 +61,11 @@ test("production entrypoints use only their exact runtime capabilities", () => {
       unsupportedIdentifierUses(role.source, "runtime"),
       [],
       `${role.name} must not pass, spread, or index the complete runtime`,
+    );
+    assert.equal(
+      identifierCalls(role.source, role.factory).length,
+      1,
+      `${role.name} must construct its exact role runtime once`,
     );
   }
 });
@@ -140,22 +148,28 @@ test("role consumers use only their mapped nested methods", () => {
 test("each role retains runtime cleanup on success and failure paths", () => {
   const api = sourceFile(path.join(SOURCE_ROOT, "api-main.ts"));
   const apiMain = functionDeclaration(api, "main");
-  const apiCloseCalls = directCalls(api, "runtime", "close");
-  assert.equal(apiCloseCalls.length, 2);
-  assert.deepEqual(
-    apiCloseCalls.map(insideCatchClause).sort(),
-    [false, true],
+  const close = variableInitializer(apiMain, "close");
+  assert.equal(
+    memoizedCallAssignments(close, "closePromise", "closeApiResources"),
+    1,
   );
-  assert.equal(apiCloseCalls.every(insideAwaitExpression), true);
-  assertAwaitedCloseCalls(
-    variableInitializer(apiMain, "close"),
-    ["fundingIntake", "api", "recoveryApi", "runtime"],
+  const apiCleanup = functionDeclaration(api, "closeApiResources");
+  const apiCleanupCalls = resourceCleanupCalls(apiCleanup, "resources");
+  assert.deepEqual(
+    apiCleanupCalls.map((entry) => entry.resource),
+    ["fundingIntake", "api", "recoveryApi", "runtimeClose"],
+  );
+  assert.equal(
+    apiCleanupCalls.every((entry) => insideAwaitExpression(entry.call)),
+    true,
   );
   const apiCatchClauses = descendants(apiMain, ts.isCatchClause);
   assert.equal(apiCatchClauses.length, 1);
-  assertAwaitedCloseCalls(
-    apiCatchClauses[0],
-    ["api", "recoveryApi", "fundingIntake", "runtime"],
+  const failedStartCloseCalls = identifierCalls(apiCatchClauses[0], "close");
+  assert.equal(failedStartCloseCalls.length, 1);
+  assert.equal(
+    failedStartCloseCalls.every(insideAwaitExpression),
+    true,
   );
   const shutdown = variableInitializer(apiMain, "shutdown");
   assert.equal(identifierCalls(shutdown, "close").length, 1);
@@ -173,6 +187,50 @@ test("each role retains runtime cleanup on success and failure paths", () => {
     assert.equal(closeCalls.length, 1);
     assert.equal(insideFinallyBlock(closeCalls[0]), true);
     assert.equal(insideAwaitExpression(closeCalls[0]), true);
+  }
+});
+
+test("the broad runtime and duplicate composition roots do not exist", () => {
+  const runtime = sourceFile(
+    path.join(SOURCE_ROOT, "runtime", "purchase-runtime.ts"),
+  );
+  assert.equal(identifierCount(runtime, "SompiPurchaseRuntime"), 0);
+  assert.equal(identifierCount(runtime, "createSompiPurchaseRuntime"), 0);
+
+  const composition = functionDeclaration(
+    runtime,
+    "createSompiRuntimeComposition",
+  );
+  assert.equal(
+    composition.modifiers?.some(
+      (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+    ) ?? false,
+    false,
+  );
+  for (const factory of [
+    "createSompiApiRuntime",
+    "createSompiOfflineOwnerRuntime",
+    "createSompiBootstrapRuntime",
+  ]) {
+    assert.equal(
+      identifierCalls(
+        functionDeclaration(runtime, factory),
+        "createSompiRuntimeComposition",
+      ).length,
+      1,
+      `${factory} must use the shared private composition root`,
+    );
+  }
+  for (const constructor of [
+    "PurchaseJournal",
+    "KaspaWallet",
+    "TreasuryOperationModule",
+  ]) {
+    assert.equal(
+      newExpressionCount(runtime, constructor),
+      1,
+      `${constructor} must have one runtime construction site`,
+    );
   }
 });
 
@@ -360,6 +418,65 @@ function identifierCalls(
   );
 }
 
+function identifierCount(root: ts.Node, name: string): number {
+  return descendants(root, ts.isIdentifier)
+    .filter((identifier) => identifier.text === name)
+    .length;
+}
+
+function newExpressionCount(root: ts.Node, name: string): number {
+  return descendants(root, ts.isNewExpression)
+    .filter(
+      (expression) =>
+        ts.isIdentifier(expression.expression) &&
+        expression.expression.text === name,
+    )
+    .length;
+}
+
+function memoizedCallAssignments(
+  root: ts.Node,
+  promiseName: string,
+  functionName: string,
+): number {
+  return descendants(root, ts.isBinaryExpression)
+    .filter(
+      (expression) =>
+        expression.operatorToken.kind ===
+          ts.SyntaxKind.QuestionQuestionEqualsToken &&
+        ts.isIdentifier(expression.left) &&
+        expression.left.text === promiseName &&
+        ts.isCallExpression(expression.right) &&
+        ts.isIdentifier(expression.right.expression) &&
+        expression.right.expression.text === functionName,
+    )
+    .length;
+}
+
+function resourceCleanupCalls(
+  root: ts.Node,
+  objectName: string,
+): Array<{ resource: string; call: ts.CallExpression }> {
+  return descendants(root, ts.isCallExpression).flatMap((call) => {
+    const expression = call.expression;
+    if (!ts.isPropertyAccessExpression(expression)) return [];
+    if (
+      ts.isIdentifier(expression.expression) &&
+      expression.expression.text === objectName &&
+      expression.name.text === "runtimeClose"
+    ) {
+      return [{ resource: "runtimeClose", call }];
+    }
+    const resource = expression.expression;
+    return expression.name.text === "close" &&
+      ts.isPropertyAccessExpression(resource) &&
+      ts.isIdentifier(resource.expression) &&
+      resource.expression.text === objectName
+      ? [{ resource: resource.name.text, call }]
+      : [];
+  });
+}
+
 function registeredSignals(root: ts.Node, handlerName: string): string[] {
   return descendants(root, ts.isCallExpression).flatMap((call) => {
     const expression = call.expression;
@@ -386,40 +503,6 @@ function variableInitializer(root: ts.Node, name: string): ts.Expression {
   );
   assert.ok(declaration?.initializer, `${name} must have an initializer`);
   return declaration.initializer;
-}
-
-function closeCalls(root: ts.Node): ts.CallExpression[] {
-  return descendants(root, ts.isCallExpression).filter((call) => {
-    const expression = call.expression;
-    return ts.isPropertyAccessExpression(expression) &&
-      expression.name.text === "close" &&
-      ts.isIdentifier(expression.expression);
-  });
-}
-
-function assertAwaitedCloseCalls(
-  root: ts.Node,
-  expectedReceivers: readonly string[],
-): void {
-  const calls = closeCalls(root);
-  assert.deepEqual(
-    calls.map((call) => {
-      const expression = call.expression;
-      assert.ok(ts.isPropertyAccessExpression(expression));
-      assert.ok(ts.isIdentifier(expression.expression));
-      return expression.expression.text;
-    }),
-    expectedReceivers,
-  );
-  assert.equal(
-    calls.every(insideAwaitExpression),
-    true,
-    "each cleanup call must be awaited",
-  );
-}
-
-function insideCatchClause(node: ts.Node): boolean {
-  return hasAncestor(node, ts.isCatchClause);
 }
 
 function insideAwaitExpression(node: ts.Node): boolean {

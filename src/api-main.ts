@@ -10,8 +10,8 @@ import {
 } from "./api/config.js";
 import { createSompiApplication } from "./api/contracts.js";
 import { startSompiApiServer, startSompiRecoveryApiServer } from "./api/server.js";
-import { SompiRuntimeConfigError, purchaseRuntimeConfigFromEnv } from "./runtime/config.js";
-import { createSompiPurchaseRuntime } from "./runtime/purchase-runtime.js";
+import { SompiRuntimeConfigError, sompiRuntimeConfigFromEnv } from "./runtime/config.js";
+import { createSompiApiRuntime } from "./runtime/purchase-runtime.js";
 import { startFundingIntake, type RunningFundingIntake } from "./funding-intake/module.js";
 
 if (process.argv.length > 3 || (process.argv[2] && !["start", "help", "--help"].includes(process.argv[2]))) {
@@ -24,14 +24,24 @@ if (process.argv[2] === "help" || process.argv[2] === "--help") {
 }
 
 async function main(): Promise<void> {
-  let runtime: ReturnType<typeof createSompiPurchaseRuntime> | undefined;
+  let runtime: ReturnType<typeof createSompiApiRuntime> | undefined;
   let api: Awaited<ReturnType<typeof startSompiApiServer>> | undefined;
   let recoveryApi: Awaited<ReturnType<typeof startSompiRecoveryApiServer>> | undefined;
   let fundingIntake: RunningFundingIntake | undefined;
+  let closePromise: Promise<void> | undefined;
+  const close = (): Promise<void> => {
+    closePromise ??= closeApiResources({
+      fundingIntake,
+      api,
+      recoveryApi,
+      runtimeClose: runtime?.close,
+    });
+    return closePromise;
+  };
   try {
     const listener = sompiApiListenerConfigFromEnv();
     const recoveryListener = sompiRecoveryApiListenerConfigFromEnv();
-    runtime = createSompiPurchaseRuntime(purchaseRuntimeConfigFromEnv());
+    runtime = createSompiApiRuntime(sompiRuntimeConfigFromEnv());
     const application = createSompiApplication(
       runtime.purchase,
       runtime.transfer,
@@ -64,26 +74,30 @@ async function main(): Promise<void> {
     fundingIntake = startFundingIntake(runtime.fundingIntake, {
       onError: () => console.error("sompi warning: automatic funding intake needs reconciliation"),
     });
-    let closing = false;
-    const close = async () => {
-      if (closing) return;
-      closing = true;
-      await fundingIntake?.close();
-      await api?.close();
-      await recoveryApi?.close();
-      await runtime?.close();
-    };
     const shutdown = () => { void close().then(() => process.exit(0), () => fatal("Sompi API could not close cleanly.")); };
     process.once("SIGINT", shutdown);
     process.once("SIGTERM", shutdown);
     console.error(`sompi API ${packageVersion()} ready on its configured local socket`);
   } catch (error) {
-    await api?.close().catch(() => undefined);
-    await recoveryApi?.close().catch(() => undefined);
-    await fundingIntake?.close().catch(() => undefined);
-    await runtime?.close().catch(() => undefined);
+    await close().catch(() => undefined);
     if (error instanceof SompiApiConfigError || error instanceof SompiRuntimeConfigError) fatal(error.message);
     fatal("Sompi API could not start. Inspect the local operator configuration.");
+  }
+}
+
+async function closeApiResources(resources: Readonly<{
+  fundingIntake?: RunningFundingIntake;
+  api?: Awaited<ReturnType<typeof startSompiApiServer>>;
+  recoveryApi?: Awaited<ReturnType<typeof startSompiRecoveryApiServer>>;
+  runtimeClose?: () => Promise<void>;
+}>): Promise<void> {
+  const errors: unknown[] = [];
+  try { await resources.fundingIntake?.close(); } catch (error) { errors.push(error); }
+  try { await resources.api?.close(); } catch (error) { errors.push(error); }
+  try { await resources.recoveryApi?.close(); } catch (error) { errors.push(error); }
+  try { await resources.runtimeClose?.(); } catch (error) { errors.push(error); }
+  if (errors.length > 0) {
+    throw new AggregateError(errors, "Sompi API cleanup failed");
   }
 }
 

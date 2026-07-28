@@ -1,5 +1,5 @@
-import { purchaseRuntimeConfigFromEnv } from "../runtime/config.js";
-import { createSompiPurchaseRuntime } from "../runtime/purchase-runtime.js";
+import { sompiRuntimeConfigFromEnv } from "../runtime/config.js";
+import { createSompiBootstrapRuntime } from "../runtime/purchase-runtime.js";
 import { JournalNotFoundError } from "../purchase/journal.js";
 import type { TreasuryOperationView } from "../treasury/operations.js";
 import { displayKas } from "../amount-display.js";
@@ -45,7 +45,7 @@ export async function activateBootstrapVault(
   const minimumFunding = atomicEnv(env.SOMPI_BOOTSTRAP_MINIMUM_FUNDING_SOMPI, "minimum funding");
   const minimumDeposit = atomicEnv(env.SOMPI_BOOTSTRAP_MINIMUM_DEPOSIT_SOMPI, "minimum vault deposit");
   const keepFloat = atomicEnv(env.SOMPI_BOOTSTRAP_KEEP_FLOAT_SOMPI, "funding-wallet float");
-  const runtime = createSompiPurchaseRuntime(purchaseRuntimeConfigFromEnv(env));
+  const runtime = createSompiBootstrapRuntime(sompiRuntimeConfigFromEnv(env));
   try {
     const fundingBalance = await runtime.wallet.balanceSompi();
     const config = runtime.vault.config();

@@ -711,10 +711,10 @@ export function createPurchaseApplication(module: PurchaseModule): PurchaseAppli
 
 export function createSompiApplication(
   purchase: PurchaseModule,
-  transfer: TransferModule,
-  walletView: WalletViewModule,
-  policyChange: PolicyChangeModule,
-  vaultMigration: VaultMigrationModule,
+  transfer: Pick<TransferModule, "transfer" | "status" | "recover">,
+  walletView: Pick<WalletViewModule, "wallet" | "technical" | "activity">,
+  policyChange: Pick<PolicyChangeModule, "propose" | "status" | "recover">,
+  vaultMigration: Pick<VaultMigrationModule, "propose" | "status">,
 ): SompiApplication {
   const purchaseApplication = createPurchaseApplication(purchase);
   return Object.freeze({

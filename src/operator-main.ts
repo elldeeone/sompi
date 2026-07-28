@@ -26,8 +26,8 @@ import {
 import { OfflineRuntimeIdentityError, enterOfflineOwnerRuntime } from "./operator/offline-runtime.js";
 import { activateBootstrapVault } from "./operator/vault-activation.js";
 import { generateOwnerKey } from "./vault.js";
-import { purchaseRuntimeConfigFromEnv } from "./runtime/config.js";
-import { createSompiPurchaseRuntime } from "./runtime/purchase-runtime.js";
+import { sompiRuntimeConfigFromEnv } from "./runtime/config.js";
+import { createSompiOfflineOwnerRuntime } from "./runtime/purchase-runtime.js";
 import { OfflineOwnerVaultMigrationExecutor } from "./vault-migration/owner-executor.js";
 import {
   ApiCredentialInstallError,
@@ -76,8 +76,8 @@ try {
     case "vault-migrate": {
       const ownerPrivateKey = readOwnerKey(command.ownerKeyFile);
       enterOfflineOwnerRuntime(process.env);
-      const config = purchaseRuntimeConfigFromEnv(process.env);
-      const runtime = createSompiPurchaseRuntime(config);
+      const config = sompiRuntimeConfigFromEnv(process.env);
+      const runtime = createSompiOfflineOwnerRuntime(config);
       try {
         const executor = new OfflineOwnerVaultMigrationExecutor({
           vault: runtime.vault, wallet: runtime.wallet, chainEvidence: runtime.chainEvidence,

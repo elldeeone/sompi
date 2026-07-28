@@ -9,68 +9,133 @@ import {
   initializeAuthorityRuntime,
 } from "../authority/runtime.js";
 import { SqliteAuthorityReplayStore } from "../authority/replay-store.js";
-import {
-  assertPurchaseRequestKey,
-  createPurchaseId,
-  requestFingerprint,
-} from "../purchase/identity.js";
+import { assertPurchaseRequestKey } from "../purchase/identity.js";
 import { PurchaseJournal } from "../purchase/journal.js";
 import { publishOperatorManifestForTests } from "../operator/manifest.js";
 import { VaultManager, generateOwnerKey, vaultStaticConfigurationDigest } from "../vault.js";
 import { KaspaWallet } from "../wallet.js";
 import {
-  purchaseRuntimeConfigFromEnv,
-  type SompiPurchaseRuntimeConfig,
+  sompiRuntimeConfigFromEnv,
+  type SompiRuntimeConfig,
 } from "./config.js";
-import { createSompiPurchaseRuntime } from "./purchase-runtime.js";
+import {
+  createSompiApiRuntime,
+  createSompiBootstrapRuntime,
+  createSompiOfflineOwnerRuntime,
+} from "./purchase-runtime.js";
 
 const NOW = 1_800_000_000_000;
 
-test("composition uses one dynamic clock and an immutable active policy snapshot", async () => {
+const ROLE_FACTORIES = [
+  {
+    name: "API",
+    create: createSompiApiRuntime,
+    capabilities: [
+      "close",
+      "fundingIntake",
+      "policyChange",
+      "purchase",
+      "transfer",
+      "vaultMigration",
+      "walletView",
+    ],
+  },
+  {
+    name: "offline owner",
+    create: createSompiOfflineOwnerRuntime,
+    capabilities: [
+      "chainEvidence",
+      "close",
+      "vault",
+      "vaultMigration",
+      "wallet",
+    ],
+  },
+  {
+    name: "bootstrap",
+    create: createSompiBootstrapRuntime,
+    capabilities: [
+      "close",
+      "treasuryOperations",
+      "vault",
+      "wallet",
+    ],
+  },
+] as const;
+
+test("role factories expose only their mapped capabilities", async () => {
+  for (const role of ROLE_FACTORIES) {
+    const fixture = await runtimeFixture();
+    const runtime = role.create(fixture.config, {
+      now: () => NOW,
+      resolver: publicResolver,
+    });
+    try {
+      assert.equal(Object.isFrozen(runtime), true);
+      assert.deepEqual(
+        Object.keys(runtime).sort(),
+        [...role.capabilities].sort(),
+        `${role.name} runtime capabilities changed`,
+      );
+    } finally {
+      await runtime.close();
+      fixture.dispose();
+    }
+  }
+});
+
+test("API composition keeps the injected clock behind the narrow role", async () => {
   const fixture = await runtimeFixture();
   let now = NOW;
-  const runtime = createSompiPurchaseRuntime(fixture.config, {
+  const runtime = createSompiApiRuntime(fixture.config, {
     now: () => now,
     resolver: publicResolver,
+    transport: {
+      async send() {
+        return {
+          status: 500,
+          headers: [],
+          body: (async function* () {})(),
+        };
+      },
+    },
   });
+  const firstKey = assertPurchaseRequestKey("runtime-clock:first");
+  const secondKey = assertPurchaseRequestKey("runtime-clock:second");
   try {
-    const resourceA = {
-      url: "https://merchant.example/resource-a",
-      method: "GET",
-    };
-    const first = runtime.journal.createPurchase({
-      id: createPurchaseId(Buffer.alloc(16, 1)),
-      requestKey: assertPurchaseRequestKey("runtime-clock:first"),
-      resourceUrl: resourceA.url,
-      method: resourceA.method,
-      resourceFingerprint: requestFingerprint(resourceA),
-    });
-    assert.equal(first.createdAtMs, NOW);
-
+    await assert.rejects(
+      () => runtime.purchase.purchase({
+        requestKey: firstKey,
+        resource: {
+          url: "https://merchant.example/resource-a",
+          method: "GET",
+        },
+      }),
+      /Merchant did not return payment-required Checkout Terms/,
+    );
     now += 12_345;
-    const resourceB = {
-      url: "https://merchant.example/resource-b",
-      method: "POST",
-      body: Buffer.from("request", "utf8"),
-      mediaType: "application/octet-stream",
-    };
-    const second = runtime.journal.createPurchase({
-      id: createPurchaseId(Buffer.alloc(16, 2)),
-      requestKey: assertPurchaseRequestKey("runtime-clock:second"),
-      resourceUrl: resourceB.url,
-      method: resourceB.method,
-      resourceFingerprint: requestFingerprint(resourceB),
-    });
-    assert.equal(second.createdAtMs, now);
-
-    assert.equal(runtime.policy.policy.maxSompiPerTx, 100n);
-    assert.throws(() => {
-      (fixture.config.policy as { maxSompiPerTx: bigint }).maxSompiPerTx = 250n;
-    }, TypeError);
-    assert.equal(runtime.policy.policy.maxSompiPerTx, 100n);
-    assert.equal(runtime.policy.policy.maxSompiPerHour, 500n);
+    await assert.rejects(
+      () => runtime.purchase.purchase({
+        requestKey: secondKey,
+        resource: {
+          url: "https://merchant.example/resource-b",
+          method: "POST",
+          body: Buffer.from("request", "utf8"),
+          mediaType: "application/octet-stream",
+        },
+      }),
+      /Merchant did not return payment-required Checkout Terms/,
+    );
   } finally {
     await runtime.close();
+  }
+
+  const journal = new PurchaseJournal(fixture.config.journalDatabase);
+  try {
+    assert.equal(journal.findPurchaseByRequestKey(firstKey)?.createdAtMs, NOW);
+    assert.equal(journal.findPurchaseByRequestKey(secondKey)?.createdAtMs, now);
+  } finally {
+    journal.close();
     fixture.dispose();
   }
 });
@@ -80,7 +145,7 @@ test("invalid clocks and trust fail before wallet or journal creation", async ()
   try {
     assert.throws(
       () =>
-        createSompiPurchaseRuntime(invalidClock.config, {
+        createSompiApiRuntime(invalidClock.config, {
           now: () => Number.NaN,
           resolver: publicResolver,
         }),
@@ -99,7 +164,7 @@ test("invalid clocks and trust fail before wallet or journal creation", async ()
     });
     assert.throws(
       () =>
-        createSompiPurchaseRuntime(invalidTrust.config, {
+        createSompiApiRuntime(invalidTrust.config, {
           now: () => NOW,
           resolver: publicResolver,
         }),
@@ -128,7 +193,7 @@ test("production composition rejects a signer socket owned by the MCP OS user", 
       },
     };
     assert.throws(
-      () => createSompiPurchaseRuntime(unsafe, { resolver: publicResolver }),
+      () => createSompiApiRuntime(unsafe, { resolver: publicResolver }),
       /OS user distinct/,
     );
     assert.equal(
@@ -141,58 +206,34 @@ test("production composition rejects a signer socket owned by the MCP OS user", 
 });
 
 test("partial construction after both durable stores open closes both stores", async () => {
-  const fixture = await runtimeFixture();
-  const cleanup = instrumentRuntimeCleanup();
-  try {
-    fs.writeFileSync(fixture.config.stagingKeyDirectory, "not a directory\n", {
-      mode: 0o600,
-    });
-    assert.throws(
-      () =>
-        createSompiPurchaseRuntime(fixture.config, {
-          now: () => NOW,
-          resolver: publicResolver,
-        }),
-      /staging key directory|secure staging key directory/
-    );
-    assert.equal(cleanup.calls.journal, 1);
-    assert.equal(cleanup.calls.authorityReplay, 1);
-    for (const database of [
-      fixture.config.journalDatabase,
-      fixture.config.authority.clientReplayDatabase,
-    ]) {
-      assert.equal(fs.existsSync(`${database}-wal`), false);
-      assert.equal(fs.existsSync(`${database}-shm`), false);
-    }
-  } finally {
-    cleanup.restore();
-    fixture.dispose();
-  }
-});
-
-test("runtime cleanup is memoized and attempts every resource after any cleanup failure", async () => {
-  for (const failure of ["authorityReplay", "journal", "wallet"] as const) {
+  for (const role of ROLE_FACTORIES) {
     const fixture = await runtimeFixture();
-    const cleanup = instrumentRuntimeCleanup({ failure });
+    const cleanup = instrumentRuntimeCleanup();
     try {
-      const runtime = createSompiPurchaseRuntime(fixture.config, {
-        now: () => NOW,
-        resolver: publicResolver,
+      fs.writeFileSync(fixture.config.stagingKeyDirectory, "not a directory\n", {
+        mode: 0o600,
       });
-      const closable: Readonly<{ close(): Promise<void> }> = runtime;
-      const first = closable.close();
-      const concurrent = closable.close();
-      assert.equal(concurrent, first);
-      await assert.rejects(first, /cleanup failed/);
-
-      const repeated = closable.close();
-      assert.equal(repeated, first);
-      await assert.rejects(repeated, /cleanup failed/);
-      assert.deepEqual(cleanup.calls, {
-        journal: 1,
-        authorityReplay: 1,
-        wallet: 1,
-      });
+      assert.throws(
+        () =>
+          role.create(fixture.config, {
+            now: () => NOW,
+            resolver: publicResolver,
+          }),
+        /staging key directory|secure staging key directory/
+      );
+      assert.equal(cleanup.calls.journal, 1, `${role.name} Journal cleanup changed`);
+      assert.equal(
+        cleanup.calls.authorityReplay,
+        1,
+        `${role.name} Authority replay cleanup changed`,
+      );
+      for (const database of [
+        fixture.config.journalDatabase,
+        fixture.config.authority.clientReplayDatabase,
+      ]) {
+        assert.equal(fs.existsSync(`${database}-wal`), false);
+        assert.equal(fs.existsSync(`${database}-shm`), false);
+      }
     } finally {
       cleanup.restore();
       fixture.dispose();
@@ -200,9 +241,40 @@ test("runtime cleanup is memoized and attempts every resource after any cleanup 
   }
 });
 
+test("each role cleanup is memoized and attempts every resource after a failure", async () => {
+  for (const role of ROLE_FACTORIES) {
+    for (const failure of ["authorityReplay", "journal", "wallet"] as const) {
+      const fixture = await runtimeFixture();
+      const cleanup = instrumentRuntimeCleanup({ failure });
+      try {
+        const runtime = role.create(fixture.config, {
+          now: () => NOW,
+          resolver: publicResolver,
+        });
+        const first = runtime.close();
+        const concurrent = runtime.close();
+        assert.equal(concurrent, first);
+        await assert.rejects(first, /cleanup failed/);
+
+        const repeated = runtime.close();
+        assert.equal(repeated, first);
+        await assert.rejects(repeated, /cleanup failed/);
+        assert.deepEqual(cleanup.calls, {
+          journal: 1,
+          authorityReplay: 1,
+          wallet: 1,
+        });
+      } finally {
+        cleanup.restore();
+        fixture.dispose();
+      }
+    }
+  }
+});
+
 interface RuntimeFixture {
   readonly root: string;
-  readonly config: SompiPurchaseRuntimeConfig;
+  readonly config: SompiRuntimeConfig;
   dispose(): void;
 }
 
@@ -268,7 +340,7 @@ async function runtimeFixture(): Promise<RuntimeFixture> {
   });
   const uid = typeof process.getuid === "function" ? process.getuid() : 0;
   const gid = typeof process.getgid === "function" ? process.getgid() : 0;
-  const config = purchaseRuntimeConfigFromEnv(
+  const config = sompiRuntimeConfigFromEnv(
     {
       SOMPI_OPERATOR_MANIFEST: manifestPath,
       SOMPI_OPERATOR_UID: String(uid),

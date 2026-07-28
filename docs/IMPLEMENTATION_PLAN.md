@@ -1,6 +1,6 @@
 # Sompi implementation plan
 
-Status: **Architecture Phase 5 C3 complete**
+Status: **Architecture Phase 5 C4 complete**
 
 Starting commit: `89b0f1f404ce8e5f2ded88a5b1a99d8ca1743bba`
 
@@ -521,7 +521,7 @@ test for each retained candidate.
 
 Phase 4 is complete. Phase 5 is scoped against commit
 `a258727aca0e735fe5ca97253c20abe9eb6a742f`. P5.C1 through P5.C3 are
-complete. P5.C4 has not started.
+complete. P5.C4 is complete. P5.C5 is next.
 
 Purpose: remove two proven internal decision leaks. Keep the stable Purchase
 interface, process authority, durable state, and protocol seams unchanged.
@@ -554,7 +554,7 @@ Implementation sequence:
    the exact capabilities and cleanup behavior needed by the API,
    offline-owner vault-migration, and bootstrap vault-activation entrypoints.
    Do not change runtime behavior. Estimated effort: 0.5–1 day.
-4. [ ] **P5.C4 — Reduce runtime exposure.** Replace the broad exported runtime
+4. [x] **P5.C4 — Reduce runtime exposure.** Replace the broad exported runtime
    interface with the smallest role-specific interfaces proved by C3. Share
    private construction without creating duplicate composition roots,
    Journals, wallets, or cleanup paths. Delete the broad interface and replaced
@@ -618,6 +618,33 @@ C3 completion evidence from 2026-07-28:
   protocol adapter, protocol pin, release, deployment, live host, or sibling
   repository changed. The focused command passed 22 tests. The complete
   offline command passed 628 tests: 627 passed and one privileged ownership
+  test was skipped as expected. Offline smoke passed.
+
+C4 completion evidence from 2026-07-28:
+
+- The API, offline-owner, and bootstrap entrypoints use separate role
+  interfaces. Each role receives only the top-level modules and methods that
+  C3 proved it needs.
+- One private composition function constructs the Journal, wallet, Treasury,
+  protocol adapters, and operation modules. The role factories return frozen
+  projections of that composition.
+- The broad `SompiPurchaseRuntime` interface and
+  `createSompiPurchaseRuntime` factory do not exist. Deletion tests prove that
+  production entrypoints call only their role factory and cannot access unused
+  runtime properties.
+- Each role receives the same memoized cleanup contract. Construction failure
+  closes both durable stores. API shutdown attempts Funding Intake, API,
+  recovery API, and runtime cleanup once, even if one cleanup fails.
+- The existing batch capitalization and refund modules still receive the same
+  Treasury instance as every other Treasury caller. They remain private to the
+  composition root and are not exposed through a role interface.
+- Shared runtime configuration names no longer describe the composition as a
+  Purchase-only runtime.
+- The change alters cleanup behavior only. It does not alter Purchase
+  operation behavior, the stable Purchase interface, physical Journal schema,
+  AP2 or Kaspa-x402 adapters, protocol pins, release, deployment, live host, or
+  a sibling repository. The focused command passed 32 tests. The complete
+  offline command passed 630 tests: 629 passed and one privileged ownership
   test was skipped as expected. Offline smoke passed.
 
 Each checkpoint must leave the repository buildable. Add interface tests before

@@ -38,7 +38,7 @@ export interface SompiAuthorityClientConfig {
   readonly clientReplayDatabase: string;
 }
 
-export interface SompiPurchaseRuntimeConfig {
+export interface SompiRuntimeConfig {
   readonly networkId: typeof TESTNET;
   readonly x402Network: typeof X402_TESTNET;
   readonly dataDirectory: string;
@@ -64,7 +64,7 @@ export interface SompiPurchaseRuntimeConfig {
   readonly egressAllowRules: readonly EgressAllowRule[];
 }
 
-export interface PurchaseRuntimeConfigFromEnvOptions {
+export interface SompiRuntimeConfigFromEnvOptions {
   readonly allowSameUserOperatorManifestForTests?: boolean;
 }
 
@@ -76,15 +76,15 @@ export class SompiRuntimeConfigError extends Error {
 }
 
 /** Strict environment boundary for the initial AP2 + exact testnet profile. */
-export function purchaseRuntimeConfigFromEnv(
+export function sompiRuntimeConfigFromEnv(
   env: NodeJS.ProcessEnv = process.env,
   homeDirectory: string = os.homedir(),
-  options: PurchaseRuntimeConfigFromEnvOptions = {}
-): SompiPurchaseRuntimeConfig {
+  options: SompiRuntimeConfigFromEnvOptions = {}
+): SompiRuntimeConfig {
   const configuredNetwork = env.SOMPI_NETWORK ?? TESTNET;
   if (configuredNetwork !== TESTNET) {
     throw new SompiRuntimeConfigError(
-      "the initial Purchase runtime supports only testnet-10"
+      "the initial Sompi runtime supports only testnet-10"
     );
   }
 
@@ -206,11 +206,11 @@ export function purchaseRuntimeConfigFromEnv(
 }
 
 /** Revalidates programmatic configuration before the composition root acts. */
-export function assertSompiPurchaseRuntimeConfig(
+export function assertSompiRuntimeConfig(
   value: unknown
-): asserts value is SompiPurchaseRuntimeConfig {
+): asserts value is SompiRuntimeConfig {
   if (!isRecord(value)) {
-    throw new SompiRuntimeConfigError("Sompi Purchase runtime configuration is invalid");
+    throw new SompiRuntimeConfigError("Sompi runtime configuration is invalid");
   }
   exactKeys(
     value,
@@ -234,11 +234,11 @@ export function assertSompiPurchaseRuntimeConfig(
       "egressAllowRules",
     ],
     new Set(),
-    "Purchase runtime configuration"
+    "Sompi runtime configuration"
   );
   if (value.networkId !== TESTNET || value.x402Network !== X402_TESTNET) {
     throw new SompiRuntimeConfigError(
-      "the initial Purchase runtime supports only testnet-10"
+      "the initial Sompi runtime supports only testnet-10"
     );
   }
   const dataDirectory = absoluteConfiguredPath(
@@ -252,7 +252,7 @@ export function assertSompiPurchaseRuntimeConfig(
       path.join(dataDirectory, "staging-keys")
   ) {
     throw new SompiRuntimeConfigError(
-      "Purchase runtime state paths are not bound to the Sompi data directory"
+      "Sompi runtime state paths are not bound to the Sompi data directory"
     );
   }
   if (!isRecord(value.operatorManifest)) {

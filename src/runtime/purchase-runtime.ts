@@ -69,9 +69,9 @@ import { VaultManager, vaultStaticConfigurationDigest } from "../vault.js";
 import { assertVaultConfigurationLineage, reconcileAppliedVaultMigrationFence } from "../vault-migration/lineage.js";
 import { KaspaWallet } from "../wallet.js";
 import {
-  assertSompiPurchaseRuntimeConfig,
+  assertSompiRuntimeConfig,
   secureRuntimeDirectory,
-  type SompiPurchaseRuntimeConfig,
+  type SompiRuntimeConfig,
 } from "./config.js";
 import {
   JournalChainTreasuryMetadataSource,
@@ -85,25 +85,36 @@ import { FundingIntakeModule } from "../funding-intake/module.js";
 import { PolicyChangeModule } from "../policy-change/module.js";
 import { VaultMigrationModule } from "../vault-migration/module.js";
 
-export interface SompiPurchaseRuntime {
-  readonly purchase: PurchaseModule;
-  readonly transfer: TransferModule;
-  readonly walletView: WalletViewModule;
-  readonly fundingIntake: FundingIntakeModule;
-  readonly policyChange: PolicyChangeModule;
-  readonly vaultMigration: VaultMigrationModule;
-  readonly journal: PurchaseJournal;
-  readonly wallet: KaspaWallet;
-  readonly vault: VaultManager;
-  readonly policy: PolicyEngine;
-  readonly chainEvidence: ChainEvidenceModule;
-  readonly treasuryOperations: TreasuryOperationModule;
-  readonly batchCapital: KaspaX402BatchCapitalModule;
-  readonly batchRefund: KaspaX402BatchRefundModule;
+interface RuntimeCleanup {
   close(): Promise<void>;
 }
 
-export interface SompiPurchaseRuntimeDependencies {
+export interface SompiApiRuntime extends RuntimeCleanup {
+  readonly purchase: PurchaseModule;
+  readonly transfer: Pick<TransferModule, "transfer" | "status" | "recover">;
+  readonly walletView: Pick<WalletViewModule, "wallet" | "technical" | "activity">;
+  readonly fundingIntake: Pick<FundingIntakeModule, "reconcile">;
+  readonly policyChange: Pick<PolicyChangeModule, "propose" | "status" | "recover">;
+  readonly vaultMigration: Pick<VaultMigrationModule, "propose" | "status">;
+}
+
+export interface SompiOfflineOwnerRuntime extends RuntimeCleanup {
+  readonly vaultMigration: Pick<VaultMigrationModule, "execute" | "recover">;
+  readonly wallet: KaspaWallet;
+  readonly vault: VaultManager;
+  readonly chainEvidence: ChainEvidenceModule;
+}
+
+export interface SompiBootstrapRuntime extends RuntimeCleanup {
+  readonly wallet: Pick<KaspaWallet, "address" | "balanceSompi">;
+  readonly vault: Pick<VaultManager, "config">;
+  readonly treasuryOperations: Pick<
+    TreasuryOperationModule,
+    "status" | "execute" | "recover"
+  >;
+}
+
+export interface SompiRuntimeDependencies {
   readonly now?: () => number;
   readonly resolver?: EgressResolver;
   readonly transport?: PinnedHttpTransport;
@@ -112,15 +123,58 @@ export interface SompiPurchaseRuntimeDependencies {
   readonly allowSameUserAuthorityForTests?: boolean;
 }
 
+export function createSompiApiRuntime(
+  config: SompiRuntimeConfig,
+  dependencies: SompiRuntimeDependencies = {}
+): SompiApiRuntime {
+  const runtime = createSompiRuntimeComposition(config, dependencies);
+  return Object.freeze({
+    purchase: runtime.purchase,
+    transfer: runtime.transfer,
+    walletView: runtime.walletView,
+    fundingIntake: runtime.fundingIntake,
+    policyChange: runtime.policyChange,
+    vaultMigration: runtime.vaultMigration,
+    close: runtime.close,
+  });
+}
+
+export function createSompiOfflineOwnerRuntime(
+  config: SompiRuntimeConfig,
+  dependencies: SompiRuntimeDependencies = {}
+): SompiOfflineOwnerRuntime {
+  const runtime = createSompiRuntimeComposition(config, dependencies);
+  return Object.freeze({
+    vaultMigration: runtime.vaultMigration,
+    wallet: runtime.wallet,
+    vault: runtime.vault,
+    chainEvidence: runtime.chainEvidence,
+    close: runtime.close,
+  });
+}
+
+export function createSompiBootstrapRuntime(
+  config: SompiRuntimeConfig,
+  dependencies: SompiRuntimeDependencies = {}
+): SompiBootstrapRuntime {
+  const runtime = createSompiRuntimeComposition(config, dependencies);
+  return Object.freeze({
+    wallet: runtime.wallet,
+    vault: runtime.vault,
+    treasuryOperations: runtime.treasuryOperations,
+    close: runtime.close,
+  });
+}
+
 /**
  * Production composition root. Every volatile protocol dependency terminates
  * here; the Purchase coordinator receives only its narrow Sompi-owned seams.
  */
-export function createSompiPurchaseRuntime(
-  config: SompiPurchaseRuntimeConfig,
-  dependencies: SompiPurchaseRuntimeDependencies = {}
-): SompiPurchaseRuntime {
-  assertSompiPurchaseRuntimeConfig(config);
+function createSompiRuntimeComposition(
+  config: SompiRuntimeConfig,
+  dependencies: SompiRuntimeDependencies
+) {
+  assertSompiRuntimeConfig(config);
   const sameUserAuthorityTest =
     dependencies.allowSameUserAuthorityForTests === true;
   assertAuthorityProcessIsolation(
@@ -443,10 +497,8 @@ export function createSompiPurchaseRuntime(
       fundingIntake,
       policyChange,
       vaultMigration,
-      journal,
       wallet,
       vault,
-      policy,
       chainEvidence,
       treasuryOperations,
       batchCapital,
@@ -475,7 +527,7 @@ export function createSompiPurchaseRuntime(
 function assertManifestVault(
   vault: VaultManager,
   journal: PurchaseJournal,
-  config: SompiPurchaseRuntimeConfig
+  config: SompiRuntimeConfig
 ): void {
   if (!vault.configured) {
     throw new Error("Operator Manifest vault has not been provisioned");
@@ -489,7 +541,7 @@ function assertManifestVault(
 }
 
 function assertAuthorityProcessIsolation(
-  config: SompiPurchaseRuntimeConfig,
+  config: SompiRuntimeConfig,
   allowSameUserForTests: boolean
 ): void {
   if (allowSameUserForTests) return;
