@@ -1,6 +1,6 @@
 # Sompi implementation plan
 
-Status: **Architecture Phase 6 C3 complete; C4 not started**
+Status: **Architecture Phase 6 C4 complete; C5 not started**
 
 Starting commit: `89b0f1f404ce8e5f2ded88a5b1a99d8ca1743bba`
 
@@ -746,14 +746,14 @@ The phase has these requirements:
   Transfer-specific durable contracts remain owned by Transfer.
 - [x] **P6.3:** Treasury and Transfer do not import the concrete
   `PurchaseJournal` implementation.
-- [ ] **P6.4:** The production TypeScript dependency graph is acyclic.
-- [ ] **P6.5:** One `PurchaseJournal` SQLite implementation remains the only
+- [x] **P6.4:** The production TypeScript dependency graph is acyclic.
+- [x] **P6.5:** One `PurchaseJournal` SQLite implementation remains the only
   Journal transaction owner. Do not add a database, persistence adapter,
   transaction owner, or speculative persistence seam.
-- [ ] **P6.6:** Do not split an implementation only because its file is long.
+- [x] **P6.6:** Do not split an implementation only because its file is long.
   Move code only when contract ownership or dependency direction requires the
   move.
-- [ ] **P6.7:** Keep runtime behavior, the physical Journal schema, the stable
+- [x] **P6.7:** Keep runtime behavior, the physical Journal schema, the stable
   Purchase and Transfer interfaces, process authority, and protocol seams
   unchanged.
 
@@ -773,7 +773,7 @@ Implementation sequence:
    Transfer contract types with their owning modules. Preserve the existing
    deep module interfaces and one SQLite implementation. Estimated effort:
    1–2 days.
-4. [ ] **P6.C4 — Complete the clean cutover.** Delete the old contract
+4. [x] **P6.C4 — Complete the clean cutover.** Delete the old contract
    locations, aliases, re-exports, imports, and replaced tests. Add deletion
    tests that prove the production dependency graph is acyclic and that no
    second Journal or persistence seam exists. Estimated effort: 0.5–1 day.
@@ -845,6 +845,29 @@ C3 completion evidence from 2026-07-30:
 - The physical Journal schema, runtime behavior, public interfaces, AP2 and
   Kaspa-x402 adapter behavior, protocol pins, release, deployment, live host,
   and sibling repositories did not change.
+
+C4 completion evidence from 2026-07-30:
+
+- `PaymentAttemptState` now has one Purchase contract owner. The C2-era local
+  alias in the concrete Purchase Journal does not exist.
+- The final graph test replaces the intermediate C2 and C3 regional edge
+  snapshots. It checks all 156 production TypeScript files and 722 unique
+  static local dependency edges. The graph has no cyclic component.
+- Deletion tests prove one direct owner for each moved contract. The old
+  implementation files do not define or forward a moved contract. Production
+  Treasury and Transfer source does not import the concrete Purchase Journal.
+- A TypeScript semantic test proves that `PurchaseJournal` is the only concrete
+  implementation of both `TreasuryOperationJournal` and `TransferJournal`.
+  The runtime role test continues to prove one production construction site.
+- The scoped SQLite gate finds only the concrete Purchase Journal and the
+  Journal schema fingerprint helper. The helper opens only in-memory
+  databases. The concrete Journal has the one filename-backed database.
+- No implementation was split. The physical Journal schema, runtime behavior,
+  stable interfaces, process authority, protocol adapters, and protocol pins
+  did not change.
+- The focused C4 command passed all 8 tests. The complete offline command ran
+  639 tests: 638 passed and one privileged ownership test was skipped as
+  expected. Offline smoke passed.
 
 Verification gate:
 

@@ -7,32 +7,11 @@ import ts from "typescript";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SOURCE_ROOT = path.join(ROOT, "src");
-
-const PHASE_6_IMPLEMENTATION_REGION = [
-  "purchase/journal.ts",
-  "transfer/journal.ts",
-  "treasury/lease-lifecycle.ts",
-  "treasury/operation-adapters.ts",
-  "treasury/operation-journal.ts",
-  "treasury/operations.ts",
-] as const;
-
-const C2_REMOVED_BACK_EDGES = [
-  "treasury/lease-lifecycle.ts -> purchase/journal.ts",
-  "treasury/operation-journal.ts -> purchase/journal.ts",
-  "treasury/operations.ts -> purchase/journal.ts",
-] as const;
-
-const C3_IMPLEMENTATION_EDGES = [
-  "purchase/journal.ts -> transfer/journal.ts",
-  "purchase/journal.ts -> treasury/operation-journal.ts",
-  "transfer/journal.ts -> treasury/operation-journal.ts",
-  "treasury/lease-lifecycle.ts -> treasury/operation-journal.ts",
-  "treasury/operation-adapters.ts -> treasury/operation-journal.ts",
-  "treasury/operations.ts -> treasury/lease-lifecycle.ts",
-  "treasury/operations.ts -> treasury/operation-adapters.ts",
-  "treasury/operations.ts -> treasury/operation-journal.ts",
-] as const;
+const COMPILER_OPTIONS: ts.CompilerOptions = {
+  module: ts.ModuleKind.NodeNext,
+  moduleResolution: ts.ModuleResolutionKind.NodeNext,
+  target: ts.ScriptTarget.ES2022,
+};
 
 const SHARED_JOURNAL_CONTRACTS = [
   "EffectClaim",
@@ -67,6 +46,7 @@ const PURCHASE_JOURNAL_CONTRACTS = [
   "FulfilmentRecord",
   "JournalAdmissionStatus",
   "PaymentAttemptRecord",
+  "PaymentAttemptState",
   "PaymentPreparationRecord",
   "PreparePaymentAttemptInput",
   "PURCHASE_RECEIPT_PROFILE",
@@ -84,16 +64,11 @@ const PURCHASE_JOURNAL_CONTRACTS = [
   "RecordReceiptInput",
 ] as const;
 
-test("C2 removes the contract back-edges from the implementation region", () => {
-  const graph = productionImportGraph();
-  const edges = componentEdges(graph, new Set(PHASE_6_IMPLEMENTATION_REGION));
-  assert.deepEqual(
-    C2_REMOVED_BACK_EDGES.filter((edge) => edges.includes(edge)),
-    [],
-  );
+test("production TypeScript dependency graph is acyclic", () => {
+  assert.deepEqual(cyclicComponents(productionImportGraph()), []);
 });
 
-test("C2 gives shared and Purchase Journal contracts one direct owner", () => {
+test("moved Journal contracts have one direct owner and no forwarding path", () => {
   const contracts = [
     ...SHARED_JOURNAL_CONTRACTS.map(
       (name) => [name, "journal/contracts.ts"] as const,
@@ -101,6 +76,10 @@ test("C2 gives shared and Purchase Journal contracts one direct owner", () => {
     ...PURCHASE_JOURNAL_CONTRACTS.map(
       (name) => [name, "purchase/journal-contracts.ts"] as const,
     ),
+    ["PolicyReservationError", "treasury/operation-journal.ts"] as const,
+    ["TreasuryOperationView", "treasury/operation-journal.ts"] as const,
+    ["TransferJournal", "transfer/journal.ts"] as const,
+    ["TransferJournalIntent", "transfer/journal.ts"] as const,
   ];
   const sharedOwner = exportedDeclarationNames("journal/contracts.ts");
   const purchaseOwner = exportedDeclarationNames(
@@ -126,11 +105,17 @@ test("C2 gives shared and Purchase Journal contracts one direct owner", () => {
     );
   }
 
-  assert.deepEqual(
-    reexportSpecifiers("purchase/journal.ts"),
-    [],
-    "the concrete Purchase Journal must not forward moved contracts",
-  );
+  for (const oldOwner of [
+    "purchase/journal.ts",
+    "treasury/operations.ts",
+    "treasury/purchase-staging.ts",
+  ]) {
+    assert.deepEqual(
+      forwardingExports(oldOwner),
+      [],
+      `${oldOwner} must not forward a moved contract`,
+    );
+  }
   assert.deepEqual(
     identifierUsers("TreasuryStagingPreparationLease"),
     [],
@@ -170,31 +155,8 @@ test("C2 gives shared and Purchase Journal contracts one direct owner", () => {
   assert.doesNotMatch(concreteJournal, /\bPAYMENT_ATTEMPT_STATES\b/);
 });
 
-test("C3 gives Treasury and Transfer contracts one direct owner", () => {
-  const owners = productionDeclarationOwners();
-  const contracts = [
-    ["PolicyReservationError", "treasury/operation-journal.ts"],
-    ["TreasuryOperationView", "treasury/operation-journal.ts"],
-    ["TransferJournal", "transfer/journal.ts"],
-    ["TransferJournalIntent", "transfer/journal.ts"],
-  ] as const;
-
-  for (const [name, expectedOwner] of contracts) {
-    assert.deepEqual(
-      owners.get(name) ?? [],
-      [expectedOwner],
-      `${name} must have one direct contract owner`,
-    );
-  }
-});
-
-test("C3 removes Treasury and Transfer dependencies on implementations", () => {
+test("Treasury and Transfer do not import the concrete Purchase Journal", () => {
   const graph = productionImportGraph();
-  assert.deepEqual(
-    componentEdges(graph, new Set(PHASE_6_IMPLEMENTATION_REGION)),
-    [...C3_IMPLEMENTATION_EDGES],
-  );
-
   const concreteJournalImporters = [...graph]
     .filter(([source, dependencies]) =>
       (source.startsWith("treasury/") || source.startsWith("transfer/")) &&
@@ -209,16 +171,58 @@ test("C3 removes Treasury and Transfer dependencies on implementations", () => {
   );
 });
 
+test("one concrete Purchase Journal owns both domain Journal seams", () => {
+  const program = productionProgram();
+  assert.deepEqual(
+    concreteJournalImplementations(
+      program,
+      "transfer/journal.ts",
+      "TransferJournal",
+    ),
+    ["purchase/journal.ts:PurchaseJournal:class"],
+  );
+  assert.deepEqual(
+    journalContractDeclarations(
+      program,
+      "transfer/journal.ts",
+      "TransferJournal",
+    ),
+    ["transfer/journal.ts:TransferJournal:interface"],
+  );
+  assert.deepEqual(
+    concreteJournalImplementations(
+      program,
+      "treasury/operation-journal.ts",
+      "TreasuryOperationJournal",
+    ),
+    ["purchase/journal.ts:PurchaseJournal:class"],
+  );
+  assert.deepEqual(
+    journalContractDeclarations(
+      program,
+      "treasury/operation-journal.ts",
+      "TreasuryOperationJournal",
+    ),
+    ["treasury/operation-journal.ts:TreasuryOperationJournal:interface"],
+  );
+
+  assert.deepEqual(crossDomainSqliteImporters(), [
+    "purchase/journal-schema.ts",
+    "purchase/journal.ts",
+  ]);
+  assert.deepEqual(
+    databaseConstructorArguments("purchase/journal-schema.ts"),
+    [":memory:", ":memory:", ":memory:", ":memory:"],
+  );
+  assert.deepEqual(
+    databaseConstructorArguments("purchase/journal.ts"),
+    ["filename"],
+  );
+});
+
 function productionImportGraph(): ReadonlyMap<string, readonly string[]> {
-  const filenames = sourceFiles(SOURCE_ROOT)
-    .filter((filename) => !filename.endsWith(".test.ts"))
-    .sort();
+  const filenames = productionSourceFiles();
   const productionFiles = new Set(filenames.map(normalizeFilename));
-  const compilerOptions: ts.CompilerOptions = {
-    module: ts.ModuleKind.NodeNext,
-    moduleResolution: ts.ModuleResolutionKind.NodeNext,
-    target: ts.ScriptTarget.ES2022,
-  };
   const graph = new Map<string, readonly string[]>();
 
   for (const filename of filenames) {
@@ -234,7 +238,7 @@ function productionImportGraph(): ReadonlyMap<string, readonly string[]> {
       const resolved = ts.resolveModuleName(
         specifier,
         filename,
-        compilerOptions,
+        COMPILER_OPTIONS,
         ts.sys,
       ).resolvedModule?.resolvedFileName;
       if (!resolved) continue;
@@ -265,16 +269,60 @@ function staticModuleSpecifiers(source: ts.SourceFile): readonly string[] {
   });
 }
 
-function componentEdges(
+function cyclicComponents(
   graph: ReadonlyMap<string, readonly string[]>,
-  component: ReadonlySet<string>,
-): readonly string[] {
-  return [...component]
-    .sort()
-    .flatMap((source) =>
-      (graph.get(source) ?? [])
-        .filter((target) => component.has(target))
-        .map((target) => `${source} -> ${target}`)
+): readonly (readonly string[])[] {
+  const indices = new Map<string, number>();
+  const lowLinks = new Map<string, number>();
+  const stack: string[] = [];
+  const onStack = new Set<string>();
+  const components: string[][] = [];
+  let nextIndex = 0;
+
+  const visit = (node: string): void => {
+    indices.set(node, nextIndex);
+    lowLinks.set(node, nextIndex);
+    nextIndex += 1;
+    stack.push(node);
+    onStack.add(node);
+
+    for (const dependency of graph.get(node) ?? []) {
+      if (!indices.has(dependency)) {
+        visit(dependency);
+        lowLinks.set(
+          node,
+          Math.min(lowLinks.get(node)!, lowLinks.get(dependency)!),
+        );
+      } else if (onStack.has(dependency)) {
+        lowLinks.set(
+          node,
+          Math.min(lowLinks.get(node)!, indices.get(dependency)!),
+        );
+      }
+    }
+
+    if (lowLinks.get(node) !== indices.get(node)) return;
+    const component: string[] = [];
+    let member: string;
+    do {
+      member = stack.pop()!;
+      onStack.delete(member);
+      component.push(member);
+    } while (member !== node);
+    component.sort();
+    if (
+      component.length > 1 ||
+      (graph.get(component[0]) ?? []).includes(component[0])
+    ) {
+      components.push(component);
+    }
+  };
+
+  for (const node of [...graph.keys()].sort()) {
+    if (!indices.has(node)) visit(node);
+  }
+  return components.sort((left, right) =>
+    left.join("\0").localeCompare(right.join("\0"))
   );
 }
 
@@ -353,14 +401,12 @@ function productionDeclarationOwners(): ReadonlyMap<
   return owners;
 }
 
-function reexportSpecifiers(relativeFilename: string): readonly string[] {
-  return parsedSource(relativeFilename).statements.flatMap((statement) =>
-    ts.isExportDeclaration(statement) &&
-      statement.moduleSpecifier &&
-      ts.isStringLiteral(statement.moduleSpecifier)
-      ? [statement.moduleSpecifier.text]
-      : []
-  );
+function forwardingExports(relativeFilename: string): readonly string[] {
+  const source = parsedSource(relativeFilename);
+  return source.statements
+    .filter(ts.isExportDeclaration)
+    .map((statement) => statement.getText(source))
+    .sort();
 }
 
 function identifierUsers(name: string): readonly string[] {
@@ -398,6 +444,234 @@ function parsedSource(relativeFilename: string): ts.SourceFile {
   );
 }
 
+function productionProgram(): ts.Program {
+  return ts.createProgram({
+    rootNames: productionSourceFiles(),
+    options: {
+      ...COMPILER_OPTIONS,
+      noEmit: true,
+      skipLibCheck: true,
+      strict: true,
+    },
+  });
+}
+
+function concreteJournalImplementations(
+  program: ts.Program,
+  targetFilename: string,
+  targetName: string,
+): readonly string[] {
+  const checker = program.getTypeChecker();
+  const target = namedTypeDeclaration(program, targetFilename, targetName);
+  const targetType = checker.getTypeAtLocation(target.name);
+  const implementations = new Set<string>();
+
+  for (const source of productionProgramSources(program)) {
+    const visit = (node: ts.Node): void => {
+      if (
+        ts.isClassDeclaration(node) &&
+        node.name &&
+        isAssignableImplementation(
+          checker,
+          checker.getTypeAtLocation(node.name),
+          targetType,
+        )
+      ) {
+        implementations.add(
+          `${relativeSourceFilename(source.fileName)}:${node.name.text}:class`,
+        );
+      } else if (
+        ts.isClassExpression(node) &&
+        isAssignableImplementation(
+          checker,
+          classExpressionInstanceType(checker, node),
+          targetType,
+        )
+      ) {
+        const line = source.getLineAndCharacterOfPosition(
+          node.getStart(source),
+        ).line + 1;
+        implementations.add(
+          `${relativeSourceFilename(source.fileName)}:${line}:class-expression`,
+        );
+      } else if (
+        (ts.isObjectLiteralExpression(node) ||
+          (ts.isAsExpression(node) &&
+            (ts.isClassExpression(node.expression) ||
+              ts.isObjectLiteralExpression(node.expression)))) &&
+        isAssignableImplementation(
+          checker,
+          checker.getTypeAtLocation(node),
+          targetType,
+        )
+      ) {
+        const line = source.getLineAndCharacterOfPosition(
+          node.getStart(source),
+        ).line + 1;
+        implementations.add(
+          `${relativeSourceFilename(source.fileName)}:${line}:${
+            ts.isObjectLiteralExpression(node) ? "object" : "assertion"
+          }`,
+        );
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+  }
+  return [...implementations].sort();
+}
+
+function journalContractDeclarations(
+  program: ts.Program,
+  targetFilename: string,
+  targetName: string,
+): readonly string[] {
+  const checker = program.getTypeChecker();
+  const target = namedTypeDeclaration(program, targetFilename, targetName);
+  const targetType = checker.getTypeAtLocation(target.name);
+  const contracts = new Set<string>();
+
+  for (const source of productionProgramSources(program)) {
+    for (const statement of source.statements) {
+      if (
+        !(
+          ts.isInterfaceDeclaration(statement) ||
+          ts.isTypeAliasDeclaration(statement)
+        ) ||
+        !statement.name
+      ) {
+        continue;
+      }
+      const candidateType = checker.getTypeAtLocation(statement.name);
+      if (
+        !isAssignableImplementation(checker, candidateType, targetType)
+      ) {
+        continue;
+      }
+      contracts.add(
+        `${relativeSourceFilename(source.fileName)}:${statement.name.text}:${
+          ts.isInterfaceDeclaration(statement) ? "interface" : "type"
+        }`,
+      );
+    }
+  }
+  return [...contracts].sort();
+}
+
+type NamedTypeDeclaration =
+  & (ts.ClassDeclaration | ts.InterfaceDeclaration | ts.TypeAliasDeclaration)
+  & { readonly name: ts.Identifier };
+
+function namedTypeDeclaration(
+  program: ts.Program,
+  targetFilename: string,
+  targetName: string,
+): NamedTypeDeclaration {
+  const targetSource = program.getSourceFile(
+    path.join(SOURCE_ROOT, targetFilename),
+  );
+  assert.ok(targetSource);
+  const target = targetSource.statements.find(
+    (statement) =>
+      (ts.isClassDeclaration(statement) ||
+        ts.isInterfaceDeclaration(statement) ||
+        ts.isTypeAliasDeclaration(statement)) &&
+      statement.name?.text === targetName,
+  );
+  if (
+    !target ||
+    !(
+      ts.isClassDeclaration(target) ||
+      ts.isInterfaceDeclaration(target) ||
+      ts.isTypeAliasDeclaration(target)
+    ) ||
+    !target.name
+  ) {
+    throw new Error(`${targetFilename} does not declare ${targetName}`);
+  }
+  return target as NamedTypeDeclaration;
+}
+
+function productionProgramSources(program: ts.Program): readonly ts.SourceFile[] {
+  return program.getSourceFiles().filter((source) =>
+    normalizeFilename(source.fileName).startsWith(
+      `${normalizeFilename(SOURCE_ROOT)}${path.sep}`,
+    ) && !source.fileName.endsWith(".test.ts")
+  );
+}
+
+function isAssignableImplementation(
+  checker: ts.TypeChecker,
+  candidate: ts.Type,
+  target: ts.Type,
+): boolean {
+  if (
+    candidate.flags &
+      (ts.TypeFlags.Any | ts.TypeFlags.Never | ts.TypeFlags.Unknown)
+  ) {
+    return false;
+  }
+  return checker.isTypeAssignableTo(candidate, target);
+}
+
+function classExpressionInstanceType(
+  checker: ts.TypeChecker,
+  expression: ts.ClassExpression,
+): ts.Type {
+  const signature = checker
+    .getTypeAtLocation(expression)
+    .getConstructSignatures()[0];
+  if (!signature) {
+    throw new Error("class expression has no construct signature");
+  }
+  return checker.getReturnTypeOfSignature(signature);
+}
+
+function crossDomainSqliteImporters(): readonly string[] {
+  return productionSourceFiles()
+    .map(relativeSourceFilename)
+    .filter((filename) =>
+      !filename.startsWith("authority/") &&
+      !filename.startsWith("demo/") &&
+      !filename.startsWith("e2e/") &&
+      filename !== "e2e-main.ts" &&
+      filename !== "smoke.ts"
+    )
+    .filter((filename) =>
+      staticModuleSpecifiers(parsedSource(filename)).includes("better-sqlite3")
+    )
+    .sort();
+}
+
+function databaseConstructorArguments(
+  relativeFilename: string,
+): readonly string[] {
+  const source = parsedSource(relativeFilename);
+  const arguments_: string[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isNewExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === "Database"
+    ) {
+      assert.equal(
+        node.arguments?.length,
+        1,
+        `${relativeFilename} has an unexpected Database constructor`,
+      );
+      const argument = node.arguments![0]!;
+      arguments_.push(
+        ts.isStringLiteral(argument) || ts.isIdentifier(argument)
+          ? argument.text
+          : argument.getText(source),
+      );
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return arguments_;
+}
+
 function sourceText(relativeFilename: string): string {
   return fs.readFileSync(path.join(SOURCE_ROOT, relativeFilename), "utf8");
 }
@@ -409,14 +683,16 @@ function resolvedSourceFilename(
   const resolved = ts.resolveModuleName(
     specifier,
     path.join(SOURCE_ROOT, sourceRelativeFilename),
-    {
-      module: ts.ModuleKind.NodeNext,
-      moduleResolution: ts.ModuleResolutionKind.NodeNext,
-      target: ts.ScriptTarget.ES2022,
-    },
+    COMPILER_OPTIONS,
     ts.sys,
   ).resolvedModule?.resolvedFileName;
   return resolved ? relativeSourceFilename(resolved) : undefined;
+}
+
+function productionSourceFiles(): string[] {
+  return sourceFiles(SOURCE_ROOT)
+    .filter((filename) => !filename.endsWith(".test.ts"))
+    .sort();
 }
 
 function sourceFiles(directory: string): string[] {

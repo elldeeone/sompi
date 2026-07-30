@@ -173,7 +173,7 @@ Kaspa-x402 adapter, protocol pin, release, deployment, live host, or sibling
 repository. It did not start owner-change persistence, shared Agent
 continuation, or another deferred candidate.
 
-Architecture Phase 6 C3 is complete. C4 has not started. Phase 6 starts from
+Architecture Phase 6 C4 is complete. C5 has not started. Phase 6 starts from
 `cde460cb80f9c5d6afa65f83431e6544e2e8f598`.
 
 Phase 6 removes one production TypeScript dependency cycle between the
@@ -229,6 +229,28 @@ schema, runtime behavior, public interfaces, protocol adapter behavior, and
 protocol pins did not change. The focused C3 command passed all 133 tests. The
 complete offline command ran 639 tests: 638 passed and one privileged ownership
 test was skipped as expected. Offline smoke passed.
+
+P6.C4 completes the internal clean cutover. `PaymentAttemptState` has one
+Purchase contract owner. The temporary alias in the concrete Purchase Journal
+does not exist. The intermediate regional edge snapshots do not exist.
+
+The final graph test checks all 156 production TypeScript files and 722 unique
+static local dependency edges. The graph has no cyclic component. The final
+deletion tests prove that each moved contract has one owner and no forwarding
+export. Production Treasury and Transfer source does not import the concrete
+Purchase Journal.
+
+A semantic TypeScript test proves that `PurchaseJournal` is the only concrete
+implementation of both domain Journal interfaces. The scoped SQLite test
+allows the in-memory schema fingerprint helper and the one filename-backed
+Purchase Journal only. The existing runtime test proves one production
+construction site.
+
+No implementation was split. The physical Journal schema, runtime behavior,
+stable interfaces, process authority, protocol adapters, and protocol pins did
+not change. The focused C4 command passed all 8 tests. The complete offline
+command ran 639 tests: 638 passed and one privileged ownership test was skipped
+as expected. Offline smoke passed.
 
 ## Current release
 
@@ -408,10 +430,9 @@ The deterministic Trusted Authority records signed human approval before an irre
 
 ## Next work
 
-Architecture Phase 6 C3 is complete. C4 has not started.
+Architecture Phase 6 C4 is complete. C5 has not started.
 
-1. P6.C4 deletes old contract paths and proves the production graph is acyclic.
-2. P6.C5 runs the complete proof, review, deletion, and stop gates.
+1. P6.C5 runs the complete proof, review, final gate, and stop work.
 
 Phase 6 is a clean internal cutover. It keeps one SQLite Journal and does not
 change runtime behavior, the physical schema, public interfaces, process

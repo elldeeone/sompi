@@ -148,6 +148,7 @@ import {
   type FulfilmentRecord,
   type JournalAdmissionStatus,
   type PaymentAttemptRecord,
+  type PaymentAttemptState,
   type PaymentPreparationRecord,
   type PreparePaymentAttemptInput,
   type PurchaseExecutionPlanRecord,
@@ -164,7 +165,6 @@ import {
 } from "./journal-contracts.js";
 
 const RESERVATION_STATES = ["active", "in_flight", "spent", "released", "expired"] as const;
-type PaymentAttemptState = PaymentAttemptRecord["state"];
 type ReservationState = TreasuryReservationState;
 
 /**

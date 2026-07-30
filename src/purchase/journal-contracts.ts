@@ -23,7 +23,7 @@ const PAYMENT_ATTEMPT_STATES = [
   "failed",
 ] as const;
 
-type PaymentAttemptState = (typeof PAYMENT_ATTEMPT_STATES)[number];
+export type PaymentAttemptState = (typeof PAYMENT_ATTEMPT_STATES)[number];
 
 export const PURCHASE_RECEIPT_PROFILE =
   "urn:sompi:receipt:purchase:1" as const;
