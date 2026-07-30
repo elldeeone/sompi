@@ -13,7 +13,7 @@ export const HOST_BOOTSTRAP_SCHEMA = "sompi-host-bootstrap-v1" as const;
 export const HOST_BOOTSTRAP_TOPOLOGY_SCHEMA =
   "sompi-host-bootstrap-topology-v1" as const;
 export const HOST_BOOTSTRAP_INSTALLER_SHA256 =
-  "5636810d34f3c253fef8d503b7829b8f4518eefa31b591184be515cca6840411" as const;
+  "d9f639c5dcf0fcb76e0ccdac96d284740e9a79cb04530ccff3bc5ba10ccc999c" as const;
 export const HOST_BOOTSTRAP_PRINCIPALS = Object.freeze({
   operator: "root",
   api: "sompi-api",

@@ -281,7 +281,7 @@ funded transaction because Phase 6 does not require fresh funded evidence.
 
 ## Current release
 
-Sompi `0.13.0` completes architecture programme phases 1 through 6.
+Sompi `0.13.1` completes architecture programme phases 1 through 6.
 The release gives Purchase progression, Treasury, runtime roles, and shared
 Journal contracts explicit module boundaries. It moves internal authorization
 evidence to Journal epoch 20 as defined in ADR-0024.
@@ -294,6 +294,9 @@ The clean-host Hermes onboarding controls from `0.12.2` remain in force.
 The skill, request template, scriptless installer, preview, and privileged
 command use the same version. The installer disables package lifecycle scripts
 and runs only the required native dependency install script.
+Version `0.13.1` makes the installer use `umask 022` for public runtime code.
+This keeps runtime directories traversable and runtime files readable when
+Host Bootstrap uses `umask 077` for private state.
 
 A live deployment requires a controlled clean cutover to a fresh Journal
 epoch-20 runtime identity. The existing epoch-19 state must remain an immutable

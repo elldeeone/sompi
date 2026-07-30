@@ -10,6 +10,9 @@ const NATIVE_INSTALL = "prebuild-install || node-gyp rebuild --release";
 const NPM_REGISTRY = "https://registry.npmjs.org/";
 
 const options = parseArguments(process.argv.slice(2));
+// The runtime contains public program files. Host Bootstrap keeps a restrictive
+// umask for state and credentials, so the installer must set its own code mode.
+process.umask(0o022);
 fs.mkdirSync(options.prefix, { recursive: true, mode: 0o755 });
 
 runNpm([

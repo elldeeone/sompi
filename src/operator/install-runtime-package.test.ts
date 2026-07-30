@@ -27,12 +27,14 @@ const prefix = args[args.indexOf("--prefix") + 1];
 if (args[0] === "install") {
   if (!args.includes("--ignore-scripts")) fs.writeFileSync(marker, "executed");
   const sompi = path.join(prefix, "node_modules", "@elldeeone", "sompi");
+  const skill = path.join(sompi, "integrations", "hermes", "sompi");
   const native = path.join(prefix, "node_modules", "better-sqlite3");
   fs.mkdirSync(path.join(native, "lib"), { recursive: true });
-  fs.mkdirSync(sompi, { recursive: true });
+  fs.mkdirSync(skill, { recursive: true });
   fs.writeFileSync(path.join(sompi, "package.json"), JSON.stringify({
     name: "@elldeeone/sompi", version: "0.11.4", dependencies: { "better-sqlite3": "12.11.1" }
   }));
+  fs.writeFileSync(path.join(skill, "SKILL.md"), "# Sompi\\n");
   const nativeScripts = { install: "prebuild-install || node-gyp rebuild --release" };
   if (fs.existsSync(path.join(root, "inject-extra-lifecycle"))) nativeScripts.postinstall = "node unexpected.js";
   fs.writeFileSync(path.join(native, "package.json"), JSON.stringify({
@@ -44,7 +46,11 @@ if (args[0] === "install") {
 }
 `, { mode: 0o700 });
 
-  const result = spawnSync(process.execPath, [
+  const result = spawnSync("/bin/sh", [
+    "-c",
+    'umask 077; exec "$@"',
+    "sompi-runtime-install",
+    process.execPath,
     path.resolve("scripts/install-runtime-package.mjs"),
     "--prefix", prefix,
     "--package", "/reviewed/sompi.tgz",
@@ -59,6 +65,33 @@ if (args[0] === "install") {
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
   assert.equal(fs.existsSync(marker), false, "no unreviewed lifecycle may run during install");
+  for (const directory of [
+    prefix,
+    path.join(prefix, "node_modules"),
+    path.join(prefix, "node_modules", "@elldeeone"),
+    path.join(prefix, "node_modules", "@elldeeone", "sompi"),
+    path.join(prefix, "node_modules", "@elldeeone", "sompi", "integrations"),
+    path.join(prefix, "node_modules", "@elldeeone", "sompi", "integrations", "hermes"),
+    path.join(prefix, "node_modules", "@elldeeone", "sompi", "integrations", "hermes", "sompi"),
+    path.join(prefix, "node_modules", "better-sqlite3"),
+  ]) {
+    assert.equal(
+      fs.statSync(directory).mode & 0o777,
+      0o755,
+      `public runtime directory must remain traversable: ${directory}`,
+    );
+  }
+  for (const filename of [
+    path.join(prefix, "node_modules", "@elldeeone", "sompi", "package.json"),
+    path.join(prefix, "node_modules", "@elldeeone", "sompi", "integrations", "hermes", "sompi", "SKILL.md"),
+    path.join(prefix, "node_modules", "better-sqlite3", "package.json"),
+  ]) {
+    assert.equal(
+      fs.statSync(filename).mode & 0o777,
+      0o644,
+      `public runtime file must remain readable: ${filename}`,
+    );
+  }
   const calls = fs.readFileSync(log, "utf8").trim().split("\n").map((line) => JSON.parse(line) as string[]);
   assert.equal(calls.length, 2);
   assert.equal(calls[0]?.[0], "install");
