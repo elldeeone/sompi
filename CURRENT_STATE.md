@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: **2026-07-28**
+Last updated: **2026-07-30**
 
 ## Architecture programme
 
@@ -172,6 +172,21 @@ Phase 5 did not change the public interface, physical Journal schema, AP2 or
 Kaspa-x402 adapter, protocol pin, release, deployment, live host, or sibling
 repository. It did not start owner-change persistence, shared Agent
 continuation, or another deferred candidate.
+
+Architecture Phase 6 is scoped and has not started. It starts from
+`cde460cb80f9c5d6afa65f83431e6544e2e8f598`.
+
+Phase 6 removes one production TypeScript dependency cycle between the
+Purchase Journal, Treasury, and Transfer implementations. It moves existing
+transaction and domain contracts to their correct owners. It does not create a
+new persistence interface merely to wrap the concrete Journal.
+
+Phase 6 is a clean cutover. Each checkpoint updates every caller and deletes
+the old definition, import, alias, re-export, and replaced test. It keeps one
+`PurchaseJournal` SQLite implementation and one transaction owner. It does not
+change runtime behavior, the physical Journal schema, the stable Purchase or
+Transfer interface, AP2, Kaspa-x402, protocol pins, release, deployment, the
+live host, or a sibling repository.
 
 ## Current release
 
@@ -351,19 +366,16 @@ The deterministic Trusted Authority records signed human approval before an irre
 
 ## Next work
 
-Architecture Phase 5 is complete. The stop gate is active.
+Architecture Phase 6 is scoped and implementation has not started.
 
-1. P5.C1 characterized Purchase progression through the existing interface.
-2. P5.C2 consolidated normal and recovery state routing behind one private
-   progression implementation.
-3. P5.C3 characterized the exact runtime needs and cleanup paths of the API,
-   offline-owner, and bootstrap roles.
-4. P5.C4 replaced the broad runtime interface with narrow role interfaces and
-   gave each role one memoized cleanup contract.
-5. P5.C5 passed the complete proof, review, deletion, and stop gates.
+1. P6.C1 characterizes the current contract graph and durable behavior.
+2. P6.C2 moves shared Journal contracts to their correct owners.
+3. P6.C3 removes concrete Purchase Journal imports from Treasury and Transfer.
+4. P6.C4 deletes old contract paths and proves the production graph is acyclic.
+5. P6.C5 runs the complete proof, review, deletion, and stop gates.
 
-Phase 5 does not change the stable Purchase interface, physical Journal schema,
-process authority, AP2 or Kaspa-x402 adapters, protocol pins, release,
-deployment, live host, or sibling repositories. It does not include
-owner-change persistence or shared Agent continuation work. Start no deferred
-candidate without a separate scope decision.
+Phase 6 is a clean internal cutover. It keeps one SQLite Journal and does not
+change runtime behavior, the physical schema, public interfaces, process
+authority, AP2 or Kaspa-x402 adapters, protocol pins, release, deployment,
+live host, or sibling repositories. It does not include owner-change
+persistence or shared Agent continuation work.

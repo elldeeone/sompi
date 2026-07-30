@@ -1,6 +1,6 @@
 # Sompi implementation plan
 
-Status: **Architecture Phase 5 complete**
+Status: **Architecture Phase 6 scoped; implementation not started**
 
 Starting commit: `89b0f1f404ce8e5f2ded88a5b1a99d8ca1743bba`
 
@@ -712,6 +712,102 @@ Verification gate:
 This phase deepens implementations accepted in ADR-0002, ADR-0008, ADR-0013,
 ADR-0015, and ADR-0018. It does not change an accepted decision. Add or amend
 an ADR before implementation if a checkpoint changes one of those decisions.
+
+### Phase 6: Restore Journal contract ownership
+
+Phase 5 is complete. Phase 6 is scoped against commit
+`cde460cb80f9c5d6afa65f83431e6544e2e8f598`.
+
+Purpose: remove the one production TypeScript dependency cycle between the
+Purchase Journal, Treasury, and Transfer implementations. Put shared Journal
+contracts and domain contracts under their correct owners. Keep one concrete
+SQLite Journal and one transaction owner.
+
+The current cycle includes these files:
+
+- `src/purchase/journal.ts`
+- `src/treasury/operation-journal.ts`
+- `src/treasury/operations.ts`
+- `src/treasury/lease-lifecycle.ts`
+- `src/treasury/operation-adapters.ts`
+- `src/transfer/journal.ts`
+
+This phase is an internal clean cutover. It must update every caller and delete
+the old definition, import, alias, re-export, and test in the same checkpoint.
+It must not keep a compatibility path or two contract locations.
+
+The phase has these requirements:
+
+- [ ] **P6.1:** Shared Journal errors, leases, Effects, evidence records, and
+  other transaction primitives have one owner that does not depend on a domain
+  implementation.
+- [ ] **P6.2:** Purchase-specific durable contracts remain owned by Purchase.
+  Treasury-specific durable contracts remain owned by Treasury.
+  Transfer-specific durable contracts remain owned by Transfer.
+- [ ] **P6.3:** Treasury and Transfer do not import the concrete
+  `PurchaseJournal` implementation.
+- [ ] **P6.4:** The production TypeScript dependency graph is acyclic.
+- [ ] **P6.5:** One `PurchaseJournal` SQLite implementation remains the only
+  Journal transaction owner. Do not add a database, persistence adapter,
+  transaction owner, or speculative persistence seam.
+- [ ] **P6.6:** Do not split an implementation only because its file is long.
+  Move code only when contract ownership or dependency direction requires the
+  move.
+- [ ] **P6.7:** Keep runtime behavior, the physical Journal schema, the stable
+  Purchase and Transfer interfaces, process authority, and protocol seams
+  unchanged.
+
+Implementation sequence:
+
+1. [ ] **P6.C1 — Characterize the contract graph.** Add tests through the
+   existing Journal, Treasury, Purchase, and Transfer interfaces for the
+   shared errors, leases, Effects, durable records, and atomic transitions
+   that move later. Record the production dependency graph. Do not change
+   production behavior. Estimated effort: 0.5–1 day.
+2. [ ] **P6.C2 — Move shared Journal contracts.** Move transaction primitives
+   and concrete-Journal-independent Purchase contracts to their correct
+   contract owners. Update every caller in the same checkpoint. Do not add a
+   forwarding module or compatibility re-export. Estimated effort: 1–2 days.
+3. [ ] **P6.C3 — Restore Treasury and Transfer ownership.** Remove imports from
+   Treasury and Transfer to the concrete Purchase Journal. Keep Treasury and
+   Transfer contract types with their owning modules. Preserve the existing
+   deep module interfaces and one SQLite implementation. Estimated effort:
+   1–2 days.
+4. [ ] **P6.C4 — Complete the clean cutover.** Delete the old contract
+   locations, aliases, re-exports, imports, and replaced tests. Add deletion
+   tests that prove the production dependency graph is acyclic and that no
+   second Journal or persistence seam exists. Estimated effort: 0.5–1 day.
+5. [ ] **P6.C5 — Verify and stop.** Run all Phase 6 gates, complete an
+   independent architecture review, update the state documents, and stop
+   before deferred work starts. Estimated effort: 1 day.
+
+Verification gate:
+
+- [ ] **P6.G1:** Journal, Treasury, Purchase, and Transfer interface tests
+  prove unchanged errors, leases, Effects, recovery fences, and atomic durable
+  results.
+- [ ] **P6.G2:** A production dependency graph test proves that no static
+  import cycle exists.
+- [ ] **P6.G3:** Deletion tests prove that Treasury and Transfer do not import
+  the concrete Purchase Journal and that old contract locations, aliases, and
+  compatibility re-exports do not exist.
+- [ ] **P6.G4:** Runtime composition constructs one concrete
+  `PurchaseJournal`. One SQLite transaction continues to own cross-domain
+  policy, reservation, Effect, Treasury, Purchase, and Transfer transitions.
+- [ ] **P6.G5:** The Journal schema version, schema checksum, schema
+  fingerprint, SQL tables, and runtime behavior are unchanged.
+- [ ] **P6.G6:** The complete unit suite, offline smoke, all five Kaspa-x402
+  conformance checks, generated OpenAPI and Arazzo checks, stored-evidence
+  checks, and the release verifier pass.
+- [ ] **P6.G7:** No public interface, AP2 or Kaspa-x402 adapter, protocol pin,
+  release, deployment, live-host, sibling-repository, owner-change
+  persistence, or shared Agent continuation change is included.
+
+This phase aligns the existing decisions in ADR-0002, ADR-0004, ADR-0013,
+ADR-0015, and ADR-0019. It does not change an accepted decision and does not
+require a new ADR. Stop and add or amend an ADR before implementation if a
+checkpoint needs a second persistence implementation, a physical schema
+change, or another transaction owner.
 
 ## Deferred work
 
