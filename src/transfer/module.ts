@@ -9,11 +9,11 @@ import {
   TreasuryOperationError,
   TreasuryOperationNotFoundError,
   type TreasuryOperationModule,
-  type TreasuryOperationView,
 } from "../treasury/operations.js";
 import {
   PolicyReservationError,
-} from "../purchase/journal.js";
+  type TreasuryOperationView,
+} from "../treasury/operation-journal.js";
 import type { TransferJournal } from "./journal.js";
 import type {
   TransferAuthorizationFacts,

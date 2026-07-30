@@ -19,6 +19,7 @@ import {
   type RecordTreasuryStagingRecoveryObservationInput,
   type TreasuryDriverLease,
   type TreasuryOperationIntent,
+  type TreasuryOperationView,
 } from "../treasury/operation-journal.js";
 import {
   treasuryStagingPreparationLeaseName,
@@ -53,7 +54,6 @@ import {
 } from "./journal.js";
 import type { PurchaseId, Sha256Digest } from "./types.js";
 import type { TransferAuthorizationFacts, TransferAuthorityDecision, TransferReceipt } from "../transfer/types.js";
-import type { TreasuryOperationView } from "../treasury/operations.js";
 
 interface TestClock {
   value: number;

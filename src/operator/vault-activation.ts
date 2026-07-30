@@ -1,7 +1,7 @@
 import { sompiRuntimeConfigFromEnv } from "../runtime/config.js";
 import { createSompiBootstrapRuntime } from "../runtime/purchase-runtime.js";
 import { JournalNotFoundError } from "../journal/contracts.js";
-import type { TreasuryOperationView } from "../treasury/operations.js";
+import type { TreasuryOperationView } from "../treasury/operation-journal.js";
 import { displayKas } from "../amount-display.js";
 import { HostBootstrapError } from "./host-bootstrap.js";
 

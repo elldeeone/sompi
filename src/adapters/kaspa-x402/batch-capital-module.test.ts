@@ -6,7 +6,8 @@ import test from "node:test";
 
 import { PurchaseJournal } from "../../purchase/journal.js";
 import { evidenceDigest } from "../../purchase/identity.js";
-import type { TreasuryOperationRequest, TreasuryOperationView } from "../../treasury/operations.js";
+import type { TreasuryOperationView } from "../../treasury/operation-journal.js";
+import type { TreasuryOperationRequest } from "../../treasury/operations.js";
 import { KaspaX402BatchCapitalModule } from "./batch-capital-module.js";
 import { SecureBatchChannelSigner } from "./batch-channel-signer.js";
 

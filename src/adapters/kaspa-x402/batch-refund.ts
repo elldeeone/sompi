@@ -19,16 +19,14 @@ import type { Sha256Digest } from "../../purchase/types.js";
 import type {
   PreparedTreasuryOperationMaterial,
   TreasuryOperationRecord,
+  TreasuryOperationView,
   TreasuryOperationValidationInput,
 } from "../../treasury/operation-journal.js";
 import type {
   TreasuryOperationAdapter,
   TreasuryOperationProbe,
 } from "../../treasury/operation-adapters.js";
-import type {
-  TreasuryOperationModule,
-  TreasuryOperationView,
-} from "../../treasury/operations.js";
+import type { TreasuryOperationModule } from "../../treasury/operations.js";
 import { Transaction } from "../../kaspa-wasm.js";
 import type { KaspaWallet } from "../../wallet.js";
 import { KaspaTestnet10AddressCodec } from "./address-codec.js";

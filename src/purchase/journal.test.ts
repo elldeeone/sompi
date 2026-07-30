@@ -14,11 +14,9 @@ import type {
   PreparePaymentAttemptInput,
   PurchaseRecord,
 } from "./journal-contracts.js";
+import { PurchaseJournal } from "./journal.js";
 import {
   PolicyReservationError,
-  PurchaseJournal,
-} from "./journal.js";
-import {
   TREASURY_STAGING_EVIDENCE_KIND,
   type PolicyReservationInput,
   type PolicySnapshotRecord,

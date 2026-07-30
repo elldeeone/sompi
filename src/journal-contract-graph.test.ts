@@ -8,7 +8,7 @@ import ts from "typescript";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const SOURCE_ROOT = path.join(ROOT, "src");
 
-const C2_IMPLEMENTATION_REGION = [
+const PHASE_6_IMPLEMENTATION_REGION = [
   "purchase/journal.ts",
   "transfer/journal.ts",
   "treasury/lease-lifecycle.ts",
@@ -17,11 +17,16 @@ const C2_IMPLEMENTATION_REGION = [
   "treasury/operations.ts",
 ] as const;
 
-const C2_IMPLEMENTATION_EDGES = [
+const C2_REMOVED_BACK_EDGES = [
+  "treasury/lease-lifecycle.ts -> purchase/journal.ts",
+  "treasury/operation-journal.ts -> purchase/journal.ts",
+  "treasury/operations.ts -> purchase/journal.ts",
+] as const;
+
+const C3_IMPLEMENTATION_EDGES = [
   "purchase/journal.ts -> transfer/journal.ts",
   "purchase/journal.ts -> treasury/operation-journal.ts",
-  "purchase/journal.ts -> treasury/operations.ts",
-  "transfer/journal.ts -> treasury/operations.ts",
+  "transfer/journal.ts -> treasury/operation-journal.ts",
   "treasury/lease-lifecycle.ts -> treasury/operation-journal.ts",
   "treasury/operation-adapters.ts -> treasury/operation-journal.ts",
   "treasury/operations.ts -> treasury/lease-lifecycle.ts",
@@ -81,9 +86,10 @@ const PURCHASE_JOURNAL_CONTRACTS = [
 
 test("C2 removes the contract back-edges from the implementation region", () => {
   const graph = productionImportGraph();
+  const edges = componentEdges(graph, new Set(PHASE_6_IMPLEMENTATION_REGION));
   assert.deepEqual(
-    componentEdges(graph, new Set(C2_IMPLEMENTATION_REGION)),
-    [...C2_IMPLEMENTATION_EDGES],
+    C2_REMOVED_BACK_EDGES.filter((edge) => edges.includes(edge)),
+    [],
   );
 });
 
@@ -162,6 +168,45 @@ test("C2 gives shared and Purchase Journal contracts one direct owner", () => {
   const concreteJournal = sourceText("purchase/journal.ts");
   assert.doesNotMatch(concreteJournal, /\bEFFECT_STATES\b/);
   assert.doesNotMatch(concreteJournal, /\bPAYMENT_ATTEMPT_STATES\b/);
+});
+
+test("C3 gives Treasury and Transfer contracts one direct owner", () => {
+  const owners = productionDeclarationOwners();
+  const contracts = [
+    ["PolicyReservationError", "treasury/operation-journal.ts"],
+    ["TreasuryOperationView", "treasury/operation-journal.ts"],
+    ["TransferJournal", "transfer/journal.ts"],
+    ["TransferJournalIntent", "transfer/journal.ts"],
+  ] as const;
+
+  for (const [name, expectedOwner] of contracts) {
+    assert.deepEqual(
+      owners.get(name) ?? [],
+      [expectedOwner],
+      `${name} must have one direct contract owner`,
+    );
+  }
+});
+
+test("C3 removes Treasury and Transfer dependencies on implementations", () => {
+  const graph = productionImportGraph();
+  assert.deepEqual(
+    componentEdges(graph, new Set(PHASE_6_IMPLEMENTATION_REGION)),
+    [...C3_IMPLEMENTATION_EDGES],
+  );
+
+  const concreteJournalImporters = [...graph]
+    .filter(([source, dependencies]) =>
+      (source.startsWith("treasury/") || source.startsWith("transfer/")) &&
+      dependencies.includes("purchase/journal.ts")
+    )
+    .map(([source]) => source)
+    .sort();
+  assert.deepEqual(
+    concreteJournalImporters,
+    [],
+    "Treasury and Transfer must not import the concrete Purchase Journal",
+  );
 });
 
 function productionImportGraph(): ReadonlyMap<string, readonly string[]> {

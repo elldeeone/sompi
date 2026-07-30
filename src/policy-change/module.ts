@@ -8,12 +8,12 @@ import { SompiOperationFailure } from "../operation-failure.js";
 import type { OperatorManifestIdentity } from "../operator/manifest.js";
 import { PolicyEngine, type Policy } from "../policy.js";
 import {
-  PolicyReservationError,
   PurchaseJournal,
   type PolicyChangeJournalRecord,
 } from "../purchase/journal.js";
-import type {
-  PolicySnapshotRecord,
+import {
+  PolicyReservationError,
+  type PolicySnapshotRecord,
 } from "../treasury/operation-journal.js";
 import type {
   PolicyChangeAuthorityModule,

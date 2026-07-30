@@ -11,14 +11,14 @@ import type {
   FinalityFloor,
 } from "../chain-evidence/types.js";
 import { SompiOperationFailure } from "../operation-failure.js";
+import { PurchaseJournal } from "../purchase/journal.js";
 import {
   PolicyReservationError,
-  PurchaseJournal,
-} from "../purchase/journal.js";
+  type TreasuryOperationView,
+} from "../treasury/operation-journal.js";
 import {
   TreasuryOperationError,
   TreasuryOperationNotFoundError,
-  type TreasuryOperationView,
 } from "../treasury/operations.js";
 import type { TransferJournal } from "./journal.js";
 import { TransferModule } from "./module.js";

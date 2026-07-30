@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
-import type { TreasuryOperationModule, TreasuryOperationView } from "../treasury/operations.js";
+import type { TreasuryOperationView } from "../treasury/operation-journal.js";
+import type { TreasuryOperationModule } from "../treasury/operations.js";
 import type { VaultManager } from "../vault.js";
 import type { FundingUtxo, KaspaWallet } from "../wallet.js";
 

@@ -19,6 +19,7 @@ import {
   type TreasuryOperationJournal,
   type TreasuryOperationKind,
   type TreasuryOperationRecord,
+  type TreasuryOperationView,
   type TreasuryDriverLease,
   type RecordTreasuryStagingRecoveryObservationInput,
   type TreasurySubmissionOutcome,
@@ -77,27 +78,6 @@ export interface TreasuryOperationRequest {
   readonly destination: string;
   readonly amountAtomic: string | "max";
   readonly keepFloatAtomic?: string;
-}
-
-export interface TreasuryOperationView {
-  readonly operationKey: string;
-  readonly kind: TreasuryOperationKind;
-  readonly state: TreasuryOperationRecord["state"];
-  readonly summary: string;
-  readonly destination: string;
-  readonly requestedAmountAtomic: string | "max";
-  readonly keepFloatAtomic?: string;
-  readonly feeCeilingAtomic: string;
-  readonly amountAtomic?: string;
-  readonly feeAtomic?: string;
-  readonly transactionId?: string;
-  readonly retryCount: number;
-  readonly recoveryRequired: boolean;
-  readonly safeToRetry: boolean;
-  readonly cancellationRequested: boolean;
-  readonly preparationFenced: boolean;
-  readonly createdAtMs?: number;
-  readonly updatedAtMs?: number;
 }
 
 export interface TreasuryPurchaseOptions {

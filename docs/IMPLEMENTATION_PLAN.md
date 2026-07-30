@@ -1,6 +1,6 @@
 # Sompi implementation plan
 
-Status: **Architecture Phase 6 C2 complete; C3 not started**
+Status: **Architecture Phase 6 C3 complete; C4 not started**
 
 Starting commit: `89b0f1f404ce8e5f2ded88a5b1a99d8ca1743bba`
 
@@ -741,10 +741,10 @@ The phase has these requirements:
 - [x] **P6.1:** Shared Journal errors, leases, Effects, evidence records, and
   other transaction primitives have one owner that does not depend on a domain
   implementation.
-- [ ] **P6.2:** Purchase-specific durable contracts remain owned by Purchase.
+- [x] **P6.2:** Purchase-specific durable contracts remain owned by Purchase.
   Treasury-specific durable contracts remain owned by Treasury.
   Transfer-specific durable contracts remain owned by Transfer.
-- [ ] **P6.3:** Treasury and Transfer do not import the concrete
+- [x] **P6.3:** Treasury and Transfer do not import the concrete
   `PurchaseJournal` implementation.
 - [ ] **P6.4:** The production TypeScript dependency graph is acyclic.
 - [ ] **P6.5:** One `PurchaseJournal` SQLite implementation remains the only
@@ -768,7 +768,7 @@ Implementation sequence:
    and concrete-Journal-independent Purchase contracts to their correct
    contract owners. Update every caller in the same checkpoint. Do not add a
    forwarding module or compatibility re-export. Estimated effort: 1–2 days.
-3. [ ] **P6.C3 — Restore Treasury and Transfer ownership.** Remove imports from
+3. [x] **P6.C3 — Restore Treasury and Transfer ownership.** Remove imports from
    Treasury and Transfer to the concrete Purchase Journal. Keep Treasury and
    Transfer contract types with their owning modules. Preserve the existing
    deep module interfaces and one SQLite implementation. Estimated effort:
@@ -824,6 +824,27 @@ C2 completion evidence from 2026-07-30:
   expected. Offline smoke passed.
 - No public interface, AP2 or Kaspa-x402 adapter behavior, protocol pin,
   release, deployment, live host, or sibling repository changed.
+
+C3 completion evidence from 2026-07-30:
+
+- `src/treasury/operation-journal.ts` owns `PolicyReservationError` and
+  `TreasuryOperationView`.
+- The concrete Purchase Journal imports these Treasury contracts. It does not
+  define or re-export them.
+- Production Treasury and Transfer source does not import the concrete
+  Purchase Journal. Transfer durable contracts remain under Transfer.
+- The six-file implementation region has eight directed edges. The concrete
+  Purchase Journal and Transfer Journal depend on the Treasury contract owner,
+  not the Treasury implementation.
+- One concrete `PurchaseJournal` remains the SQLite transaction owner.
+  Integration tests continue to use it directly. No second persistence seam
+  exists.
+- The focused C3 command passed all 133 tests. The complete offline command ran
+  639 tests: 638 passed and one privileged ownership test was skipped as
+  expected. Offline smoke passed.
+- The physical Journal schema, runtime behavior, public interfaces, AP2 and
+  Kaspa-x402 adapter behavior, protocol pins, release, deployment, live host,
+  and sibling repositories did not change.
 
 Verification gate:
 

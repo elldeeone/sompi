@@ -7,10 +7,10 @@ import {
 import { SompiOperationFailure } from "../operation-failure.js";
 import type { OperatorManifestIdentity } from "../operator/manifest.js";
 import {
-  PolicyReservationError,
   PurchaseJournal,
   type VaultMigrationJournalRecord,
 } from "../purchase/journal.js";
+import { PolicyReservationError } from "../treasury/operation-journal.js";
 import type { Sha256Digest } from "../purchase/types.js";
 import type { VaultManager } from "../vault.js";
 import { vaultStaticConfigurationDigest } from "../vault.js";

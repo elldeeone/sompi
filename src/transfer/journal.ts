@@ -1,4 +1,4 @@
-import type { TreasuryOperationView } from "../treasury/operations.js";
+import type { TreasuryOperationView } from "../treasury/operation-journal.js";
 import type {
   TransferAuthorizationFacts,
   TransferAuthorizationRecord,

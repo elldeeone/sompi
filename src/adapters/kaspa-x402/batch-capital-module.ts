@@ -19,9 +19,9 @@ import type {
   PurchaseJournal,
 } from "../../purchase/journal.js";
 import type {
-  TreasuryOperationModule,
   TreasuryOperationView,
-} from "../../treasury/operations.js";
+} from "../../treasury/operation-journal.js";
+import type { TreasuryOperationModule } from "../../treasury/operations.js";
 import { KaspaTestnet10AddressCodec } from "./address-codec.js";
 import { SecureBatchChannelSigner } from "./batch-channel-signer.js";
 import { JournalBatchChannelStore } from "./batch-channel-store.js";

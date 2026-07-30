@@ -14,10 +14,7 @@ import {
   evidenceDigest,
   requestFingerprint,
 } from "../purchase/identity.js";
-import {
-  PolicyReservationError,
-  PurchaseJournal,
-} from "../purchase/journal.js";
+import { PurchaseJournal } from "../purchase/journal.js";
 import type { PurchaseId, Sha256Digest } from "../purchase/types.js";
 import { PolicyEngine } from "../policy.js";
 import type {
@@ -26,6 +23,7 @@ import type {
   TreasuryOperationKind,
   TreasuryOperationRecord,
 } from "./operation-journal.js";
+import { PolicyReservationError } from "./operation-journal.js";
 import type {
   TreasuryOperationAdapter,
   TreasuryOperationProbe,

@@ -35,6 +35,13 @@ export const TREASURY_STAGING_RECOVERY_EFFECT_KIND =
 
 export type PolicyDefinition = TreasuryPolicy;
 
+export class PolicyReservationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "PolicyReservationError";
+  }
+}
+
 export interface PolicySnapshotRecord extends TreasuryPolicy {
   readonly digest: Sha256Digest;
   readonly version: number;
@@ -216,6 +223,27 @@ export interface TreasuryOperationRecord {
   readonly createdAtMs: number;
   readonly updatedAtMs: number;
   readonly completedAtMs?: number;
+}
+
+export interface TreasuryOperationView {
+  readonly operationKey: string;
+  readonly kind: TreasuryOperationKind;
+  readonly state: TreasuryOperationRecord["state"];
+  readonly summary: string;
+  readonly destination: string;
+  readonly requestedAmountAtomic: string | "max";
+  readonly keepFloatAtomic?: string;
+  readonly feeCeilingAtomic: string;
+  readonly amountAtomic?: string;
+  readonly feeAtomic?: string;
+  readonly transactionId?: string;
+  readonly retryCount: number;
+  readonly recoveryRequired: boolean;
+  readonly safeToRetry: boolean;
+  readonly cancellationRequested: boolean;
+  readonly preparationFenced: boolean;
+  readonly createdAtMs?: number;
+  readonly updatedAtMs?: number;
 }
 
 export interface TreasuryDriverLease {

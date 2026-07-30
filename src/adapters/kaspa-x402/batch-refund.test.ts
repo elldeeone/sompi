@@ -15,10 +15,12 @@ import {
 } from "../../chain-evidence/types.js";
 import { evidenceDigest } from "../../purchase/identity.js";
 import { PurchaseJournal, type JournalFaultPoint } from "../../purchase/journal.js";
-import type { TreasuryOperationRecord } from "../../treasury/operation-journal.js";
+import type {
+  TreasuryOperationRecord,
+  TreasuryOperationView,
+} from "../../treasury/operation-journal.js";
 import type {
   TreasuryOperationRequest,
-  TreasuryOperationView,
 } from "../../treasury/operations.js";
 import type { KaspaWallet } from "../../wallet.js";
 import { KaspaX402BatchCapitalModule } from "./batch-capital-module.js";

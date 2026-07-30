@@ -59,10 +59,8 @@ import {
   VaultSendTreasuryOperationAdapter,
   WalletTreasuryOperationAdapter,
 } from "../treasury/operation-adapters.js";
-import {
-  TreasuryOperationModule,
-  type TreasuryOperationView,
-} from "../treasury/operations.js";
+import type { TreasuryOperationView } from "../treasury/operation-journal.js";
+import { TreasuryOperationModule } from "../treasury/operations.js";
 import { Transaction } from "../kaspa-wasm.js";
 import {
   LIVE_NETWORK,

@@ -87,11 +87,13 @@ import type {
   TreasuryOperationObservationStatus,
   TreasuryOperationRecord,
   TreasuryOperationState,
+  TreasuryOperationView,
   TreasurySubmissionOutcome,
   TreasuryDriverClaim,
   TreasuryDriverLease,
 } from "../treasury/operation-journal.js";
 import {
+  PolicyReservationError,
   TREASURY_STAGING_EFFECT_KIND,
   TREASURY_STAGING_EVIDENCE_KIND,
   TREASURY_STAGING_RECOVERY_EFFECT_KIND,
@@ -119,7 +121,6 @@ import type {
   TransferState,
 } from "../transfer/types.js";
 import type { TransferJournalIntent } from "../transfer/journal.js";
-import type { TreasuryOperationView } from "../treasury/operations.js";
 import type {
   TreasuryReservationState,
 } from "../treasury/purchase-capacity.js";
@@ -1008,13 +1009,6 @@ export interface CreateVaultMigrationJournalInput {
   manifestRevision: number;
   manifestDigest: Sha256Digest;
   expiresAtMs: number;
-}
-
-export class PolicyReservationError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "PolicyReservationError";
-  }
 }
 
 interface BatchChannelRow {

@@ -44,10 +44,10 @@ import { SUPPORTED_PROTOCOL_PROFILES } from "../protocols/profiles.js";
 import { assertPurchaseId, createPaymentIdentifier } from "../purchase/identity.js";
 import { SqliteMerchantServerStateStore } from "../demo/merchant-server-store.js";
 import type { KaspaWallet } from "../wallet.js";
+import type { TreasuryOperationView } from "../treasury/operation-journal.js";
 import type {
   TreasuryOperationModule,
   TreasuryOperationRequest,
-  TreasuryOperationView,
 } from "../treasury/operations.js";
 
 const TEST_NODE_URL = "ws://127.0.0.1:17210/";

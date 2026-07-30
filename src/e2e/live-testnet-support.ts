@@ -36,10 +36,10 @@ import { PolicyEngine } from "../policy.js";
 import { assertPurchaseRequestKey } from "../purchase/identity.js";
 import { PurchaseJournal } from "../purchase/journal.js";
 import { SecureLocalStateDirectory } from "../secure-local-state.js";
+import type { TreasuryOperationView } from "../treasury/operation-journal.js";
 import {
   TreasuryOperationModule,
   type TreasuryOperationRequest,
-  type TreasuryOperationView,
 } from "../treasury/operations.js";
 import {
   VaultDepositTreasuryOperationAdapter,

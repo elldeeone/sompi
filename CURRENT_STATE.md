@@ -173,7 +173,7 @@ Kaspa-x402 adapter, protocol pin, release, deployment, live host, or sibling
 repository. It did not start owner-change persistence, shared Agent
 continuation, or another deferred candidate.
 
-Architecture Phase 6 C2 is complete. C3 has not started. Phase 6 starts from
+Architecture Phase 6 C3 is complete. C4 has not started. Phase 6 starts from
 `cde460cb80f9c5d6afa65f83431e6544e2e8f598`.
 
 Phase 6 removes one production TypeScript dependency cycle between the
@@ -212,6 +212,22 @@ One `PurchaseJournal` remains the SQLite transaction owner. The physical
 schema, runtime behavior, public interfaces, protocol adapter behavior, and
 protocol pins did not change. The focused C2 command passed all 150 tests. The
 complete offline command ran 637 tests: 636 passed and one privileged ownership
+test was skipped as expected. Offline smoke passed.
+
+P6.C3 moves `PolicyReservationError` and `TreasuryOperationView` to the
+Treasury operation Journal contract owner. The concrete Purchase Journal
+imports these contracts and does not define or re-export them.
+
+Production Treasury and Transfer source does not import the concrete Purchase
+Journal. Transfer durable contracts remain under Transfer. The six-file
+implementation region now has eight directed edges. The Purchase Journal and
+Transfer Journal depend on the Treasury contract owner instead of the Treasury
+implementation.
+
+One `PurchaseJournal` remains the SQLite transaction owner. The physical
+schema, runtime behavior, public interfaces, protocol adapter behavior, and
+protocol pins did not change. The focused C3 command passed all 133 tests. The
+complete offline command ran 639 tests: 638 passed and one privileged ownership
 test was skipped as expected. Offline smoke passed.
 
 ## Current release
@@ -392,11 +408,10 @@ The deterministic Trusted Authority records signed human approval before an irre
 
 ## Next work
 
-Architecture Phase 6 C2 is complete. C3 has not started.
+Architecture Phase 6 C3 is complete. C4 has not started.
 
-1. P6.C3 restores Treasury and Transfer contract ownership.
-2. P6.C4 deletes old contract paths and proves the production graph is acyclic.
-3. P6.C5 runs the complete proof, review, deletion, and stop gates.
+1. P6.C4 deletes old contract paths and proves the production graph is acyclic.
+2. P6.C5 runs the complete proof, review, deletion, and stop gates.
 
 Phase 6 is a clean internal cutover. It keeps one SQLite Journal and does not
 change runtime behavior, the physical schema, public interfaces, process
