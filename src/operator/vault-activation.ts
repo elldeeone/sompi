@@ -1,7 +1,7 @@
 import { sompiRuntimeConfigFromEnv } from "../runtime/config.js";
 import { createSompiBootstrapRuntime } from "../runtime/purchase-runtime.js";
-import { JournalNotFoundError } from "../journal/contracts.js";
 import type { TreasuryOperationView } from "../treasury/operation-journal.js";
+import { TreasuryOperationNotFoundError } from "../treasury/operations.js";
 import { displayKas } from "../amount-display.js";
 import { HostBootstrapError } from "./host-bootstrap.js";
 
@@ -77,7 +77,7 @@ export async function driveBootstrapVaultDeposit(
   try {
     view = operations.status(input.operationKey);
   } catch (error) {
-    if (!(error instanceof JournalNotFoundError)) throw error;
+    if (!(error instanceof TreasuryOperationNotFoundError)) throw error;
     if (input.fundingBalance < input.minimumFunding) {
       throw new HostBootstrapError(`funding wallet needs at least ${displayKas(input.minimumFunding)} before vault activation`);
     }

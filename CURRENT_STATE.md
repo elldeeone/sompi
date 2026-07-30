@@ -281,7 +281,7 @@ funded transaction because Phase 6 does not require fresh funded evidence.
 
 ## Current release
 
-Sompi `0.13.2` completes architecture programme phases 1 through 6.
+Sompi `0.13.3` completes architecture programme phases 1 through 6.
 The release gives Purchase progression, Treasury, runtime roles, and shared
 Journal contracts explicit module boundaries. It moves internal authorization
 evidence to Journal epoch 20 as defined in ADR-0024.
@@ -289,6 +289,11 @@ evidence to Journal epoch 20 as defined in ADR-0024.
 The stable Purchase model remains independent from the AP2 and Kaspa-x402
 adapters. The release removes replaced code and does not add compatibility
 fallbacks.
+
+Version `0.13.3` corrects the first vault activation path. The bootstrap
+worker now handles the public Treasury operation not-found error before it
+creates the first durable vault deposit intent. The regression test uses the
+same public error that the production Treasury module returns.
 
 The clean-host Hermes onboarding controls from `0.12.2` remain in force.
 The skill, request template, scriptless installer, preview, and privileged
@@ -302,7 +307,7 @@ A live deployment requires a controlled clean cutover to a fresh Journal
 epoch-20 runtime identity. The existing epoch-19 state must remain an immutable
 recovery unit.
 
-## Published but not deployed
+## Release cutover
 
 Sompi `0.13.1` added the installer correction.
 It was tagged and published but was not deployed.
@@ -310,7 +315,15 @@ Host Bootstrap failed closed before funding because it checked the obsolete
 Hermes `plugins.entries.sompi-approval.enabled` setting.
 Version `0.13.2` verifies the active user plugin through the current Hermes
 plugin list.
-No epoch-20 runtime was activated by the failed attempt.
+
+Version `0.13.2` was tagged, published, and installed on Terah. Host Bootstrap
+committed a fresh epoch-20 identity. The separate Testnet-10 funder sent the
+required `85000000` sompi to its funding address. The first vault activation
+failed before it created a Treasury operation or submitted a transaction
+because it handled the wrong not-found error type.
+
+The funded epoch-20 identity remains intact for controlled recovery.
+Version `0.13.3` is not yet published or deployed.
 
 ## Last verified deployment
 
@@ -319,8 +332,9 @@ ADR-0023 defines this release.
 
 The `v0.12.0` tag, source, and deployed Terah bytes match.
 The verified Terah runtime used a fresh Journal epoch-19 identity.
-It is now an immutable recovery unit during the `0.13.2` cutover.
-No Sompi runtime is active after the failed pre-funding `0.13.1` attempt.
+It is now an immutable recovery unit during the epoch-20 cutover.
+The `0.13.2` pre-activation Authority, API, and Hermes Gateway are active.
+The epoch-20 vault is not yet active.
 
 | Item | Value |
 |---|---|
@@ -351,21 +365,21 @@ It does not provide a general payment-rail interface.
 
 ## Retired epoch-19 runtime
 
-No Sompi runtime is active on Terah.
 The Journal epoch-19 runtime is in an immutable, private, hash-recorded
 operator archive. Its release package remains available for controlled
 recovery.
 
 The `0.13.0` and `0.13.1` attempts stopped before funding and activation.
 Their incomplete privileged state and Hermes projections were removed.
-The Hermes gateway is inactive.
+The `0.13.2` pre-activation runtime uses a new epoch-20 identity.
+The Hermes Gateway is active.
 The primary Hermes checkout remains at
 `2d404942471633d5338a8ff514ea7da24549274f`.
 
 ## Historical verification
 
 The results below record earlier phase and release gates.
-They do not claim `0.13.2` publication, deployment, or GitHub verification.
+They do not claim `0.13.3` publication, deployment, or GitHub verification.
 
 The Architecture Phase 1 verifier passed on its release commit and GitHub
 Node 22 runner.

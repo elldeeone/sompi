@@ -2,6 +2,7 @@ import * as assert from "node:assert/strict";
 import test from "node:test";
 
 import { JournalNotFoundError } from "../journal/contracts.js";
+import { TreasuryOperationNotFoundError } from "../treasury/operations.js";
 import { activateBootstrapVault, driveBootstrapVaultDeposit, finalizeVaultActivationResult } from "./vault-activation.js";
 
 const TXID = "a".repeat(64);
@@ -92,7 +93,7 @@ test("completed vault activation is idempotent after the funding wallet has been
 
   await assert.rejects(
     () => driveBootstrapVaultDeposit({
-      status: () => { throw new JournalNotFoundError("missing"); },
+      status: () => { throw new TreasuryOperationNotFoundError(); },
       execute: async () => { executeCalls += 1; return completed; },
       recover: async () => completed,
     }, {
@@ -103,6 +104,75 @@ test("completed vault activation is idempotent after the funding wallet has been
       keepFloat: 10_000_000n,
     }),
     /needs at least 0\.85 tKAS/,
+  );
+  assert.equal(executeCalls, 0);
+});
+
+test("first funded vault activation executes only after the public absence result", async () => {
+  const completed = {
+    operationKey: "bootstrap:new",
+    kind: "vault_deposit" as const,
+    state: "completed" as const,
+    summary: "done",
+    destination: "kaspatest:vault",
+    requestedAmountAtomic: "max" as const,
+    keepFloatAtomic: "10000000",
+    feeCeilingAtomic: "25000000",
+    amountAtomic: "74000000",
+    feeAtomic: "1000000",
+    transactionId: TXID,
+    retryCount: 0,
+    recoveryRequired: false,
+    safeToRetry: false,
+    cancellationRequested: false,
+    preparationFenced: false,
+  };
+  let request: unknown;
+  const result = await driveBootstrapVaultDeposit({
+    status: () => { throw new TreasuryOperationNotFoundError(); },
+    execute: async (input) => {
+      request = input;
+      return completed;
+    },
+    recover: async () => completed,
+  }, {
+    operationKey: completed.operationKey,
+    destination: completed.destination,
+    fundingBalance: 85_000_000n,
+    minimumFunding: 85_000_000n,
+    keepFloat: 10_000_000n,
+  });
+  assert.equal(result, completed);
+  assert.deepEqual(request, {
+    operationKey: completed.operationKey,
+    kind: "vault_deposit",
+    destination: completed.destination,
+    amountAtomic: "max",
+    keepFloatAtomic: "10000000",
+  });
+});
+
+test("vault activation preserves internal Journal status failures", async () => {
+  let executeCalls = 0;
+  const failure = new JournalNotFoundError("internal Journal lookup failed");
+  await assert.rejects(
+    () => driveBootstrapVaultDeposit({
+      status: () => { throw failure; },
+      execute: async () => {
+        executeCalls += 1;
+        throw new Error("unexpected execute");
+      },
+      recover: async () => {
+        throw new Error("unexpected recover");
+      },
+    }, {
+      operationKey: "bootstrap:new",
+      destination: "kaspatest:vault",
+      fundingBalance: 85_000_000n,
+      minimumFunding: 85_000_000n,
+      keepFloat: 10_000_000n,
+    }),
+    (error) => error === failure,
   );
   assert.equal(executeCalls, 0);
 });

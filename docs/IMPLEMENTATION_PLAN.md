@@ -5,7 +5,7 @@ Status: **Architecture programme completed Phase 6**
 Starting commit: `89b0f1f404ce8e5f2ded88a5b1a99d8ca1743bba`
 
 Sompi `0.12.0` completed phases 0 through 21. The current source release is
-`0.13.2`. The last verified deployed runtime used Kaspa-x402
+`0.13.3`. The last verified deployed runtime used Kaspa-x402
 `0.1.0-alpha.9` and Journal epoch 19. Phase 3 source uses Journal epoch 20
 after the internal authorization evidence cutover in ADR-0024.
 
