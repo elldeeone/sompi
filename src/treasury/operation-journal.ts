@@ -8,11 +8,15 @@ import type {
   EffectObservation,
   EffectRecord,
   EvidenceAttachmentRecord,
+  EvidenceVerificationInput,
   LeaseToken,
+  StoreEvidenceInput,
+} from "../journal/contracts.js";
+import type {
   PaymentAttemptRecord,
   PaymentPreparationRecord,
   PurchaseSettlementRecord,
-} from "../purchase/journal.js";
+} from "../purchase/journal-contracts.js";
 import type {
   ReservePurchaseCapacityInput,
   TreasuryPolicy,
@@ -21,7 +25,6 @@ import type {
 import type {
   PlanTreasuryStagingInput,
   TreasuryStagingPreparationContext,
-  TreasuryStagingPreparationLease,
   TreasuryStagingPlanRecord,
 } from "./purchase-staging.js";
 
@@ -340,14 +343,14 @@ export interface TreasuryOperationJournal {
     name: string,
     holder: string,
     ttlMs: number
-  ): TreasuryStagingPreparationLease | undefined;
+  ): LeaseToken | undefined;
   renewLease(
-    lease: TreasuryStagingPreparationLease,
+    lease: LeaseToken,
     ttlMs: number
-  ): TreasuryStagingPreparationLease;
-  releaseLease(lease: TreasuryStagingPreparationLease): boolean;
+  ): LeaseToken;
+  releaseLease(lease: LeaseToken): boolean;
   commitTreasuryStagingPreparation(
-    lease: TreasuryStagingPreparationLease,
+    lease: LeaseToken,
     input: PlanTreasuryStagingInput
   ): TreasuryStagingPlanRecord;
   readPreparedTreasuryStaging(
@@ -416,22 +419,11 @@ export interface TreasuryOperationJournal {
   ): TreasuryStagingRecoveryJournalContext;
   storeEvidence(
     purchaseId: PurchaseId,
-    input: {
-      readonly bytes: Uint8Array;
-      readonly mediaType: string;
-      readonly profile: string;
-      readonly issuer?: string;
-      readonly kind: string;
-      readonly attempt?: number;
-    }
+    input: StoreEvidenceInput
   ): EvidenceAttachmentRecord;
   recordEvidenceVerification(
     digest: Sha256Digest,
-    input: {
-      readonly verifierId: string;
-      readonly profile: string;
-      readonly detailDigest: Sha256Digest;
-    }
+    input: EvidenceVerificationInput
   ): void;
   recordReconciliation(
     lease: LeaseToken,

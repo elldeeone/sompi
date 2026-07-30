@@ -184,13 +184,6 @@ export type TreasuryStagingExecutionResult =
       readonly detailDigest?: Sha256Digest;
     };
 
-export interface TreasuryStagingPreparationLease {
-  readonly name: string;
-  readonly holder: string;
-  readonly generation: number;
-  readonly expiresAtMs: number;
-}
-
 /** Protocol adapter behind Treasury. It prepares bytes but cannot persist them. */
 export interface TreasuryStagingPreparationAdapter {
   prepareStaging(

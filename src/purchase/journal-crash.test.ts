@@ -5,11 +5,11 @@ import * as path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { JournalNotFoundError } from "../journal/contracts.js";
+import type { PreparePaymentAttemptInput } from "./journal-contracts.js";
 import {
-  JournalNotFoundError,
   PurchaseJournal,
   type JournalFaultPoint,
-  type PreparePaymentAttemptInput,
 } from "./journal.js";
 import type {
   PolicyReservationInput,

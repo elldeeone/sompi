@@ -1,7 +1,7 @@
 import * as assert from "node:assert/strict";
 import test from "node:test";
 
-import { JournalNotFoundError } from "../purchase/journal.js";
+import { JournalNotFoundError } from "../journal/contracts.js";
 import { activateBootstrapVault, driveBootstrapVaultDeposit, finalizeVaultActivationResult } from "./vault-activation.js";
 
 const TXID = "a".repeat(64);

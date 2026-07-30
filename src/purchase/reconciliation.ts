@@ -2,11 +2,15 @@ import { evidenceDigest } from "./identity.js";
 import {
   JournalFencingError,
   JournalInvariantError,
-  PurchaseJournal,
   type EffectObservation,
   type EffectRecord,
   type LeaseToken,
-  type RecordPurchaseSettlementInput,
+} from "../journal/contracts.js";
+import type {
+  RecordPurchaseSettlementInput,
+} from "./journal-contracts.js";
+import {
+  PurchaseJournal,
 } from "./journal.js";
 import type { Sha256Digest } from "./types.js";
 import type { PurchaseId } from "./types.js";

@@ -4,7 +4,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 import Database from "better-sqlite3";
-import { JournalInvariantError, PurchaseJournal } from "./journal.js";
+import { JournalInvariantError } from "../journal/contracts.js";
+import { PurchaseJournal } from "./journal.js";
 import {
   JOURNAL_APPLICATION_ID,
   JOURNAL_SCHEMA_V1_CHECKSUM,

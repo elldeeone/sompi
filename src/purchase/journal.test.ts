@@ -9,10 +9,14 @@ import {
   JournalFencingError,
   JournalInvariantError,
   JournalNotFoundError,
+} from "../journal/contracts.js";
+import type {
+  PreparePaymentAttemptInput,
+  PurchaseRecord,
+} from "./journal-contracts.js";
+import {
   PolicyReservationError,
   PurchaseJournal,
-  type PreparePaymentAttemptInput,
-  type PurchaseRecord,
 } from "./journal.js";
 import {
   TREASURY_STAGING_EVIDENCE_KIND,

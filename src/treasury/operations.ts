@@ -1,7 +1,4 @@
 import { createHash, randomBytes } from "node:crypto";
-import { PolicyEngine } from "../policy.js";
-import { paymentFinalityMeets } from "../purchase/finality.js";
-import { evidenceDigest } from "../purchase/identity.js";
 import {
   JournalFencingError,
   JournalNotFoundError,
@@ -9,7 +6,10 @@ import {
   type EffectObservation,
   type EffectRecord,
   type LeaseToken,
-} from "../purchase/journal.js";
+} from "../journal/contracts.js";
+import { PolicyEngine } from "../policy.js";
+import { paymentFinalityMeets } from "../purchase/finality.js";
+import { evidenceDigest } from "../purchase/identity.js";
 import {
   TreasuryPreparationError,
   type TreasuryOperationAdapter,

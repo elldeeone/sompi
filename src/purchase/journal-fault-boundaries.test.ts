@@ -5,6 +5,11 @@ import * as path from "node:path";
 import test from "node:test";
 
 import {
+  JournalFencingError,
+  JournalNotFoundError,
+  type LeaseToken,
+} from "../journal/contracts.js";
+import {
   TREASURY_STAGING_EVIDENCE_KIND,
   type PlanTreasuryStagingRecoveryInput,
   type PolicyReservationInput,
@@ -31,21 +36,20 @@ import {
   requestFingerprint,
 } from "./identity.js";
 import {
-  JOURNAL_FAULT_POINTS,
   PURCHASE_RECEIPT_PROFILE,
-  JournalFencingError,
-  JournalNotFoundError,
-  PurchaseJournal,
   type BindCheckoutTermsInput,
-  type BatchChannelJournalRecord,
-  type JournalFaultPoint,
-  type LeaseToken,
   type PreparePaymentAttemptInput,
   type RecordAuthorizationDecisionInput,
   type RecordAuthorizationRequestInput,
   type RecordFulfilmentInput,
   type RecordPurchaseSettlementInput,
   type RecordReceiptInput,
+} from "./journal-contracts.js";
+import {
+  JOURNAL_FAULT_POINTS,
+  PurchaseJournal,
+  type BatchChannelJournalRecord,
+  type JournalFaultPoint,
 } from "./journal.js";
 import type { PurchaseId, Sha256Digest } from "./types.js";
 import type { TransferAuthorizationFacts, TransferAuthorityDecision, TransferReceipt } from "../transfer/types.js";

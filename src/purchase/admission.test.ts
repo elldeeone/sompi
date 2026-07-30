@@ -5,12 +5,14 @@ import * as path from "node:path";
 import test from "node:test";
 import Database from "better-sqlite3";
 
+import { JournalRequestConflictError } from "../journal/contracts.js";
 import { EvidenceStore } from "./evidence-store.js";
 import { createPurchaseId, evidenceDigest, requestFingerprint } from "./identity.js";
 import {
   EvidenceAdmissionError,
-  JournalRequestConflictError,
   PurchaseAdmissionError,
+} from "./journal-contracts.js";
+import {
   PurchaseJournal,
   type PurchaseJournalOptions,
 } from "./journal.js";

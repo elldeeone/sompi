@@ -4,6 +4,7 @@ import { SompiOperationFailure } from "../operation-failure.js";
 import { Address } from "../kaspa-wasm.js";
 import { kasAmountView } from "../amount-display.js";
 import type { ChainEvidenceFinalitySelector } from "../chain-evidence/types.js";
+import { JournalRequestConflictError } from "../journal/contracts.js";
 import {
   TreasuryOperationError,
   TreasuryOperationNotFoundError,
@@ -11,7 +12,6 @@ import {
   type TreasuryOperationView,
 } from "../treasury/operations.js";
 import {
-  JournalRequestConflictError,
   PolicyReservationError,
 } from "../purchase/journal.js";
 import type { TransferJournal } from "./journal.js";

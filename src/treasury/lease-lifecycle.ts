@@ -1,12 +1,10 @@
 import {
   JournalFencingError,
-} from "../purchase/journal.js";
+  type LeaseToken,
+} from "../journal/contracts.js";
 import type {
   TreasuryOperationJournal,
 } from "./operation-journal.js";
-import type {
-  TreasuryStagingPreparationLease,
-} from "./purchase-staging.js";
 
 interface TreasuryLeaseLifecycleOptions {
   readonly abortOnLoss?: boolean;
@@ -20,7 +18,7 @@ interface TreasuryLeaseLifecycleOptions {
  * one acquired generation live and applies one release policy.
  */
 export class TreasuryLeaseLifecycle<
-  Lease extends TreasuryStagingPreparationLease,
+  Lease extends LeaseToken,
 > {
   private currentLease: Lease;
   private readonly heartbeat: NodeJS.Timeout;

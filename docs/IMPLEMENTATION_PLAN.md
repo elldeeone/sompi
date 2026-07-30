@@ -1,6 +1,6 @@
 # Sompi implementation plan
 
-Status: **Architecture Phase 6 C1 complete; C2 not started**
+Status: **Architecture Phase 6 C2 complete; C3 not started**
 
 Starting commit: `89b0f1f404ce8e5f2ded88a5b1a99d8ca1743bba`
 
@@ -738,7 +738,7 @@ It must not keep a compatibility path or two contract locations.
 
 The phase has these requirements:
 
-- [ ] **P6.1:** Shared Journal errors, leases, Effects, evidence records, and
+- [x] **P6.1:** Shared Journal errors, leases, Effects, evidence records, and
   other transaction primitives have one owner that does not depend on a domain
   implementation.
 - [ ] **P6.2:** Purchase-specific durable contracts remain owned by Purchase.
@@ -764,7 +764,7 @@ Implementation sequence:
    shared errors, leases, Effects, durable records, and atomic transitions
    that move later. Record the production dependency graph. Do not change
    production behavior. Estimated effort: 0.5–1 day.
-2. [ ] **P6.C2 — Move shared Journal contracts.** Move transaction primitives
+2. [x] **P6.C2 — Move shared Journal contracts.** Move transaction primitives
    and concrete-Journal-independent Purchase contracts to their correct
    contract owners. Update every caller in the same checkpoint. Do not add a
    forwarding module or compatibility re-export. Estimated effort: 1–2 days.
@@ -800,6 +800,30 @@ C1 completion evidence from 2026-07-30:
   expected. Offline smoke passed. No production source, Journal schema,
   runtime behavior, public interface, protocol adapter, protocol pin, release,
   deployment, live host, or sibling repository changed.
+
+C2 completion evidence from 2026-07-30:
+
+- `src/journal/contracts.ts` owns the shared Journal errors, lease, Effects,
+  evidence records, and evidence input.
+- `src/purchase/journal-contracts.ts` owns the Purchase durable records and
+  Purchase admission errors that do not depend on the concrete Journal.
+- The concrete Purchase Journal imports these contracts. It does not define or
+  re-export them.
+- Treasury uses the shared lease and named evidence contracts. The duplicate
+  Treasury staging lease contract and the inline evidence input shapes do not
+  exist.
+- Every caller imports a moved contract from its direct owner. Treasury
+  ownership of `PolicyReservationError` remains in C3.
+- The six-file implementation region now has nine directed edges. The three
+  edges from Treasury implementations to the concrete Purchase Journal do not
+  exist.
+- One `PurchaseJournal` remains the SQLite transaction owner. The physical
+  schema and runtime behavior did not change.
+- The focused C2 command passed all 150 tests. The complete offline command ran
+  637 tests: 636 passed and one privileged ownership test was skipped as
+  expected. Offline smoke passed.
+- No public interface, AP2 or Kaspa-x402 adapter behavior, protocol pin,
+  release, deployment, live host, or sibling repository changed.
 
 Verification gate:
 

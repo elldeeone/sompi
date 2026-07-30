@@ -41,16 +41,20 @@ import {
   type PurchaseExecutionPlan,
 } from "./execution-plan.js";
 import {
-  EvidenceAdmissionError,
-  JournalNotFoundError,
   JournalEffectBusyError,
+  JournalNotFoundError,
   JournalRequestConflictError,
-  PurchaseAdmissionError,
-  PurchaseJournal,
   type EffectClaim,
   type EffectRecord,
+} from "../journal/contracts.js";
+import {
+  EvidenceAdmissionError,
+  PurchaseAdmissionError,
   type PurchaseRecord,
   type RecordPurchaseSettlementInput,
+} from "./journal-contracts.js";
+import {
+  PurchaseJournal,
 } from "./journal.js";
 import { projectPurchaseView, type PurchaseProjectionSnapshot } from "./projection.js";
 import {

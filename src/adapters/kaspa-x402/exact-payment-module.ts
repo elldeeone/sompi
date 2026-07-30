@@ -45,7 +45,7 @@ import type {
   SettlementResult,
   VerifiedArtifact,
 } from "../../purchase/coordinator.js";
-import type { EffectObservation } from "../../purchase/journal.js";
+import type { EffectObservation } from "../../journal/contracts.js";
 import type { PurchaseId, Sha256Digest } from "../../purchase/types.js";
 import type {
   PrepareTreasuryStagingAdapterInput,

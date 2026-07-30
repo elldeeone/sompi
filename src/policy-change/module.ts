@@ -1,11 +1,13 @@
 import { createHash, randomBytes } from "node:crypto";
 
+import {
+  JournalNotFoundError,
+  JournalRequestConflictError,
+} from "../journal/contracts.js";
 import { SompiOperationFailure } from "../operation-failure.js";
 import type { OperatorManifestIdentity } from "../operator/manifest.js";
 import { PolicyEngine, type Policy } from "../policy.js";
 import {
-  JournalNotFoundError,
-  JournalRequestConflictError,
   PolicyReservationError,
   PurchaseJournal,
   type PolicyChangeJournalRecord,

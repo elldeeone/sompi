@@ -62,6 +62,8 @@ import { evidenceDigest, assertPurchaseRequestKey, createPurchaseId } from "./id
 import {
   EvidenceAdmissionError,
   PurchaseAdmissionError,
+} from "./journal-contracts.js";
+import {
   PurchaseJournal,
   type JournalFaultPoint,
 } from "./journal.js";
