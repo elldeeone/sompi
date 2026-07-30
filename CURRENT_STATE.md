@@ -173,7 +173,7 @@ Kaspa-x402 adapter, protocol pin, release, deployment, live host, or sibling
 repository. It did not start owner-change persistence, shared Agent
 continuation, or another deferred candidate.
 
-Architecture Phase 6 C4 is complete. C5 has not started. Phase 6 starts from
+The architecture programme completed Phase 6. Phase 6 started from
 `cde460cb80f9c5d6afa65f83431e6544e2e8f598`.
 
 Phase 6 removes one production TypeScript dependency cycle between the
@@ -183,18 +183,21 @@ new persistence interface merely to wrap the concrete Journal.
 
 Phase 6 is a clean cutover. Each checkpoint updates every caller and deletes
 the old definition, import, alias, re-export, and replaced test. It keeps one
-`PurchaseJournal` SQLite implementation and one transaction owner. It does not
-change runtime behavior, the physical Journal schema, the stable Purchase or
-Transfer interface, AP2, Kaspa-x402, protocol pins, release, deployment, the
+`PurchaseJournal` SQLite implementation and one transaction owner.
+It does not change runtime behavior or the physical Journal schema.
+It does not change the stable Purchase or Transfer interface.
+It does not change AP2, Kaspa-x402, protocol pins, release, deployment, the
 live host, or a sibling repository.
 
 P6.C1 records the one current production import cycle as a six-file strongly
 connected component with 12 internal edges. Tests now protect the shared
 Journal lease and error identities, exact Transfer authorization evidence
 across restart, and the existing Effect, durable-record, and atomic-transition
-behavior. The complete offline command ran 636 tests: 635 passed and one
-privileged ownership test was skipped as expected. Offline smoke passed. C1
-does not change production source or behavior.
+behavior.
+
+The complete offline command ran 636 tests. Of these tests, 635 passed. The
+command skipped one privileged ownership test as expected. Offline smoke
+passed. C1 does not change production source or behavior.
 
 P6.C2 moves the shared Journal errors, lease, Effects, evidence records, and
 evidence input to one neutral Journal contract owner. Purchase durable records
@@ -210,9 +213,11 @@ from Treasury implementations to the concrete Purchase Journal do not exist.
 
 One `PurchaseJournal` remains the SQLite transaction owner. The physical
 schema, runtime behavior, public interfaces, protocol adapter behavior, and
-protocol pins did not change. The focused C2 command passed all 150 tests. The
-complete offline command ran 637 tests: 636 passed and one privileged ownership
-test was skipped as expected. Offline smoke passed.
+protocol pins did not change.
+
+The focused C2 command passed all 150 tests. The complete offline command ran
+637 tests. Of these tests, 636 passed. The command skipped one privileged
+ownership test as expected. Offline smoke passed.
 
 P6.C3 moves `PolicyReservationError` and `TreasuryOperationView` to the
 Treasury operation Journal contract owner. The concrete Purchase Journal
@@ -226,9 +231,11 @@ implementation.
 
 One `PurchaseJournal` remains the SQLite transaction owner. The physical
 schema, runtime behavior, public interfaces, protocol adapter behavior, and
-protocol pins did not change. The focused C3 command passed all 133 tests. The
-complete offline command ran 639 tests: 638 passed and one privileged ownership
-test was skipped as expected. Offline smoke passed.
+protocol pins did not change.
+
+The focused C3 command passed all 133 tests. The complete offline command ran
+639 tests. Of these tests, 638 passed. The command skipped one privileged
+ownership test as expected. Offline smoke passed.
 
 P6.C4 completes the internal clean cutover. `PaymentAttemptState` has one
 Purchase contract owner. The temporary alias in the concrete Purchase Journal
@@ -246,11 +253,31 @@ allows the in-memory schema fingerprint helper and the one filename-backed
 Purchase Journal only. The existing runtime test proves one production
 construction site.
 
-No implementation was split. The physical Journal schema, runtime behavior,
-stable interfaces, process authority, protocol adapters, and protocol pins did
-not change. The focused C4 command passed all 8 tests. The complete offline
-command ran 639 tests: 638 passed and one privileged ownership test was skipped
-as expected. Offline smoke passed.
+The work did not split an implementation. The physical Journal schema, runtime
+behavior, stable interfaces, process authority, protocol adapters, and protocol
+pins did not change.
+
+The focused C4 command passed all 8 tests. The complete offline command ran 639
+tests. Of these tests, 638 passed. The command skipped one privileged ownership
+test as expected. Offline smoke passed.
+
+P6.C5 completes the final proof and stop gates. Independent specification and
+architecture reviews found no actionable issue. C5 corrected five ASD-STE100
+documentation findings from the first standards review. The final standards
+review found no actionable issue.
+
+The Phase 6 gate command ran 145 tests. All 145 tests passed. The full
+release verifier ran 639 tests. Of these tests, 638 passed. The verifier skipped
+one privileged ownership test as expected.
+
+Offline smoke, three Hermes tests, and all five Kaspa-x402 conformance checks
+passed. Stored-evidence, local E2E, OpenAPI, Arazzo, package, clean-install,
+license, onboarding-preview, dependency-audit, and source-tree checks passed.
+
+The Journal schema source is byte-identical to the Phase 6 base. Journal epoch
+20, its checksum, fingerprint, and SQL tables did not change. Phase 6 did not
+start owner-change persistence or shared Agent continuation. C5 did not run a
+funded transaction because Phase 6 does not require fresh funded evidence.
 
 ## Current release
 
@@ -430,12 +457,8 @@ The deterministic Trusted Authority records signed human approval before an irre
 
 ## Next work
 
-Architecture Phase 6 C4 is complete. C5 has not started.
+The architecture programme completed Phase 6.
 
-1. P6.C5 runs the complete proof, review, final gate, and stop work.
-
-Phase 6 is a clean internal cutover. It keeps one SQLite Journal and does not
-change runtime behavior, the physical schema, public interfaces, process
-authority, AP2 or Kaspa-x402 adapters, protocol pins, release, deployment,
-live host, or sibling repositories. It does not include owner-change
-persistence or shared Agent continuation work.
+No later architecture phase is in scope.
+Deferred work remains stopped.
+A new phase requires one bounded objective and the recorded start steps.

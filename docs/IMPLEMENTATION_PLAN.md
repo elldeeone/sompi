@@ -1,6 +1,6 @@
 # Sompi implementation plan
 
-Status: **Architecture Phase 6 C4 complete; C5 not started**
+Status: **Architecture programme completed Phase 6**
 
 Starting commit: `89b0f1f404ce8e5f2ded88a5b1a99d8ca1743bba`
 
@@ -732,8 +732,10 @@ The current cycle includes these files:
 - `src/treasury/operation-adapters.ts`
 - `src/transfer/journal.ts`
 
-This phase is an internal clean cutover. It must update every caller and delete
-the old definition, import, alias, re-export, and test in the same checkpoint.
+This phase is an internal clean cutover.
+In each checkpoint, update every caller.
+In the same checkpoint, delete each old definition, import, alias, re-export,
+and test.
 It must not keep a compatibility path or two contract locations.
 
 The phase has these requirements:
@@ -760,10 +762,12 @@ The phase has these requirements:
 Implementation sequence:
 
 1. [x] **P6.C1 — Characterize the contract graph.** Add tests through the
-   existing Journal, Treasury, Purchase, and Transfer interfaces for the
-   shared errors, leases, Effects, durable records, and atomic transitions
-   that move later. Record the production dependency graph. Do not change
-   production behavior. Estimated effort: 0.5–1 day.
+   existing Journal, Treasury, Purchase, and Transfer interfaces.
+   Cover shared errors, leases, Effects, durable records, and atomic
+   transitions that move later.
+   Record the production dependency graph.
+   Do not change production behavior.
+   Estimated effort: 0.5–1 day.
 2. [x] **P6.C2 — Move shared Journal contracts.** Move transaction primitives
    and concrete-Journal-independent Purchase contracts to their correct
    contract owners. Update every caller in the same checkpoint. Do not add a
@@ -777,9 +781,11 @@ Implementation sequence:
    locations, aliases, re-exports, imports, and replaced tests. Add deletion
    tests that prove the production dependency graph is acyclic and that no
    second Journal or persistence seam exists. Estimated effort: 0.5–1 day.
-5. [ ] **P6.C5 — Verify and stop.** Run all Phase 6 gates, complete an
-   independent architecture review, update the state documents, and stop
-   before deferred work starts. Estimated effort: 1 day.
+5. [x] **P6.C5 — Verify and stop.** Run all Phase 6 gates.
+   Complete an independent architecture review.
+   Update the state documents.
+   Stop before deferred work starts.
+   Estimated effort: 1 day.
 
 C1 completion evidence from 2026-07-30:
 
@@ -796,8 +802,8 @@ C1 completion evidence from 2026-07-30:
   existing Purchase, Treasury, and 34-point Journal fault-boundary tests prove
   durable records and atomic rollback and restart behavior.
 - The focused contract command passed 136 tests. The complete offline command
-  ran 636 tests: 635 passed and one privileged ownership test was skipped as
-  expected. Offline smoke passed. No production source, Journal schema,
+  ran 636 tests. Of these tests, 635 passed. The command skipped one privileged
+  ownership test as expected. Offline smoke passed. No production source, Journal schema,
   runtime behavior, public interface, protocol adapter, protocol pin, release,
   deployment, live host, or sibling repository changed.
 
@@ -820,8 +826,8 @@ C2 completion evidence from 2026-07-30:
 - One `PurchaseJournal` remains the SQLite transaction owner. The physical
   schema and runtime behavior did not change.
 - The focused C2 command passed all 150 tests. The complete offline command ran
-  637 tests: 636 passed and one privileged ownership test was skipped as
-  expected. Offline smoke passed.
+  637 tests. Of these tests, 636 passed. The command skipped one privileged
+  ownership test as expected. Offline smoke passed.
 - No public interface, AP2 or Kaspa-x402 adapter behavior, protocol pin,
   release, deployment, live host, or sibling repository changed.
 
@@ -840,8 +846,8 @@ C3 completion evidence from 2026-07-30:
   Integration tests continue to use it directly. No second persistence seam
   exists.
 - The focused C3 command passed all 133 tests. The complete offline command ran
-  639 tests: 638 passed and one privileged ownership test was skipped as
-  expected. Offline smoke passed.
+  639 tests. Of these tests, 638 passed. The command skipped one privileged
+  ownership test as expected. Offline smoke passed.
 - The physical Journal schema, runtime behavior, public interfaces, AP2 and
   Kaspa-x402 adapter behavior, protocol pins, release, deployment, live host,
   and sibling repositories did not change.
@@ -862,40 +868,71 @@ C4 completion evidence from 2026-07-30:
 - The scoped SQLite gate finds only the concrete Purchase Journal and the
   Journal schema fingerprint helper. The helper opens only in-memory
   databases. The concrete Journal has the one filename-backed database.
-- No implementation was split. The physical Journal schema, runtime behavior,
-  stable interfaces, process authority, protocol adapters, and protocol pins
-  did not change.
+- The work did not split an implementation. The physical Journal schema,
+  runtime behavior, stable interfaces, process authority, protocol adapters,
+  and protocol pins did not change.
 - The focused C4 command passed all 8 tests. The complete offline command ran
-  639 tests: 638 passed and one privileged ownership test was skipped as
-  expected. Offline smoke passed.
+  639 tests. Of these tests, 638 passed. The command skipped one privileged
+  ownership test as expected. Offline smoke passed.
+
+C5 completion evidence from 2026-07-30:
+
+- Independent specification and architecture reviews found no actionable
+  issue.
+- The first standards review found five documentation groups that did not use
+  ASD-STE100. C5 corrected these groups. The second review found three more
+  groups. C5 corrected these groups. The final standards review found no
+  actionable issue.
+- The Phase 6 gate command ran 145 tests. All 145 tests passed. It covered the
+  Journal, Treasury, Purchase, and Transfer interfaces. It also covered
+  dependency cycles, deleted paths, runtime composition, rejected Journal
+  epochs, and fresh Journal initialization.
+- `src/purchase/journal-schema.ts` is byte-identical to the Phase 6 base. Its
+  SHA-256 is
+  `21d5b807633e21a4c9ea4a450f6521afff61044fc8dd86dad7c5bf1b8c73d0b5`.
+  Journal epoch 20, its checksum, fingerprint, and SQL tables did not change.
+- The full release verifier ran 639 tests. Of these tests, 638 passed. The
+  verifier skipped one privileged ownership test as expected. Offline smoke,
+  three Hermes tests, and all five Kaspa-x402 conformance checks passed.
+- Stored-evidence, local E2E, OpenAPI, Arazzo, package, clean-install, license,
+  onboarding-preview, and source-tree checks passed. The production dependency
+  audit found only the allowlisted GHSA-frvp-7c67-39w9 advisory.
+- Phase 6 did not change the public interface, physical Journal schema, runtime
+  behavior, protocol pins, AP2 behavior, or Kaspa-x402 behavior. It did not
+  change a release, deployment, live host, sibling repository, owner-change
+  persistence, or shared Agent continuation.
+- C5 did not run a funded transaction. Phase 6 does not require fresh funded
+  evidence because it changes only internal contract ownership.
 
 Verification gate:
 
-- [ ] **P6.G1:** Journal, Treasury, Purchase, and Transfer interface tests
+- [x] **P6.G1:** Journal, Treasury, Purchase, and Transfer interface tests
   prove unchanged errors, leases, Effects, recovery fences, and atomic durable
   results.
-- [ ] **P6.G2:** A production dependency graph test proves that no static
+- [x] **P6.G2:** A production dependency graph test proves that no static
   import cycle exists.
-- [ ] **P6.G3:** Deletion tests prove that Treasury and Transfer do not import
-  the concrete Purchase Journal and that old contract locations, aliases, and
-  compatibility re-exports do not exist.
-- [ ] **P6.G4:** Runtime composition constructs one concrete
+- [x] **P6.G3:** Deletion tests prove that Treasury and Transfer do not import
+  the concrete Purchase Journal. They also prove that old contract locations,
+  aliases, and compatibility re-exports do not exist.
+- [x] **P6.G4:** Runtime composition constructs one concrete
   `PurchaseJournal`. One SQLite transaction continues to own cross-domain
   policy, reservation, Effect, Treasury, Purchase, and Transfer transitions.
-- [ ] **P6.G5:** The Journal schema version, schema checksum, schema
+- [x] **P6.G5:** The Journal schema version, schema checksum, schema
   fingerprint, SQL tables, and runtime behavior are unchanged.
-- [ ] **P6.G6:** The complete unit suite, offline smoke, all five Kaspa-x402
+- [x] **P6.G6:** The complete unit suite, offline smoke, all five Kaspa-x402
   conformance checks, generated OpenAPI and Arazzo checks, stored-evidence
   checks, and the release verifier pass.
-- [ ] **P6.G7:** No public interface, AP2 or Kaspa-x402 adapter, protocol pin,
+- [x] **P6.G7:** No public interface, AP2 or Kaspa-x402 adapter, protocol pin,
   release, deployment, live-host, sibling-repository, owner-change
   persistence, or shared Agent continuation change is included.
 
 This phase aligns the existing decisions in ADR-0002, ADR-0004, ADR-0013,
-ADR-0015, and ADR-0019. It does not change an accepted decision and does not
-require a new ADR. Stop and add or amend an ADR before implementation if a
-checkpoint needs a second persistence implementation, a physical schema
-change, or another transaction owner.
+ADR-0015, and ADR-0019.
+It does not change an accepted decision.
+A new ADR is not necessary.
+Stop if a checkpoint needs a second persistence implementation, a physical
+schema change, or another transaction owner.
+Add or amend an ADR before implementation.
 
 ## Deferred work
 
