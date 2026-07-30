@@ -5,6 +5,7 @@ import * as path from "node:path";
 import test from "node:test";
 import Database from "better-sqlite3";
 import {
+  JournalEffectBusyError,
   JournalFencingError,
   JournalInvariantError,
   JournalNotFoundError,
@@ -54,6 +55,52 @@ test("journal creates a secure, verified schema and survives restart", () => {
     assert.equal(restarted.requirePurchase(purchase.id).requestKey, purchase.requestKey);
     assert.equal(restarted.transitions(purchase.id).length, 1);
     assert.equal(restarted.integrityCheck(), true);
+  });
+});
+
+test("Journal leases exclude competitors, renew in place, and fence stale owners", () => {
+  withJournal(({ filename, evidenceDirectory, journal, clock }) => {
+    const competitor = new PurchaseJournal(filename, {
+      now: clock.now,
+      evidenceDirectory,
+    });
+    try {
+      const first = journal.acquireLease(
+        "phase6-contract-lease",
+        "phase6-owner-a",
+        10_000,
+      );
+      assert.ok(first);
+      assert.equal(
+        competitor.acquireLease(
+          "phase6-contract-lease",
+          "phase6-owner-b",
+          10_000,
+        ),
+        undefined,
+      );
+
+      const renewed = journal.renewLease(first, 20_000);
+      assert.equal(renewed.generation, first.generation);
+      assert.equal(renewed.expiresAtMs, clock.value + 20_000);
+
+      clock.value = renewed.expiresAtMs;
+      const takeover = competitor.acquireLease(
+        "phase6-contract-lease",
+        "phase6-owner-b",
+        30_000,
+      );
+      assert.ok(takeover);
+      assert.equal(takeover.generation, first.generation + 1);
+      assert.throws(
+        () => journal.renewLease(first, 10_000),
+        JournalFencingError,
+      );
+      assert.equal(journal.releaseLease(first), false);
+      assert.equal(competitor.releaseLease(takeover), true);
+    } finally {
+      competitor.close();
+    }
   });
 });
 
@@ -1000,6 +1047,49 @@ test("payment submission atomically fences the effect, Attempt, and treasury cap
       restarted.markEffectSubmitted(claim, evidenceDigest("submission-ack")).state,
       "submitted"
     );
+  });
+});
+
+test("a possible external effect rejects cancellation with the shared busy error", () => {
+  withJournal(({ journal, clock }) => {
+    const flow = preparedPaymentFlow(journal, 73, clock.value);
+    const claim = journal.beginPaymentSubmission(
+      flow.effect.id,
+      flow.reservation.id,
+      "phase6-effect-owner",
+      120_000,
+    );
+    assert.ok(claim);
+
+    assert.throws(
+      () => journal.cancelPurchaseBeforeExternalEffect(flow.purchaseId),
+      (error: unknown) =>
+        error instanceof JournalEffectBusyError &&
+        error instanceof JournalFencingError,
+    );
+    assert.equal(journal.requireEffect(flow.effect.id).state, "executing");
+    assert.equal(
+      journal.requirePaymentAttempt(flow.purchaseId, 1).state,
+      "submitted",
+    );
+    assert.equal(
+      journal.requireReservation(flow.reservation.id).state,
+      "in_flight",
+    );
+
+    const staleClaim = {
+      effect: claim.effect,
+      lease: { ...claim.lease, generation: claim.lease.generation + 1 },
+    };
+    assert.throws(
+      () =>
+        journal.markEffectSubmitted(
+          staleClaim,
+          evidenceDigest("phase6-stale-submission"),
+        ),
+      JournalFencingError,
+    );
+    assert.equal(journal.requireEffect(flow.effect.id).state, "executing");
   });
 });
 

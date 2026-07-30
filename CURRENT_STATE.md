@@ -173,7 +173,7 @@ Kaspa-x402 adapter, protocol pin, release, deployment, live host, or sibling
 repository. It did not start owner-change persistence, shared Agent
 continuation, or another deferred candidate.
 
-Architecture Phase 6 is scoped and has not started. It starts from
+Architecture Phase 6 C1 is complete. C2 has not started. Phase 6 starts from
 `cde460cb80f9c5d6afa65f83431e6544e2e8f598`.
 
 Phase 6 removes one production TypeScript dependency cycle between the
@@ -187,6 +187,14 @@ the old definition, import, alias, re-export, and replaced test. It keeps one
 change runtime behavior, the physical Journal schema, the stable Purchase or
 Transfer interface, AP2, Kaspa-x402, protocol pins, release, deployment, the
 live host, or a sibling repository.
+
+P6.C1 records the one current production import cycle as a six-file strongly
+connected component with 12 internal edges. Tests now protect the shared
+Journal lease and error identities, exact Transfer authorization evidence
+across restart, and the existing Effect, durable-record, and atomic-transition
+behavior. The complete offline command ran 636 tests: 635 passed and one
+privileged ownership test was skipped as expected. Offline smoke passed. C1
+does not change production source or behavior.
 
 ## Current release
 
@@ -366,13 +374,12 @@ The deterministic Trusted Authority records signed human approval before an irre
 
 ## Next work
 
-Architecture Phase 6 is scoped and implementation has not started.
+Architecture Phase 6 C1 is complete. C2 has not started.
 
-1. P6.C1 characterizes the current contract graph and durable behavior.
-2. P6.C2 moves shared Journal contracts to their correct owners.
-3. P6.C3 removes concrete Purchase Journal imports from Treasury and Transfer.
-4. P6.C4 deletes old contract paths and proves the production graph is acyclic.
-5. P6.C5 runs the complete proof, review, deletion, and stop gates.
+1. P6.C2 moves shared Journal contracts to their correct owners.
+2. P6.C3 removes concrete Purchase Journal imports from Treasury and Transfer.
+3. P6.C4 deletes old contract paths and proves the production graph is acyclic.
+4. P6.C5 runs the complete proof, review, deletion, and stop gates.
 
 Phase 6 is a clean internal cutover. It keeps one SQLite Journal and does not
 change runtime behavior, the physical schema, public interfaces, process

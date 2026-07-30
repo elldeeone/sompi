@@ -20,6 +20,7 @@ import {
   TreasuryOperationNotFoundError,
   type TreasuryOperationView,
 } from "../treasury/operations.js";
+import type { TransferJournal } from "./journal.js";
 import { TransferModule } from "./module.js";
 import type { TransferAuthorizationFacts, TransferAuthorityModule } from "./types.js";
 
@@ -279,6 +280,9 @@ test("request keys, Authority facts, policy snapshots, and restart recovery stay
   const before = fixture.journal.findTransferByRequestKey("telegram:send:recover")!;
   assert.equal(before.state, "failed_recoverable");
   assert.equal(before.policyDigest, fixture.policyDigest);
+  const beforeRestartJournal: TransferJournal = fixture.journal;
+  const authorizationEvidence =
+    beforeRestartJournal.readTransferAuthorizationEvidence(before.id);
   await assert.rejects(
     fixture.module.transfer({ requestKey: "telegram:send:recover", destination: ADDRESS, amountAtomic: "5001" }),
     operationFailure("TRANSFER_CONFLICT"),
@@ -290,6 +294,11 @@ test("request keys, Authority facts, policy snapshots, and restart recovery stay
     admission: ADMISSION,
   });
   t.after(() => restarted.close());
+  const afterRestartJournal: TransferJournal = restarted;
+  assert.deepEqual(
+    afterRestartJournal.readTransferAuthorizationEvidence(before.id),
+    authorizationEvidence,
+  );
   const recoveredTreasury = new FakeTreasury(fixture.policyDigest, false);
   const recovered = new TransferModule({
     journal: restarted,

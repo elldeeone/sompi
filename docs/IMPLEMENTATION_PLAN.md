@@ -1,6 +1,6 @@
 # Sompi implementation plan
 
-Status: **Architecture Phase 6 scoped; implementation not started**
+Status: **Architecture Phase 6 C1 complete; C2 not started**
 
 Starting commit: `89b0f1f404ce8e5f2ded88a5b1a99d8ca1743bba`
 
@@ -759,7 +759,7 @@ The phase has these requirements:
 
 Implementation sequence:
 
-1. [ ] **P6.C1 — Characterize the contract graph.** Add tests through the
+1. [x] **P6.C1 — Characterize the contract graph.** Add tests through the
    existing Journal, Treasury, Purchase, and Transfer interfaces for the
    shared errors, leases, Effects, durable records, and atomic transitions
    that move later. Record the production dependency graph. Do not change
@@ -780,6 +780,26 @@ Implementation sequence:
 5. [ ] **P6.C5 — Verify and stop.** Run all Phase 6 gates, complete an
    independent architecture review, update the state documents, and stop
    before deferred work starts. Estimated effort: 1 day.
+
+C1 completion evidence from 2026-07-30:
+
+- One static production-import test records the current six-file strongly
+  connected component and its 12 exact internal edges. It includes type-only
+  imports and `export ... from` edges. It reports no other production cycle.
+- Direct Journal tests prove lease exclusion, generation-preserving renewal,
+  expired takeover, stale-owner fencing, and stale and current release
+  behavior across two SQLite handles.
+- A possible external Effect returns the shared busy error. It remains a
+  fencing error and leaves the Effect, Payment Attempt, and Reservation in
+  their atomic in-flight states.
+- Transfer interface evidence bytes remain exact across Journal restart. The
+  existing Purchase, Treasury, and 34-point Journal fault-boundary tests prove
+  durable records and atomic rollback and restart behavior.
+- The focused contract command passed 136 tests. The complete offline command
+  ran 636 tests: 635 passed and one privileged ownership test was skipped as
+  expected. Offline smoke passed. No production source, Journal schema,
+  runtime behavior, public interface, protocol adapter, protocol pin, release,
+  deployment, live host, or sibling repository changed.
 
 Verification gate:
 
