@@ -281,19 +281,23 @@ funded transaction because Phase 6 does not require fresh funded evidence.
 
 ## Current release
 
-Sompi `0.12.2` repairs the clean-host Hermes onboarding trust boundary.
-The README points to one versioned remote skill.
-The skill, request template, scriptless installer, preview, and privileged command use the same version.
+Sompi `0.13.0` completes architecture programme phases 1 through 6.
+The release gives Purchase progression, Treasury, runtime roles, and shared
+Journal contracts explicit module boundaries. It moves internal authorization
+evidence to Journal epoch 20 as defined in ADR-0024.
 
-The installer disables all package lifecycle scripts during installation.
-It verifies and runs only the required native dependency install script.
-The privileged command downloads the installer into a root-owned temporary directory and verifies its pinned SHA-256 before execution.
+The stable Purchase model remains independent from the AP2 and Kaspa-x402
+adapters. The release removes replaced code and does not add compatibility
+fallbacks.
 
-Do not use `0.12.1` for clean-host onboarding.
-That release can run unreviewed package lifecycle scripts before privileged bootstrap.
+The clean-host Hermes onboarding controls from `0.12.2` remain in force.
+The skill, request template, scriptless installer, preview, and privileged
+command use the same version. The installer disables package lifecycle scripts
+and runs only the required native dependency install script.
 
-The Git tag, npm package, and source contain the same release tree.
-This release does not change the deployed Terah runtime.
+A live deployment requires a controlled clean cutover to a fresh Journal
+epoch-20 runtime identity. The existing epoch-19 state must remain an immutable
+recovery unit.
 
 ## Deployed release
 

@@ -1,6 +1,6 @@
 {
   "schema": "sompi-host-bootstrap-v1",
-  "packageVersion": "0.12.2",
+  "packageVersion": "0.13.0",
   "agent": {
     "kind": "hermes",
     "user": "agent-user"

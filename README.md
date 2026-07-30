@@ -65,7 +65,7 @@ Copy this prompt to your agent:
 
 ```text
 Install and set up Sompi. Read and follow every instruction at:
-https://raw.githubusercontent.com/elldeeone/sompi/v0.12.2/integrations/hermes/sompi/SKILL.md
+https://raw.githubusercontent.com/elldeeone/sompi/v0.13.0/integrations/hermes/sompi/SKILL.md
 ```
 
 The linked skill contains the complete installation procedure and all manual
@@ -226,10 +226,10 @@ Treasury / SompiVault -> Chain Evidence and recovery
 ```
 
 `Transfer` controls native sends. `Purchase` controls x402 commerce. The AP2
-adapter and the Kaspa-x402 adapter are separate. Journal epoch 19 is the only
-state schema in the deployed `0.12.0` runtime. Current source accepts only
-Journal epoch 20. It has the same physical SQLite shape and new authorization
-evidence semantics.
+adapter and the Kaspa-x402 adapter are separate. Sompi `0.13.0` accepts only
+Journal epoch 20. It has the same physical SQLite shape as epoch 19 and new
+authorization evidence semantics. A deployment must use a controlled clean
+cutover from an earlier Journal epoch.
 
 Read these current sources:
 

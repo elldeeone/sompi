@@ -8,7 +8,7 @@ Use separate operator, API, Authority, Agent, and recovery access boundaries.
 ## Host bootstrap
 
 Edit the non-secret `host-bootstrap.example.json` template.
-Set `packageVersion` to `0.12.2`.
+Set `packageVersion` to `0.13.0`.
 Set the Hermes user, Telegram IDs, Testnet-10 node, Merchant rules, and limits.
 
 Download and verify the scriptless installer:
@@ -16,12 +16,12 @@ Download and verify the scriptless installer:
 ```bash
 install -d -m 700 ~/.sompi
 curl --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --location --max-time 30 \
-  https://raw.githubusercontent.com/elldeeone/sompi/v0.12.2/scripts/install-runtime-package.mjs \
-  -o ~/.sompi/install-runtime-package-v0.12.2.mjs
-chmod 0600 ~/.sompi/install-runtime-package-v0.12.2.mjs
+  https://raw.githubusercontent.com/elldeeone/sompi/v0.13.0/scripts/install-runtime-package.mjs \
+  -o ~/.sompi/install-runtime-package-v0.13.0.mjs
+chmod 0600 ~/.sompi/install-runtime-package-v0.13.0.mjs
 printf '%s  %s\n' \
   5636810d34f3c253fef8d503b7829b8f4518eefa31b591184be515cca6840411 \
-  ~/.sompi/install-runtime-package-v0.12.2.mjs |
+  ~/.sompi/install-runtime-package-v0.13.0.mjs |
   sha256sum --check --strict -
 ```
 
@@ -29,17 +29,17 @@ Stop if the checksum fails.
 Install the preview runtime:
 
 ```bash
-node ~/.sompi/install-runtime-package-v0.12.2.mjs \
-  --prefix ~/.sompi/preview-runtime-v0.12.2 \
-  --package @elldeeone/sompi@0.12.2 \
-  --expected-version 0.12.2 \
+node ~/.sompi/install-runtime-package-v0.13.0.mjs \
+  --prefix ~/.sompi/preview-runtime-v0.13.0 \
+  --package @elldeeone/sompi@0.13.0 \
+  --expected-version 0.13.0 \
   --omit-dev
 ```
 
 Preview the request:
 
 ```bash
-~/.sompi/preview-runtime-v0.12.2/node_modules/.bin/sompi-operator \
+~/.sompi/preview-runtime-v0.13.0/node_modules/.bin/sompi-operator \
   bootstrap-preview REQUEST.json
 ```
 

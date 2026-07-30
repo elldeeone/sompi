@@ -4,7 +4,7 @@
     "title": "Sompi recovery workflows",
     "summary": "Operate and recover Sompi wallet, Transfer, Purchase, and protection changes.",
     "description": "Uses only the authenticated, protocol-neutral Sompi API. The recovery step reconciles durable evidence and never authorizes blind resubmission.",
-    "version": "0.12.2"
+    "version": "0.13.0"
   },
   "sourceDescriptions": [
     {
