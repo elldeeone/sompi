@@ -57,12 +57,28 @@ Prepare a clean replacement host and run a reviewed Host Bootstrap request.
 
 ```yaml
 plugins:
+  enabled:
+    - sompi-approval
   entries:
     sompi-approval:
       allow_tool_override: false
       callback_socket: /run/sompi-telegram-callback/telegram-callback.sock
       timeout_ms: 2000
 ```
+
+```bash
+selected_hermes_checkout=/absolute/path/to/selected/hermes-checkout
+selected_hermes_python=/absolute/path/to/hermes/venv/bin/python
+env \
+  PYTHONDONTWRITEBYTECODE=1 \
+  PYTHONPATH="$selected_hermes_checkout" \
+  "$selected_hermes_python" -m hermes_cli.main \
+  plugins enable sompi-approval --no-allow-tool-override
+```
+
+Keep `sompi-approval` in `plugins.enabled`.
+Remove `sompi-approval` from `plugins.disabled`.
+Do not use an `enabled` field in the `sompi-approval` entry.
 
 ```text
 PYTHONDONTWRITEBYTECODE=1
@@ -85,6 +101,17 @@ groups.
 Keep Sompi behavior in the packaged plugin and skill.
 
 ## Verify
+
+```bash
+env \
+  PYTHONDONTWRITEBYTECODE=1 \
+  PYTHONPATH="$selected_hermes_checkout" \
+  "$selected_hermes_python" -m hermes_cli.main \
+  plugins list --user --json
+```
+
+The output must contain exactly one user plugin named `sompi-approval`.
+Its status must be `enabled`.
 
 ```bash
 sompi-agent status pur_AAAAAAAAAAAAAAAAAAAAAA

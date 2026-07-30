@@ -281,7 +281,7 @@ funded transaction because Phase 6 does not require fresh funded evidence.
 
 ## Current release
 
-Sompi `0.13.1` completes architecture programme phases 1 through 6.
+Sompi `0.13.2` completes architecture programme phases 1 through 6.
 The release gives Purchase progression, Treasury, runtime roles, and shared
 Journal contracts explicit module boundaries. It moves internal authorization
 evidence to Journal epoch 20 as defined in ADR-0024.
@@ -294,7 +294,7 @@ The clean-host Hermes onboarding controls from `0.12.2` remain in force.
 The skill, request template, scriptless installer, preview, and privileged
 command use the same version. The installer disables package lifecycle scripts
 and runs only the required native dependency install script.
-Version `0.13.1` makes the installer use `umask 022` for public runtime code.
+The installer uses `umask 022` for public runtime code.
 This keeps runtime directories traversable and runtime files readable when
 Host Bootstrap uses `umask 077` for private state.
 
@@ -302,13 +302,25 @@ A live deployment requires a controlled clean cutover to a fresh Journal
 epoch-20 runtime identity. The existing epoch-19 state must remain an immutable
 recovery unit.
 
-## Deployed release
+## Published but not deployed
+
+Sompi `0.13.1` added the installer correction.
+It was tagged and published but was not deployed.
+Host Bootstrap failed closed before funding because it checked the obsolete
+Hermes `plugins.entries.sompi-approval.enabled` setting.
+Version `0.13.2` verifies the active user plugin through the current Hermes
+plugin list.
+No epoch-20 runtime was activated by the failed attempt.
+
+## Last verified deployment
 
 Sompi `0.12.0` is the completed Kaspa-x402 `0.1.0-alpha.9` clean cutover.
 ADR-0023 defines this release.
 
-The npm `latest` package, Git tag, source, and deployed Terah bytes match.
-The Terah runtime uses a fresh Journal epoch-19 identity.
+The `v0.12.0` tag, source, and deployed Terah bytes match.
+The verified Terah runtime used a fresh Journal epoch-19 identity.
+It is now an immutable recovery unit during the `0.13.2` cutover.
+No Sompi runtime is active after the failed pre-funding `0.13.1` attempt.
 
 | Item | Value |
 |---|---|
@@ -337,25 +349,26 @@ Sompi does not claim AP2 interoperability.
 The release does not support mainnet, autonomous authorization, passkeys, or UCP.
 It does not provide a general payment-rail interface.
 
-## Runtime
+## Retired epoch-19 runtime
 
-The active Terah runtime uses new Journal, wallet, vault, Authority, and API identities.
-No epoch-18 runtime state was imported.
+No Sompi runtime is active on Terah.
+The Journal epoch-19 runtime is in an immutable, private, hash-recorded
+operator archive. Its release package remains available for controlled
+recovery.
 
-The old runtime is in an immutable, private, hash-recorded operator archive.
-The old vault was recovered once with its offline owner record.
-The temporary extracted owner key was then destroyed.
+The `0.13.0` and `0.13.1` attempts stopped before funding and activation.
+Their incomplete privileged state and Hermes projections were removed.
+The Hermes gateway is inactive.
+The primary Hermes checkout remains at
+`2d404942471633d5338a8ff514ea7da24549274f`.
 
-The new vault was activated through the normal bootstrap lifecycle.
-The API, Authority, and Hermes gateway are active.
+## Historical verification
 
-The Hermes compatibility checkout is a valid Git checkout.
-It follows upstream `main` and keeps the exact Sompi callback patch.
-Hermes reports that it is current at `d604141d097eec4a49493ad1eaceb9b2ca1e496d`.
+The results below record earlier phase and release gates.
+They do not claim `0.13.2` publication, deployment, or GitHub verification.
 
-## Verification
-
-The complete release verifier passed on the release commit and GitHub Node 22 runner.
+The Architecture Phase 1 verifier passed on its release commit and GitHub
+Node 22 runner.
 The Architecture Phase 1 tree produced these local results:
 
 - 559 unit tests ran.
@@ -369,7 +382,8 @@ The complete release verifier also passed local E2E, Hermes, OpenAPI, Arazzo,
 clean-install, licence, audit, and consumer checks.
 The clean-host candidate test used the SHA-256-pinned scriptless installer and reached the privileged boundary.
 
-The registry package is byte-identical to the verified local artifact.
+The `@elldeeone/sompi@0.12.0` registry package is byte-identical to its
+verified local artifact.
 
 The Architecture Phase 2 tree produced these local results:
 

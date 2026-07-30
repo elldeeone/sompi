@@ -120,12 +120,16 @@ class ProofHostCommandRunner {
     this.failCompatibilityCheck = options.failCompatibilityCheck ?? false;
     this.effectiveDropInUnit = options.effectiveDropInUnit;
     this.effectiveFragmentUnit = options.effectiveFragmentUnit;
+    this.hermesPluginListOutput = options.hermesPluginListOutput;
+    this.hermesPluginStatusOverride = options.hermesPluginStatusOverride;
     this.hermesActive = options.hermesInitiallyActive ?? true;
     this.commands = [];
     this.activeServices = new Set();
     this.socketProcesses = new Map();
     this.fixturePrincipals = new Map();
     this.hermesSettings = new Map();
+    this.hermesEnabledPlugins = new Set();
+    this.hermesDisabledPlugins = new Set();
     this.hermesLoadedEnvironment = new Map();
     this.hermesEffectiveEnvironment = new Map();
     this.callbackServerPrincipal = undefined;
@@ -299,13 +303,37 @@ class ProofHostCommandRunner {
         hermesArgs[1] === "enable" &&
         hermesArgs[2] === "sompi-approval"
       ) {
-        this.hermesSettings.set("plugins.entries.sompi-approval.enabled", "true");
+        this.hermesEnabledPlugins.add("sompi-approval");
+        this.hermesDisabledPlugins.delete("sompi-approval");
         this.hermesSettings.set(
           "plugins.entries.sompi-approval.allow_tool_override",
           "false",
         );
         this.writeHermesConfig();
         return "";
+      }
+      if (
+        hermesArgs[0] === "plugins" &&
+        hermesArgs[1] === "list" &&
+        hermesArgs.includes("--user") &&
+        hermesArgs.includes("--json")
+      ) {
+        if (this.hermesPluginListOutput !== undefined) {
+          return this.hermesPluginListOutput;
+        }
+        const status = this.hermesPluginStatusOverride ??
+          (this.hermesDisabledPlugins.has("sompi-approval")
+            ? "disabled"
+            : this.hermesEnabledPlugins.has("sompi-approval")
+              ? "enabled"
+              : "not enabled");
+        return `${JSON.stringify([{
+          name: "sompi-approval",
+          status,
+          version: "1.0.0",
+          description: "Sompi approval bridge",
+          source: "user",
+        }])}\n`;
       }
     }
     if (
@@ -351,20 +379,24 @@ class ProofHostCommandRunner {
     const timeout = this.hermesSettings.get(
       "plugins.entries.sompi-approval.timeout_ms",
     ) ?? "";
-    const enabled = this.hermesSettings.get(
-      "plugins.entries.sompi-approval.enabled",
-    ) ?? "false";
     const allowOverride = this.hermesSettings.get(
       "plugins.entries.sompi-approval.allow_tool_override",
     ) ?? "false";
+    const enabled = [...this.hermesEnabledPlugins].sort();
+    const disabled = [...this.hermesDisabledPlugins].sort();
     fs.writeFileSync(filename, [
       "proof_sentinel: configured-by-host-bootstrap",
       "plugins:",
+      ...(enabled.length === 0
+        ? ["  enabled: []"]
+        : ["  enabled:", ...enabled.map((name) => `    - ${name}`)]),
+      ...(disabled.length === 0
+        ? ["  disabled: []"]
+        : ["  disabled:", ...disabled.map((name) => `    - ${name}`)]),
       "  entries:",
       "    sompi-approval:",
       `      callback_socket: ${callback}`,
       `      timeout_ms: ${timeout}`,
-      `      enabled: ${enabled}`,
       `      allow_tool_override: ${allowOverride}`,
       "",
     ].join("\n"), { mode: 0o600 });
@@ -597,6 +629,32 @@ try {
   preConfigurationRunner.stopAll();
 }
 
+for (const { error, ...pluginFailure } of [
+  { hermesPluginStatusOverride: "disabled", error: /installed Hermes configuration changed/ },
+  { hermesPluginStatusOverride: "not enabled", error: /installed Hermes configuration changed/ },
+  { hermesPluginListOutput: "not-json\n", error: /Hermes plugin status is invalid/ },
+]) {
+  const pluginFailureRunner = new ProofHostCommandRunner({
+    hermesInitiallyActive: false,
+    ...pluginFailure,
+  });
+  await assert.rejects(
+    installHostBootstrap(REQUEST, REQUEST_DIGEST, {
+      packageRoot: PACKAGE_ROOT,
+      runningPackageVersion: PACKAGE_VERSION,
+      requestFilename: REQUEST_FILE,
+      commandRunner: pluginFailureRunner,
+    }),
+    error,
+  );
+  try {
+    assert.equal(pluginFailureRunner.hermesActive, false);
+    verifyRollback();
+  } finally {
+    pluginFailureRunner.stopAll();
+  }
+}
+
 for (const failedWrite of [
   path.join(HOST_BOOTSTRAP_PATHS.apiRuntime, "wallet-key"),
   path.join(HOST_BOOTSTRAP_PATHS.authorityPrivate, "telegram-bot-token"),
@@ -795,6 +853,7 @@ const report = {
     dualAgentCredentialsHaveIdenticalBytes: true,
     uidPrivateAgentCredentialHandoff: true,
     hermesEffectiveEnvironmentVerified: true,
+    invalidHermesPluginStatesRejected: true,
     hermesPythonBytecodeWritesDisabled: true,
     positiveAndNegativeSecretAccess: true,
     brokenCleanTargetSymlinkRejectedAndPreserved: true,
@@ -1176,7 +1235,11 @@ function verifySuccess(receipt, runner) {
     /callback_socket: \/run\/sompi-telegram-callback\/telegram-callback\.sock/,
   );
   assert.match(hermesConfig, /timeout_ms: 2000/);
-  assert.match(hermesConfig, /enabled: true/);
+  assert.match(hermesConfig, /enabled:\n    - sompi-approval/);
+  assert.doesNotMatch(
+    hermesConfig,
+    /sompi-approval:\n(?:      .*\n)*      enabled:/,
+  );
   assert.match(hermesConfig, /allow_tool_override: false/);
 
   verifyProjectedAccess();

@@ -5,7 +5,7 @@ license: MIT
 compatibility: Requires a clean Linux systemd host, Node.js 22 or later, npm, curl, sha256sum, Git, sudo, internet access, and a working Hermes gateway.
 metadata:
   author: Sompi contributors
-  version: "0.13.1"
+  version: "0.13.2"
 ---
 
 # Sompi skill
@@ -55,23 +55,23 @@ Use this procedure when the user asks to install Sompi.
 ```sh
 install -d -m 700 ~/.sompi
 curl --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --location --max-time 30 \
-  https://raw.githubusercontent.com/elldeeone/sompi/v0.13.1/host-bootstrap.example.json \
+  https://raw.githubusercontent.com/elldeeone/sompi/v0.13.2/host-bootstrap.example.json \
   -o ~/.sompi/bootstrap-request.json
 curl --proto '=https' --proto-redir '=https' --tlsv1.2 --fail --location --max-time 30 \
-  https://raw.githubusercontent.com/elldeeone/sompi/v0.13.1/scripts/install-runtime-package.mjs \
-  -o ~/.sompi/install-runtime-package-v0.13.1.mjs
+  https://raw.githubusercontent.com/elldeeone/sompi/v0.13.2/scripts/install-runtime-package.mjs \
+  -o ~/.sompi/install-runtime-package-v0.13.2.mjs
 chmod 0600 \
   ~/.sompi/bootstrap-request.json \
-  ~/.sompi/install-runtime-package-v0.13.1.mjs
+  ~/.sompi/install-runtime-package-v0.13.2.mjs
 printf '%s  %s\n' \
   d9f639c5dcf0fcb76e0ccdac96d284740e9a79cb04530ccff3bc5ba10ccc999c \
-  ~/.sompi/install-runtime-package-v0.13.1.mjs |
+  ~/.sompi/install-runtime-package-v0.13.2.mjs |
   sha256sum --check --strict -
 ```
 
 Stop if the checksum fails.
 
-3. Keep `packageVersion` set to `0.13.1`.
+3. Keep `packageVersion` set to `0.13.2`.
 4. Set only these non-secret values:
 
    - the Hermes OS user
@@ -88,10 +88,10 @@ Stop if the checksum fails.
 5. Install the exact preview runtime without package lifecycle scripts.
 
 ```sh
-node ~/.sompi/install-runtime-package-v0.13.1.mjs \
-  --prefix ~/.sompi/preview-runtime-v0.13.1 \
-  --package @elldeeone/sompi@0.13.1 \
-  --expected-version 0.13.1 \
+node ~/.sompi/install-runtime-package-v0.13.2.mjs \
+  --prefix ~/.sompi/preview-runtime-v0.13.2 \
+  --package @elldeeone/sompi@0.13.2 \
+  --expected-version 0.13.2 \
   --omit-dev
 ```
 
@@ -101,7 +101,7 @@ It then verifies and runs only the required `better-sqlite3@12.11.1` install scr
 6. Preview the request.
 
 ```sh
-~/.sompi/preview-runtime-v0.13.1/node_modules/.bin/sompi-operator \
+~/.sompi/preview-runtime-v0.13.2/node_modules/.bin/sompi-operator \
   bootstrap-preview ~/.sompi/bootstrap-request.json
 ```
 

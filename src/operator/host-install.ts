@@ -2265,7 +2265,6 @@ function assertInstalledHermesTopology(
   const settings = new Map([
     ["plugins.entries.sompi-approval.callback_socket", topology.hermes.callback],
     ["plugins.entries.sompi-approval.timeout_ms", "2000"],
-    ["plugins.entries.sompi-approval.enabled", "true"],
     ["plugins.entries.sompi-approval.allow_tool_override", "false"],
   ]);
   for (const [key, expected] of settings) {
@@ -2281,7 +2280,62 @@ function assertInstalledHermesTopology(
       throw new HostBootstrapError("installed Hermes configuration changed");
     }
   }
+  assertHermesPluginEnabled(request.agent.user, ids, pythonPath, runner);
   assertHermesEffectiveEnvironment(request.agent.user, ids, pythonPath, runner);
+}
+
+function assertHermesPluginEnabled(
+  agentUser: string,
+  ids: PrincipalIds,
+  pythonPath: string,
+  runner: HostCommandRunner,
+): void {
+  const python = path.join(
+    ids.agentHome,
+    ".hermes",
+    "hermes-agent",
+    "venv",
+    "bin",
+    "python",
+  );
+  const output = runAsUserWithOutput(
+    agentUser,
+    "env",
+    [
+      "PYTHONDONTWRITEBYTECODE=1",
+      `PYTHONPATH=${pythonPath}`,
+      python,
+      "-m",
+      "hermes_cli.main",
+      "plugins",
+      "list",
+      "--user",
+      "--json",
+    ],
+    runner,
+  );
+  let value: unknown;
+  try {
+    value = JSON.parse(output);
+  } catch (cause) {
+    throw new HostBootstrapError("Hermes plugin status is invalid", { cause });
+  }
+  if (!Array.isArray(value) || value.length > 10_000) {
+    throw new HostBootstrapError("Hermes plugin status is invalid");
+  }
+  const matches = value.filter((entry) =>
+    entry !== null &&
+    typeof entry === "object" &&
+    !Array.isArray(entry) &&
+    (entry as { name?: unknown }).name === "sompi-approval"
+  );
+  if (
+    matches.length !== 1 ||
+    (matches[0] as { status?: unknown }).status !== "enabled" ||
+    (matches[0] as { source?: unknown }).source !== "user"
+  ) {
+    throw new HostBootstrapError("installed Hermes configuration changed");
+  }
 }
 
 function assertHermesEffectiveEnvironment(
