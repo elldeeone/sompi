@@ -306,6 +306,22 @@ If capacity changes after the quote, staging returns the stable
 `treasury_capacity_changed` failure. It creates no effect fence and removes
 the unused staging key.
 
+The exact live underfunded shape is a regression fixture. It uses a
+`57028640`-sompi covenant UTXO, a `20000000`-sompi Merchant price, and the
+`15000000`-sompi additional-cost ceiling. The quote fails closed and creates
+no staging key or submission.
+
+The complete `0.13.4` source-candidate verifier ran 643 tests. Of these tests,
+642 passed. One privileged ownership test was skipped as expected. Offline
+smoke, three Hermes tests, all five Kaspa-x402 conformance checks, retained
+evidence, local E2E, OpenAPI, Arazzo, package, clean-install, licence,
+onboarding-preview, dependency-audit, and source-tree checks passed.
+
+The correction does not change the Journal schema, public API, AP2 behavior,
+Kaspa-x402 pin or wire behavior, mainnet boundary, or a sibling repository.
+It strengthens the existing Treasury staging seam and does not change an
+accepted design decision. A new ADR is not necessary.
+
 The clean-host Hermes onboarding controls from `0.12.2` remain in force.
 The skill, request template, scriptless installer, preview, and privileged
 command use the same version. The installer disables package lifecycle scripts
