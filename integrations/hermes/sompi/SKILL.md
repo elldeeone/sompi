@@ -1,6 +1,6 @@
 ---
 name: sompi
-description: Install and configure Sompi with Hermes, inspect its wallet, send approved Testnet-10 KAS, and buy paid HTTP resources. Use when the user asks to install, set up, configure, or use Sompi.
+description: Install and configure Sompi with Hermes, inspect its wallet, send approved Testnet-10 KAS, and buy paid HTTP resources. Use when the user asks how much KAS or tKAS the agent has, or asks to install, set up, configure, or use Sompi.
 license: MIT
 compatibility: Requires a clean Linux systemd host, Node.js 22 or later, npm, curl, sha256sum, Git, sudo, internet access, and a working Hermes gateway.
 metadata:
@@ -163,6 +163,11 @@ Lead with the returned tKAS or KAS display fields.
 
 Report total, available, incoming, pending, receive address, and securing status as needed.
 Do not expose the vault address by default.
+
+The wallet response covers only the active Sompi identity.
+Do not call an older balance stale or lost.
+An older balance can belong to a retired epoch and can need an operator recovery.
+Do not include it in the active available balance without current operator evidence.
 
 Use `wallet-technical` only when the user explicitly requests technical wallet facts.
 

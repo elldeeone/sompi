@@ -104,6 +104,9 @@ test("Hermes onboarding uses a short prompt and the tested scriptless installer"
   assert.ok(runbook.includes(installerSha256));
   assert.ok(hostBootstrapSource.includes(installerSha256));
   for (const required of [
+    "Use when the user asks how much KAS or tKAS the agent has",
+    "The wallet response covers only the active Sompi identity.",
+    "Do not call an older balance stale or lost.",
     "Require a clean Linux host with all these items:",
     "Give the user the exact manual command or action that is required.",
     "Download the pinned non-secret request template and scriptless installer.",

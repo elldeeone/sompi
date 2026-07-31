@@ -2,6 +2,28 @@
 
 Last updated: **2026-07-31**
 
+## Hermes balance routing repair
+
+The live Hermes balance path is repaired.
+
+- The canonical Sompi skill is the only active skill that owns Sompi wallet
+  balance questions.
+- The Hermes command uses the stable checkout venv. It does not use a removed
+  Sompi compatibility path.
+- The Sompi gateway drop-in puts the stable Hermes venv first in `PATH`.
+  A later Sompi version change cannot write a version-specific Hermes launcher.
+- A live question returned `0.8333003 tKAS` from the active epoch-20 identity.
+  A follow-up question correctly identified older funds as retired epoch-19
+  funds that can need owner recovery.
+
+The epoch-19 archive passed its checksum set. Public chain evidence still
+shows `9,992.2138806 tKAS` in its retired vault and `0.1 tKAS` at its retired
+receive address. These funds are not part of the active available balance.
+No owner key was read. No recovery transaction was created or broadcast.
+
+The public repair evidence is in
+`evidence/hermes-balance-routing-20260731/`.
+
 ## Architecture programme
 
 Architecture Phase 1 is complete. It started from

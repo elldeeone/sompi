@@ -1919,7 +1919,26 @@ function installHermesServiceDropIn(
 }
 
 function renderHermesServiceDropIn(ids: PrincipalIds, pythonPath: string): string {
-  return `[Service]\nEnvironment="PYTHONDONTWRITEBYTECODE=1"\nEnvironment="PYTHONPATH=${pythonPath}"\nEnvironment="SOMPI_API_SOCKET=${API_SOCKET}"\nEnvironment="SOMPI_AGENT_API_CREDENTIAL=${agentCredentialPath(ids)}"\nEnvironment="SOMPI_OPERATOR_UID=0"\nEnvironment="SOMPI_API_UID=${ids.apiUid}"\nEnvironment="SOMPI_RUNTIME_GID=${ids.agentGid}"\nEnvironment="SOMPI_API_SOCKET_GID=${ids.agentSocketGid}"\n`;
+  const stableVenvBin = path.join(
+    ids.agentHome,
+    ".hermes",
+    "hermes-agent",
+    "venv",
+    "bin",
+  );
+  const executablePath = [
+    stableVenvBin,
+    path.join(ids.agentHome, ".hermes", "node", "bin"),
+    path.join(ids.agentHome, ".local", "bin"),
+    path.join(ids.agentHome, ".cargo", "bin"),
+    "/usr/local/sbin",
+    "/usr/local/bin",
+    "/usr/sbin",
+    "/usr/bin",
+    "/sbin",
+    "/bin",
+  ].join(":");
+  return `[Service]\nEnvironment="PYTHONDONTWRITEBYTECODE=1"\nEnvironment="PYTHONPATH=${pythonPath}"\nEnvironment="PATH=${executablePath}"\nEnvironment="SOMPI_API_SOCKET=${API_SOCKET}"\nEnvironment="SOMPI_AGENT_API_CREDENTIAL=${agentCredentialPath(ids)}"\nEnvironment="SOMPI_OPERATOR_UID=0"\nEnvironment="SOMPI_API_UID=${ids.apiUid}"\nEnvironment="SOMPI_RUNTIME_GID=${ids.agentGid}"\nEnvironment="SOMPI_API_SOCKET_GID=${ids.agentSocketGid}"\n`;
 }
 
 function configureHermes(

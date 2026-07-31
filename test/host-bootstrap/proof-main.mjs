@@ -1156,6 +1156,13 @@ function verifySuccess(receipt, runner) {
     "hermes-compat",
     PACKAGE_VERSION,
   );
+  const stableHermesVenvBin = path.join(
+    AGENT_HOME,
+    ".hermes",
+    "hermes-agent",
+    "venv",
+    "bin",
+  );
   assert.equal(fs.existsSync(path.join(compatibilityRoot, ".git")), true);
   assert.equal(
     runAgentGit(runner, compatibilityRoot, ["branch", "--show-current"]).trim(),
@@ -1195,6 +1202,9 @@ function verifySuccess(receipt, runner) {
   assert.match(dropIn, new RegExp(
     `PYTHONPATH=${escapeRegularExpression(compatibilityRoot)}`,
   ));
+  assert.match(dropIn, new RegExp(
+    `PATH=${escapeRegularExpression(stableHermesVenvBin)}:`,
+  ));
   assert.match(dropIn, /SOMPI_API_SOCKET=\/run\/sompi-api\/sompi\.sock/);
   assert.match(
     dropIn,
@@ -1207,6 +1217,18 @@ function verifySuccess(receipt, runner) {
     {
       PYTHONDONTWRITEBYTECODE: "1",
       PYTHONPATH: compatibilityRoot,
+      PATH: [
+        stableHermesVenvBin,
+        path.join(AGENT_HOME, ".hermes", "node", "bin"),
+        path.join(AGENT_HOME, ".local", "bin"),
+        path.join(AGENT_HOME, ".cargo", "bin"),
+        "/usr/local/sbin",
+        "/usr/local/bin",
+        "/usr/sbin",
+        "/usr/bin",
+        "/sbin",
+        "/bin",
+      ].join(":"),
       SOMPI_API_SOCKET: HOST_BOOTSTRAP_PATHS.agentApiSocket,
       SOMPI_AGENT_API_CREDENTIAL: agentCredential,
       SOMPI_OPERATOR_UID: "0",
