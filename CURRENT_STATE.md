@@ -1,6 +1,6 @@
 # Current state
 
-Last updated: **2026-07-30**
+Last updated: **2026-07-31**
 
 ## Architecture programme
 
@@ -355,25 +355,49 @@ the epoch-20 identity. The Authority, API, and Hermes services now use
 `0.13.3`. The first live Purchase failed closed before a staging effect because
 the vault could not fund the exact staging transaction and its covenant fee.
 
-Version `0.13.4` is the source candidate for that readiness correction.
-It is not yet published or deployed.
+Version `0.13.4` was tagged, published, installed, and activated on Terah.
+The original `0.13.2` bootstrap receipt remains the immutable provenance for
+the epoch-20 identity. The release retained the same state and authority
+identity. It did not run Host Bootstrap or create a replacement Journal.
+
+The separate Testnet-10 funder sent `50000000` sompi to the stable receive
+address. Funding Intake secured the available receive-address funds in the
+vault. A Telegram-approved `20000000`-sompi Purchase then reached `receipted`.
+The exact payment reached accepted finality and the paid resource response
+passed fulfilment verification.
 
 ## Last verified deployment
 
-Sompi `0.13.3` is active on Terah with Journal epoch 20.
+Sompi `0.13.4` is active on Terah with Journal epoch 20.
 The Authority, API, Hermes Gateway, runtime commands, and package installation
 use the same exact release. The epoch-20 vault activation reached accepted
+Testnet-10 Chain Evidence. The `0.13.4` paid canary also reached accepted
 Testnet-10 Chain Evidence.
 
 | Item | Value |
 |---|---|
-| Source commit | `6537dcd974423ecf45dbf24b46b889cd5f1e97e4` |
-| Tag | `v0.13.3` |
-| Tag object | `3fedf681cf430f33daa8b9c2bc821ce98421d843` |
-| npm package | `@elldeeone/sompi@0.13.3` |
-| Registry SHA-1 | `e15b8747fcc75789647d47d2c05a0a3a23d79c7a` |
+| Source commit | `cf7b45d15ec51ddabde3d1c5f5d3020eec4fba24` |
+| Tag | `v0.13.4` |
+| Tag object | `391461c934bbb4ea31da24b7e8a7ba7d95ff1c47` |
+| npm package | `@elldeeone/sompi@0.13.4` |
+| Registry SHA-1 | `c7c27f24556630d38d82ff4e7a284a1de4c4df07` |
+| GitHub CI | `30592481061` passed |
 | Journal epoch | `20` |
 | Network | `kaspa:testnet-10` |
+
+The final live canary has these public identities:
+
+| Item | Value |
+|---|---|
+| Funding transaction | `377d9e146b8426684504a07e45427279ecb29dde8eed855489298aab7a7ac27d` |
+| Funding Intake transaction | `cc6548d26f4a941c04ebc3b0ed6069871d621b0a84bda65331f8cc54750012f0` |
+| Purchase | `pur_SCVoKgqKifvFDCis-1qnwA` |
+| Payment transaction | `a01c024e123bb7c105f65077e7ff4ae460430d245690f7812c4c26ee043b7035` |
+| Payment finality | `accepted` |
+| Purchase state | `receipted` |
+
+The public release evidence is in
+[`evidence/release-0.13.4/`](evidence/release-0.13.4/README.md).
 
 ## Protocol boundary
 
@@ -400,7 +424,7 @@ recovery.
 
 The `0.13.0` and `0.13.1` attempts stopped before funding and activation.
 Their incomplete privileged state and Hermes projections were removed.
-The active `0.13.3` runtime uses the epoch-20 identity.
+The active `0.13.4` runtime uses the epoch-20 identity.
 The Hermes Gateway is active.
 The primary Hermes checkout remains at
 `2d404942471633d5338a8ff514ea7da24549274f`.
@@ -408,7 +432,7 @@ The primary Hermes checkout remains at
 ## Historical verification
 
 The results below record earlier phase and release gates.
-They do not claim `0.13.4` publication, deployment, or GitHub verification.
+The current release and deployment section records the final `0.13.4` result.
 
 The Architecture Phase 1 verifier passed on its release commit and GitHub
 Node 22 runner.

@@ -1,0 +1,93 @@
+{
+  "profile": "urn:sompi:evidence:release-deployment:1",
+  "generatedAt": "2026-07-31T02:53:29Z",
+  "release": {
+    "name": "@elldeeone/sompi",
+    "version": "0.13.4",
+    "sourceCommit": "cf7b45d15ec51ddabde3d1c5f5d3020eec4fba24",
+    "tag": "v0.13.4",
+    "tagObject": "391461c934bbb4ea31da24b7e8a7ba7d95ff1c47"
+  },
+  "registry": {
+    "distTag": "latest",
+    "tarball": "https://registry.npmjs.org/@elldeeone/sompi/-/sompi-0.13.4.tgz",
+    "sha1": "c7c27f24556630d38d82ff4e7a284a1de4c4df07",
+    "integrity": "sha512-Iuq4vys5LmKylWJCLOc5QrRxIC4jJJC//b4sfZGjFILcrN7pCyJCR3+hcm+tygTE7wKGI/g2JJkhp1jT3zWBSQ==",
+    "entries": 234,
+    "packedBytes": 5169118,
+    "byteIdenticalToVerifiedReleaseArtifact": true
+  },
+  "verification": {
+    "unitTests": 643,
+    "passed": 642,
+    "expectedPrivilegedSkip": 1,
+    "protocolConformanceChecks": 5,
+    "completeReleaseVerifier": "pass",
+    "githubNode22Run": "https://github.com/elldeeone/sompi/actions/runs/30592481061",
+    "githubNode22Conclusion": "success"
+  },
+  "deployment": {
+    "host": "terah",
+    "journalEpoch": 20,
+    "existingRuntimeIdentityPreserved": true,
+    "hostBootstrapRun": false,
+    "allActiveCommandsTargetVersion": "0.13.4",
+    "preCutoverStateSnapshotCreated": true,
+    "hermes": {
+      "primaryCheckoutCommit": "2d404942471633d5338a8ff514ea7da24549274f",
+      "compatibilityPatchSha256": "3baeaa27420366d9018b70245cf0ca895d9aac25c997647fbe489dbfd3617c83",
+      "callbackTestsPassed": 4,
+      "pluginSha256": "1bcf44b5d151ccf61de94f18c4f4fc17909346cd5969338a07352af749cefbbf",
+      "skillSha256": "652e887d43ea49c811551eaea7b50faf70f99f1631bc119c82d93d8ae5ff25e1"
+    },
+    "services": {
+      "sompiAuthority": {
+        "active": true,
+        "restartCount": 0
+      },
+      "sompiApi": {
+        "active": true,
+        "restartCount": 0
+      },
+      "hermesGateway": {
+        "active": true,
+        "restartCount": 0
+      }
+    }
+  },
+  "funding": {
+    "transactionId": "377d9e146b8426684504a07e45427279ecb29dde8eed855489298aab7a7ac27d",
+    "amountAtomic": "50000000",
+    "fundingIntakeTransactionId": "cc6548d26f4a941c04ebc3b0ed6069871d621b0a84bda65331f8cc54750012f0",
+    "automaticIntakeReachedIdle": true,
+    "availableAfterIntakeAtomic": "115205280"
+  },
+  "purchase": {
+    "id": "pur_SCVoKgqKifvFDCis-1qnwA",
+    "requestKey": "release-0.13.4-epoch20-canary-20260731",
+    "state": "receipted",
+    "merchantOrigin": "https://demo.kaspa-x402.org",
+    "resource": "https://demo.kaspa-x402.org/exact/report",
+    "amountAtomic": "20000000",
+    "authorizationStatus": "approved",
+    "authorityId": "urn:sompi:authority:luke",
+    "authorizationEvidenceDigest": "sha256:_Cw37Xd1fvtZv-RE7Ngk8C21K3rNj3gjzHmc8dCdmeo",
+    "paymentIdentifier": "pay_NIrK4sFvNtyRE3Go1lEqHN4I2aUDZMY138oBrrNs8lE",
+    "paymentTransactionId": "a01c024e123bb7c105f65077e7ff4ae460430d245690f7812c4c26ee043b7035",
+    "paymentFinality": "accepted",
+    "settlementEvidenceDigest": "sha256:7JKGPIXhoHcrC4RjQQWZDWRRu61QF8_mksG-6ixwwJY",
+    "fulfilmentDigest": "sha256:rxzbswfWSoPKXPXSC44xqkH1qXU-CEyEXHt2ZZnXueQ",
+    "receiptEvidenceDigests": [
+      "sha256:jAeVa2khxlQftDNpiD8d9_inFNSo-k0JeXzNcGqdVYc"
+    ],
+    "paidResponseVerified": true
+  },
+  "walletAfterCanary": {
+    "totalAtomic": "83330030",
+    "availableAtomic": "83330030",
+    "incomingAtomic": "0",
+    "pendingAtomic": "0",
+    "chainStatus": "observed"
+  },
+  "privateMaterialIncluded": false
+}
