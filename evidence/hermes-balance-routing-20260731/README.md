@@ -33,16 +33,30 @@ The Sompi API and active wallet were healthy.
 - A historical-balance question said that older funds can belong to a retired
   epoch. It did not call those funds stale or lost.
 
-## Retired epoch
+## Epoch-19 recovery
 
 The epoch-19 archive passed its complete SHA-256 checksum set.
 The owner recovery record remains a root-owned mode-`0600` file.
 
-Public Testnet-10 evidence showed:
+Before recovery, public Testnet-10 evidence showed:
 
 - `9,992.2138806 tKAS` in the retired vault;
 - `0.1 tKAS` at the retired receive address.
 
-These funds are separate from the active epoch-20 balance.
-No owner key was read.
-No recovery transaction was created or broadcast.
+The user ran the root-only recovery command in a local terminal.
+The recovery transaction moved `9,992.2070639 tKAS` to the active receive
+address after a `0.0068167 tKAS` fee.
+
+Funding Intake then secured `9,992.1945327 tKAS` in the active vault after a
+`0.0125312 tKAS` fee.
+
+Both transactions are accepted.
+The retired vault has no UTXO.
+The active wallet now reports `9,993.027833 tKAS` total and available.
+A new Hermes process returned this exact balance for the original question.
+
+The separate `0.1 tKAS` retired receive UTXO was not moved.
+No owner key entered the agent, repository, or public evidence.
+
+[`recovery.json`](recovery.json) contains the public transaction and balance
+facts.

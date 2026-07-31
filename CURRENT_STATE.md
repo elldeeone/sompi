@@ -16,10 +16,16 @@ The live Hermes balance path is repaired.
   A follow-up question correctly identified older funds as retired epoch-19
   funds that can need owner recovery.
 
-The epoch-19 archive passed its checksum set. Public chain evidence still
-shows `9,992.2138806 tKAS` in its retired vault and `0.1 tKAS` at its retired
-receive address. These funds are not part of the active available balance.
-No owner key was read. No recovery transaction was created or broadcast.
+The epoch-19 archive passed its checksum set. On 2026-07-31, the user ran the
+root-only owner recovery command in a local terminal. The recovery transaction
+was accepted and moved `9,992.2070639 tKAS` into the active receive address
+after a `0.0068167 tKAS` fee.
+
+Funding Intake then secured `9,992.1945327 tKAS` in the active spending-limited
+vault after a `0.0125312 tKAS` fee. The active epoch-20 wallet now reports
+`9,993.027833 tKAS` total and available. The retired vault has no UTXO.
+The retired receive address still has a separate `0.1 tKAS` UTXO.
+No owner key entered the agent, repository, or public evidence.
 
 The public repair evidence is in
 `evidence/hermes-balance-routing-20260731/`.

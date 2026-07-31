@@ -1,0 +1,45 @@
+{
+  "profile": "urn:sompi:evidence:epoch19-owner-recovery:1",
+  "generatedAt": "2026-07-31T03:52:36.504Z",
+  "network": "kaspa:testnet-10",
+  "source": {
+    "vaultAddress": "kaspatest:pq0mm062te00njldmh9r2tt0w88aw99c3kmct6c9j6dc30gyd5g2zuhuvdz4n",
+    "outpoint": {
+      "transactionId": "666118b7d82aedae274cc0b2d16cad440cb9968e31744a0c2eae75cffd145b58",
+      "index": 1
+    },
+    "amountAtomic": "999221388060",
+    "utxoAfter": "absent"
+  },
+  "ownerRecovery": {
+    "transactionId": "09a4161605bad4e90d878cacc4626f7b09eaf13cedb5560f756f3236f1e77adf",
+    "destination": "kaspatest:qr4keyh0lazzvjku5r9wwapraqsrynmcwfec5mp43m7u2hj0dxhvyqexspvwa",
+    "recoveredAtomic": "999220706390",
+    "feeAtomic": "681670",
+    "accepted": true,
+    "acceptingBlockBlueScore": "520184131"
+  },
+  "fundingIntake": {
+    "operationId": "funding-intake:GvOpkA4t4RNnxc3nsqhZ01m5IyMAgqvgKN7piygHk6c",
+    "transactionId": "3f90511c50d6e78824e24d5001d44ec7a5132f84381f11c60434ce24d9161034",
+    "securedAtomic": "999219453270",
+    "feeAtomic": "1253120",
+    "accepted": true,
+    "acceptingBlockBlueScore": "520184166"
+  },
+  "activeWallet": {
+    "totalAtomic": "999302783300",
+    "availableAtomic": "999302783300",
+    "display": "9993.027833 tKAS",
+    "incomingAtomic": "0",
+    "pendingAtomic": "0"
+  },
+  "retiredReceive": {
+    "amountAtomic": "10000000",
+    "status": "retained-separately"
+  },
+  "witnessSnapshot": {
+    "virtualBlueScore": "520185032"
+  },
+  "privateMaterialIncluded": false
+}
