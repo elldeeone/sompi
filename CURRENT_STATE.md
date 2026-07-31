@@ -396,8 +396,9 @@ The final live canary has these public identities:
 | Payment finality | `accepted` |
 | Purchase state | `receipted` |
 
-The public release evidence is in
-[`evidence/release-0.13.4/`](evidence/release-0.13.4/README.md).
+The
+[public `0.13.4` release evidence](https://github.com/elldeeone/sompi/blob/c2a1db5c59d962c960bb1403fa3f1c54e22a9f85/evidence/release-0.13.4/README.md)
+records the deployment and paid canary.
 
 ## Protocol boundary
 
