@@ -623,6 +623,7 @@ function composeCoordinator(input: {
       additionalCostCeilingAtomic: ADDITIONAL_COST_CEILING_ATOMIC,
       reservationTtlMs: 120_000,
       staging: treasuryStaging,
+      stagingCapacity: staging,
       stagingRecovery,
       now: input.clock,
     },

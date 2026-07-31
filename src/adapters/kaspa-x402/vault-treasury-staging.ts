@@ -11,18 +11,23 @@ import { assertPurchaseId, evidenceDigest } from "../../purchase/identity.js";
 import type {
   VerifiedArtifact,
 } from "../../purchase/coordinator.js";
-import type {
-  PreparedTreasuryStaging,
-  TreasuryStagingAdapterContext,
-  TreasuryStagingRecoveryObservation,
-  TreasuryStagingResult,
-  TreasuryStagingSubmissionResult,
+import {
+  TreasuryStagingCapacityError,
+  type PreparedTreasuryStaging,
+  type TreasuryStagingCapacityAdapter,
+  type TreasuryStagingCapacityInput,
+  type TreasuryStagingCapacityQuote,
+  type TreasuryStagingAdapterContext,
+  type TreasuryStagingRecoveryObservation,
+  type TreasuryStagingResult,
+  type TreasuryStagingSubmissionResult,
 } from "../../treasury/purchase-staging.js";
 import type { PurchaseId, Sha256Digest } from "../../purchase/types.js";
-import type {
-  ObservedVaultSpend,
-  PreparedVaultSpend,
-  VaultManager,
+import {
+  VaultPreparationError,
+  type ObservedVaultSpend,
+  type PreparedVaultSpend,
+  type VaultManager,
 } from "../../vault.js";
 import type { KaspaWallet } from "../../wallet.js";
 import type {
@@ -212,7 +217,9 @@ export class VaultTreasuryStagingError extends Error {
 }
 
 /** Concrete durable Treasury staging adapter for the exact-only profile. */
-export class VaultTreasuryStaging implements TreasuryStagingDriver {
+export class VaultTreasuryStaging
+  implements TreasuryStagingDriver, TreasuryStagingCapacityAdapter
+{
   private readonly vault: VaultManager;
   private readonly wallet: KaspaWallet;
   private readonly keyStore: StagingKeyStore;
@@ -228,6 +235,46 @@ export class VaultTreasuryStaging implements TreasuryStagingDriver {
     this.wallet = options.wallet;
     this.keyStore = options.keyStore;
     this.chainEvidence = options.chainEvidence;
+  }
+
+  async quoteStagingCapacity(
+    input: Readonly<TreasuryStagingCapacityInput>,
+  ): Promise<TreasuryStagingCapacityQuote> {
+    const price = atomic(input.amountAtomic, "Merchant price", true);
+    const ceiling = atomic(
+      input.additionalCostCeilingAtomic,
+      "additional-cost ceiling",
+    );
+    const exactFee = atomic(
+      SOMPI_EXACT_FEE_POLICY.feeSompi,
+      "pinned exact fee",
+    );
+    if (exactFee > ceiling) {
+      return Object.freeze({
+        ready: false,
+        blockerCode: "vault_fee_exceeds_ceiling",
+      });
+    }
+    try {
+      await this.vault.quoteSend(
+        this.wallet,
+        this.wallet.address,
+        checkedAdd(price, exactFee, "price and bounded exact fee"),
+        ceiling - exactFee,
+      );
+      return Object.freeze({ ready: true });
+    } catch (error) {
+      if (error instanceof VaultPreparationError) {
+        return Object.freeze({
+          ready: false,
+          blockerCode: capacityBlockerCode(error),
+        });
+      }
+      return Object.freeze({
+        ready: false,
+        blockerCode: "vault_unavailable",
+      });
+    }
   }
 
   async prepare(input: Readonly<PrepareInput>): Promise<PreparedTreasuryStaging> {
@@ -248,7 +295,26 @@ export class VaultTreasuryStaging implements TreasuryStagingDriver {
       );
     }
 
-    const prepared = await this.prepareWithinCeiling(key, facts);
+    let prepared: PreparedVaultSpend;
+    try {
+      prepared = await this.prepareWithinCeiling(key, facts);
+    } catch (error) {
+      if (error instanceof VaultPreparationError) {
+        try {
+          this.keyStore.delete(key);
+        } catch (cleanupError) {
+          throw new TreasuryStagingCapacityError(
+            "Kaspa-x402 staging capacity changed and its unused key could not be removed",
+            { cause: cleanupError },
+          );
+        }
+        throw new TreasuryStagingCapacityError(
+          "Kaspa-x402 staging capacity changed before preparation",
+          { cause: error },
+        );
+      }
+      throw error;
+    }
     const envelope = envelopeFromPrepared(facts, key, prepared);
     const preparedBytes = Buffer.from(stableStringify(envelope), "utf8");
     const decoded = decodeVaultTreasuryStagingEnvelope(preparedBytes, {
@@ -448,6 +514,21 @@ export class VaultTreasuryStaging implements TreasuryStagingDriver {
       stagingAmountAtomic: prepared.amountSompi.toString(),
       fundingSource: FUNDING_SOURCE,
     });
+  }
+}
+
+function capacityBlockerCode(
+  error: VaultPreparationError,
+): Exclude<TreasuryStagingCapacityQuote["blockerCode"], undefined> {
+  switch (error.code) {
+    case "insufficient_funds":
+      return "vault_insufficient_funds";
+    case "fee_exceeds_ceiling":
+      return "vault_fee_exceeds_ceiling";
+    case "invalid_runtime_state":
+      return "vault_policy_capacity_unavailable";
+    default:
+      return "vault_unavailable";
   }
 }
 

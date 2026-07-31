@@ -36,11 +36,13 @@ import {
 } from "./purchase-capacity.js";
 import {
   TreasuryStagingPreparationError,
+  TreasuryStagingCapacityError,
   treasuryStagingPreparationLeaseName,
   type ExecutePurchaseStagingInput,
   type PreparePurchaseStagingInput,
   type PreparedTreasuryStaging,
   type TreasuryStagingAdapter,
+  type TreasuryStagingCapacityAdapter,
   type TreasuryStagingAdapterContext,
   type TreasuryStagingExecutionResult,
   type TreasuryStagingOutput,
@@ -93,6 +95,7 @@ export interface TreasuryPurchaseOptions {
   readonly stagingExecutionLeaseTtlMs?: number;
   readonly stagingReconciliationLeaseTtlMs?: number;
   readonly staging: TreasuryStagingAdapter;
+  readonly stagingCapacity: TreasuryStagingCapacityAdapter;
   readonly stagingRecovery: TreasuryStagingRecoveryAdapter;
   readonly now?: () => number;
 }
@@ -150,6 +153,7 @@ export class TreasuryOperationModule implements TreasuryModule {
     readonly stagingExecutionLeaseTtlMs: number;
     readonly stagingReconciliationLeaseTtlMs: number;
     readonly staging: TreasuryPurchaseOptions["staging"];
+    readonly stagingCapacity: TreasuryStagingCapacityAdapter;
     readonly stagingRecovery: TreasuryStagingRecoveryAdapter;
     readonly now: () => number;
   };
@@ -192,6 +196,10 @@ export class TreasuryOperationModule implements TreasuryModule {
       requireMethod(purchase.staging?.prepareStaging, "staging preparation");
       requireMethod(purchase.staging?.submitStaging, "staging submission");
       requireMethod(purchase.staging?.observeStaging, "staging observation");
+      requireMethod(
+        purchase.stagingCapacity?.quoteStagingCapacity,
+        "staging capacity quote",
+      );
       requireMethod(purchase.stagingRecovery?.prepare, "staging recovery preparation");
       requireMethod(purchase.stagingRecovery?.observe, "staging recovery observation");
       requireMethod(purchase.stagingRecovery?.submit, "staging recovery submission");
@@ -226,6 +234,7 @@ export class TreasuryOperationModule implements TreasuryModule {
         stagingExecutionLeaseTtlMs,
         stagingReconciliationLeaseTtlMs,
         staging: purchase.staging,
+        stagingCapacity: purchase.stagingCapacity,
         stagingRecovery: purchase.stagingRecovery,
         now: purchase.now ?? Date.now,
       });
@@ -266,10 +275,24 @@ export class TreasuryOperationModule implements TreasuryModule {
     ) {
       return this.quoteResult(false, "vault_unavailable");
     }
-    return this.quoteResult(
-      Boolean(configured.covenantId),
-      configured.covenantId ? undefined : "vault_not_covenant_funded",
-    );
+    if (!configured.covenantId) {
+      return this.quoteResult(false, "vault_not_covenant_funded");
+    }
+    try {
+      const capacity = await purchase.stagingCapacity.quoteStagingCapacity({
+        amountAtomic: input.terms.amountAtomic,
+        additionalCostCeilingAtomic: purchase.additionalCostCeilingAtomic,
+      });
+      if (!capacity.ready) {
+        return this.quoteResult(
+          false,
+          capacity.blockerCode ?? "vault_unavailable",
+        );
+      }
+    } catch {
+      return this.quoteResult(false, "vault_unavailable");
+    }
+    return this.quoteResult(true);
   }
 
   async reservePurchaseCapacity(
@@ -428,12 +451,24 @@ export class TreasuryOperationModule implements TreasuryModule {
         );
       }
 
-      const prepared = await purchase.staging.prepareStaging({
-        execution: context.execution,
-        request: context.request,
-        paymentRequirements: Uint8Array.from(context.paymentRequirements),
-        additionalCostCeilingAtomic: reservation.additionalCostCeilingAtomic,
-      });
+      let prepared: PreparedTreasuryStaging;
+      try {
+        prepared = await purchase.staging.prepareStaging({
+          execution: context.execution,
+          request: context.request,
+          paymentRequirements: Uint8Array.from(context.paymentRequirements),
+          additionalCostCeilingAtomic: reservation.additionalCostCeilingAtomic,
+        });
+      } catch (error) {
+        if (error instanceof TreasuryStagingCapacityError) {
+          throw new TreasuryStagingPreparationError(
+            "Treasury capacity changed before staging preparation",
+            "treasury_capacity_changed",
+            { cause: error },
+          );
+        }
+        throw error;
+      }
       if (leaseLifecycle.leaseLost) {
         throw new TreasuryStagingPreparationError(
           "Treasury staging preparation lost its exclusive lease",

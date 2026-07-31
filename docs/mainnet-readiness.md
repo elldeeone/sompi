@@ -1,6 +1,6 @@
 # Mainnet is not supported
 
-Status: explicit `0.13.3` release boundary.
+Status: explicit `0.13.4` release boundary.
 
 Sompi supports only Kaspa Testnet-10.
 It rejects each other network before it opens the Journal or creates signing material.

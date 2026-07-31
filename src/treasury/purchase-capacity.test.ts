@@ -15,7 +15,7 @@ import { TreasuryOperationModule } from "./operations.js";
 const NOW = 1_900_000_000_000;
 
 test("Treasury returns the exact Purchase quote and fails readiness closed", async () => {
-  await withTreasury(async ({ module, vault }) => {
+  await withTreasury(async ({ module, vault, stagingCapacity }) => {
     assert.deepEqual(
       await module.quote({
         purchaseId: "pur_test" as never,
@@ -52,6 +52,27 @@ test("Treasury returns the exact Purchase quote and fails readiness closed", asy
         terms: { asset: "BTC", network: "other" } as never,
       })).blockerCode,
       "unsupported_asset_or_network",
+    );
+
+    vault.configured = true;
+    stagingCapacity.ready = false;
+    stagingCapacity.blockerCode = "vault_insufficient_funds";
+    assert.deepEqual(
+      await module.quote({
+        purchaseId: "pur_test" as never,
+        fundingMode: "staged-payment",
+        terms: {
+          amountAtomic: "20000000",
+          asset: "KAS",
+          network: "kaspa:testnet-10",
+        } as never,
+      }),
+      {
+        additionalCostCeilingAtomic: "15000000",
+        reservationTtlMs: 120000,
+        ready: false,
+        blockerCode: "vault_insufficient_funds",
+      },
     );
   });
 });
@@ -111,6 +132,7 @@ async function withTreasury(
   run: (fixture: {
     module: TreasuryOperationModule;
     vault: MutableVault;
+    stagingCapacity: MutableStagingCapacity;
   }) => Promise<void>,
 ): Promise<void> {
   const directory = fs.mkdtempSync(
@@ -121,6 +143,7 @@ async function withTreasury(
     now: () => NOW,
   });
   const vault = new MutableVault();
+  const stagingCapacity = new MutableStagingCapacity();
   const module = new TreasuryOperationModule({
     journal,
     policy: new PolicyEngine({
@@ -134,15 +157,35 @@ async function withTreasury(
       vault,
       additionalCostCeilingAtomic: "15000000",
       staging: unavailableStaging(),
+      stagingCapacity,
       stagingRecovery: unavailableStagingRecovery(),
       now: () => NOW,
     },
   });
   try {
-    await run({ module, vault });
+    await run({ module, vault, stagingCapacity });
   } finally {
     journal.close();
     fs.rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+class MutableStagingCapacity {
+  ready = true;
+  blockerCode:
+    | "vault_insufficient_funds"
+    | "vault_fee_exceeds_ceiling"
+    | "vault_policy_capacity_unavailable"
+    | "vault_unavailable"
+    | undefined;
+
+  async quoteStagingCapacity() {
+    return {
+      ready: this.ready,
+      ...(this.blockerCode === undefined
+        ? {}
+        : { blockerCode: this.blockerCode }),
+    };
   }
 }
 

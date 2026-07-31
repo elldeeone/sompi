@@ -1710,6 +1710,11 @@ class FakeDependencies {
         additionalCostCeilingAtomic: this.quoteAdditionalCost,
         reservationTtlMs: 60_000,
         staging: this.payment,
+        stagingCapacity: {
+          async quoteStagingCapacity() {
+            return { ready: true };
+          },
+        },
         stagingRecovery: this.stagingRecovery,
         now,
       },

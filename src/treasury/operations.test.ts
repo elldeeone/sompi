@@ -35,6 +35,7 @@ import {
   type ReservePurchaseCapacityInput,
 } from "./purchase-capacity.js";
 import {
+  TreasuryStagingCapacityError,
   TreasuryStagingPreparationError,
   type PreparePurchaseStagingInput,
   type TreasuryStagingAdapter,
@@ -557,6 +558,33 @@ test("Treasury rejects invalid Purchase staging before creating its fence", asyn
       (error: unknown) =>
         error instanceof TreasuryStagingPreparationError &&
         error.code === "treasury_staging_mismatch",
+    );
+    assert.equal(journal.findTreasuryStagingPlan(purchaseId, 1), undefined);
+    assert.equal(journal.effectsForPurchase(purchaseId).length, 0);
+  });
+});
+
+test("Treasury reports a staging-capacity race without creating its fence", async () => {
+  await withFixture(async ({ journal, policy, wallet, vault, deposit }) => {
+    const purchaseId = authorizedPurchase(journal, 76, "100");
+    const module = purchaseStagingModule({
+      journal,
+      policy,
+      adapters: [wallet, vault, deposit],
+      prepareStaging: async () => {
+        throw new TreasuryStagingCapacityError("staging capacity changed");
+      },
+    });
+    await module.reservePurchaseCapacity(
+      purchaseCapacityInput(journal, purchaseId, "res_staging_capacity_race"),
+    );
+    const input = purchaseStagingInput(journal, purchaseId);
+
+    await assert.rejects(
+      module.preparePurchaseStaging(input),
+      (error: unknown) =>
+        error instanceof TreasuryStagingPreparationError &&
+        error.code === "treasury_capacity_changed",
     );
     assert.equal(journal.findTreasuryStagingPlan(purchaseId, 1), undefined);
     assert.equal(journal.effectsForPurchase(purchaseId).length, 0);
@@ -1953,6 +1981,11 @@ function purchaseStagingModule(input: {
         submitStaging: input.submitStaging ?? unexpected,
         observeStaging: input.observeStaging ?? unexpected,
       },
+      stagingCapacity: {
+        async quoteStagingCapacity() {
+          return { ready: true };
+        },
+      },
       stagingRecovery: input.stagingRecovery ?? {
         prepare: unexpected,
         observe: unexpected,
@@ -2112,6 +2145,11 @@ function purchaseOptions(
       prepareStaging: unexpected,
       submitStaging: unexpected,
       observeStaging: unexpected,
+    },
+    stagingCapacity: {
+      async quoteStagingCapacity() {
+        return { ready: true };
+      },
     },
     stagingRecovery: {
       prepare: unexpected,

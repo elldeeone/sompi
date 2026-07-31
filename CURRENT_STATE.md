@@ -281,7 +281,7 @@ funded transaction because Phase 6 does not require fresh funded evidence.
 
 ## Current release
 
-Sompi `0.13.3` completes architecture programme phases 1 through 6.
+Sompi `0.13.4` completes architecture programme phases 1 through 6.
 The release gives Purchase progression, Treasury, runtime roles, and shared
 Journal contracts explicit module boundaries. It moves internal authorization
 evidence to Journal epoch 20 as defined in ADR-0024.
@@ -290,10 +290,21 @@ The stable Purchase model remains independent from the AP2 and Kaspa-x402
 adapters. The release removes replaced code and does not add compatibility
 fallbacks.
 
-Version `0.13.3` corrects the first vault activation path. The bootstrap
+Version `0.13.3` corrected the first vault activation path. The bootstrap
 worker now handles the public Treasury operation not-found error before it
 creates the first durable vault deposit intent. The regression test uses the
 same public error that the production Treasury module returns.
+
+Version `0.13.4` corrects the staged-payment readiness check found by the first
+live epoch-20 Purchase. Treasury now asks the Kaspa-x402 staging adapter for a
+read-only capacity quote before approval. The adapter plans the exact covenant
+withdrawal shape and its fee. It does not sign, create a staging key, write the
+Journal, or submit a transaction.
+
+An insufficient vault or fee ceiling now blocks the Purchase before approval.
+If capacity changes after the quote, staging returns the stable
+`treasury_capacity_changed` failure. It creates no effect fence and removes
+the unused staging key.
 
 The clean-host Hermes onboarding controls from `0.12.2` remain in force.
 The skill, request template, scriptless installer, preview, and privileged
@@ -322,28 +333,30 @@ required `85000000` sompi to its funding address. The first vault activation
 failed before it created a Treasury operation or submitted a transaction
 because it handled the wrong not-found error type.
 
-The funded epoch-20 identity remains intact for controlled recovery.
-Version `0.13.3` is not yet published or deployed.
+Version `0.13.3` was tagged, published, installed, and activated on Terah.
+The original `0.13.2` bootstrap receipt remains the immutable provenance for
+the epoch-20 identity. The Authority, API, and Hermes services now use
+`0.13.3`. The first live Purchase failed closed before a staging effect because
+the vault could not fund the exact staging transaction and its covenant fee.
+
+Version `0.13.4` is the source candidate for that readiness correction.
+It is not yet published or deployed.
 
 ## Last verified deployment
 
-Sompi `0.12.0` is the completed Kaspa-x402 `0.1.0-alpha.9` clean cutover.
-ADR-0023 defines this release.
-
-The `v0.12.0` tag, source, and deployed Terah bytes match.
-The verified Terah runtime used a fresh Journal epoch-19 identity.
-It is now an immutable recovery unit during the epoch-20 cutover.
-The `0.13.2` pre-activation Authority, API, and Hermes Gateway are active.
-The epoch-20 vault is not yet active.
+Sompi `0.13.3` is active on Terah with Journal epoch 20.
+The Authority, API, Hermes Gateway, runtime commands, and package installation
+use the same exact release. The epoch-20 vault activation reached accepted
+Testnet-10 Chain Evidence.
 
 | Item | Value |
 |---|---|
-| Source commit | `09b6887dc62ea5e0f42164d90531e553660261b0` |
-| Tag | `v0.12.0` |
-| Tag object | `89f5170305cd5d96733400a3bd79e1bcaf4f172b` |
-| npm package | `@elldeeone/sompi@0.12.0` |
-| Registry SHA-1 | `f0052f4f8dcbb12f8a8753479e1b29dbbf427504` |
-| Journal epoch | `19` |
+| Source commit | `6537dcd974423ecf45dbf24b46b889cd5f1e97e4` |
+| Tag | `v0.13.3` |
+| Tag object | `3fedf681cf430f33daa8b9c2bc821ce98421d843` |
+| npm package | `@elldeeone/sompi@0.13.3` |
+| Registry SHA-1 | `e15b8747fcc75789647d47d2c05a0a3a23d79c7a` |
+| Journal epoch | `20` |
 | Network | `kaspa:testnet-10` |
 
 ## Protocol boundary
@@ -371,7 +384,7 @@ recovery.
 
 The `0.13.0` and `0.13.1` attempts stopped before funding and activation.
 Their incomplete privileged state and Hermes projections were removed.
-The `0.13.2` pre-activation runtime uses a new epoch-20 identity.
+The active `0.13.3` runtime uses the epoch-20 identity.
 The Hermes Gateway is active.
 The primary Hermes checkout remains at
 `2d404942471633d5338a8ff514ea7da24549274f`.
@@ -379,7 +392,7 @@ The primary Hermes checkout remains at
 ## Historical verification
 
 The results below record earlier phase and release gates.
-They do not claim `0.13.3` publication, deployment, or GitHub verification.
+They do not claim `0.13.4` publication, deployment, or GitHub verification.
 
 The Architecture Phase 1 verifier passed on its release commit and GitHub
 Node 22 runner.

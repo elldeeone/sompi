@@ -292,6 +292,11 @@ export async function runLiveBatchProof(
             throw new Error("batch execution must not observe exact staging");
           },
         },
+        stagingCapacity: {
+          async quoteStagingCapacity() {
+            return { ready: true };
+          },
+        },
         stagingRecovery: {
           async prepare() {
             throw new Error("batch execution has no exact staging recovery");

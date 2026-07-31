@@ -122,6 +122,11 @@ export interface PreparedVaultSpend {
   };
 }
 
+export interface VaultSendQuote {
+  readonly amountSompi: bigint;
+  readonly feeSompi: bigint;
+}
+
 export interface ObservedVaultSpend {
   transactionId: string;
   destinationOutpoint: { txid: string; index: 0 };
@@ -527,6 +532,53 @@ export class VaultManager {
     return { spendableSompi, unboundSompi };
   }
 
+  /**
+   * Plans the exact covenant withdrawal shape without signing, broadcasting,
+   * or changing local state.
+   */
+  async quoteSend(
+    wallet: KaspaWallet,
+    destination: string,
+    amount: bigint,
+    feeCeilingSompi?: bigint,
+  ): Promise<VaultSendQuote> {
+    this.assertNotMigrating();
+    if (amount <= 0n) {
+      throw new VaultPreparationError(
+        "invalid_input",
+        "vault send quote amount is invalid",
+      );
+    }
+    if (feeCeilingSompi !== undefined && feeCeilingSompi < 0n) {
+      throw new VaultPreparationError(
+        "invalid_input",
+        "vault send quote fee ceiling is invalid",
+      );
+    }
+    const config = this.config();
+    if (!config.covenantId) {
+      throw new VaultPreparationError(
+        "not_funded",
+        "vault has not been covenant-funded",
+      );
+    }
+    const plan = await planVaultWithdrawal({
+      wallet,
+      config,
+      destination,
+      amount,
+      ...(feeCeilingSompi === undefined ? {} : { feeCeilingSompi }),
+    });
+    try {
+      return Object.freeze({
+        amountSompi: plan.amountSompi,
+        feeSompi: plan.feeSompi,
+      });
+    } finally {
+      plan.transaction.free();
+    }
+  }
+
   /** Builds and signs a covenant deposit without broadcasting or changing config. */
   async prepareDeposit(
     wallet: KaspaWallet,
@@ -875,14 +927,14 @@ async function spendVault(
 ): Promise<VaultSpendResult> {
   const { wallet, config, fn, destination } = params;
   assertCurrentConfig(config, wallet.networkId);
+  if (fn === "withdraw") return spendVaultWithdrawal(params);
   const max = BigInt(config.maxOutflowSompi);
   const windowSize = BigInt(config.windowSizeDaa);
   const currentState = stateFromConfig(config);
   const redeem = buildRedeemScript(config.agentPublic, config.ownerPublic, max, windowSize, currentState);
-  const vaultSpk = payToScriptHashScript(redeem);
 
   const rpc = await vaultRpcRead(() => wallet.client());
-  const utxo = await selectCurrentVaultUtxo(wallet, config, fn === "withdraw");
+  const utxo = await selectCurrentVaultUtxo(wallet, config, false);
   const destSpk = payToAddressScript(destination);
   const estimate = await vaultRpcRead(() => rpc.getFeeEstimate());
   const feerate = estimate.estimate?.normalBuckets?.[0]?.feerate ?? 100;
@@ -933,15 +985,122 @@ async function spendVault(
     return { txid: String(transactionId), amountSompi, feeSompi };
   }
 
-  if (!config.covenantId) throw new Error("vault has not been covenant-funded yet; call vault_deposit first");
+  throw new Error("unsupported vault spend function");
+}
 
+interface VaultWithdrawalPlanInput {
+  readonly wallet: KaspaWallet;
+  readonly config: VaultSpendConfig;
+  readonly destination: string;
+  readonly amount?: bigint | "max";
+  readonly feeSompi?: bigint;
+  readonly feeCeilingSompi?: bigint;
+}
+
+interface VaultWithdrawalPlan {
+  readonly rpc: Awaited<ReturnType<KaspaWallet["client"]>>;
+  readonly transaction: Transaction;
+  readonly redeem: Uint8Array;
+  readonly amountSompi: bigint;
+  readonly feeSompi: bigint;
+  readonly feerate: number;
+  readonly nextState: {
+    readonly windowStartDaa: bigint;
+    readonly spentInWindowSompi: bigint;
+  };
+  readonly nextAddress: string;
+}
+
+async function spendVaultWithdrawal(
+  params: VaultSpendParams,
+): Promise<VaultSpendResult> {
+  const plan = await planVaultWithdrawal(params);
+  params.authorize?.(plan.amountSompi);
+  const pushedSig = createInputSignature(
+    plan.transaction,
+    0,
+    params.signingKey,
+    SighashType.All,
+  );
+  setInputScripts(plan.transaction, [
+    payToScriptHashSignatureScript(
+      plan.redeem,
+      buildSigArgs(hexToBytes(pushedSig).slice(1), "withdraw"),
+    ),
+  ]);
+  assertFeeCoversSignedTx(
+    params.wallet.networkId,
+    plan.transaction,
+    plan.feerate,
+    plan.feeSompi,
+    "vault withdrawal",
+  );
+  if (params.broadcast === false) {
+    const txid = String(plan.transaction.finalize());
+    return {
+      txid,
+      amountSompi: plan.amountSompi,
+      feeSompi: plan.feeSompi,
+      preparedTransaction: plan.transaction.serializeToSafeJSON(),
+      configUpdate: {
+        windowStartDaa: plan.nextState.windowStartDaa.toString(),
+        spentInWindowSompi: plan.nextState.spentInWindowSompi.toString(),
+        address: plan.nextAddress,
+        currentOutpoint: { txid, index: 1 },
+      },
+    };
+  }
+  const { transactionId } = await plan.rpc.submitTransaction({
+    transaction: plan.transaction,
+    allowOrphan: false,
+  });
+  const txid = String(transactionId);
+  return {
+    txid,
+    amountSompi: plan.amountSompi,
+    feeSompi: plan.feeSompi,
+    configUpdate: {
+      windowStartDaa: plan.nextState.windowStartDaa.toString(),
+      spentInWindowSompi: plan.nextState.spentInWindowSompi.toString(),
+      address: plan.nextAddress,
+      currentOutpoint: { txid, index: 1 },
+    },
+  };
+}
+
+async function planVaultWithdrawal(
+  input: VaultWithdrawalPlanInput,
+): Promise<VaultWithdrawalPlan> {
+  const { wallet, config, destination } = input;
+  assertCurrentConfig(config, wallet.networkId);
+  if (!config.covenantId) {
+    throw new VaultPreparationError(
+      "not_funded",
+      "vault has not been covenant-funded",
+    );
+  }
+  const max = BigInt(config.maxOutflowSompi);
+  const windowSize = BigInt(config.windowSizeDaa);
+  const currentState = stateFromConfig(config);
+  const redeem = buildRedeemScript(
+    config.agentPublic,
+    config.ownerPublic,
+    max,
+    windowSize,
+    currentState,
+  );
+  const vaultSpk = payToScriptHashScript(redeem);
+  const rpc = await vaultRpcRead(() => wallet.client());
+  const utxo = await selectCurrentVaultUtxo(wallet, config, true);
+  const destSpk = payToAddressScript(destination);
+  const estimate = await vaultRpcRead(() => rpc.getFeeEstimate());
+  const feerate = estimate.estimate?.normalBuckets?.[0]?.feerate ?? 100;
   const info = await vaultRpcRead(() => rpc.getServerInfo());
   const virtualDaa = BigInt(info.virtualDaaScore);
   // Keep the input non-final so header context enforces this DAA locktime.
-  // The contract also requires the active vault UTXO itself to have aged a
-  // full window, so stale-but-final historical locktimes cannot reset windows.
   const lockDaa = virtualDaa > 0n ? virtualDaa - 1n : 0n;
-  const resetTargetDaa = maxBigInt(currentState.windowStartDaa, utxo.blockDaaScore) + windowSize;
+  const resetTargetDaa =
+    maxBigInt(currentState.windowStartDaa, utxo.blockDaaScore) + windowSize;
   const reset = lockDaa >= resetTargetDaa;
   const spentAtWindowStart = reset ? 0n : currentState.spentInWindowSompi;
   const remainingWindow = max - spentAtWindowStart;
@@ -949,7 +1108,7 @@ async function spendVault(
     throw new VaultPreparationError(
       "invalid_runtime_state",
       `Vault window exhausted: spent ${displayAmount(spentAtWindowStart)} of ${displayAmount(max)}; ` +
-        `next reset at DAA ${resetTargetDaa}`
+        `next reset at DAA ${resetTargetDaa}`,
     );
   }
 
@@ -958,119 +1117,150 @@ async function spendVault(
       windowStartDaa: reset ? lockDaa : currentState.windowStartDaa,
       spentInWindowSompi: spentAtWindowStart + outflow,
     };
-    const nextRedeem = buildRedeemScript(config.agentPublic, config.ownerPublic, max, windowSize, nextState);
+    const nextRedeem = buildRedeemScript(
+      config.agentPublic,
+      config.ownerPublic,
+      max,
+      windowSize,
+      nextState,
+    );
     const nextSpk = payToScriptHashScript(nextRedeem);
-    const derivedAddress = addressFromScriptPublicKey(nextSpk, wallet.networkId);
+    const derivedAddress = addressFromScriptPublicKey(
+      nextSpk,
+      wallet.networkId,
+    );
     let nextAddress: string;
     try {
-      if (!derivedAddress) throw new Error("could not derive next vault address");
+      if (!derivedAddress) {
+        throw new Error("could not derive next vault address");
+      }
       nextAddress = derivedAddress.toString();
     } finally {
       derivedAddress?.free();
     }
-    return { nextState, nextRedeem, nextSpk, nextAddress };
+    return { nextState, nextSpk, nextAddress };
   };
 
   let amountSompi: bigint;
-  let feeSompi = params.feeSompi ?? 0n;
-  let converged = params.feeSompi !== undefined;
+  let feeSompi = input.feeSompi ?? 0n;
+  let converged = input.feeSompi !== undefined;
   for (let i = 0; i < MAX_FEE_CONVERGENCE_PASSES; i++) {
-    amountSompi = withdrawAmount(params.amount, remainingWindow, utxo.amount, feeSompi);
+    amountSompi = withdrawAmount(
+      input.amount,
+      remainingWindow,
+      utxo.amount,
+      feeSompi,
+    );
     const outflow = amountSompi + feeSompi;
     if (outflow > remainingWindow) {
       throw new VaultPreparationError(
         "invalid_runtime_state",
         `Outflow ${displayAmount(outflow)} (amount + estimated fee ${displayAmount(feeSompi)}) exceeds remaining vault window ` +
-          `${displayAmount(remainingWindow)}.`
+          `${displayAmount(remainingWindow)}.`,
       );
     }
     const next = continuationFor(outflow);
     const changeSompi = utxo.amount - outflow;
     if (changeSompi <= 0n) {
-      throw new VaultPreparationError("insufficient_funds", `Vault balance ${displayAmount(utxo.amount)} is too small for this spend.`);
+      throw new VaultPreparationError(
+        "insufficient_funds",
+        `Vault balance ${displayAmount(utxo.amount)} is too small for this spend.`,
+      );
     }
-    const tx = buildTransaction({
+    const candidate = buildTransaction({
       inputs: [txInput(utxo, "")],
       outputs: [
         { value: amountSompi, scriptPublicKey: destSpk },
-        { value: changeSompi, scriptPublicKey: next.nextSpk, covenant: covenantBinding(config.covenantId, 0) },
+        {
+          value: changeSompi,
+          scriptPublicKey: next.nextSpk,
+          covenant: covenantBinding(config.covenantId, 0),
+        },
       ],
       lockTime: lockDaa,
     });
-    const nextFee = estimateTxFeeSompi(wallet.networkId, tx, feerate, [dummyVaultSignatureScript(redeem, "withdraw")]);
-    if (params.feeSompi !== undefined || nextFee <= feeSompi) {
+    let nextFee: bigint;
+    try {
+      nextFee = estimateTxFeeSompi(
+        wallet.networkId,
+        candidate,
+        feerate,
+        [dummyVaultSignatureScript(redeem, "withdraw")],
+      );
+    } finally {
+      candidate.free();
+    }
+    if (input.feeSompi !== undefined || nextFee <= feeSompi) {
       converged = true;
       break;
     }
     feeSompi = nextFee;
   }
   if (!converged) {
-    throw new VaultPreparationError("invalid_runtime_state", `vault withdrawal fee estimate did not converge after ${MAX_FEE_CONVERGENCE_PASSES} passes`);
+    throw new VaultPreparationError(
+      "invalid_runtime_state",
+      `vault withdrawal fee estimate did not converge after ${MAX_FEE_CONVERGENCE_PASSES} passes`,
+    );
+  }
+  if (
+    input.feeCeilingSompi !== undefined &&
+    feeSompi > input.feeCeilingSompi
+  ) {
+    throw new VaultPreparationError(
+      "fee_exceeds_ceiling",
+      "vault withdrawal fee exceeds the capacity reserved before signing",
+    );
   }
 
-  if (params.feeCeilingSompi !== undefined && feeSompi > params.feeCeilingSompi) {
-    throw new VaultPreparationError("fee_exceeds_ceiling", "vault withdrawal fee exceeds the capacity reserved before signing");
-  }
-
-  amountSompi = withdrawAmount(params.amount, remainingWindow, utxo.amount, feeSompi);
+  amountSompi = withdrawAmount(
+    input.amount,
+    remainingWindow,
+    utxo.amount,
+    feeSompi,
+  );
   const outflow = amountSompi + feeSompi;
   if (outflow > remainingWindow) {
     throw new VaultPreparationError(
       "invalid_runtime_state",
       `Outflow ${displayAmount(outflow)} (amount + estimated fee ${displayAmount(feeSompi)}) exceeds remaining vault window ` +
-        `${displayAmount(remainingWindow)}.`
+        `${displayAmount(remainingWindow)}.`,
     );
   }
   if (amountSompi <= 0n) {
-    throw new VaultPreparationError("insufficient_funds", `Vault balance ${displayAmount(utxo.amount)} is too small for this spend.`);
+    throw new VaultPreparationError(
+      "insufficient_funds",
+      `Vault balance ${displayAmount(utxo.amount)} is too small for this spend.`,
+    );
   }
-  params.authorize?.(amountSompi);
-
   const next = continuationFor(outflow);
   const changeSompi = utxo.amount - outflow;
   if (changeSompi <= 0n) {
-    throw new VaultPreparationError("insufficient_funds", `Vault balance ${displayAmount(utxo.amount)} is too small for this spend.`);
+    throw new VaultPreparationError(
+      "insufficient_funds",
+      `Vault balance ${displayAmount(utxo.amount)} is too small for this spend.`,
+    );
   }
-
-  const tx = buildTransaction({
+  const transaction = buildTransaction({
     inputs: [txInput({ ...utxo, scriptPublicKey: vaultSpk }, "")],
     outputs: [
       { value: amountSompi, scriptPublicKey: destSpk },
-      { value: changeSompi, scriptPublicKey: next.nextSpk, covenant: covenantBinding(config.covenantId, 0) },
+      {
+        value: changeSompi,
+        scriptPublicKey: next.nextSpk,
+        covenant: covenantBinding(config.covenantId, 0),
+      },
     ],
     lockTime: lockDaa,
   });
-  const pushedSig = createInputSignature(tx, 0, params.signingKey, SighashType.All);
-  setInputScripts(tx, [payToScriptHashSignatureScript(redeem, buildSigArgs(hexToBytes(pushedSig).slice(1), "withdraw"))]);
-  assertFeeCoversSignedTx(wallet.networkId, tx, feerate, feeSompi, "vault withdrawal");
-  if (params.broadcast === false) {
-    const txid = String(tx.finalize());
-    return {
-      txid,
-      amountSompi,
-      feeSompi,
-      preparedTransaction: tx.serializeToSafeJSON(),
-      configUpdate: {
-        windowStartDaa: next.nextState.windowStartDaa.toString(),
-        spentInWindowSompi: next.nextState.spentInWindowSompi.toString(),
-        address: next.nextAddress,
-        currentOutpoint: { txid, index: 1 },
-      },
-    };
-  }
-  const { transactionId } = await (rpc as any).submitTransaction({ transaction: tx, allowOrphan: false });
-  const txid = String(transactionId);
-
   return {
-    txid,
+    rpc,
+    transaction,
+    redeem,
     amountSompi,
     feeSompi,
-    configUpdate: {
-      windowStartDaa: next.nextState.windowStartDaa.toString(),
-      spentInWindowSompi: next.nextState.spentInWindowSompi.toString(),
-      address: next.nextAddress,
-      currentOutpoint: { txid, index: 1 },
-    },
+    feerate,
+    nextState: next.nextState,
+    nextAddress: next.nextAddress,
   };
 }
 

@@ -20,7 +20,13 @@ import {
 import { buildRedeemScript } from "../../vault/template.js";
 import { VaultManager, generateOwnerKey } from "../../vault.js";
 import { KaspaWallet } from "../../wallet.js";
-import { StagingKeyStore } from "./staging-key-store.js";
+import {
+  StagingKeyStore,
+  stagingKeyReference,
+} from "./staging-key-store.js";
+import {
+  TreasuryStagingCapacityError,
+} from "../../treasury/purchase-staging.js";
 import {
   CanonicalTreasuryStagingMetadataSource,
   type StagingChainEvidence,
@@ -116,6 +122,39 @@ test("actual staging fee and signed transaction cap are fail-closed", async () =
       () => decodeVaultTreasuryStagingEnvelope(narrowed),
       /outside its authorized exact-payment bounds|cannot fund/
     );
+  });
+});
+
+test("capacity quote rejects the live underfunded shape without creating a staging key", async () => {
+  await withFixture(async (fixture) => {
+    fixture.setVaultAmount(57_028_640n);
+    const lookup = {
+      purchaseId: PURCHASE_ID,
+      paymentIdentifier: PAYMENT_ID,
+      keyReference: stagingKeyReference({
+        purchaseId: PURCHASE_ID,
+        paymentIdentifier: PAYMENT_ID,
+      }),
+    };
+    assert.equal(fixture.keyStore.load(lookup), undefined);
+    assert.deepEqual(
+      await fixture.staging.quoteStagingCapacity({
+        amountAtomic: PRICE,
+        additionalCostCeilingAtomic: "15000000",
+      }),
+      {
+        ready: false,
+        blockerCode: "vault_insufficient_funds",
+      },
+    );
+    assert.equal(fixture.keyStore.load(lookup), undefined);
+    assert.equal(fixture.submitCount(), 0);
+    await assert.rejects(
+      fixture.staging.prepare(fixture.prepareInput("15000000")),
+      (error: unknown) =>
+        error instanceof TreasuryStagingCapacityError,
+    );
+    assert.equal(fixture.keyStore.load(lookup), undefined);
   });
 });
 
@@ -291,6 +330,7 @@ interface Fixture {
   ): any;
   context(input: any, prepared: any): any;
   effect(payloadDigest: string): any;
+  setVaultAmount(amount: bigint): void;
   makeVisible(): void;
   submitCount(): number;
 }
@@ -316,7 +356,7 @@ async function withFixture(action: (fixture: Fixture) => Promise<void>): Promise
     JSON.stringify(funded, null, 2),
     { mode: 0o600 }
   );
-  const vaultAmount = 600_000_000n;
+  let vaultAmount = 600_000_000n;
   const vaultScript = payToScriptHashScript(
     buildRedeemScript(
       funded.agentPublic,
@@ -518,6 +558,9 @@ async function withFixture(action: (fixture: Fixture) => Promise<void>): Promise
           createdAtMs: NOW,
           updatedAtMs: NOW,
         };
+      },
+      setVaultAmount(amount) {
+        vaultAmount = amount;
       },
       makeVisible() {
         visible = true;

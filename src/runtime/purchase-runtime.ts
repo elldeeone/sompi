@@ -432,6 +432,7 @@ function createSompiRuntimeComposition(
         vault,
         additionalCostCeilingAtomic: config.additionalCostCeilingAtomic,
         staging: treasuryStaging,
+        stagingCapacity: staging,
         stagingRecovery,
         now,
       },

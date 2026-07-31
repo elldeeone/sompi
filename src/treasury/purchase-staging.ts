@@ -191,6 +191,39 @@ export interface TreasuryStagingPreparationAdapter {
   ): Promise<Readonly<PreparedTreasuryStaging>>;
 }
 
+export interface TreasuryStagingCapacityInput {
+  readonly amountAtomic: string;
+  readonly additionalCostCeilingAtomic: string;
+}
+
+export type TreasuryStagingCapacityBlockerCode =
+  | "vault_insufficient_funds"
+  | "vault_fee_exceeds_ceiling"
+  | "vault_policy_capacity_unavailable"
+  | "vault_unavailable";
+
+export interface TreasuryStagingCapacityQuote {
+  readonly ready: boolean;
+  readonly blockerCode?: TreasuryStagingCapacityBlockerCode;
+}
+
+/** Read-only protocol capacity check. It must not sign or create staging keys. */
+export interface TreasuryStagingCapacityAdapter {
+  quoteStagingCapacity(
+    input: Readonly<TreasuryStagingCapacityInput>
+  ): Promise<Readonly<TreasuryStagingCapacityQuote>>;
+}
+
+export class TreasuryStagingCapacityError extends Error {
+  constructor(
+    message: string,
+    options?: { readonly cause?: unknown },
+  ) {
+    super(message, options);
+    this.name = "TreasuryStagingCapacityError";
+  }
+}
+
 /** Protocol adapter behind Treasury. It cannot choose or persist execution. */
 export interface TreasuryStagingExecutionAdapter {
   submitStaging(input: {
@@ -212,6 +245,7 @@ export type TreasuryStagingPreparationErrorCode =
   | "payment_invariant"
   | "treasury_reservation_invariant"
   | "treasury_staging_busy"
+  | "treasury_capacity_changed"
   | "treasury_staging_mismatch";
 
 export class TreasuryStagingPreparationError extends Error {

@@ -712,6 +712,7 @@ function composeLiveCoordinator(input: {
       additionalCostCeilingAtomic: LIVE_ADDITIONAL_COST_CEILING_ATOMIC,
       reservationTtlMs: 30 * 60_000,
       staging: treasuryStaging,
+      stagingCapacity: staging,
       stagingRecovery,
       now,
     },
